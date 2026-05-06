@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `spore task new` now refuses to mint a task when any
+  `[matter.<name>]` section is enabled in `spore.toml`. Once a
+  matter adapter is the source of truth, hand-minted task files
+  race adapter projection and produce slug or status drift.
+  Adapters create files via `task.Allocate` + `frontmatter.Write`
+  directly and never go through this command, so projection is
+  unaffected. Projects with no matter enabled keep the old
+  behaviour. No flag overrides; disable the matter section to
+  re-enable manual mints.
 - Renamed the per-task inbox env var from `SKYBOT_INBOX` to
   `SPORE_TASK_INBOX` to drop a foreign prefix that had leaked in
   from a consumer harness. Spore sets and reads the new name only;

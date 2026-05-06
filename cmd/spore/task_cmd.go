@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -21,7 +22,10 @@ Usage:
   spore task <subcommand> [flags]
 
 Subcommands:
-  new <title> [flags]          Create a tasks/<slug>.md.
+  new <title> [flags]          Create a tasks/<slug>.md. Refuses when any
+                               [matter.<name>] is enabled in spore.toml so
+                               manual mints cannot collide with adapter
+                               projection.
   ls [--all] [--done]          List tasks (default hides done).
   edit <slug>                  Open task file in $EDITOR.
   pick                         Interactive rofi/fzf task picker.
@@ -224,6 +228,36 @@ func runTaskVerify(args []string) error {
 	return nil
 }
 
+// refuseTaskNewWhenMatterEnabled reads <projectRoot>/spore.toml and
+// returns a non-nil error when any [matter.<name>] section has
+// enabled = true. The intent: once a project wires an external
+// tracker (Linear, GitHub Issues, ...) as the source of truth,
+// hand-minted tasks/<slug>.md files race the adapter's projection
+// and produce slug or status drift. Refusing here keeps the single
+// source of truth honest. Adapters create files via task.Allocate +
+// frontmatter.Write directly and never go through this command, so
+// projection is unaffected.
+func refuseTaskNewWhenMatterEnabled(projectRoot string) error {
+	configs, err := matter.LoadFromProject(projectRoot)
+	if err != nil {
+		return err
+	}
+	var enabled []string
+	for _, c := range configs {
+		if c.Enabled {
+			enabled = append(enabled, c.Name)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"'spore task new' is disabled: [matter.%s] enabled in spore.toml; "+
+			"file the work in the upstream tracker and let the adapter project it",
+		strings.Join(enabled, "], [matter."),
+	)
+}
+
 // needsFlag is a repeatable string flag for --needs.
 type needsFlag []string
 
@@ -252,6 +286,10 @@ func runTaskNew(args []string) error {
 	title := fs.Arg(0)
 	if strings.TrimSpace(title) == "" {
 		return fmt.Errorf("title must not be empty")
+	}
+
+	if err := refuseTaskNewWhenMatterEnabled("."); err != nil {
+		return err
 	}
 
 	tasksDir := "tasks"
