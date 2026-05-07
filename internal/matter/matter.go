@@ -1,8 +1,10 @@
 // Package matter is the plugin layer for external work sources
 // (Linear, GitHub Issues, Jira, ad-hoc CSV, ...). A Matter polls its
 // upstream and projects ready tickets onto tasks/<slug>.md files;
-// when a task carrying its metadata flips to done, the matter is
-// asked to mirror that back upstream.
+// when the fleet reconciler spawns a worker for a projected task the
+// matter is told to mirror the claim upstream, and when a task
+// carrying its metadata flips to done the matter is told to mirror
+// that close upstream.
 //
 // The package is interface + registry only: adapters live in their
 // own subpackages (e.g. internal/matter/linear) and self-register
@@ -16,8 +18,8 @@
 //	matter_url: <url>       # adapter-defined deep link (optional)
 //
 // MatterKey, MatterIDKey, and MatterURLKey are the canonical names.
-// OnDone receives the parsed Extra map verbatim so adapters can read
-// any additional keys they wrote.
+// OnClaim and OnDone receive the parsed Extra map verbatim so adapters
+// can read any additional keys they wrote.
 package matter
 
 import "context"
@@ -52,7 +54,25 @@ type Matter interface {
 	// of task files created and updated by this pass. Implementations
 	// must be safe to call repeatedly: re-syncing an unchanged
 	// upstream should report 0/0 and touch nothing on disk.
+	//
+	// Sync MUST NOT push the upstream record into the in-progress
+	// state at projection time: a projected task without a worker
+	// is not yet claimed, and an upstream board that pretends
+	// otherwise is the failure mode this contract exists to
+	// prevent. The fleet reconciler is the source of truth for the
+	// claim signal; see OnClaim.
 	Sync(ctx context.Context, projectRoot string) (created, updated int, err error)
+
+	// OnClaim is invoked when the fleet reconciler spawns a worker
+	// for a task carrying this matter's metadata. Meta is the
+	// task's frontmatter Extra map. Adapters use this hook to
+	// mirror the local claim upstream (e.g. Linear ready ->
+	// in-progress). Adapters should be idempotent: a re-fired
+	// OnClaim for an already-claimed upstream record is not an
+	// error, since session re-spawn after a crash routes through
+	// the same path. Errors are logged by the caller and do not
+	// abort reconciliation.
+	OnClaim(ctx context.Context, slug string, meta map[string]string) error
 
 	// OnDone is invoked after a task carrying this matter's
 	// metadata flips to status=done. Meta is the task's frontmatter

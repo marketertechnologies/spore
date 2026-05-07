@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -200,6 +201,7 @@ func Reconcile(cfg Config) (Result, error) {
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
 			return res, fmt.Errorf("ensure %s: %w", slug, err)
 		}
+		notifyMatterClaim(cfg.ProjectRoot, cfg.TasksDir, slug, os.Stderr)
 		res.Spawned = append(res.Spawned, slug)
 		runningSet[slug] = true
 		agentCounts[picked]++
@@ -253,6 +255,74 @@ func assignAgent(tasksDir, slug string, cfg WorkersConfig, counts map[string]int
 		return "", err
 	}
 	return picked, nil
+}
+
+// notifyMatterClaim fires OnClaim on the matter named in the task's
+// frontmatter (Extra["matter"]) the moment the reconciler spawns a
+// worker for the slug. No-op when the key is absent or the adapter
+// isn't configured for this project. Errors land on warnOut; the
+// spawn itself remains the source of truth, mirroring the
+// fire-and-log shape of notifyMatterDone.
+func notifyMatterClaim(projectRoot, tasksDir, slug string, warnOut io.Writer) {
+	m, err := readMatterMeta(tasksDir, slug)
+	if err != nil {
+		fmt.Fprintf(warnOut, "spore reconcile %s: matter read: %v\n", slug, err)
+		return
+	}
+	name := m.Extra[matter.MatterKey]
+	if name == "" {
+		return
+	}
+	configs, err := matter.LoadFromProject(projectRoot)
+	if err != nil {
+		fmt.Fprintf(warnOut, "spore reconcile %s: matter load: %v\n", slug, err)
+		return
+	}
+	var cfg *matter.Config
+	for i := range configs {
+		if configs[i].Name == name && configs[i].Enabled {
+			cfg = &configs[i]
+			break
+		}
+	}
+	if cfg == nil {
+		return
+	}
+	matters, err := matter.FromConfig([]matter.Config{*cfg})
+	if err != nil {
+		fmt.Fprintf(warnOut, "spore reconcile %s: matter %s: %v\n", slug, name, err)
+		return
+	}
+	if len(matters) == 0 {
+		return
+	}
+	if err := matters[0].OnClaim(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+		fmt.Fprintf(warnOut, "spore reconcile %s: matter %s OnClaim: %v\n", slug, name, err)
+	}
+}
+
+func readMatterMeta(tasksDir, slug string) (frontmatter.Meta, error) {
+	path := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return frontmatter.Meta{}, err
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return m, nil
+}
+
+func copyExtra(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // syncMatters runs Sync against every enabled matter under

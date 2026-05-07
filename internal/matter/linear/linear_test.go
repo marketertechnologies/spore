@@ -201,7 +201,7 @@ func newSource(t *testing.T, srvURL string) *Source {
 	return src
 }
 
-func TestSyncCreatesTasksAndPushesReady(t *testing.T) {
+func TestSyncProjectsReadyWithoutFlippingState(t *testing.T) {
 	stub := newStub(t)
 	stub.addReady("issue-uuid-1", "MAR-12", "Wire up onboarding email", "Send welcome email on signup.")
 	stub.addReady("issue-uuid-2", "MAR-13", "Crash on empty cart", "Repro: open cart without items.")
@@ -220,9 +220,13 @@ func TestSyncCreatesTasksAndPushesReady(t *testing.T) {
 		t.Errorf("Sync = (created=%d, updated=%d), want (2, 0)", created, updated)
 	}
 
+	// Projection no longer pushes the issue into In Progress: the
+	// flip is OnClaim's job, fired by the fleet reconciler the
+	// moment a worker actually claims the projected task. The
+	// kanban must keep saying "Ready" until then.
 	for id, iss := range stub.issues {
-		if iss.StateID != stub.states["In Progress"] {
-			t.Errorf("issue %s state = %s, want In Progress", id, iss.StateID)
+		if iss.StateID != stub.states["Ready"] {
+			t.Errorf("issue %s state = %s, want Ready (Sync must not flip)", id, iss.StateID)
 		}
 	}
 
@@ -418,6 +422,73 @@ func TestSyncRecognisesLegacyLinearKey(t *testing.T) {
 	}
 	if iss.StateID != stub.states["Done"] {
 		t.Errorf("legacy task should have pushed Done, got state %q", iss.StateID)
+	}
+}
+
+func TestOnClaimFlipsReadyToInProgress(t *testing.T) {
+	stub := newStub(t)
+	iss := stub.addReady("issue-uuid-claim-1", "MAR-77", "Claimed by rover", "")
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	src := newSource(t, srv.URL)
+	err := src.OnClaim(context.Background(), "claimed-by-rover", map[string]string{
+		matter.MatterKey:   "linear",
+		matter.MatterIDKey: "MAR-77",
+	})
+	if err != nil {
+		t.Fatalf("OnClaim: %v", err)
+	}
+	if iss.StateID != stub.states["In Progress"] {
+		t.Errorf("OnClaim should have moved issue to In Progress, got %q", iss.StateID)
+	}
+
+	// Idempotent: a re-fired OnClaim against an already-claimed
+	// issue must not error (worker re-spawn after a session crash
+	// routes through the same path).
+	if err := src.OnClaim(context.Background(), "claimed-by-rover", map[string]string{
+		matter.MatterKey:   "linear",
+		matter.MatterIDKey: "MAR-77",
+	}); err != nil {
+		t.Fatalf("OnClaim re-fire: %v", err)
+	}
+	if iss.StateID != stub.states["In Progress"] {
+		t.Errorf("OnClaim re-fire flipped state: %q", iss.StateID)
+	}
+}
+
+func TestOnClaimIgnoresUnrelatedMatter(t *testing.T) {
+	stub := newStub(t)
+	stub.addReady("issue-uuid-claim-2", "MAR-78", "Wrong adapter", "")
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	src := newSource(t, srv.URL)
+	err := src.OnClaim(context.Background(), "wrong-adapter", map[string]string{
+		matter.MatterKey:   "jira",
+		matter.MatterIDKey: "MAR-78",
+	})
+	if err != nil {
+		t.Fatalf("OnClaim: %v", err)
+	}
+	if stub.calls != 0 {
+		t.Errorf("OnClaim should make 0 GraphQL calls when matter != linear, got %d", stub.calls)
+	}
+}
+
+func TestOnClaimNoOpWithoutID(t *testing.T) {
+	stub := newStub(t)
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	src := newSource(t, srv.URL)
+	if err := src.OnClaim(context.Background(), "no-id", map[string]string{}); err != nil {
+		t.Fatalf("OnClaim: %v", err)
+	}
+	if stub.calls != 0 {
+		t.Errorf("want 0 calls, got %d", stub.calls)
 	}
 }
 

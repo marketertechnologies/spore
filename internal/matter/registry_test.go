@@ -9,14 +9,16 @@ import (
 )
 
 type fakeMatter struct {
-	name    string
-	created int
-	updated int
-	syncErr error
-	doneErr error
-	calls   struct {
-		sync   int
-		onDone []string
+	name     string
+	created  int
+	updated  int
+	syncErr  error
+	claimErr error
+	doneErr  error
+	calls    struct {
+		sync    int
+		onClaim []string
+		onDone  []string
 	}
 }
 
@@ -24,6 +26,10 @@ func (f *fakeMatter) Name() string { return f.name }
 func (f *fakeMatter) Sync(ctx context.Context, projectRoot string) (int, int, error) {
 	f.calls.sync++
 	return f.created, f.updated, f.syncErr
+}
+func (f *fakeMatter) OnClaim(ctx context.Context, slug string, meta map[string]string) error {
+	f.calls.onClaim = append(f.calls.onClaim, slug)
+	return f.claimErr
 }
 func (f *fakeMatter) OnDone(ctx context.Context, slug string, meta map[string]string) error {
 	f.calls.onDone = append(f.calls.onDone, slug)

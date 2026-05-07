@@ -6,12 +6,21 @@
 //     IDs are stable).
 //  2. List issues in ready_state for team. For each issue not yet
 //     present on disk (no tasks/<slug>.md carries `matter_id: <id>`),
-//     create a tasks/<slug>.md and push the issue ready->in-progress.
+//     create a tasks/<slug>.md. The issue is left in ready_state:
+//     projection by itself does not claim a worker, so the kanban
+//     must keep telling the truth until the fleet reconciler
+//     actually spawns a rover (see OnClaim).
 //  3. Walk tasks/. For every status=done task that carries
 //     `matter_id: <id>` and is missing `linear_done: yes`, push the
 //     issue to done_state and stamp `linear_done: yes`. This is the
 //     safety-net path; the synchronous push happens via OnDone the
 //     moment the task flips to done.
+//
+// The ready -> in_progress push happens in OnClaim, fired by the
+// fleet reconciler the moment a worker is spawned for a projected
+// task. Decoupling projection from the flip means a backlog still
+// being routed through `[matter.linear]` does not lie about reality
+// when the worker cap clips the active set.
 //
 // The adapter registers itself under the name "linear" via init(),
 // so importing this package is enough to make `[matter.linear]` (or
@@ -139,6 +148,12 @@ func (*Source) Name() string { return sourceName }
 // Sync runs one full pass. See package doc for the sequence. The
 // returned counters cover this pass only (re-syncing an unchanged
 // upstream reports 0 / 0).
+//
+// Sync does not push ready issues into in_progress: that flip is
+// owned by OnClaim, fired by the fleet reconciler the moment a
+// worker actually claims the projected task. Sync is therefore safe
+// to run on a host with no fleet (e.g. a read-only mirror); the only
+// side-effects against Linear are the safety-net done pushes.
 func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated int, err error) {
 	tasksDir := filepath.Join(projectRoot, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
@@ -152,8 +167,7 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 	if !ok {
 		return 0, 0, fmt.Errorf("matter.linear: ready_state %q not found in team %s", s.cfg.ReadyState, s.cfg.Team)
 	}
-	inProgressID, ok := s.stateIDs[s.cfg.InProgressState]
-	if !ok {
+	if _, ok := s.stateIDs[s.cfg.InProgressState]; !ok {
 		return 0, 0, fmt.Errorf("matter.linear: in_progress_state %q not found in team %s", s.cfg.InProgressState, s.cfg.Team)
 	}
 	doneID, ok := s.stateIDs[s.cfg.DoneState]
@@ -178,9 +192,6 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		if err != nil {
 			return created, updated, fmt.Errorf("matter.linear: adopt %s: %w", issue.Identifier, err)
 		}
-		if err := s.transitionIssue(issue.ID, inProgressID); err != nil {
-			return created, updated, fmt.Errorf("matter.linear: transition %s -> in_progress: %w", issue.Identifier, err)
-		}
 		created++
 		known[issue.Identifier] = slug
 	}
@@ -199,6 +210,27 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		updated++
 	}
 	return created, updated, nil
+}
+
+// OnClaim flips the projected Linear issue from ready_state to
+// in_progress_state. Fired by the fleet reconciler the moment it
+// spawns a worker for a task projected from this adapter; the same
+// path runs for re-spawn after a session crash, so the upstream push
+// must be idempotent (Linear's issueUpdate is). No-op when the meta
+// names a different matter or carries no matter_id.
+func (s *Source) OnClaim(ctx context.Context, slug string, meta map[string]string) error {
+	id := issueIDFromMeta(meta)
+	if id == "" {
+		return nil
+	}
+	if err := s.loadStateIDs(); err != nil {
+		return err
+	}
+	inProgressID, ok := s.stateIDs[s.cfg.InProgressState]
+	if !ok {
+		return fmt.Errorf("matter.linear: in_progress_state %q not found in team %s", s.cfg.InProgressState, s.cfg.Team)
+	}
+	return s.transitionIssue(id, inProgressID)
 }
 
 // OnDone is the synchronous push for a task that just flipped to

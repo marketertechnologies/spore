@@ -1,10 +1,12 @@
 package fleet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -12,17 +14,35 @@ import (
 )
 
 type recordingMatter struct {
-	name    string
-	created int
-	updated int
-	syncErr error
-	calls   atomic.Int32
+	name     string
+	created  int
+	updated  int
+	syncErr  error
+	claimErr error
+	calls    atomic.Int32
+	claims   struct {
+		mu  sync.Mutex
+		log []string
+	}
 }
 
 func (r *recordingMatter) Name() string { return r.name }
 func (r *recordingMatter) Sync(ctx context.Context, projectRoot string) (int, int, error) {
 	r.calls.Add(1)
 	return r.created, r.updated, r.syncErr
+}
+func (r *recordingMatter) OnClaim(ctx context.Context, slug string, meta map[string]string) error {
+	r.claims.mu.Lock()
+	r.claims.log = append(r.claims.log, slug)
+	r.claims.mu.Unlock()
+	return r.claimErr
+}
+func (r *recordingMatter) claimLog() []string {
+	r.claims.mu.Lock()
+	defer r.claims.mu.Unlock()
+	out := make([]string, len(r.claims.log))
+	copy(out, r.claims.log)
+	return out
 }
 func (r *recordingMatter) OnDone(ctx context.Context, slug string, meta map[string]string) error {
 	return nil
@@ -112,5 +132,92 @@ func TestSyncMattersUnknownAdapterCapturedAsError(t *testing.T) {
 	res := syncMatters(dirs.project)
 	if len(res) != 1 || res[0].Err == nil {
 		t.Fatalf("want error result for unknown adapter, got %v", res)
+	}
+}
+
+// notifyMatterClaim fires OnClaim on the matter named in the
+// just-spawned task's frontmatter. The tests below pin the contract
+// (matter resolution, disabled skip, error swallow) so the rover
+// claim signal stays bound to spawn even after a refactor.
+
+func writeMatterTask(t *testing.T, tasksDir, slug, matterName, matterID string) {
+	t.Helper()
+	body := "---\nstatus: active\nslug: " + slug + "\ntitle: " + slug
+	if matterName != "" {
+		body += "\nmatter: " + matterName
+	}
+	if matterID != "" {
+		body += "\nmatter_id: " + matterID
+	}
+	body += "\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotifyMatterClaimFiresOnClaim(t *testing.T) {
+	dirs := newTestDirs(t)
+	rec := &recordingMatter{name: "fake"}
+	installMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
+	writeSporeTOML(t, dirs.project, "[matter.fake]\nenabled = true\n")
+	writeMatterTask(t, dirs.tasks, "alpha", "fake", "FAKE-12")
+
+	var warn bytes.Buffer
+	notifyMatterClaim(dirs.project, dirs.tasks, "alpha", &warn)
+
+	if got := rec.claimLog(); len(got) != 1 || got[0] != "alpha" {
+		t.Errorf("OnClaim log = %v, want [alpha]", got)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("happy path should not warn, got %q", warn.String())
+	}
+}
+
+func TestNotifyMatterClaimSkipsWhenNoMatterMeta(t *testing.T) {
+	dirs := newTestDirs(t)
+	rec := &recordingMatter{name: "fake"}
+	installMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
+	writeSporeTOML(t, dirs.project, "[matter.fake]\nenabled = true\n")
+	writeMatterTask(t, dirs.tasks, "alpha", "", "")
+
+	var warn bytes.Buffer
+	notifyMatterClaim(dirs.project, dirs.tasks, "alpha", &warn)
+
+	if got := rec.claimLog(); len(got) != 0 {
+		t.Errorf("OnClaim should not fire without matter meta, got %v", got)
+	}
+}
+
+func TestNotifyMatterClaimSkipsWhenDisabled(t *testing.T) {
+	dirs := newTestDirs(t)
+	rec := &recordingMatter{name: "fake"}
+	installMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
+	writeSporeTOML(t, dirs.project, "[matter.fake]\nenabled = false\n")
+	writeMatterTask(t, dirs.tasks, "alpha", "fake", "FAKE-12")
+
+	var warn bytes.Buffer
+	notifyMatterClaim(dirs.project, dirs.tasks, "alpha", &warn)
+
+	if got := rec.claimLog(); len(got) != 0 {
+		t.Errorf("OnClaim should not fire when matter disabled, got %v", got)
+	}
+}
+
+func TestNotifyMatterClaimSwallowsError(t *testing.T) {
+	dirs := newTestDirs(t)
+	boom := errors.New("upstream rejected")
+	rec := &recordingMatter{name: "fake", claimErr: boom}
+	installMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
+	writeSporeTOML(t, dirs.project, "[matter.fake]\nenabled = true\n")
+	writeMatterTask(t, dirs.tasks, "alpha", "fake", "FAKE-12")
+
+	var warn bytes.Buffer
+	notifyMatterClaim(dirs.project, dirs.tasks, "alpha", &warn)
+
+	if got := rec.claimLog(); len(got) != 1 {
+		t.Errorf("OnClaim should have been called once, got %v", got)
+	}
+	if warn.Len() == 0 {
+		t.Errorf("OnClaim error should land on warnOut, got empty buffer")
 	}
 }

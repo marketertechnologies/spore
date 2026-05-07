@@ -22,6 +22,9 @@ func (r *recordingDoneMatter) Name() string { return r.name }
 func (r *recordingDoneMatter) Sync(ctx context.Context, projectRoot string) (int, int, error) {
 	return 0, 0, nil
 }
+func (r *recordingDoneMatter) OnClaim(ctx context.Context, slug string, meta map[string]string) error {
+	return nil
+}
 func (r *recordingDoneMatter) OnDone(ctx context.Context, slug string, meta map[string]string) error {
 	r.calls.Add(1)
 	r.lastID = meta[matter.MatterIDKey]
