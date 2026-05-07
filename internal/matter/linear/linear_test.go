@@ -11,20 +11,25 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 // stubLinear emulates the Linear GraphQL endpoint just well enough to
 // drive the Sync paths. State and issues are mutable so a test can
-// verify a transition mutation actually moved the issue.
+// verify a transition mutation actually moved the issue. comments is
+// keyed by both UUID and human identifier so respondIssueComments can
+// resolve whichever the production code passes.
 type stubLinear struct {
-	t      *testing.T
-	team   string
-	states map[string]string // name -> id
-	issues map[string]*stubIssue
-	calls  int
+	t        *testing.T
+	team     string
+	states   map[string]string // name -> id
+	issues   map[string]*stubIssue
+	comments map[string][]*stubComment
+	calls    int
 }
 
 type stubIssue struct {
@@ -37,6 +42,14 @@ type stubIssue struct {
 	SortOrder   float64
 }
 
+type stubComment struct {
+	ID        string
+	Body      string
+	URL       string
+	CreatedAt time.Time
+	Author    string
+}
+
 func newStub(t *testing.T) *stubLinear {
 	return &stubLinear{
 		t:    t,
@@ -47,8 +60,24 @@ func newStub(t *testing.T) *stubLinear {
 			"In Progress": "state-doing",
 			"Done":        "state-done",
 		},
-		issues: map[string]*stubIssue{},
+		issues:   map[string]*stubIssue{},
+		comments: map[string][]*stubComment{},
 	}
+}
+
+// addComment registers a comment against both the UUID and the human
+// identifier so respondIssueComments can answer whichever the caller
+// passes in via vars["id"].
+func (s *stubLinear) addComment(uuidOrIdent string, c *stubComment) {
+	iss, ok := s.issues[uuidOrIdent]
+	if !ok {
+		iss = s.findByIdentifier(uuidOrIdent)
+	}
+	if iss == nil {
+		s.t.Fatalf("addComment: unknown issue %q", uuidOrIdent)
+	}
+	s.comments[iss.ID] = append(s.comments[iss.ID], c)
+	s.comments[iss.Identifier] = append(s.comments[iss.Identifier], c)
 }
 
 func (s *stubLinear) addReady(id, identifier, title, desc string) *stubIssue {
@@ -107,6 +136,8 @@ func (s *stubLinear) handler() http.HandlerFunc {
 			s.respondIssueUpdate(w, body.Variables)
 		case strings.Contains(body.Query, "issues("):
 			s.respondIssues(w, body.Variables)
+		case strings.Contains(body.Query, "IssueComments"):
+			s.respondIssueComments(w, body.Variables)
 		default:
 			http.Error(w, "unrecognised query: "+body.Query, http.StatusBadRequest)
 		}
@@ -156,6 +187,44 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 	resp := map[string]any{
 		"data": map[string]any{
 			"issues": map[string]any{"nodes": nodes},
+		},
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *stubLinear) respondIssueComments(w http.ResponseWriter, vars map[string]any) {
+	id, _ := vars["id"].(string)
+	cs := s.comments[id]
+	type userPayload struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+	}
+	type node struct {
+		ID        string       `json:"id"`
+		Body      string       `json:"body"`
+		URL       string       `json:"url"`
+		CreatedAt string       `json:"createdAt"`
+		User      *userPayload `json:"user"`
+	}
+	var nodes []node
+	for _, c := range cs {
+		var u *userPayload
+		if c.Author != "" {
+			u = &userPayload{Name: c.Author, DisplayName: c.Author}
+		}
+		nodes = append(nodes, node{
+			ID:        c.ID,
+			Body:      c.Body,
+			URL:       c.URL,
+			CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339Nano),
+			User:      u,
+		})
+	}
+	resp := map[string]any{
+		"data": map[string]any{
+			"issue": map[string]any{
+				"comments": map[string]any{"nodes": nodes},
+			},
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
@@ -553,5 +622,344 @@ func TestRegisteredViaInit(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("linear should self-register via init(); registered = %v", matter.Registered())
+	}
+}
+
+// withFixedClock pins commentsClock for the duration of a test so cursor
+// seeding is deterministic. The original clock is restored on cleanup.
+func withFixedClock(t *testing.T, at time.Time) {
+	t.Helper()
+	prev := commentsClock
+	commentsClock = func() time.Time { return at }
+	t.Cleanup(func() { commentsClock = prev })
+}
+
+// inboxEnvelopes returns the parsed (ts, source, body) triples sitting
+// in the spore inbox for slug under projectRoot, sorted by ts ascending.
+// Excludes the .tmp and read subdirs.
+type inboxEnvelope struct{ ts, source, body string }
+
+func readInboxEnvelopes(t *testing.T, projectRoot, slug string) []inboxEnvelope {
+	t.Helper()
+	dir, err := task.InboxDirForProject(projectRoot, slug)
+	if err != nil {
+		t.Fatalf("InboxDirForProject: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	var out []inboxEnvelope
+	for _, n := range names {
+		raw, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", n, err)
+		}
+		var ev struct {
+			Ts     string `json:"ts"`
+			Source string `json:"source"`
+			Body   string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &ev); err != nil {
+			t.Fatalf("unmarshal %s: %v", n, err)
+		}
+		out = append(out, inboxEnvelope{ts: ev.Ts, source: ev.Source, body: ev.Body})
+	}
+	return out
+}
+
+// writeActiveTask drops a tasks/<slug>.md with status=active wired to
+// the linear matter under tasksDir.
+func writeActiveTask(t *testing.T, tasksDir, slug, identifier, cursor string) {
+	t.Helper()
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extra := map[string]string{
+		matter.MatterKey:   "linear",
+		matter.MatterIDKey: identifier,
+	}
+	if cursor != "" {
+		extra[linearCommentsCursorKey] = cursor
+	}
+	m := frontmatter.Meta{
+		Status: "active", Slug: slug, Title: identifier,
+		Extra: extra,
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"),
+		frontmatter.Write(m, []byte("\nbody\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncProjectsCommentsToInbox(t *testing.T) {
+	stub := newStub(t)
+	iss := stub.addReady("u-1", "MAR-100", "Project comments", "")
+	iss.StateID = stub.states["In Progress"]
+
+	// Cursor anchored 10 minutes ago: two newer comments expected to
+	// land in the inbox, the older one (5 min before cursor) suppressed.
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	cursor := now.Add(-10 * time.Minute)
+	stub.addComment("MAR-100", &stubComment{
+		ID: "c-old", Body: "pre-cursor", Author: "alice",
+		CreatedAt: cursor.Add(-5 * time.Minute),
+		URL:       "https://linear.app/team/comment/c-old",
+	})
+	stub.addComment("MAR-100", &stubComment{
+		ID: "c-new-1", Body: "first new comment", Author: "bob",
+		CreatedAt: cursor.Add(2 * time.Minute),
+		URL:       "https://linear.app/team/comment/c-new-1",
+	})
+	stub.addComment("MAR-100", &stubComment{
+		ID: "c-new-2", Body: "second new comment", Author: "carol",
+		CreatedAt: cursor.Add(5 * time.Minute),
+	})
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	tasksDir := filepath.Join(root, "tasks")
+	writeActiveTask(t, tasksDir, "project-comments", "MAR-100",
+		cursor.Format(time.RFC3339Nano))
+
+	src := newSource(t, srv.URL)
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	got := readInboxEnvelopes(t, root, "project-comments")
+	if len(got) != 2 {
+		t.Fatalf("inbox envelopes = %d, want 2: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.source != "linear" {
+			t.Errorf("source = %q, want linear", e.source)
+		}
+		if !strings.HasPrefix(e.body, "MAR-100 comment from") {
+			t.Errorf("body = %q, want MAR-100 comment from <author>:", e.body)
+		}
+	}
+	if !strings.Contains(got[0].body, "first new comment") || !strings.Contains(got[0].body, "bob") {
+		t.Errorf("first envelope body wrong: %q", got[0].body)
+	}
+	if !strings.Contains(got[1].body, "second new comment") || !strings.Contains(got[1].body, "carol") {
+		t.Errorf("second envelope body wrong: %q", got[1].body)
+	}
+	if !strings.Contains(got[0].body, "https://linear.app/team/comment/c-new-1") {
+		t.Errorf("expected URL in first envelope body: %q", got[0].body)
+	}
+
+	// Cursor should advance to the latest projected comment so the
+	// next pass is a no-op.
+	raw, err := os.ReadFile(filepath.Join(tasksDir, "project-comments.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCursor := cursor.Add(5 * time.Minute).UTC().Format(time.RFC3339Nano)
+	if m.Extra[linearCommentsCursorKey] != wantCursor {
+		t.Errorf("cursor = %q, want %q", m.Extra[linearCommentsCursorKey], wantCursor)
+	}
+
+	// Idempotent second pass: no new comments, no new envelopes.
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync second pass: %v", err)
+	}
+	got2 := readInboxEnvelopes(t, root, "project-comments")
+	if len(got2) != 2 {
+		t.Errorf("second pass inbox count = %d, want still 2", len(got2))
+	}
+}
+
+func TestSyncSeedsCommentCursorOnAdopt(t *testing.T) {
+	stub := newStub(t)
+	stub.addReady("u-2", "MAR-200", "Adopt seeds cursor", "Body")
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	withFixedClock(t, now)
+
+	// Comment older than the adoption clock: must NOT flood the
+	// freshly-spawned rover. Adoption seeds cursor=now and the same
+	// pass's comment fetch only emits createdAt > cursor.
+	stub.addComment("MAR-200", &stubComment{
+		ID: "old", Body: "predates rover", Author: "alice",
+		CreatedAt: now.Add(-1 * time.Hour),
+	})
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	src := newSource(t, srv.URL)
+
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	tasksDir := filepath.Join(root, "tasks")
+	files, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("want 1 task, got %d", len(files))
+	}
+	raw, err := os.ReadFile(filepath.Join(tasksDir, files[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Extra[linearCommentsCursorKey]; got != now.Format(time.RFC3339Nano) {
+		t.Errorf("cursor = %q, want %q", got, now.Format(time.RFC3339Nano))
+	}
+
+	envs := readInboxEnvelopes(t, root, m.Slug)
+	if len(envs) != 0 {
+		t.Errorf("freshly adopted task should not flood inbox, got %+v", envs)
+	}
+}
+
+func TestSyncSeedsCursorForLegacyTaskWithoutEmission(t *testing.T) {
+	stub := newStub(t)
+	iss := stub.addReady("u-3", "MAR-300", "Legacy active task", "")
+	iss.StateID = stub.states["In Progress"]
+	stub.addComment("MAR-300", &stubComment{
+		ID: "stale", Body: "would have flooded", Author: "alice",
+		CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	withFixedClock(t, now)
+
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	tasksDir := filepath.Join(root, "tasks")
+	// Pre-feature task: status=active, linear matter, NO cursor.
+	writeActiveTask(t, tasksDir, "legacy-active", "MAR-300", "")
+
+	src := newSource(t, srv.URL)
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	envs := readInboxEnvelopes(t, root, "legacy-active")
+	if len(envs) != 0 {
+		t.Errorf("legacy task with empty cursor should not flood, got %+v", envs)
+	}
+	raw, err := os.ReadFile(filepath.Join(tasksDir, "legacy-active.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Extra[linearCommentsCursorKey]; got != now.Format(time.RFC3339Nano) {
+		t.Errorf("cursor = %q, want seeded to %q", got, now.Format(time.RFC3339Nano))
+	}
+}
+
+func TestSyncSkipsCommentsForDoneTasks(t *testing.T) {
+	stub := newStub(t)
+	iss := stub.addReady("u-4", "MAR-400", "Done task", "")
+	iss.StateID = stub.states["In Progress"]
+	stub.addComment("MAR-400", &stubComment{
+		ID: "post-done", Body: "rover already gone", Author: "alice",
+		CreatedAt: time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC),
+	})
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cursor := time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	m := frontmatter.Meta{
+		Status: "done", Slug: "done-task", Title: "Done task",
+		Extra: map[string]string{
+			matter.MatterKey:        "linear",
+			matter.MatterIDKey:      "MAR-400",
+			linearCommentsCursorKey: cursor,
+		},
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "done-task.md"),
+		frontmatter.Write(m, []byte("\nbody\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := newSource(t, srv.URL)
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	envs := readInboxEnvelopes(t, root, "done-task")
+	if len(envs) != 0 {
+		t.Errorf("done task should not project comments, got %+v", envs)
+	}
+}
+
+func TestSyncProjectsAuthorlessComment(t *testing.T) {
+	// Bot-authored or anonymous comments arrive with a null user. The
+	// envelope still lands; the body just omits the "from <author>"
+	// suffix instead of crashing on a nil deref.
+	stub := newStub(t)
+	iss := stub.addReady("u-5", "MAR-500", "Authorless", "")
+	iss.StateID = stub.states["In Progress"]
+
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	cursor := now.Add(-1 * time.Hour)
+	stub.addComment("MAR-500", &stubComment{
+		ID: "c-anon", Body: "no author", CreatedAt: cursor.Add(5 * time.Minute),
+		// Author empty -> stub returns user: null.
+	})
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	tasksDir := filepath.Join(root, "tasks")
+	writeActiveTask(t, tasksDir, "anon", "MAR-500", cursor.Format(time.RFC3339Nano))
+
+	src := newSource(t, srv.URL)
+	if _, _, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	envs := readInboxEnvelopes(t, root, "anon")
+	if len(envs) != 1 {
+		t.Fatalf("want 1 envelope, got %d", len(envs))
+	}
+	if strings.Contains(envs[0].body, "from") {
+		t.Errorf("authorless body should not say 'from': %q", envs[0].body)
+	}
+	if !strings.Contains(envs[0].body, "no author") {
+		t.Errorf("body missing comment text: %q", envs[0].body)
 	}
 }

@@ -198,6 +198,10 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		}
 		updated++
 	}
+
+	if err := s.projectComments(projectRoot, tasksDir); err != nil {
+		return created, updated, err
+	}
 	return created, updated, nil
 }
 
@@ -290,15 +294,22 @@ func (s *Source) adoptIssue(absTasks string, issue linearIssue) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	now := commentsClock()
 	m := frontmatter.Meta{
 		Status:  "active",
 		Slug:    slug,
 		Title:   issue.Title,
-		Created: time.Now().UTC().Format("2006-01-02"),
+		Created: now.UTC().Format("2006-01-02"),
 		Extra: map[string]string{
 			matter.MatterKey:          sourceName,
 			matter.MatterIDKey:        issue.Identifier,
 			matter.MatterSortOrderKey: strconv.FormatFloat(issue.SortOrder, 'g', -1, 64),
+			// Seed the comment-projection cursor so the upcoming
+			// projectComments pass does not flood this rover with the
+			// full pre-adoption comment history. A dedicated rover for
+			// this ticket only just spawned; older threads belong in
+			// the brief, not the inbox.
+			linearCommentsCursorKey: now.UTC().Format(time.RFC3339Nano),
 		},
 	}
 	if issue.URL != "" {
