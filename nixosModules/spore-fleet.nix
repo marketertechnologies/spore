@@ -4,6 +4,19 @@ let
   cfg = config.services.spore-fleet;
   stateRel = ".local/state/spore/fleet-enabled";
 
+  # effectiveProjects collapses the legacy single-project schema and
+  # the multi-project schema into one attrset of { <name> = { path }; }.
+  # When cfg.projectRoot is set (deprecated), it surfaces under its
+  # basename so existing consumers keep working without renames.
+  # Otherwise cfg.projects is used directly. The assertion below
+  # guarantees at most one of the two is in effect at a time.
+  effectiveProjects =
+    if cfg.projectRoot != null
+    then { ${baseNameOf (toString cfg.projectRoot)} = { path = cfg.projectRoot; }; }
+    else cfg.projects;
+
+  projectNames = lib.attrNames effectiveProjects;
+
   # Common preamble: re-exec as cfg.user with a clean systemd-user
   # environment when invoked as root (system.activationScripts and
   # colmena pre/postActivation both run as root). When already running
@@ -32,51 +45,56 @@ let
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
     ${asUserPreamble}
 
-    project_root='${toString cfg.projectRoot}'
-    project="$(${pkgs.coreutils}/bin/basename "$project_root")"
     timeout=${toString cfg.gracefulDeploy.timeout}
     message='${cfg.gracefulDeploy.message}'
     sporecli='${cfg.package}/bin/spore'
     tmuxcli='${pkgs.tmux}/bin/tmux'
 
-    cd "$project_root"
-
     echo "spore-fleet-graceful: disabling kill-switch" >&2
     "$sporecli" fleet disable || true
 
-    list_workers() {
-      "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
-        | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
-        | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
+    drain_project() {
+      local project="$1" project_root="$2"
+      cd "$project_root"
+
+      list_workers() {
+        "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
+          | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
+          | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
+      }
+
+      sessions="$(list_workers)"
+      if [ -z "$sessions" ]; then
+        echo "spore-fleet-graceful: [$project] no active workers" >&2
+        return 0
+      fi
+
+      while IFS= read -r s; do
+        slug="''${s##spore/$project/}"
+        echo "spore-fleet-graceful: [$project] signalling $slug" >&2
+        "$sporecli" task tell "$slug" "$message" || true
+      done <<< "$sessions"
+
+      deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
+      while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
+        remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
+        if [ "$remaining" = "0" ]; then
+          echo "spore-fleet-graceful: [$project] workers drained" >&2
+          return 0
+        fi
+        ${pkgs.coreutils}/bin/sleep 2
+      done
+
+      echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
+      list_workers | while IFS= read -r s; do
+        [ -z "$s" ] && continue
+        "$tmuxcli" kill-session -t "$s" || true
+      done
     }
 
-    sessions="$(list_workers)"
-    if [ -z "$sessions" ]; then
-      echo "spore-fleet-graceful: no active workers" >&2
-      exit 0
-    fi
-
-    while IFS= read -r s; do
-      slug="''${s##spore/$project/}"
-      echo "spore-fleet-graceful: signalling $slug" >&2
-      "$sporecli" task tell "$slug" "$message" || true
-    done <<< "$sessions"
-
-    deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
-    while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
-      remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
-      if [ "$remaining" = "0" ]; then
-        echo "spore-fleet-graceful: workers drained" >&2
-        exit 0
-      fi
-      ${pkgs.coreutils}/bin/sleep 2
-    done
-
-    echo "spore-fleet-graceful: timeout (''${timeout}s); killing remaining workers" >&2
-    list_workers | while IFS= read -r s; do
-      [ -z "$s" ] && continue
-      "$tmuxcli" kill-session -t "$s" || true
-    done
+${lib.concatMapStringsSep "\n" (name: ''
+    drain_project '${name}' '${toString effectiveProjects.${name}.path}'
+  '') projectNames}
   '';
 
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
@@ -205,13 +223,58 @@ in
     };
 
     projectRoot = lib.mkOption {
-      type = lib.types.path;
+      type = lib.types.nullOr lib.types.path;
+      default = null;
       example = "/home/spore/project";
       description = ''
-        Project tree containing tasks/. The reconciler scans
-        `''${projectRoot}/tasks` and creates worker worktrees under
-        `''${projectRoot}/.worktrees/<slug>`. Must be writable by
-        `services.spore-fleet.user`.
+        DEPRECATED. Single-project shorthand for the multi-project
+        `services.spore-fleet.projects` schema; setting this is
+        equivalent to declaring one project under
+        `projects.''${baseNameOf projectRoot}.path`. Setting both
+        `projectRoot` and `projects` is an error.
+
+        Existing single-project consumers can keep this as-is for
+        now; new consumers should set `projects` directly.
+      '';
+    };
+
+    projects = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          path = lib.mkOption {
+            type = lib.types.path;
+            example = "/home/spore/project";
+            description = ''
+              Project tree containing tasks/. The reconciler scans
+              `''${path}/tasks` and creates worker worktrees under
+              `''${path}/.worktrees/<slug>`. Must be writable by
+              `services.spore-fleet.user`.
+            '';
+          };
+        };
+      });
+      default = { };
+      example = lib.literalExpression ''
+        {
+          crm-gateway.path = "/home/spore/crm-gateway";
+          crm-webapp.path  = "/home/spore/crm-webapp";
+        }
+      '';
+      description = ''
+        Projects this fleet reconciles. Each entry generates its
+        own `spore-fleet-reconcile-<name>` systemd-user service +
+        timer + path watchers, with `WorkingDirectory` and the
+        tasks/ watcher scoped to the project's path.
+
+        The kill-switch flag at `~/.local/state/spore/fleet-enabled`
+        remains host-wide; flipping it (`spore fleet enable` /
+        `disable`) triggers reconciles across every project. Tmux
+        session naming (`spore/<name>/coordinator`,
+        `spore/<name>/<slug>`) is already namespaced by project,
+        so coordinator and worker sessions stay isolated.
+
+        Exactly one of `projects` and `projectRoot` (deprecated)
+        must be set.
       '';
     };
 
@@ -381,6 +444,33 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = !(cfg.projectRoot != null && cfg.projects != { });
+        message = ''
+          services.spore-fleet: set either `projectRoot` (deprecated)
+          or `projects`, not both. Migrate `projectRoot = X` to
+          `projects.<name>.path = X`.
+        '';
+      }
+      {
+        assertion = effectiveProjects != { };
+        message = ''
+          services.spore-fleet.enable is true but no projects are
+          configured. Set `services.spore-fleet.projects.<name>.path`
+          for each project this fleet should reconcile.
+        '';
+      }
+    ];
+
+    warnings = lib.optional (cfg.projectRoot != null) ''
+      services.spore-fleet.projectRoot is deprecated. Migrate to
+      services.spore-fleet.projects.<name>.path. The current value
+      is being surfaced as
+      services.spore-fleet.projects."${baseNameOf (toString cfg.projectRoot)}".path
+      so existing deployments keep working.
+    '';
+
     services.spore-fleet.gracefulDeploy = {
       preScript = "${preScript}/bin/spore-fleet-graceful-pre";
       postScript = "${postScript}/bin/spore-fleet-graceful-post";
@@ -410,66 +500,73 @@ in
     };
 
     home-manager.users.${cfg.user} = {
-      systemd.user.services.spore-fleet-reconcile = {
-        Unit = {
-          Description = "spore fleet reconciler (host=${cfg.hostId})";
-        };
-        Service = {
-          Type = "oneshot";
-          WorkingDirectory = toString cfg.projectRoot;
-          ExecStart = "${cfg.package}/bin/spore fleet reconcile";
-          Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
-            {
-              SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
-              SPORE_HOST_ID = cfg.hostId;
-              PATH = lib.makeBinPath [
-                cfg.package
-                cfg.claudeCodePackage
-                pkgs.git
-                pkgs.tmux
-              ];
-            } // matterEnv // cfg.extraEnv
-          );
-          NoNewPrivileges = true;
-          LockPersonality = true;
-          RestrictSUIDSGID = true;
-          ReadWritePaths = [ (toString cfg.projectRoot) ];
-          LoadCredential = lib.mapAttrsToList
-            (name: path: "${name}:${toString path}")
-            (cfg.credentialFiles // matterCredentials);
-        };
-      };
-
-      systemd.user.timers.spore-fleet-reconcile = {
-        Unit.Description = "Periodic spore fleet reconcile";
-        Timer = {
-          OnBootSec = "30s";
-          OnUnitInactiveSec = cfg.interval;
-          AccuracySec = "5s";
-          Unit = "spore-fleet-reconcile.service";
-        };
-        Install.WantedBy = [ "timers.target" ];
-      };
-
-      systemd.user.paths = {
-        spore-fleet-reconcile-flag = {
-          Unit.Description = "Trigger spore-fleet-reconcile when the kill-switch flag changes";
-          Path = {
-            PathChanged = "%h/${stateRel}";
-            Unit = "spore-fleet-reconcile.service";
+      systemd.user.services = lib.mapAttrs'
+        (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
+          Unit = {
+            Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
           };
-          Install.WantedBy = [ "default.target" ];
-        };
-
-        spore-fleet-reconcile-tasks = {
-          Unit.Description = "Trigger spore-fleet-reconcile when tasks/ changes";
-          Path = {
-            PathChanged = "${toString cfg.projectRoot}/tasks";
-            Unit = "spore-fleet-reconcile.service";
+          Service = {
+            Type = "oneshot";
+            WorkingDirectory = toString project.path;
+            ExecStart = "${cfg.package}/bin/spore fleet reconcile";
+            Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+              {
+                SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
+                SPORE_HOST_ID = cfg.hostId;
+                PATH = lib.makeBinPath [
+                  cfg.package
+                  cfg.claudeCodePackage
+                  pkgs.git
+                  pkgs.tmux
+                ];
+              } // matterEnv // cfg.extraEnv
+            );
+            NoNewPrivileges = true;
+            LockPersonality = true;
+            RestrictSUIDSGID = true;
+            ReadWritePaths = [ (toString project.path) ];
+            LoadCredential = lib.mapAttrsToList
+              (n: path: "${n}:${toString path}")
+              (cfg.credentialFiles // matterCredentials);
           };
-          Install.WantedBy = [ "default.target" ];
-        };
-      };
+        })
+        effectiveProjects;
+
+      systemd.user.timers = lib.mapAttrs'
+        (name: _: lib.nameValuePair "spore-fleet-reconcile-${name}" {
+          Unit.Description = "Periodic spore fleet reconcile [${name}]";
+          Timer = {
+            OnBootSec = "30s";
+            OnUnitInactiveSec = cfg.interval;
+            AccuracySec = "5s";
+            Unit = "spore-fleet-reconcile-${name}.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        })
+        effectiveProjects;
+
+      systemd.user.paths = lib.foldlAttrs
+        (acc: name: project: acc // {
+          "spore-fleet-reconcile-flag-${name}" = {
+            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
+            Path = {
+              PathChanged = "%h/${stateRel}";
+              Unit = "spore-fleet-reconcile-${name}.service";
+            };
+            Install.WantedBy = [ "default.target" ];
+          };
+
+          "spore-fleet-reconcile-tasks-${name}" = {
+            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when tasks/ changes";
+            Path = {
+              PathChanged = "${toString project.path}/tasks";
+              Unit = "spore-fleet-reconcile-${name}.service";
+            };
+            Install.WantedBy = [ "default.target" ];
+          };
+        })
+        { }
+        effectiveProjects;
     };
   };
 }

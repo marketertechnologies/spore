@@ -4,16 +4,29 @@ Once a project reaches `worker-fleet-ready`, a downstream NixOS host
 can autostart the fleet reconciler by importing
 `nixosModules.spore-fleet` from this flake.
 
-The module declares a systemd-user oneshot driven by:
+The module declares one systemd-user oneshot per project, each driven
+by:
 
 - a 60-second timer;
-- path watches on the project's `tasks/` directory;
-- a path watch on the kill-switch flag at
-  `~/.local/state/spore/fleet-enabled`.
+- a path watch on that project's `tasks/` directory;
+- a path watch on the host-wide kill-switch flag at
+  `~/.local/state/spore/fleet-enabled` (a flip there triggers every
+  project's reconciler).
 
 This keeps `spore fleet enable` and new active tasks responsive even
 when the timer has not ticked yet. home-manager wiring for the target
 user is assumed.
+
+## Multiple projects on one host
+
+Set `services.spore-fleet.projects` to an attrset (`name → { path }`)
+to reconcile multiple projects under the same `user`. Each entry
+generates its own `spore-fleet-reconcile-<name>.service` and timer,
+so tasks/, worktrees, and the per-project tmux session prefix
+(`spore/<name>/...`) stay isolated.
+
+The single-project shorthand `projectRoot = "..."` is kept for
+backward compatibility; new consumers should use `projects` directly.
 
 ## Example
 
@@ -41,7 +54,10 @@ user is assumed.
           services.spore-fleet = {
             enable = true;
             user = "spore";
-            projectRoot = "/home/spore/project";
+            projects = {
+              project.path = "/home/spore/project";
+              # extra-project.path = "/home/spore/extra-project";
+            };
             maxWorkers = 6;
           };
         })
