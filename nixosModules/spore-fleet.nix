@@ -43,58 +43,58 @@ let
   '';
 
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
-    ${asUserPreamble}
+        ${asUserPreamble}
 
-    timeout=${toString cfg.gracefulDeploy.timeout}
-    message='${cfg.gracefulDeploy.message}'
-    sporecli='${cfg.package}/bin/spore'
-    tmuxcli='${pkgs.tmux}/bin/tmux'
+        timeout=${toString cfg.gracefulDeploy.timeout}
+        message='${cfg.gracefulDeploy.message}'
+        sporecli='${cfg.package}/bin/spore'
+        tmuxcli='${pkgs.tmux}/bin/tmux'
 
-    echo "spore-fleet-graceful: disabling kill-switch" >&2
-    "$sporecli" fleet disable || true
+        echo "spore-fleet-graceful: disabling kill-switch" >&2
+        "$sporecli" fleet disable || true
 
-    drain_project() {
-      local project="$1" project_root="$2"
-      cd "$project_root"
+        drain_project() {
+          local project="$1" project_root="$2"
+          cd "$project_root"
 
-      list_workers() {
-        "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
-          | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
-          | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
-      }
+          list_workers() {
+            "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
+              | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
+              | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
+          }
 
-      sessions="$(list_workers)"
-      if [ -z "$sessions" ]; then
-        echo "spore-fleet-graceful: [$project] no active workers" >&2
-        return 0
-      fi
+          sessions="$(list_workers)"
+          if [ -z "$sessions" ]; then
+            echo "spore-fleet-graceful: [$project] no active workers" >&2
+            return 0
+          fi
 
-      while IFS= read -r s; do
-        slug="''${s##spore/$project/}"
-        echo "spore-fleet-graceful: [$project] signalling $slug" >&2
-        "$sporecli" task tell "$slug" "$message" || true
-      done <<< "$sessions"
+          while IFS= read -r s; do
+            slug="''${s##spore/$project/}"
+            echo "spore-fleet-graceful: [$project] signalling $slug" >&2
+            "$sporecli" task tell "$slug" "$message" || true
+          done <<< "$sessions"
 
-      deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
-      while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
-        remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
-        if [ "$remaining" = "0" ]; then
-          echo "spore-fleet-graceful: [$project] workers drained" >&2
-          return 0
-        fi
-        ${pkgs.coreutils}/bin/sleep 2
-      done
+          deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
+          while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
+            remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
+            if [ "$remaining" = "0" ]; then
+              echo "spore-fleet-graceful: [$project] workers drained" >&2
+              return 0
+            fi
+            ${pkgs.coreutils}/bin/sleep 2
+          done
 
-      echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
-      list_workers | while IFS= read -r s; do
-        [ -z "$s" ] && continue
-        "$tmuxcli" kill-session -t "$s" || true
-      done
-    }
+          echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
+          list_workers | while IFS= read -r s; do
+            [ -z "$s" ] && continue
+            "$tmuxcli" kill-session -t "$s" || true
+          done
+        }
 
-${lib.concatMapStringsSep "\n" (name: ''
-    drain_project '${name}' '${toString effectiveProjects.${name}.path}'
-  '') projectNames}
+    ${lib.concatMapStringsSep "\n" (name: ''
+        drain_project '${name}' '${toString effectiveProjects.${name}.path}'
+      '') projectNames}
   '';
 
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
