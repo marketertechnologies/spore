@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `bootstrap/handover/spore-coordinator-launch.sh`: support a host-wide
+  shared role file in addition to the per-project `$SPORE_COORDINATOR_ROLE`.
+  The launcher now reads `$SPORE_COORDINATOR_ROLE_SHARED` (default
+  `${XDG_CONFIG_HOME:-$HOME/.config}/spore/coordinator-role.md`) and
+  concatenates the shared file and the project role file with a blank
+  line between them before passing the result as the agent's first user
+  message. Each part is optional; missing parts are skipped, and when
+  both are missing the agent launches unseeded as before. Operators can
+  factor common respawn / wrap-up / operating-regime boilerplate out of
+  per-project role files and keep only project-specific identity and
+  deltas in each `bootstrap/coordinator/role.md`. Backward compatible:
+  hosts without a shared file behave exactly as today.
 - `nixosModules/spore-fleet`: replaced single-project
   `services.spore-fleet.projectRoot` with the multi-project
   `services.spore-fleet.projects` attrset

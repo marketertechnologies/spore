@@ -4,25 +4,49 @@
 # project root with SPORE_COORDINATOR_ROLE pointing at the resolved
 # role file (may not exist).
 #
-# We launch the selected interactive agent, seeding the role file's
-# contents as the first user message when the file is readable and
-# non-empty. If the agent exits immediately because first login is
-# still needed, the coordinator pane stays alive with a clear shell.
+# We launch the selected interactive agent, seeding (shared-role +
+# project-role) as the first user message. Each part is optional;
+# missing parts are skipped and a missing pair yields an unseeded
+# agent. If the agent exits immediately because first login is still
+# needed, the coordinator pane stays alive with a clear shell.
+#
+# Role resolution:
+#   $SPORE_COORDINATOR_ROLE_SHARED (default
+#     "${XDG_CONFIG_HOME:-$HOME/.config}/spore/coordinator-role.md")
+#     — host-wide content shared across every project; lets the
+#     operator factor common respawn / wrap-up / operating-regime
+#     boilerplate out of per-project role files.
+#   $SPORE_COORDINATOR_ROLE — project-specific delta set by the
+#     kernel to <project>/bootstrap/coordinator/role.md.
+# When both are readable and non-empty they are concatenated with a
+# blank line between them.
 #
 # Override knobs:
-#   SPORE_COORDINATOR_PROVIDER  claude or codex (default: claude)
-#   SPORE_COORDINATOR_MODEL     model to pass to the selected CLI
-#   SPORE_COORDINATOR_EFFORT    codex effort (default: high)
+#   SPORE_COORDINATOR_PROVIDER     claude or codex (default: claude)
+#   SPORE_COORDINATOR_MODEL        model to pass to the selected CLI
+#   SPORE_COORDINATOR_EFFORT       codex effort (default: high)
+#   SPORE_COORDINATOR_ROLE_SHARED  override shared role path; point at
+#                                  a non-existent file to disable.
 set -euo pipefail
 
 provider="${SPORE_COORDINATOR_PROVIDER:-claude}"
 model="${SPORE_COORDINATOR_MODEL:-}"
 effort="${SPORE_COORDINATOR_EFFORT:-high}"
 role="${SPORE_COORDINATOR_ROLE:-}"
+shared="${SPORE_COORDINATOR_ROLE_SHARED:-${XDG_CONFIG_HOME:-$HOME/.config}/spore/coordinator-role.md}"
+
+payload=""
+if [[ -r "$shared" && -s "$shared" ]]; then
+  payload+=$(cat "$shared")
+  payload+=$'\n\n'
+fi
+if [[ -n "$role" && -r "$role" && -s "$role" ]]; then
+  payload+=$(cat "$role")
+fi
 
 prompt=()
-if [[ -n "$role" && -r "$role" && -s "$role" ]]; then
-  prompt=("$(cat "$role")")
+if [[ -n "$payload" ]]; then
+  prompt=("$payload")
 fi
 
 case "$provider" in
