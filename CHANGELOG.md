@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `nixosModules/spore-fleet`: replaced single-project
+  `services.spore-fleet.projectRoot` with the multi-project
+  `services.spore-fleet.projects` attrset
+  (`name → { path }`). The module now generates one
+  `spore-fleet-reconcile-<name>` service + timer + path watchers
+  per entry, so a single host can reconcile several project trees
+  under the same `user` without external glue. Tmux session naming
+  (`spore/<name>/coordinator`, `spore/<name>/<slug>`) is already
+  namespaced by project, so coordinator and worker sessions stay
+  isolated.
+
+  `projectRoot` is kept as a deprecated alias: when set (and
+  `projects` is empty), it surfaces as
+  `projects.${baseNameOf projectRoot}.path`, with a deprecation
+  warning. Setting both is an assertion error; setting neither
+  with `enable = true` is also an assertion error.
+
+  The kill-switch flag at `~/.local/state/spore/fleet-enabled`
+  remains host-wide; flipping it triggers reconciles across every
+  project. The pre/post graceful-deploy scripts now drain workers
+  for every configured project sequentially.
 - `matter.linear`: Sync now projects new Linear comments per active
   ticket as tell-envelope JSON files in the matching rover slug's
   spore inbox dir, so an operator commenting on a Linear ticket

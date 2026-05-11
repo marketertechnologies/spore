@@ -239,17 +239,17 @@
                       return f"systemctl --machine=spore-test@.host --user {cmd}"
                   # Oneshot; trigger it and assert exit 0 plus that the
                   # timer + path watchers are active.
-                  machine.succeed(usercmd("start spore-fleet-reconcile.service"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile.timer"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag.path"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks.path"))
+                  machine.succeed(usercmd("start spore-fleet-reconcile-project.service"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile-project.timer"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag-project.path"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks-project.path"))
 
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect
                   # the rendered unit env directly so the wire format
                   # stays pinned.
                   env = machine.succeed(usercmd(
-                      "show spore-fleet-reconcile.service -p Environment"))
+                      "show spore-fleet-reconcile-project.service -p Environment"))
                   for needle in [
                       "SPORE_MATTER_LINEAR__ENABLED=1",
                       "SPORE_MATTER_LINEAR__TEAM=MAR",
@@ -264,7 +264,7 @@
                   # file off disk instead. home-manager renders user
                   # units under ~/.config/systemd/user/.
                   unit = machine.succeed(
-                      "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile.service")
+                      "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile-project.service")
                   assert "LoadCredential=matter-linear-api_key:" in unit, unit
 
                   # Graceful-deploy: pre-script disables the kill-switch
