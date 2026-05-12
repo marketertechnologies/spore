@@ -20,7 +20,15 @@ import (
 // child to die within a few ms, after which the session is gone. The
 // settle window catches that case so EnsureCoordinator surfaces a real
 // error instead of lying with "spawned".
-const coordinatorSpawnSettleDelay = 150 * time.Millisecond
+//
+// Sized for slow exec paths (shim that resolves shared+project role
+// files via `cat`, then forks again to exec the agent). 150ms tripped
+// on a host where the user-service PATH was missing bashInteractive,
+// causing `#!/usr/bin/env bash` to die before claude was ever exec'd;
+// fixing the service PATH made that the dominant failure mode, but
+// the wider window costs the reconciler nothing on the happy path and
+// shrugs off filesystem-cold reads on the role files.
+const coordinatorSpawnSettleDelay = 300 * time.Millisecond
 
 // CoordinatorSlug is the reserved session slug for the singleton
 // coordinator agent. Workers cannot use it; the fleet reconciler
