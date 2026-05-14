@@ -22,6 +22,8 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -36,6 +38,13 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 	body := "---\nstatus: draft\nslug: demo\ntitle: Demo\n---\nbody\n"
 	taskPath := filepath.Join(tasksDir, slug+".md")
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	servicesDir := filepath.Join(state, "spore", "services", slug)
+	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(servicesDir, "sentinel"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,8 +108,8 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 	if err := Done(tasksDir, slug, false); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("after Done: status = %q, want done", status)
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".worktrees", slug)); !os.IsNotExist(err) {
 		t.Errorf("worktree should be removed after Done, stat err = %v", err)
@@ -111,9 +120,12 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
 		t.Errorf("tmux session %q still alive after Done", session)
 	}
+	if _, err := os.Stat(servicesDir); !os.IsNotExist(err) {
+		t.Errorf("services dir should be removed after Done, stat err = %v", err)
+	}
 
 	if err := Done(tasksDir, slug, false); err != nil {
-		t.Errorf("Done on already-done task should be no-op, got %v", err)
+		t.Errorf("Done on already-removed task should be no-op, got %v", err)
 	}
 }
 
@@ -127,6 +139,7 @@ func TestStartResumesPaused(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -187,6 +200,7 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -220,8 +234,8 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 	if err := Done(tasksDir, slug, false); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("after Done: status = %q, want done", status)
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", customSession).Run(); err == nil {
 		t.Errorf("custom tmux session %q still alive after Done", customSession)
@@ -355,6 +369,7 @@ func TestDoneAllowsRealImpl(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_EVIDENCE_WARN_ONLY", "0")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	origStart := evidence.ContractStart
 	evidence.ContractStart = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() { evidence.ContractStart = origStart })
@@ -362,8 +377,8 @@ func TestDoneAllowsRealImpl(t *testing.T) {
 	if err := Done(tasksDir, "x", false); err != nil {
 		t.Fatalf("Done with real-impl evidence: %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("status = %q want done", status)
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
@@ -376,6 +391,7 @@ func TestDoneWarnOnlyAllowsBlockedVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_EVIDENCE_WARN_ONLY", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	origStart := evidence.ContractStart
 	evidence.ContractStart = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() { evidence.ContractStart = origStart })
@@ -383,8 +399,8 @@ func TestDoneWarnOnlyAllowsBlockedVerdict(t *testing.T) {
 	if err := Done(tasksDir, "x", false); err != nil {
 		t.Fatalf("Done in warn-only mode should pass, got %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("status = %q want done (warn-only)", status)
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
@@ -441,8 +457,8 @@ func TestDoneForceBypassesInbox(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done --force should bypass inbox gate: %v", err)
 	}
-	if readStatus(t, taskPath) != "done" {
-		t.Error("status should be done")
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
@@ -566,16 +582,17 @@ func TestDoneForceBypassesUnmergedCommits(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done --force should bypass unmerged gate: %v", err)
 	}
-	if readStatus(t, filepath.Join(tasksDir, "x.md")) != "done" {
-		t.Error("status should be done")
+	if _, err := os.Stat(filepath.Join(tasksDir, "x.md")); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
 // TestDoneForceCleansArtifacts walks Done(--force) through the full
-// cleanup chain (worktree, wt/<slug> branch, tmux session) and
-// asserts each artifact is gone afterward. Companion to the
-// force=false coverage in TestLifecycleStartPauseDone; both must hit
-// the same cleanup code so a regression in the force path is caught.
+// cleanup chain (worktree, wt/<slug> branch, tmux session, services
+// state dir, task file) and asserts each artifact is gone afterward.
+// Companion to the force=false coverage in TestLifecycleStartPauseDone;
+// both must hit the same cleanup code so a regression in the force
+// path is caught.
 func TestDoneForceCleansArtifacts(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
@@ -604,6 +621,13 @@ func TestDoneForceCleansArtifacts(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	servicesDir := filepath.Join(state, "spore", "services", slug)
+	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(servicesDir, "sentinel"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
 
@@ -623,8 +647,8 @@ func TestDoneForceCleansArtifacts(t *testing.T) {
 	if err := Done(tasksDir, slug, true); err != nil {
 		t.Fatalf("Done --force: %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("after Done --force: status = %q, want done", status)
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done --force, stat err = %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Errorf("worktree should be removed after Done --force, stat err = %v", err)
@@ -634,6 +658,9 @@ func TestDoneForceCleansArtifacts(t *testing.T) {
 	}
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
 		t.Errorf("tmux session %q still alive after Done --force", session)
+	}
+	if _, err := os.Stat(servicesDir); !os.IsNotExist(err) {
+		t.Errorf("services dir should be removed after Done --force, stat err = %v", err)
 	}
 }
 

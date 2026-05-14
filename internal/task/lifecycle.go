@@ -185,6 +185,9 @@ func Done(tasksDir, slug string, force bool) error {
 	path := filepath.Join(tasksDir, slug+".md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	m, body, err := frontmatter.Parse(raw)
@@ -244,6 +247,16 @@ func Done(tasksDir, slug string, force bool) error {
 			fmt.Fprintf(os.Stderr, "spore task done %s: git branch -D %s: %v: %s\n",
 				slug, branch, err, strings.TrimSpace(string(out)))
 		}
+	}
+	if dir, err := slugServicesDir(slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done %s: services dir resolve: %v\n", slug, err)
+	} else if _, statErr := os.Stat(dir); statErr == nil {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: rm -r %s: %v\n", slug, dir, rmErr)
+		}
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, path, err)
 	}
 	return nil
 }
@@ -766,4 +779,21 @@ func hasSession(name string) bool {
 
 func branchExists(projectRoot, branch string) bool {
 	return gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+}
+
+// slugServicesDir returns the per-slug services state dir:
+// `<XDG_STATE_HOME>/spore/services/<slug>`, falling back to
+// `$HOME/.local/state/spore/services/<slug>` when XDG_STATE_HOME is
+// unset. Done uses this to clean up the worker's PG / Redis / etc.
+// state directory written by the consumer's bin/with-services.
+func slugServicesDir(slug string) (string, error) {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			return "", fmt.Errorf("HOME and XDG_STATE_HOME both unset")
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "spore", "services", slug), nil
 }
