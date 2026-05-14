@@ -571,6 +571,72 @@ func TestDoneForceBypassesUnmergedCommits(t *testing.T) {
 	}
 }
 
+// TestDoneForceCleansArtifacts walks Done(--force) through the full
+// cleanup chain (worktree, wt/<slug> branch, tmux session) and
+// asserts each artifact is gone afterward. Companion to the
+// force=false coverage in TestLifecycleStartPauseDone; both must hit
+// the same cleanup code so a regression in the force path is caught.
+func TestDoneForceCleansArtifacts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slug := "demo"
+	body := "---\nstatus: draft\nslug: demo\ntitle: Demo\n---\nbody\n"
+	taskPath := filepath.Join(tasksDir, slug+".md")
+	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+
+	session, err := Start(tasksDir, slug)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+
+	// Add an unmerged commit on wt/<slug> so the force path is the
+	// only one that can succeed.
+	worktree := filepath.Join(repo, ".worktrees", slug)
+	runGit(t, worktree, "commit", "-q", "--allow-empty", "-m", "unmerged")
+
+	if err := Done(tasksDir, slug, true); err != nil {
+		t.Fatalf("Done --force: %v", err)
+	}
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("after Done --force: status = %q, want done", status)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("worktree should be removed after Done --force, stat err = %v", err)
+	}
+	if branchExists(repo, "wt/"+slug) {
+		t.Errorf("branch wt/%s should be removed after Done --force", slug)
+	}
+	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
+		t.Errorf("tmux session %q still alive after Done --force", session)
+	}
+}
+
 func TestBlockFlipsActiveToBlocked(t *testing.T) {
 	tasksDir := t.TempDir()
 	taskPath := filepath.Join(tasksDir, "x.md")

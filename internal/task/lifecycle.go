@@ -174,8 +174,9 @@ func Verify(tasksDir, slug string) (evidence.Verdict, []string, error) {
 
 // Done flips a task to done and best-effort cleans up the tmux
 // session, worktree, and wt/<slug> branch. Errors from cleanup are
-// swallowed; the status flip is the source of truth. Calling Done on
-// an already-done task is a no-op.
+// surfaced to stderr so a broken chain is visible; the status flip
+// remains the source of truth. Calling Done on an already-done task
+// is a no-op.
 //
 // When force is true, the inbox-drain and unmerged-commit gates are
 // bypassed; the evidence gate still runs (it has its own soak/env
@@ -232,8 +233,18 @@ func Done(tasksDir, slug string, force bool) error {
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 
 	killAllSlugSessions(tasksDir, projectRoot, slug)
-	_ = gitCmd(projectRoot, "worktree", "remove", "--force", worktree).Run()
-	_ = gitCmd(projectRoot, "branch", "-D", branch).Run()
+	if _, statErr := os.Stat(worktree); statErr == nil {
+		if out, err := gitCmd(projectRoot, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: git worktree remove %s: %v: %s\n",
+				slug, worktree, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if branchExists(projectRoot, branch) {
+		if out, err := gitCmd(projectRoot, "branch", "-D", branch).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: git branch -D %s: %v: %s\n",
+				slug, branch, err, strings.TrimSpace(string(out)))
+		}
+	}
 	return nil
 }
 
@@ -683,12 +694,16 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 }
 
 // killAllSlugSessions tears down every tmux session matching slug
-// for the project. Errors are swallowed - this is best-effort cleanup;
-// the status flip stays the source of truth. Pass-through no-op when
-// tmux isn't running or nothing matches.
+// for the project. Errors are surfaced to stderr so a broken kill is
+// visible; this is best-effort cleanup and the status flip stays the
+// source of truth. Pass-through no-op when tmux isn't running or
+// nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
-		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
+				name, err, strings.TrimSpace(string(out)))
+		}
 	}
 }
 
