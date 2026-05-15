@@ -174,8 +174,9 @@ func Verify(tasksDir, slug string) (evidence.Verdict, []string, error) {
 
 // Done flips a task to done and best-effort cleans up the tmux
 // session, worktree, and wt/<slug> branch. Errors from cleanup are
-// swallowed; the status flip is the source of truth. Calling Done on
-// an already-done task is a no-op.
+// surfaced to stderr so a broken chain is visible; the status flip
+// remains the source of truth. Calling Done on an already-done task
+// is a no-op.
 //
 // When force is true, the inbox-drain and unmerged-commit gates are
 // bypassed; the evidence gate still runs (it has its own soak/env
@@ -184,6 +185,9 @@ func Done(tasksDir, slug string, force bool) error {
 	path := filepath.Join(tasksDir, slug+".md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	m, body, err := frontmatter.Parse(raw)
@@ -232,8 +236,28 @@ func Done(tasksDir, slug string, force bool) error {
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 
 	killAllSlugSessions(tasksDir, projectRoot, slug)
-	_ = gitCmd(projectRoot, "worktree", "remove", "--force", worktree).Run()
-	_ = gitCmd(projectRoot, "branch", "-D", branch).Run()
+	if _, statErr := os.Stat(worktree); statErr == nil {
+		if out, err := gitCmd(projectRoot, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: git worktree remove %s: %v: %s\n",
+				slug, worktree, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if branchExists(projectRoot, branch) {
+		if out, err := gitCmd(projectRoot, "branch", "-D", branch).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: git branch -D %s: %v: %s\n",
+				slug, branch, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if dir, err := slugServicesDir(slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done %s: services dir resolve: %v\n", slug, err)
+	} else if _, statErr := os.Stat(dir); statErr == nil {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "spore task done %s: rm -r %s: %v\n", slug, dir, rmErr)
+		}
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, path, err)
+	}
 	return nil
 }
 
@@ -683,12 +707,16 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 }
 
 // killAllSlugSessions tears down every tmux session matching slug
-// for the project. Errors are swallowed - this is best-effort cleanup;
-// the status flip stays the source of truth. Pass-through no-op when
-// tmux isn't running or nothing matches.
+// for the project. Errors are surfaced to stderr so a broken kill is
+// visible; this is best-effort cleanup and the status flip stays the
+// source of truth. Pass-through no-op when tmux isn't running or
+// nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
-		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
+				name, err, strings.TrimSpace(string(out)))
+		}
 	}
 }
 
@@ -751,4 +779,21 @@ func hasSession(name string) bool {
 
 func branchExists(projectRoot, branch string) bool {
 	return gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+}
+
+// slugServicesDir returns the per-slug services state dir:
+// `<XDG_STATE_HOME>/spore/services/<slug>`, falling back to
+// `$HOME/.local/state/spore/services/<slug>` when XDG_STATE_HOME is
+// unset. Done uses this to clean up the worker's PG / Redis / etc.
+// state directory written by the consumer's bin/with-services.
+func slugServicesDir(slug string) (string, error) {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			return "", fmt.Errorf("HOME and XDG_STATE_HOME both unset")
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "spore", "services", slug), nil
 }
