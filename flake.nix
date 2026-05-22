@@ -32,6 +32,11 @@
             subPackages = [ "cmd/spore" ];
             vendorHash = null;
             ldflags = [ "-X=github.com/versality/spore.buildCommit=${commit}" ];
+            # Integration tests exec git and tmux directly; without
+            # them on PATH the buildGoModule check phase fails in the
+            # nix sandbox. See cmd/spore/coordinator_lifecycle_test.go
+            # and internal/{fleet,task,lints,bootstrap,hooks}/*_test.go.
+            nativeCheckInputs = [ pkgs.git pkgs.tmux ];
             meta = {
               description = "Drop-in harness template for LLM-coding agents.";
               homepage = "https://github.com/versality/spore";
