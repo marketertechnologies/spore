@@ -141,17 +141,18 @@ func CountUnreadInbox(slug string) (int, string, error) {
 }
 
 // UnmergedCommits returns the count of commits reachable from
-// refs/heads/<branch> but not from main. Returns 0 when the branch
-// does not exist (already deleted by a prior merge).
+// refs/heads/<branch> but not from the project's integration target
+// (see defaultBranch). Returns 0 when the branch does not exist
+// (already deleted by a prior merge).
 func UnmergedCommits(projectRoot, branch string) (int, error) {
 	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() != nil {
 		return 0, nil
 	}
-	mainRef := "main"
-	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/main").Run() != nil {
-		mainRef = "master"
+	baseRef, err := defaultBranch(projectRoot)
+	if err != nil {
+		return 0, err
 	}
-	out, err := gitCmd(projectRoot, "rev-list", mainRef+".."+branch).Output()
+	out, err := gitCmd(projectRoot, "rev-list", baseRef+".."+branch).Output()
 	if err != nil {
 		return 0, err
 	}
@@ -160,6 +161,31 @@ func UnmergedCommits(projectRoot, branch string) (int, error) {
 		return 0, nil
 	}
 	return strings.Count(s, "\n") + 1, nil
+}
+
+// defaultBranch resolves the local branch that the project treats as
+// its integration target. Order: local "main", local "master", then
+// origin/HEAD's symbolic ref (e.g. refs/remotes/origin/development
+// resolves to "development"). Returns an error if none resolve, so
+// callers fail loudly instead of running rev-list against a name that
+// does not exist (the previous fallthrough to a missing "master" was
+// the source of an exit-128 from rev-list).
+func defaultBranch(projectRoot string) (string, error) {
+	for _, name := range []string{"main", "master"} {
+		if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name).Run() == nil {
+			return name, nil
+		}
+	}
+	out, err := gitCmd(projectRoot, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(out))
+		if name := strings.TrimPrefix(ref, "refs/remotes/origin/"); name != "" && name != ref {
+			if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name).Run() == nil {
+				return name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no default branch: tried main, master, origin/HEAD")
 }
 
 // gitCmd returns `git -c safe.directory=<abs(projectRoot)> -C

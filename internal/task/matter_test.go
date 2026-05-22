@@ -63,6 +63,7 @@ func TestDoneFiresOnDoneForTaggedTask(t *testing.T) {
 	withMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
 
 	project, tasksDir := matterTaskDirs(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(project, "spore.toml"),
 		[]byte("[matter.fake]\nenabled = true\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -82,8 +83,8 @@ func TestDoneFiresOnDoneForTaggedTask(t *testing.T) {
 	if rec.lastID != "FAKE-7" {
 		t.Errorf("OnDone meta[matter_id] = %q, want FAKE-7", rec.lastID)
 	}
-	if readStatus(t, taskPath) != "done" {
-		t.Errorf("status should be done")
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
@@ -92,6 +93,7 @@ func TestDoneSkipsWhenMatterMetaMissing(t *testing.T) {
 	t.Cleanup(matter.ResetForTest)
 
 	_, tasksDir := matterTaskDirs(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	taskPath := filepath.Join(tasksDir, "x.md")
 	body := "---\nstatus: active\nslug: x\ntitle: X\n---\nbody\n"
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
@@ -101,8 +103,8 @@ func TestDoneSkipsWhenMatterMetaMissing(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done with no matter meta: %v", err)
 	}
-	if readStatus(t, taskPath) != "done" {
-		t.Errorf("status should be done")
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 }
 
@@ -111,6 +113,7 @@ func TestDoneSkipsWhenMatterDisabled(t *testing.T) {
 	withMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
 
 	project, tasksDir := matterTaskDirs(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(project, "spore.toml"),
 		[]byte("[matter.fake]\nenabled = false\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -223,6 +226,7 @@ func TestDoneSwallowsOnDoneError(t *testing.T) {
 	withMatter(t, "fake", func(c matter.Config) (matter.Matter, error) { return rec, nil })
 
 	project, tasksDir := matterTaskDirs(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(project, "spore.toml"),
 		[]byte("[matter.fake]\nenabled = true\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -236,8 +240,8 @@ func TestDoneSwallowsOnDoneError(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done should not surface OnDone error: %v", err)
 	}
-	if readStatus(t, taskPath) != "done" {
-		t.Errorf("status should be done despite OnDone error")
+	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
+		t.Errorf("task file should be removed after Done, stat err = %v", err)
 	}
 	if got := rec.calls.Load(); got != 1 {
 		t.Errorf("OnDone calls = %d, want 1", got)

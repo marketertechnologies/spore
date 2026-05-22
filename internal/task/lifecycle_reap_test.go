@@ -17,6 +17,7 @@ func TestDoneKillsAllMatchingSlugSessions(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")
@@ -69,6 +70,7 @@ func TestDoneLeavesUnrelatedSessionsAlone(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")

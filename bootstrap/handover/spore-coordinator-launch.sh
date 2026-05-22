@@ -13,10 +13,10 @@
 # Role resolution:
 #   $SPORE_COORDINATOR_ROLE_SHARED (default
 #     "${XDG_CONFIG_HOME:-$HOME/.config}/spore/coordinator-role.md")
-#     — host-wide content shared across every project; lets the
+#     - host-wide content shared across every project; lets the
 #     operator factor common respawn / wrap-up / operating-regime
 #     boilerplate out of per-project role files.
-#   $SPORE_COORDINATOR_ROLE — project-specific delta set by the
+#   $SPORE_COORDINATOR_ROLE - project-specific delta set by the
 #     kernel to <project>/bootstrap/coordinator/role.md.
 # When both are readable and non-empty they are concatenated with a
 # blank line between them.
