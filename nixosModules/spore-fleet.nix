@@ -513,9 +513,16 @@ in
               {
                 SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
                 SPORE_HOST_ID = cfg.hostId;
+                # bashInteractive + coreutils land on PATH so the shims
+                # the reconciler spawns (spore-coordinator-launch,
+                # spore-worker-brief) can resolve `#!/usr/bin/env bash`
+                # and call `cat`/`mkdir`/`tee`/`date` without an
+                # in-shim PATH-augment workaround.
                 PATH = lib.makeBinPath [
                   cfg.package
                   cfg.claudeCodePackage
+                  pkgs.bashInteractive
+                  pkgs.coreutils
                   pkgs.git
                   pkgs.tmux
                 ];
