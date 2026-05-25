@@ -17,27 +17,14 @@ spore hooks watch-inbox
 ```
 
 The bash shim and the kernel command overlap in purpose (context-budget
-soft / hard caps on Stop) but they were authored independently and
-differ in three load-bearing ways. Until those gaps close, swapping
-projects to the kernel hook is a workflow regression for the operator.
+soft / hard caps on Stop) but they were authored independently. One
+real workflow delta blocks the swap, plus a parallel event-ledger
+system the bash hook builds out that the kernel covers a different
+(better) way.
 
-## The three deltas
+## The blocking delta
 
-### 1. Hook placement + gating
-
-- **Bash**: registered in the host-global
-  `~/.claude/settings.json`. Each project's shim self-gates on
-  `transcript_path` prefix, so a session in marketer ignores the
-  crm-gateway shim and vice versa.
-- **Kernel**: registered in the per-project
-  `.claude/settings.json` (Claude Code's hook layering handles
-  project gating). Worker / non-coordinator gating is via
-  `$SPORE_TASK_INBOX` presence.
-
-Net: swap shape is "move the registration from one settings file to
-another", but only safe after deltas 2 and 3 land.
-
-### 2. Coordinator hard-cap action
+### Coordinator hard-cap action
 
 - **Bash** hands the LLM a literal respawn-pane command that
   preserves the tmux session AND any attached SSH client:
@@ -58,23 +45,69 @@ another", but only safe after deltas 2 and 3 land.
   Real regression for SSH-attached operators on this host: their
   terminal closes when the coordinator caps.
 
-### 3. Coordinator env tunables
+## Non-blocking notes
 
-- **Bash** reads `SPORE_TOKEN_SOFT` and `SPORE_TOKEN_HARD` and uses
-  them as the soft / hard percent caps.
-- **Kernel** `runCoordinatorTokenMonitor`
-  (`cmd/spore/coordinator_cmd.go:385`) reads no env vars. The worker
-  side has three tunables; the coordinator side has zero.
+### Hook placement + gating
 
-Before swapping, audit each project for `export
-SPORE_TOKEN_SOFT=...` or `SPORE_TOKEN_HARD=...` in shell rcs,
-`spore.toml`, or systemd units. If any project actually relies on
-non-default caps, the swap fails silently (caps revert to kernel
-defaults) until the kernel honors the env.
+- **Bash**: registered in the host-global
+  `~/.claude/settings.json`. Each project's shim self-gates on
+  `transcript_path` prefix.
+- **Kernel**: registered in the per-project `.claude/settings.json`
+  (Claude Code's hook layering handles project gating). Worker /
+  non-coordinator gating is via `$SPORE_TASK_INBOX` presence.
+
+Mechanical swap: copy `spore/.claude/settings.json`'s hook block
+into each project, remove the per-project entry from the host-global
+file.
+
+### Env tunables (dropped from scope)
+
+Audit on 2026-05-25 grepped every project tree, shell rc,
+`/etc/spore/coordinator.env`, and systemd user-unit env for
+`SPORE_TOKEN_SOFT` / `SPORE_TOKEN_HARD`. Zero external exporters.
+Only the bash hooks themselves reference the names, with hardcoded
+defaults `150000 / 190000`.
+
+The kernel's defaults are equivalent in practice. If someone later
+wants to tune caps per project, adding the env reads is a small
+follow-up; not in scope here.
+
+### events.jsonl + scan-worker-completions.pl
+
+The bash hook writes a cross-project ledger at
+`~/.local/state/spore/events.jsonl` with `{ts, kind, session_id,
+slug, tokens}` per Stop event. crm-gateway (only) ships a perl
+consumer, `bin/dev/scan-worker-completions.pl`, registered in the
+host-global `~/.claude/settings.json` as a UserPromptSubmit hook
+that tails the ledger and surfaces worker events as additionalContext
+to the coordinator.
+
+This entire writer + reader pair duplicates the kernel's inbox flow:
+
+- Worker -> coordinator pokes go through
+  `internal/hooks/notifycoordinator.go` (`spore hooks
+  notify-coordinator`), which drops a file into the coordinator's
+  project inbox.
+- Coordinator side runs `spore hooks watch-inbox`
+  (`internal/hooks/watchinbox.go`,
+  `cmd/spore/hooks_cmd.go:35`), already wired in
+  `spore/.claude/settings.json` as a Stop hook with
+  `asyncRewake: true`. It blocks on inotify, exits 2 on message,
+  Claude Code surfaces the rewake as additionalContext.
+- The worker spawn (`internal/fleet/coordinator.go:127`,
+  `internal/task/lifecycle.go:511`) already sets
+  `SPORE_TASK_INBOX=<inbox>` for both coordinator and worker
+  sessions, which is what the kernel's gating reads.
+
+Decision (operator-confirmed 2026-05-25): retire the perl alongside
+the bash hook. No compat write from the kernel to
+`~/.local/state/spore/events.jsonl`; the kernel inbox flow is the
+load-bearing path going forward. See `feedback_prefer_kernel_flow.md`
+in project memory.
 
 ## Plan
 
-### A. Kernel PR (one)
+### A. Kernel PR
 
 Land before any per-project swap.
 
@@ -88,72 +121,72 @@ Land before any per-project swap.
    ```
 
    where `{session}` is `CoordinatorSessionName(projectRoot)` and
-   `{coordinator_launch}` is
-   `/usr/local/bin/spore-coordinator-launch` (or whatever the host
-   resolves to once `host-shims-via-nix` lands).
+   `{coordinator_launch}` is the host's
+   `spore-coordinator-launch` path (`/usr/local/bin/...` today,
+   to be stabilized by `host-shims-via-nix.md`).
 
    Preserve the existing tmux session and any attached SSH client.
+   Fall back to `kill-session` only when the template is explicitly
+   empty (so an operator can opt out).
 
-2. **`cmd/spore/coordinator_cmd.go` `runCoordinatorTokenMonitor`**:
-   read `SPORE_TOKEN_SOFT` and `SPORE_TOKEN_HARD` (parsing percent
-   values), falling back to the current hard-coded defaults. Match
-   the worker token-monitor's env-tunable shape so both sides are
-   consistent.
+2. **Tests**:
+   - Unit test that `ReapCoordinator` issues `respawn-pane -k` (not
+     `kill-session`) when the default template applies.
+   - Unit test the empty-template fallback to `kill-session`.
+   - Spore.toml round-trip test that `[coordinator].respawn_template`
+     parses cleanly.
 
-3. **Optional**: surface the same knobs as `[coordinator]`
-   `token_soft` / `token_hard` keys in `spore.toml`, with env vars
-   as override.
+3. Out of scope (deferred follow-ups):
+   - `SPORE_TOKEN_SOFT/HARD` env reads in
+     `runCoordinatorTokenMonitor` (no exporters found in audit;
+     add later if a use case appears).
+   - `cmd/spore/coordinator_cmd.go` other coordinator subcommands.
 
-4. Tests: a unit test that `ReapCoordinator` issues
-   `respawn-pane -k` (not `kill-session`) when a template is set,
-   and falls back to `kill-session` only when the template is
-   explicitly empty.
+### B. Per-project swap (one PR per project)
 
-### B. events.jsonl reader audit
+For marketer and crm-gateway, in either order, after A merges:
 
-The bash token-monitor writes to a cross-project
-`~/.local/state/spore/events.jsonl` ledger. Before retiring the
-shim, grep marketer + crm-gateway + this repo for any reader of
-that path (`events.jsonl`, `SPORE_EVENTS_LOG`, etc.). If a reader
-exists, decide whether the kernel ledger
-(`~/.local/state/spore/<project>/...`) already covers it or whether
-we need a compat write.
-
-### C. Per-project swap (one PR per project)
-
-For marketer and crm-gateway, in either order:
-
-1. Add the kernel hook block to project `.claude/settings.json`
+1. Add the kernel Stop-hook block to project `.claude/settings.json`
    (copy from `spore/.claude/settings.json` verbatim, minus the
    `gopls-lsp` plugin entry which is project-specific).
 2. Delete `bin/dev/spore-token-monitor`.
-3. Remove the per-project Stop hook entry from the host-global
-   `~/.claude/settings.json`. Confirm no other projects on the
-   host still depend on it; if so, leave the entry but gate it on
-   the remaining project's transcript path.
-4. Smoke: trigger a soft cap (one large turn) and a hard cap
-   (sequence of large turns) and confirm wrap-up + respawn-pane
-   behavior matches the operator's expectation.
+3. crm-gateway only: delete `bin/dev/scan-worker-completions.pl`,
+   the `~/.local/state/spore/scan-worker-completions/` cursor dir,
+   and the doc references in `CLAUDE.md:149` and `AGENTS.md:95`
+   ("Events are appended to `~/.local/state/spore/events.jsonl`...").
+4. Remove the per-project Stop hook entry AND the
+   UserPromptSubmit hook entry from the host-global
+   `~/.claude/settings.json`. If no other project still depends on
+   that global file for spore reasons, leave the file untouched
+   beyond removing the spore-specific entries.
+5. Smoke: trigger a soft cap (one large turn) and a hard cap
+   (sequence of large turns); confirm wrap-up message + respawn-pane
+   behavior; confirm SSH client survives. Dispatch a worker and
+   confirm worker events still reach the coordinator via the inbox
+   flow.
+6. Stale ledger cleanup: `rm
+   ~/.local/state/spore/events.jsonl` after both projects swap, so
+   there is no orphan file giving the impression the system is still
+   writing.
 
 ## Acceptance
 
 1. `internal/fleet/coordinator.go` `ReapCoordinator` issues
    `tmux respawn-pane -k ...` against the coordinator's
    spore-coordinator-launch shim by default. SSH clients attached
-   to that session survive a hard-cap fire.
-2. `SPORE_TOKEN_SOFT=N SPORE_TOKEN_HARD=M spore coordinator
-   token-monitor` honors the overrides; default-only run uses the
-   prior kernel defaults.
-3. `bin/dev/spore-token-monitor` is deleted from marketer and
+   to that session survive a hard-cap fire. Test coverage in place.
+2. `bin/dev/spore-token-monitor` is deleted from marketer and
    crm-gateway. Their `.claude/settings.json` carries the kernel
    hook block.
+3. `bin/dev/scan-worker-completions.pl` is deleted from crm-gateway
+   along with its cursor dir and the AGENTS.md / CLAUDE.md
+   references.
 4. The host-global `~/.claude/settings.json` no longer references
-   either project's bash hook (or is rewritten to gate on something
-   sane if a non-spore reason still requires a global entry).
-5. `~/.local/state/spore/events.jsonl` either remains consistent
-   with the prior bash format (if a reader still depends on it) or
-   the reader is migrated to the kernel ledger and the cross-project
-   file is dropped.
+   either project's bash hook or the perl scan tool.
+5. `~/.local/state/spore/events.jsonl` is gone (no kernel-side
+   writer; no remaining reader).
+6. Worker events still reach coordinator sessions via the kernel
+   inbox flow; verified by a multi-worker smoke.
 
 ## Sequencing vs. host-shims-via-nix
 
@@ -162,9 +195,9 @@ work is independent:
 
 - The kernel PR (A) does not depend on shim delivery; it edits
   Go source and Go tests.
-- The per-project swap (C) depends on the kernel PR but not on
+- The per-project swap (B) depends on the kernel PR but not on
   shim delivery.
-- The respawn-pane template in delta 2 points at
+- The respawn-pane template in A points at
   `/usr/local/bin/spore-coordinator-launch`, which is exactly the
   path `host-shims-via-nix` is migrating. As long as both specs
   agree to keep that path stable (symlink farm into the nix store
@@ -176,13 +209,24 @@ Pick whichever is cheapest to land first; the other slots in behind.
 
 - `internal/fleet/coordinator.go:239` (`ReapCoordinator`,
   current `kill-session`).
+- `internal/fleet/coordinator.go:127` (worker spawn,
+  `SPORE_TASK_INBOX=` env).
+- `internal/task/lifecycle.go:511` (worker spawn env, same
+  variable).
+- `internal/hooks/notifycoordinator.go` (worker -> coordinator
+  poke).
+- `internal/hooks/watchinbox.go`, `cmd/spore/hooks_cmd.go:35`
+  (`spore hooks watch-inbox`).
 - `cmd/spore/coordinator_cmd.go:385` (`runCoordinatorTokenMonitor`,
-  no env reads today).
-- `cmd/spore/worker_cmd.go:46` (`runWorkerTokenMonitor`, env
-  tunables to mirror).
+  no env reads today; intentionally out of scope here).
+- `cmd/spore/worker_cmd.go:46` (`runWorkerTokenMonitor`).
 - `.claude/settings.json` (canonical kernel-hook layout).
-- Stale assumption: the bash shim's "workers must exit 0 because
-  `claude -p` hangs on injected stderr turns" comment is outdated;
+- crm-gateway `bin/dev/scan-worker-completions.pl` and
+  `bin/dev/spore-token-monitor`; marketer `bin/dev/spore-token-monitor`.
+- Project memory: `feedback_prefer_kernel_flow.md` (the operator
+  call: kernel mechanism over bash compat).
+- Stale assumption from the bash shim: "workers must exit 0
+  because `claude -p` hangs on injected stderr turns" is outdated;
   `spore-worker-brief` now spawns interactive claude (commit
   `fix(handover): spore-worker-brief uses interactive claude, drops
   -p`), so the kernel `exit 2` shape is safe.
