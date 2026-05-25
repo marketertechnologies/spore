@@ -93,8 +93,10 @@ shape (the Go detector validates the schema):
 - knowledge: `notion` / `confluence` / `obsidian` / `google-docs` /
   `docs-tree` / `none`.
 
-`creds_ref` is required when `tool != "none"`. Re-run
-`spore bootstrap` after writing the file to advance.
+`creds_ref` is required for any tool that reaches over the network -
+every tickets tool except `none`, and every knowledge tool except
+`none` and `docs-tree` (the local filesystem needs no broker entry).
+Re-run `spore bootstrap` after writing the file to advance.
 
 ### `tests-pass`
 

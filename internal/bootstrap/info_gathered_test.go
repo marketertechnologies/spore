@@ -51,6 +51,22 @@ func TestDetectInfoGathered(t *testing.T) {
 			wantErr: "knowledge.tool",
 		},
 		{
+			name: "docs-tree without creds_ref",
+			ig: &InfoGathered{
+				Tickets:   InfoSurface{Tool: "none"},
+				Knowledge: InfoSurface{Tool: "docs-tree"},
+			},
+			wantNote: "tickets=none knowledge=docs-tree",
+		},
+		{
+			name: "notion without creds_ref",
+			ig: &InfoGathered{
+				Tickets:   InfoSurface{Tool: "none"},
+				Knowledge: InfoSurface{Tool: "notion"},
+			},
+			wantErr: "knowledge.tool is set but knowledge.creds_ref",
+		},
+		{
 			name: "ticket tool unknown",
 			ig: &InfoGathered{
 				Tickets:   InfoSurface{Tool: "trello"},

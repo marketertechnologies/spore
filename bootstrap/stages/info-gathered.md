@@ -25,7 +25,9 @@ already lean on the right ticket and doc surfaces.
    `none`. When non-`none`, `tickets.creds_ref` is set to the
    creds-broker reference key.
 3. `knowledge.tool` is one of `notion` / `confluence` / `obsidian`
-   / `google-docs` / `docs-tree` / `none`. Same creds_ref rule.
+   / `google-docs` / `docs-tree` / `none`. `creds_ref` is required
+   when the tool is non-`none` and non-`docs-tree` (the local
+   filesystem needs no broker entry).
 
 ## Runbook
 
