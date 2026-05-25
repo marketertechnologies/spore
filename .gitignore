@@ -20,3 +20,11 @@
 /tasks/
 /.wt/
 /bootstrap/flake/local.nix
+
+# spore-as-project (dogfood) harness artifacts
+/state.md
+# Skills installed by `repo-mapped` from the spore binary's BundledSkills
+# embed. Source lives at bootstrap/skills/, so committing this snapshot
+# would create a drift target. Downstream consumers (no embed source
+# in-tree) commit their .claude/skills/; spore-as-project does not.
+/.claude/skills/

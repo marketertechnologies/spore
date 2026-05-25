@@ -20,6 +20,10 @@ type Config struct {
 	StateDir  string
 	StateFile string
 	AgeDays   int
+	// Now is the clock used to derive the staleness threshold. Tests
+	// inject a fixed time so fixture dates do not age out as wall-clock
+	// advances. Defaults to time.Now.
+	Now func() time.Time
 }
 
 type Classification string
@@ -52,6 +56,9 @@ func (c Config) defaults() Config {
 	}
 	if c.AgeDays <= 0 {
 		c.AgeDays = DefaultAgeDays
+	}
+	if c.Now == nil {
+		c.Now = time.Now
 	}
 	return c
 }
@@ -88,7 +95,7 @@ func Scan(cfg Config) (ScanResult, error) {
 		return ScanResult{}, err
 	}
 
-	threshold := time.Now().UTC().AddDate(0, 0, -cfg.AgeDays).Format("2006-01-02")
+	threshold := cfg.Now().UTC().AddDate(0, 0, -cfg.AgeDays).Format("2006-01-02")
 
 	return scanContent(string(content), threshold), nil
 }
