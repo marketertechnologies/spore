@@ -1,0 +1,7 @@
+[coordinator]
+# Override the default brief so the spore project's own coordinator does
+# not load `bootstrap/coordinator/role.md` -- that file is the
+# `BundledCoordinatorRole` asset (`embed.go:60`) shipped to downstream
+# consumers and must stay canonical. The dogfood file carries the
+# project-specific deltas for spore-as-a-project.
+brief = "bootstrap/coordinator/dogfood-role.md"

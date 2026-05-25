@@ -20,3 +20,6 @@
 /tasks/
 /.wt/
 /bootstrap/flake/local.nix
+
+# spore-as-project (dogfood) harness artifacts
+/state.md
