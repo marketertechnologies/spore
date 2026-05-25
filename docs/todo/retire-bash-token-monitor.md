@@ -1,4 +1,4 @@
-**Status**: not-started
+**Status**: kernel-change-landed, per-project swap pending
 
 # retire the per-project bash token-monitor in favor of the kernel hook
 
@@ -22,7 +22,7 @@ real workflow delta blocks the swap, plus a parallel event-ledger
 system the bash hook builds out that the kernel covers a different
 (better) way.
 
-## The blocking delta
+## The blocking delta (RESOLVED)
 
 ### Coordinator hard-cap action
 
@@ -34,16 +34,31 @@ system the bash hook builds out that the kernel covers a different
     'exec claude... "$(cat <project>/bootstrap/coordinator/role.md)"'
   ```
 
-- **Kernel** (`internal/fleet/coordinator.go:239`,
-  `ReapCoordinator`):
+- **Kernel before fix** (`internal/coordinator/tokenmonitor/tokenmonitor.go`,
+  hard-cap path at line 126-132 and soft-cap at 141-147 in the prior
+  shape): the wrap-up message instructed the LLM to run `tmux
+  kill-session`, which drops the tmux session AND any attached SSH
+  client. Real regression for SSH-attached operators on this host:
+  their terminal closes when the coordinator caps.
 
-  ```go
-  _ = exec.Command("tmux", "kill-session", "-t", session).Run()
-  ```
+The earlier draft of this spec pointed at `internal/fleet/coordinator.go`
+`ReapCoordinator`, which is the wrong site: that function is only
+called on fleet `Disable()` (true shutdown), where `kill-session` is
+semantically correct. The LLM-runnable wrap-up command lives in
+`tokenmonitor.Check`'s `result.Message`. Confirmed during Phase A
+implementation 2026-05-25.
 
-  `kill-session` drops the tmux session AND any attached SSH client.
-  Real regression for SSH-attached operators on this host: their
-  terminal closes when the coordinator caps.
+**Fix landed**: kernel commit on branch
+`coordinator-tokenmonitor-respawn-pane` replaces the `tmux
+kill-session` line in both hard- and soft-cap messages with:
+
+```
+tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /usr/local/bin/spore-coordinator-launch'
+```
+
+Self-targets via `display-message -p '#S'` so external-session-pattern
+coordinators work without configuration. The exec target is the host
+shim that `spore infect` installs (`internal/infect/infect.go:469`).
 
 ## Non-blocking notes
 
@@ -107,42 +122,35 @@ in project memory.
 
 ## Plan
 
-### A. Kernel PR
+### A. Kernel change (LANDED)
 
-Land before any per-project swap.
+Edit to `internal/coordinator/tokenmonitor/tokenmonitor.go`:
 
-1. **`internal/fleet/coordinator.go` `ReapCoordinator`**: replace
-   the unconditional `tmux kill-session` with a templated
-   `tmux respawn-pane -k`. Template comes from
-   `[coordinator].respawn_template` in `spore.toml`, defaulting to:
+1. Hard- and soft-cap `result.Message` strings now embed the
+   respawn-pane command instead of `tmux kill-session`. The
+   command self-targets via `tmux display-message -p '#S'` so
+   external-session-pattern coordinators work without extra config.
+2. `coordinatorRespawnCommand` is a package-level constant so both
+   messages share one source of truth; if `host-shims-via-nix.md`
+   later changes the shim path, this is the one spot to update.
+3. `assertRespawnPaneMessage` test helper added to
+   `tokenmonitor_test.go`; both `TestCheckHardCap` and
+   `TestCheckSoftCap` now assert that the message contains
+   `tmux respawn-pane -k`, the `display-message` self-target, the
+   correct shim path, and NOT `tmux kill-session`.
 
-   ```
-   tmux respawn-pane -k -t {session}:0 'exec {coordinator_launch}'
-   ```
+No changes needed in `internal/fleet/coordinator.go`,
+`spore.toml` schema, or `cmd/spore/coordinator_cmd.go`. Scope dropped
+versus the earlier draft:
 
-   where `{session}` is `CoordinatorSessionName(projectRoot)` and
-   `{coordinator_launch}` is the host's
-   `spore-coordinator-launch` path (`/usr/local/bin/...` today,
-   to be stabilized by `host-shims-via-nix.md`).
+- `ReapCoordinator` stays as `kill-session` (fleet `Disable()` is a
+  true shutdown; `kill-session` is semantically right there).
+- `[coordinator].respawn_template` config plumbing was unnecessary;
+  the constant suffices and the message is self-targeting.
+- `SPORE_TOKEN_SOFT/HARD` env reads stay out of scope: the
+  2026-05-25 audit found zero exporters anywhere on this host.
 
-   Preserve the existing tmux session and any attached SSH client.
-   Fall back to `kill-session` only when the template is explicitly
-   empty (so an operator can opt out).
-
-2. **Tests**:
-   - Unit test that `ReapCoordinator` issues `respawn-pane -k` (not
-     `kill-session`) when the default template applies.
-   - Unit test the empty-template fallback to `kill-session`.
-   - Spore.toml round-trip test that `[coordinator].respawn_template`
-     parses cleanly.
-
-3. Out of scope (deferred follow-ups):
-   - `SPORE_TOKEN_SOFT/HARD` env reads in
-     `runCoordinatorTokenMonitor` (no exporters found in audit;
-     add later if a use case appears).
-   - `cmd/spore/coordinator_cmd.go` other coordinator subcommands.
-
-### B. Per-project swap (one PR per project)
+### B. Per-project swap (one PR per project, NEXT)
 
 For marketer and crm-gateway, in either order, after A merges:
 
@@ -171,10 +179,13 @@ For marketer and crm-gateway, in either order, after A merges:
 
 ## Acceptance
 
-1. `internal/fleet/coordinator.go` `ReapCoordinator` issues
-   `tmux respawn-pane -k ...` against the coordinator's
-   spore-coordinator-launch shim by default. SSH clients attached
-   to that session survive a hard-cap fire. Test coverage in place.
+1. (DONE) `tokenmonitor.Check`'s hard- and soft-cap messages
+   instruct the agent to run `tmux respawn-pane -k -t
+   "$(tmux display-message -p '#S'):0" 'exec
+   /usr/local/bin/spore-coordinator-launch'` rather than
+   `tmux kill-session`. SSH clients attached to the session
+   survive a cap. Test coverage in place
+   (`assertRespawnPaneMessage`).
 2. `bin/dev/spore-token-monitor` is deleted from marketer and
    crm-gateway. Their `.claude/settings.json` carries the kernel
    hook block.
@@ -207,8 +218,11 @@ Pick whichever is cheapest to land first; the other slots in behind.
 
 ## Cross-references
 
-- `internal/fleet/coordinator.go:239` (`ReapCoordinator`,
-  current `kill-session`).
+- `internal/coordinator/tokenmonitor/tokenmonitor.go` (Phase A
+  call site: `Check`'s hard- and soft-cap `result.Message`).
+- `internal/fleet/coordinator.go:239` (`ReapCoordinator`, retained
+  as `kill-session` for the fleet `Disable()` shutdown path; NOT
+  the call site the spec earlier pointed at).
 - `internal/fleet/coordinator.go:127` (worker spawn,
   `SPORE_TASK_INBOX=` env).
 - `internal/task/lifecycle.go:511` (worker spawn env, same
