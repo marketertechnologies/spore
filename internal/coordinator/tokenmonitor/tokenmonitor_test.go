@@ -3,6 +3,7 @@ package tokenmonitor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,7 @@ func TestCheckHardCap(t *testing.T) {
 	if result.Ctx != 195000 {
 		t.Errorf("Ctx = %d, want 195000", result.Ctx)
 	}
+	assertRespawnPaneMessage(t, result.Message)
 }
 
 func TestCheckSoftCap(t *testing.T) {
@@ -89,6 +91,7 @@ func TestCheckSoftCap(t *testing.T) {
 	if !result.ShouldFire {
 		t.Error("expected ShouldFire = true on first soft crossing")
 	}
+	assertRespawnPaneMessage(t, result.Message)
 
 	result2 := Check(cfg, HookPayload{SessionID: "test-soft", TranscriptPath: f})
 	if result2.Level != "ok" {
@@ -119,6 +122,25 @@ func TestCheckOk(t *testing.T) {
 	result := Check(cfg, HookPayload{SessionID: "test-ok", TranscriptPath: f})
 	if result.Level != "ok" {
 		t.Errorf("expected ok, got %s", result.Level)
+	}
+}
+
+// assertRespawnPaneMessage checks the wrap-up message instructs the
+// coordinator agent to respawn the pane (preserving the tmux session
+// and any attached SSH client) rather than killing the session.
+func assertRespawnPaneMessage(t *testing.T, msg string) {
+	t.Helper()
+	if !strings.Contains(msg, "tmux respawn-pane -k") {
+		t.Errorf("message must instruct respawn-pane -k, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, `"$(tmux display-message -p '#S'):0"`) {
+		t.Errorf("message must self-target via display-message, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "/usr/local/bin/spore-coordinator-launch") {
+		t.Errorf("message must exec the coordinator-launch shim, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "tmux kill-session") {
+		t.Errorf("message must not instruct kill-session (drops attached SSH), got:\n%s", msg)
 	}
 }
 
