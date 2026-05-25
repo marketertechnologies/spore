@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Apply the latest main of spore to this NixOS host.
+# Bumps /etc/nixos flake.lock's spore input, then nixos-rebuild switch.
+# Run as root. Override flake dir / nixos config target via env vars.
+
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "update-spore: must run as root (no sudo on this host)" >&2
+    exit 1
+fi
+
+flake_dir=${SPORE_NIXOS_DIR:-/etc/nixos}
+target=${SPORE_NIXOS_TARGET:-spore-bootstrap}
+
+echo "before: $(spore --version 2>/dev/null || echo 'not installed')"
+
+(cd "$flake_dir" && nix flake update spore)
+nixos-rebuild switch --flake "$flake_dir#$target"
+
+echo "after:  $(spore --version)"
