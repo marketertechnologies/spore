@@ -23,9 +23,9 @@ file means:
 
 Document and codify a two-layer convention in spore:
 
-- `~/.config/spore/<project>/secrets.env` — per-project, primary.
+- `~/.config/spore/<project>/secrets.env` - per-project, primary.
   Mode 0600, dir mode 0700.
-- `~/.config/spore/secrets.env` — optional global fallback. Same mode.
+- `~/.config/spore/secrets.env` - optional global fallback. Same mode.
   For keys genuinely shared across every spore-managed project on
   the host. Layered _under_ the per-project file: source global
   first, per-project second, so per-project entries override globals
@@ -40,8 +40,8 @@ non-spore invocations.
 Already in production in `crm-gateway`:
 
 - `bin/with-services` (`load_secrets` helper at the top of the
-  `exec` subcommand) — the canonical resolver for app/test commands.
-- `bin/dev/record-vitec-payloads` — the same resolver duplicated
+  `exec` subcommand) - the canonical resolver for app/test commands.
+- `bin/dev/record-vitec-payloads` - the same resolver duplicated
   because the script pre-checks credentials before delegating to
   `with-services exec`.
 
@@ -58,22 +58,22 @@ set +a
 
 ## Where this should land in spore
 
-1. **`rules/core/secrets.md`** (new) — a short rule fragment that
+1. **`rules/core/secrets.md`** (new) - a short rule fragment that
    coordinators and workers pick up via `spore compose`. Describes
    the layered model, the project-name resolution rule, the
    "never echo or log" guardrail, and one canonical sourcing
    snippet.
-2. **`bootstrap/stages/creds-wired.md`** update — the creds-wired
+2. **`bootstrap/stages/creds-wired.md`** update - the creds-wired
    stage already exists to record where credentials live. Add a
    bullet pointing operators at the per-project location as the
    default destination for any newly-wired credential, and note the
    global file as opt-in.
 3. **`spore-coordinator-launch` shim** (in nixosModules / bundled
-   flake) — currently does not touch secrets at all. Leave it that
+   flake) - currently does not touch secrets at all. Leave it that
    way. Sourcing remains a project-side concern so individual
    commands can decide whether they need secrets in env.
 4. **`spore secrets path <project>` helper** (optional, nice-to-have)
-   — emits the resolved per-project path so wrappers don't all
+   - emits the resolved per-project path so wrappers don't all
    duplicate the resolver. Defer until the convention has at least
    two downstream consumers.
 
@@ -95,11 +95,11 @@ set +a
 ## Cross-references
 
 - crm-gateway commit `96fc1127 chore(secrets): layered per-project
-  secrets resolver` — landed the resolver + CLAUDE.md update.
-- crm-gateway `CLAUDE.md` "Credentials & secrets" section — the
+  secrets resolver` - landed the resolver + CLAUDE.md update.
+- crm-gateway `CLAUDE.md` "Credentials & secrets" section - the
   project-side write-up of the convention.
 - Host-level shared role at `~/.config/spore/coordinator-role.md`
-  "Operating regime" — updated in lockstep to describe the layered
+  "Operating regime" - updated in lockstep to describe the layered
   model.
 - Related rules: `rules/core/role.md` (where the coordinator role
   base lives), `bootstrap/stages/creds-wired.md` (where the
