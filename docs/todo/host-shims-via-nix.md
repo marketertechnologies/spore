@@ -133,9 +133,7 @@ The operator-managed per-host nix config needs:
   those alone in Phase 1. They are not the load-bearing surface
   for the cap-respawn flow.
 
-Add the snippet to `docs/operations/host-nix-snippet.md` (new file)
-and cross-reference from `bootstrap/flake/README.md` so an operator
-upgrading an existing host can paste it in.
+Snippet lives at `docs/host-nix-snippet.md`.
 
 #### 1.3. Refresh existing hosts
 
