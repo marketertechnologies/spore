@@ -21,8 +21,20 @@ slug="${SPORE_TASK_SLUG:-}"
 agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
 
-if [[ -z "$slug" || ! -f "$brief" ]]; then
-  echo "spore-worker-brief: no slug or brief at $(pwd)/$brief; dropping to interactive $agent" >&2
+if [[ -z "$slug" ]]; then
+  echo "spore-worker-brief: SPORE_TASK_SLUG not set; dropping to interactive $agent" >&2
+  exec "$agent" --dangerously-skip-permissions
+fi
+
+# Absorb the spawn race: tmux can open before the binary finishes
+# copying tasks/<slug>.md into the worktree. Up to ~3s of backoff.
+for _ in 1 2 3 4 5 6; do
+  [[ -f "$brief" ]] && break
+  sleep 0.5
+done
+
+if [[ ! -f "$brief" ]]; then
+  echo "spore-worker-brief: no brief at $(pwd)/$brief after retry; dropping to interactive $agent" >&2
   exec "$agent" --dangerously-skip-permissions
 fi
 
