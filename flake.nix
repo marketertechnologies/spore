@@ -294,6 +294,22 @@
                 ''
                   machine.wait_for_unit("multi-user.target")
                   machine.wait_for_unit("default.target", user="spore-test")
+
+                  # spore-shims activation: every host shim resolves
+                  # via /usr/local/bin/spore-* as a symlink into the
+                  # shims derivation, and each is executable.
+                  for shim in [
+                      "spore-attach",
+                      "spore-coordinator-launch",
+                      "spore-worker-brief",
+                      "spore-fleet-tick",
+                      "spore-greet-coordinator",
+                      "spore-greet-worker",
+                  ]:
+                      target = machine.succeed(f"readlink /usr/local/bin/{shim}").strip()
+                      assert target.startswith("/nix/store/"), \
+                          f"{shim} not a /nix/store symlink: {target!r}"
+                      machine.succeed(f"test -x /usr/local/bin/{shim}")
                   # Talk to the lingered user instance via systemctl
                   # --machine so the call uses the right XDG_RUNTIME_DIR
                   # without an interactive login.
@@ -358,6 +374,8 @@
         imports = [ ./nixosModules/spore-fleet.nix ];
         services.spore-fleet.package =
           lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.spore;
+        services.spore-fleet.shimsPackage =
+          lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.shims;
         services.spore-fleet.claudeCodePackage =
           lib.mkDefault claude-code.packages.${pkgs.stdenv.hostPlatform.system}.default;
       };

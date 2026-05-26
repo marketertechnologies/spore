@@ -5,10 +5,44 @@ under `/usr/local/bin/spore-*` started life as `install -m 0755`
 files dropped by `Handoff()` in `internal/infect/infect.go`. There
 was no refresh path: changes in `bootstrap/handover/*.sh` did not
 reach existing hosts even after `nix flake update spore &&
-nixos-rebuild switch`. This snippet wires the shims into the same
+nixos-rebuild switch`. This page wires the shims into the same
 nix refresh that already updates the spore binary.
 
-## Prereqs
+Two paths, pick one:
+
+- **Option A (preferred): import `nixosModules.spore-fleet`.** Manages
+  the shims AND the systemd-user fleet reconciler. Use this on hosts
+  where the spore user runs a fleet (every host this repo targets
+  today).
+- **Option B: paste the snippet.** Manages the shims only, no
+  reconciler. Use this on hosts that want the symlink refresh but do
+  not run a fleet (rare).
+
+## Option A: import the module
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.spore.nixosModules.spore-fleet ];
+
+  services.spore-fleet = {
+    enable = true;
+    user = "spore";
+    projects = {
+      crm-gateway.path = "/home/spore/crm-gateway";
+      # ... one entry per project under /home/spore/<name> ...
+    };
+  };
+}
+```
+
+The module defaults `services.spore-fleet.shimsPackage` to
+`inputs.spore.packages.${system}.shims` and runs the same
+`/usr/local/bin/spore-*` activation script as Option B.
+
+## Option B: paste the snippet (shims only)
+
+### Prereqs
 
 Your `/etc/nixos/flake.nix` must:
 
@@ -17,7 +51,7 @@ Your `/etc/nixos/flake.nix` must:
 - pass `inputs` to the NixOS module set via `specialArgs`, so
   `configuration.nix` can read `inputs.spore.packages.<system>.*`.
 
-## Snippet
+### Snippet
 
 Paste into `/etc/nixos/configuration.nix` (or an imported module):
 
