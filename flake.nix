@@ -45,10 +45,31 @@
               platforms = pkgs.lib.platforms.unix;
             };
           };
+
+          # Host shims plus per-user hook / settings / systemd assets,
+          # exposed for downstream nix configs that want to manage
+          # /usr/local/bin/spore-* via nix instead of the one-shot
+          # scp+install from `spore infect`. See
+          # docs/host-nix-snippet.md for the operator-facing config.
+          shims = pkgs.runCommand "spore-shims-${version}"
+            { src = ./bootstrap/handover; } ''
+            mkdir -p $out/bin $out/share/spore/hooks $out/share/spore/systemd
+            install -m 0755 $src/spore-attach.sh             $out/bin/spore-attach
+            install -m 0755 $src/spore-coordinator-launch.sh $out/bin/spore-coordinator-launch
+            install -m 0755 $src/spore-worker-brief.sh       $out/bin/spore-worker-brief
+            install -m 0755 $src/spore-fleet-tick.sh         $out/bin/spore-fleet-tick
+            install -m 0755 $src/greet-coordinator.sh        $out/bin/spore-greet-coordinator
+            install -m 0755 $src/greet-worker.sh             $out/bin/spore-greet-worker
+            install -m 0755 $src/hooks/block-bg-bash.pl      $out/share/spore/hooks/block-bg-bash.pl
+            install -m 0755 $src/hooks/load-state-md.pl      $out/share/spore/hooks/load-state-md.pl
+            install -m 0644 $src/settings.json               $out/share/spore/settings.json
+            install -m 0644 $src/systemd/spore-fleet-reconcile.service $out/share/spore/systemd/spore-fleet-reconcile.service
+            install -m 0644 $src/systemd/spore-fleet-reconcile.timer   $out/share/spore/systemd/spore-fleet-reconcile.timer
+          '';
         in
         {
           packages = {
-            inherit spore;
+            inherit spore shims;
             default = spore;
           };
 
@@ -169,6 +190,42 @@
               export GOMODCACHE=$TMPDIR/gomod
               export CGO_ENABLED=0
               go run ./cmd/spore lint
+              touch $out
+            '';
+            shims-layout = pkgs.runCommand "spore-shims-layout" { } ''
+              fail=0
+              for f in \
+                bin/spore-attach \
+                bin/spore-coordinator-launch \
+                bin/spore-worker-brief \
+                bin/spore-fleet-tick \
+                bin/spore-greet-coordinator \
+                bin/spore-greet-worker \
+                share/spore/hooks/block-bg-bash.pl \
+                share/spore/hooks/load-state-md.pl \
+                share/spore/settings.json \
+                share/spore/systemd/spore-fleet-reconcile.service \
+                share/spore/systemd/spore-fleet-reconcile.timer; do
+                if [ ! -e "${shims}/$f" ]; then
+                  echo "shims package missing $f"
+                  fail=1
+                fi
+              done
+              for f in \
+                bin/spore-attach \
+                bin/spore-coordinator-launch \
+                bin/spore-worker-brief \
+                bin/spore-fleet-tick \
+                bin/spore-greet-coordinator \
+                bin/spore-greet-worker \
+                share/spore/hooks/block-bg-bash.pl \
+                share/spore/hooks/load-state-md.pl; do
+                if [ ! -x "${shims}/$f" ]; then
+                  echo "shims package $f not executable"
+                  fail=1
+                fi
+              done
+              [ "$fail" = 0 ] || exit 1
               touch $out
             '';
           } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
