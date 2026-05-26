@@ -29,6 +29,10 @@
 #                                  a non-existent file to disable.
 set -euo pipefail
 
+# Ensure the nix-managed claude / codex / spore win over any
+# /usr/local/bin/ shadow on infected hosts.
+export PATH="/run/current-system/sw/bin:${PATH}"
+
 provider="${SPORE_COORDINATOR_PROVIDER:-claude}"
 model="${SPORE_COORDINATOR_MODEL:-}"
 effort="${SPORE_COORDINATOR_EFFORT:-high}"

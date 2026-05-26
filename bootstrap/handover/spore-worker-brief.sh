@@ -17,6 +17,10 @@
 #   SPORE_WORKER_AGENT     binary to exec (default: claude)
 set -euo pipefail
 
+# Ensure the nix-managed claude wins over any /usr/local/bin/ shadow
+# on infected hosts.
+export PATH="/run/current-system/sw/bin:${PATH}"
+
 slug="${SPORE_TASK_SLUG:-}"
 agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
