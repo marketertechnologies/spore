@@ -108,6 +108,17 @@ func TestList(t *testing.T) {
 	}
 }
 
+func TestListMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	metas, err := List(dir)
+	if err != nil {
+		t.Fatalf("List on missing dir: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("expected empty metas, got %d (%v)", len(metas), metas)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

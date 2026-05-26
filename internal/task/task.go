@@ -4,7 +4,9 @@
 package task
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -76,10 +78,16 @@ func Allocate(tasksDir, slug string) (string, error) {
 // List reads tasksDir, parses frontmatter from each `*.md` entry,
 // and returns the resulting Meta values sorted by Slug. Files
 // without parseable frontmatter (e.g. tasks/README.md) are skipped
-// silently so unrelated markdown can coexist.
+// silently so unrelated markdown can coexist. A missing tasksDir
+// returns an empty list with no error: a fresh project legitimately
+// has zero tasks before the operator starts the first one, and the
+// fleet reconciler runs against tasksDir before anything is on disk.
 func List(tasksDir string) ([]frontmatter.Meta, error) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var metas []frontmatter.Meta
