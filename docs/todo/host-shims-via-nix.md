@@ -1,4 +1,4 @@
-**Status**: not-started
+**Status**: prereqs landed, phase 1 next
 
 # host shims: deliver bootstrap/handover via the spore nix derivation
 
@@ -34,9 +34,9 @@ Goals this addresses:
 - A natural place to land the worker-brief retry-with-backoff fix
   (see prereq 1 below) and have every host pick it up automatically.
 
-## Prereqs
+## Prereqs (BOTH LANDED)
 
-### 1. worker-brief retry-with-backoff in source
+### 1. worker-brief retry-with-backoff in source (LANDED)
 
 Two coordinator smoke-tests on 2026-05-25 (marketer
 `/tmp/marketer-findings.md`, crm-gateway `/tmp/crm-gateway-findings.md`)
@@ -46,49 +46,57 @@ copying `tasks/<slug>.md` into the worker's worktree, so the
 `bootstrap/handover/spore-worker-brief.sh:24` fires and the worker
 drops to bare interactive claude with no brief.
 
-Both reports confirm the shim file is byte-identical to its
-`bak-pre-sync` backup; the race is in the binary's spawn ordering
-(likely `internal/fleet/lifecycle.go`).
+Fix landed on `main` via PR #19 (commit `0a6ce2c`): up to ~3s of
+0.5s backoff before falling through to the no-brief path. Slug
+missing remains a fast-fail (misconfig, not race). The binary's
+spawn-order fix is still backlog (order `tasks/<slug>.md` write
+before the tmux spawn in `internal/fleet/lifecycle.go`).
 
-We do not want to bake a known-fragile shim into a less-mutable
-delivery channel. Land the cheapest fix first in source:
-
-```sh
-# replace the bare guard with up to ~3s of backoff
-for _ in 1 2 3 4 5 6; do
-  [[ -n "$slug" && -f "$brief" ]] && break
-  sleep 0.5
-done
-if [[ -z "$slug" || ! -f "$brief" ]]; then
-  echo "spore-worker-brief: ..." >&2
-  exec "$agent" --dangerously-skip-permissions
-fi
-```
-
-The binary's spawn-order fix can chase as a separate change.
-
-### 2. PATH-prepend drift reconciliation
+### 2. PATH-prepend drift reconciliation (LANDED)
 
 The on-disk hand-edit
-`export PATH="/run/current-system/sw/bin:${PATH}"` in
-`spore-coordinator-launch` and `spore-worker-brief` must fold into
-source before the nix migration, or `nixos-rebuild switch` will
-silently revert it.
+`export PATH="/run/current-system/sw/bin:${PATH}"` was reconciled
+into source on `main` via PR #20 (commit `6f4bed7`). Folded in
+rather than deleted: the two shims call `claude` (and `codex`) by
+bare name, so the prepend protects the nix-managed binary against
+any future `/usr/local/bin/` shadow. Operator-validated rationale;
+once shims ship via nix and become immutable on disk, we lose the
+ability to patch this from the operator side.
 
-Audit: confirm the prepend is still needed once the host has the nix
-spore on `/run/current-system/sw/bin/spore` and the `/usr/local/bin/`
-shadows are renamed (this host's `spore-lattest-hard-linked` rename
-already cleared the original cause). If the prepend is obsolete,
-delete the on-disk edit; if still needed, add it to the source files.
+## Delivery channels: what's actually in place
+
+The spec earlier assumed `bootstrap/flake/configuration.nix` already
+referenced `inputs.spore.packages.${system}.spore`. It does not.
+The bundled flake (`bootstrap/flake/flake.nix`) only takes nixpkgs
+and disko as inputs; it provisions a base NixOS that
+`nixos-anywhere` installs onto a fresh box. The spore binary and
+shims arrive AFTER that, via `Handoff()`'s scp+install in
+`internal/infect/infect.go`.
+
+The hosts that DO consume spore via nix today are existing infected
+hosts whose OPERATOR-managed `/etc/nixos/configuration.nix` (not in
+this repo, root-owned, not visible to coordinators on those hosts)
+references `inputs.spore.packages.${system}.spore`. Refreshing those
+hosts is the path that exists today:
+
+```
+cd /etc/nixos
+sudo nix flake update spore
+sudo nixos-rebuild switch --flake .#spore-bootstrap
+```
+
+That refresh today only swaps the spore binary, because the spore
+flake only exposes the binary. Shims stay frozen at infect-time
+content on `/usr/local/bin/spore-*`.
 
 ## Plan
 
-### 1. Expose shims as a flake output
+### Phase 1: existing hosts (no bundled-flake changes)
 
-The spore flake (`flake.nix` at repo root) currently exposes
-`packages.${system}.spore`. Add a sibling `packages.${system}.shims`
-(or fold into the `spore` derivation as a separate `out` /
-`postInstall` step) that installs every file under
+#### 1.1. Expose shims as a flake output
+
+Add `packages.${system}.shims` to root `flake.nix` (sibling of
+`spore`). The derivation installs every file under
 `bootstrap/handover/` to a deterministic prefix:
 
 - `bin/spore-attach`
@@ -104,70 +112,81 @@ The spore flake (`flake.nix` at repo root) currently exposes
 - `share/spore/systemd/spore-fleet-reconcile.timer`
 
 Keep the existing `//go:embed all:bootstrap/handover` (the binary
-still needs the embed for non-NixOS deploys, even if there are none
-today; cheap insurance).
+still needs the embed for the existing scp+install path in
+`Handoff()` and for any non-NixOS deploys).
 
-### 2. Reference the shims in the bundled flake
+#### 1.2. Document the per-host `/etc/nixos/` snippet
 
-`bootstrap/flake/configuration.nix` already adds
-`inputs.spore.packages.${system}.spore` to
-`environment.systemPackages`. Add the shims derivation alongside, so
-`nixos-rebuild switch` writes them under
-`/run/current-system/sw/bin/spore-*`.
+The operator-managed per-host nix config needs:
 
-The hooks and systemd unit templates should be referenced from
-`share/spore/` rather than copied; the systemd units can render at
-build time with substituted paths if needed.
+- The shims package added to `environment.systemPackages` (or a
+  `services.spore-fleet.shimsPackage` option if we promote it to
+  the `nixosModules.spore-fleet` surface).
+- A `system.activationScripts.spore-shims` block that symlinks
+  `/usr/local/bin/spore-{attach,coordinator-launch,worker-brief,
+  fleet-tick,greet-coordinator,greet-worker}` -> the corresponding
+  paths in the shims derivation. Idempotent: remove any non-symlink
+  at the target (sweeps stale `install`-mode shims left over from
+  infect), then create the symlink.
+- The hooks under `share/spore/hooks/` and the settings.json have
+  per-USER install paths today (`/home/spore/.claude/`); leave
+  those alone in Phase 1. They are not the load-bearing surface
+  for the cap-respawn flow.
 
-### 3. Drop the scp install from `spore infect`
+Add the snippet to `docs/operations/host-nix-snippet.md` (new file)
+and cross-reference from `bootstrap/flake/README.md` so an operator
+upgrading an existing host can paste it in.
 
-`internal/infect/infect.go:374-470` stages `bootstrap/handover` into
-`/tmp/spore-handover` and runs `install -m 0755 ...` for each shim.
-Once the bundled flake installs the same files via nix:
+#### 1.3. Refresh existing hosts
 
-- Delete the scp + install commands from `Handoff()`.
-- Keep `SPORE_COORDINATOR_AGENT=/usr/local/bin/spore-coordinator-launch`
-  and `SPORE_AGENT_BINARY=/usr/local/bin/spore-worker-brief` env
-  references, but point them at `/run/current-system/sw/bin/...` (or
-  add a stable `/usr/local/bin/` symlink farm if downstream relies on
-  the path).
-- Update `internal/infect/infect_test.go` cases that today seed the
-  staged-handover fileset.
+After 1.1 + 1.2 ship in a release:
 
-Decision point: the simplest path is to keep `/usr/local/bin/spore-*`
-as the canonical shim path (so the env-var contract with `spore.toml`
-and `lifecycle.go` stays stable), but back each entry with a symlink
-into the nix store managed by the bundled module. That avoids a
-breaking change for hosts already infected before this migration.
+- Operator pastes the snippet into `/etc/nixos/configuration.nix`.
+- `sudo nix flake update spore && sudo nixos-rebuild switch`.
+- The activation script replaces `/usr/local/bin/spore-*` with
+  symlinks into the nix store. Any hand-edits on disk are lost
+  (which is the point).
 
-### 4. Refresh existing hosts
+### Phase 2: bundled flake + fresh infects (deferred)
 
-For hosts already infected:
+Two open design questions, both unblocked once Phase 1 is in place:
 
-- Operator runs `cd /etc/nixos && sudo nix flake update spore && sudo
-  nixos-rebuild switch --flake .#spore-bootstrap`.
-- The bundled module overwrites `/usr/local/bin/spore-*` (or the
-  symlink targets) atomically. The previous on-disk edits are lost,
-  which is the explicit goal.
+A. **Bundled flake referencing spore.** The bundled flake at
+   `bootstrap/flake/` would need spore as an input to install
+   shims at `nixos-anywhere` time. Options:
+   - `path:..` (relative). Breaks once `Stage()` copies the flake
+     to `/tmp/<staging-dir>` for scp.
+   - `github:marketertechnologies/spore/<rev>`. Pinned; bumping
+     requires updating `bootstrap/flake/flake.lock` per release.
+   - `Stage()` rewrites the bundled flake's `flake.lock` at infect
+     time to pin spore to the running CLI's commit. Aligns "local
+     spore -> infected host" but bigger code.
 
-Document the upgrade command in `bootstrap/flake/README.md` (or
-wherever the flake's operator-facing notes live).
+B. **Drop scp install from `Handoff()`.** Becomes possible once
+   the bundled flake reliably delivers shims. Keep the spore
+   binary scp+install: developers running infect from a
+   local-ahead checkout still want their local binary, not the
+   pinned one.
+
+Acceptance criteria #1, #2, and #5 (below) are achievable in
+Phase 1 alone. Criterion #4 (`spore infect` without the dropped
+scp step) is Phase 2's.
 
 ## Acceptance
 
-1. Editing `bootstrap/handover/spore-worker-brief.sh`, tagging a
-   release, then on a host running `sudo nix flake update spore &&
-   sudo nixos-rebuild switch` picks up the new shim with no manual
-   `scp` or `install`.
-2. `readlink -f /usr/local/bin/spore-worker-brief` resolves into the
-   nix store (or `/run/current-system/sw/bin/`).
-3. The PATH-prepend hand-edit on this host's
+1. (Phase 1) Editing `bootstrap/handover/spore-worker-brief.sh`,
+   tagging a release, then on a host running `sudo nix flake update
+   spore && sudo nixos-rebuild switch` picks up the new shim with
+   no manual `scp` or `install`.
+2. (Phase 1) `readlink -f /usr/local/bin/spore-worker-brief`
+   resolves into the nix store.
+3. (DONE) The PATH-prepend hand-edit on this host's
    `spore-coordinator-launch` and `spore-worker-brief` is reconciled
-   (either folded into source or proven obsolete and removed).
-4. `spore infect` on a fresh box still produces a working coordinator
-   and worker fleet without the dropped scp step.
-5. `go test ./internal/infect/...` and `go test ./internal/fleet/...`
-   stay green; `just check` passes.
+   in source (PR #20).
+4. (Phase 2) `spore infect` on a fresh box produces a working
+   coordinator and worker fleet without the dropped scp step.
+5. (every phase) `go test ./internal/infect/...` and
+   `go test ./internal/fleet/...` stay green; `just check` passes.
 
 ## Cross-references
 
@@ -175,12 +194,14 @@ wherever the flake's operator-facing notes live).
 - `internal/infect/infect.go:321-490` (`Handoff`, `StageHandover`,
   install-shim commands).
 - `internal/infect/infect_test.go:149-159` (staged-handover fixture).
-- `bootstrap/flake/configuration.nix` (where the bundled module
-  references `inputs.spore.packages.${system}.spore` today).
-- `bootstrap/handover/spore-worker-brief.sh:24` (race-vulnerable
-  guard; prereq 1).
+- `bootstrap/flake/configuration.nix` (bundled flake's OS config;
+  does NOT reference the parent spore flake today).
+- `bootstrap/flake/flake.nix` (bundled flake; only nixpkgs + disko
+  inputs today, no spore self-reference).
+- `bootstrap/handover/spore-worker-brief.sh` (now retries with
+  backoff; PR #19).
 - `bootstrap/handover/spore-coordinator-launch.sh` (PATH-prepend
-  drift target; prereq 2).
+  folded into source; PR #20).
 - 2026-05-25 smoke reports: `/tmp/marketer-findings.md`,
   `/tmp/crm-gateway-findings.md`.
 - Related todo: `docs/todo/retire-bash-token-monitor.md` (also touches
