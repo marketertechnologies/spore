@@ -1,5 +1,6 @@
-{ lib, modulesPath, pkgs, ... }:
+{ lib, modulesPath, pkgs, inputs, ... }:
 let
+  sporePkgs = inputs.spore.packages.${pkgs.stdenv.hostPlatform.system};
   sporeAttach = pkgs.writeShellScriptBin "spore-attach" ''
     set -e
 
@@ -93,7 +94,10 @@ in
     shell = "${sporeAttach}/bin/spore-attach";
   };
 
-  environment.systemPackages = with pkgs; [
+  environment.systemPackages = [
+    sporePkgs.spore
+    sporePkgs.shims
+  ] ++ (with pkgs; [
     claude-code
     codex
     git
@@ -103,7 +107,25 @@ in
     htop
     tmux
     vim
-  ];
+  ]);
+
+  # Symlink the six host shims into /usr/local/bin/ so the kernel's
+  # hard-coded paths (e.g. tokenmonitor's respawn-pane message and the
+  # entries written to /etc/spore/coordinator.env by `spore infect`)
+  # keep resolving. Sweeps any non-symlink target left over from an
+  # earlier `install -m 0755` so a re-deploy converges.
+  system.activationScripts.spore-shims = ''
+    install -d -m 0755 /usr/local/bin
+    for f in spore-attach spore-coordinator-launch spore-worker-brief \
+             spore-fleet-tick spore-greet-coordinator spore-greet-worker; do
+      target="${sporePkgs.shims}/bin/$f"
+      link="/usr/local/bin/$f"
+      if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
+        rm -f "$link"
+        ln -s "$target" "$link"
+      fi
+    done
+  '';
 
   # Coordinator watchdog. /usr/local/bin/spore-fleet-tick is the
   # idempotent reconciler the infect handover drops on the box: it

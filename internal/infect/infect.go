@@ -40,6 +40,11 @@ const (
 	DefaultCoordinatorEffort = "high"
 
 	bundledRoot = "bootstrap/flake"
+
+	// SporeFlakeURL is the bare github URL the bundled flake declares
+	// as its `spore` input. PinBundledSpore overrides this input at
+	// infect time to pin to the local CLI's build commit.
+	SporeFlakeURL = "github:marketertechnologies/spore"
 )
 
 // Config describes one infect target.
@@ -53,6 +58,14 @@ type Config struct {
 	CoordinatorAgent  string
 	CoordinatorModel  string
 	CoordinatorEffort string
+
+	// SporeCommit pins the bundled flake's `spore` input to this
+	// commit hash at infect time. The caller (cmd/spore/main.go)
+	// fills this from spore.BuildCommit() so the freshly-installed
+	// system runs the same spore the operator built locally. Empty
+	// skips the pin and falls back to the static lock entry in
+	// bootstrap/flake/flake.lock (only useful for tests).
+	SporeCommit string
 }
 
 // Validate checks required fields and that the SSH key file exists.
@@ -139,7 +152,10 @@ func SmokeArgv(c Config) []string {
 // caller must defer. When c.Flake is empty the bundled flake is
 // staged into a fresh tempdir with a generated local.nix; otherwise
 // c.Flake is used verbatim (with FlakeAttr appended when no '#' is
-// present) and cleanup is a no-op.
+// present) and cleanup is a no-op. When the bundled flake is staged
+// and c.SporeCommit is non-empty, the bundled flake.lock is rewritten
+// to pin its `spore` input to that commit so the target installs the
+// same spore the operator built locally.
 func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 	c.applyDefaults()
 	if c.Flake == "" {
@@ -151,12 +167,40 @@ func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 		if err != nil {
 			return "", nil, err
 		}
-		return "path:" + dir + "#" + FlakeAttr, func() { _ = os.RemoveAll(dir) }, nil
+		cleanup := func() { _ = os.RemoveAll(dir) }
+		if c.SporeCommit != "" {
+			if err := PinBundledSpore(dir, c.SporeCommit); err != nil {
+				cleanup()
+				return "", nil, err
+			}
+		}
+		return "path:" + dir + "#" + FlakeAttr, cleanup, nil
 	}
 	if strings.Contains(c.Flake, "#") {
 		return c.Flake, func() {}, nil
 	}
 	return c.Flake + "#" + FlakeAttr, func() {}, nil
+}
+
+// PinBundledSpore rewrites the staged bundled flake's `flake.lock` to
+// pin its `spore` input to commit. Shells out to
+// `nix flake lock --override-input spore github:.../<commit>` against
+// the staged directory; nix infers narHash from the github fetcher.
+// Errors when nix is unreachable, the commit is unknown to github
+// (likely an unpushed local commit), or the lock write fails.
+func PinBundledSpore(dir, commit string) error {
+	cmd := exec.Command(
+		"nix",
+		"--extra-experimental-features", "nix-command flakes",
+		"flake", "lock",
+		"--override-input", "spore", SporeFlakeURL+"/"+commit,
+	)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pin bundled spore to %s: %w (%s)", commit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Stage copies the bundled flake tree out of bundled into a fresh

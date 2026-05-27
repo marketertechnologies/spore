@@ -298,6 +298,7 @@ func runInfect(args []string) int {
 		CoordinatorAgent:  *coordinatorAgent,
 		CoordinatorModel:  *coordinatorModel,
 		CoordinatorEffort: *coordinatorEffort,
+		SporeCommit:       resolveSporeCommit(),
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -312,4 +313,17 @@ func runInfect(args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "spore infect:", err)
 	return 1
+}
+
+// resolveSporeCommit returns the running CLI's build commit with any
+// "-dirty" suffix stripped, or "" when the CLI was built without a
+// recorded commit. Used to pin the bundled flake's `spore` input at
+// infect time so the freshly-installed system runs the same spore
+// the operator built locally.
+func resolveSporeCommit() string {
+	raw := spore.BuildCommit()
+	if raw == "" || raw == "unknown" {
+		return ""
+	}
+	return strings.TrimSuffix(raw, "-dirty")
 }
