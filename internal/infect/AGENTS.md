@@ -100,11 +100,17 @@ Only when an action is operator-bound or genuinely ambiguous:
    claude --coordinator-model sonnet | tee /tmp/spore-infect.log"`.
    Wait via `Monitor` until `=== EXIT ===` lands.
 3. `spore infect --repo` copies the current binary to
-   `/usr/local/bin/spore`, rsyncs `<src>` to `/home/spore/<basename>`
-   with `.git/` included and `.env*` excluded, installs handover
-   assets, writes `/etc/spore/coordinator.env`, creates `tasks/` when
-   absent, enables lingering, enables the fleet flag, runs the first
-   reconcile, and restarts `spore-coordinator.service`.
+   `/usr/local/bin/spore` (via the bundled flake's nix activation),
+   rsyncs `<src>` to `/home/spore/<basename>` with `.git/` included
+   and `.env*` excluded, installs handover assets (hooks +
+   settings.json), writes `/etc/spore/coordinator.env`, creates
+   `tasks/` when absent, enables the fleet flag, and runs the first
+   reconcile. Lingering and the per-project reconcile timer are
+   declared in the bundled flake (`users.users.spore.linger` +
+   `services.spore-fleet` with `projects = import ./spore-projects.nix`),
+   so they come up at activation; Stage() writes
+   `spore-projects.nix` with the single `<basename>` entry before
+   nixos-anywhere reads the flake.
 4. Locally, open the handover window:
    `tmux new-window -d -n coord "ssh -t -o
    ServerAliveInterval=30 spore@<ip>"`. The forced login shell

@@ -164,12 +164,14 @@ func SmokeArgv(c Config) []string {
 // ResolveFlake returns the flakeRef (e.g. "path:/tmp/xyz#spore-bootstrap")
 // nixos-anywhere should be pointed at, plus a cleanup function the
 // caller must defer. When c.Flake is empty the bundled flake is
-// staged into a fresh tempdir with a generated local.nix; otherwise
-// c.Flake is used verbatim (with FlakeAttr appended when no '#' is
-// present) and cleanup is a no-op. When the bundled flake is staged
-// and c.SporeCommit is non-empty, the bundled flake.lock is rewritten
-// to pin its `spore` input to that commit so the target installs the
-// same spore the operator built locally.
+// staged into a fresh tempdir with a generated local.nix and a
+// spore-projects.nix carrying a single entry derived from c.Repo's
+// basename (or the bundled `{ }` default when c.Repo is empty);
+// otherwise c.Flake is used verbatim (with FlakeAttr appended when no
+// '#' is present) and cleanup is a no-op. When the bundled flake is
+// staged and c.SporeCommit is non-empty, the bundled flake.lock is
+// rewritten to pin its `spore` input to that commit so the target
+// installs the same spore the operator built locally.
 func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 	c.applyDefaults()
 	if c.Flake == "" {
@@ -177,7 +179,11 @@ func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 		if err != nil {
 			return "", nil, err
 		}
-		dir, err := Stage(bundled, "", c.Hostname, []string{pub})
+		var projectBase string
+		if strings.TrimSpace(c.Repo) != "" {
+			projectBase = filepath.Base(filepath.Clean(c.Repo))
+		}
+		dir, err := Stage(bundled, "", c.Hostname, []string{pub}, projectBase)
 		if err != nil {
 			return "", nil, err
 		}
@@ -246,8 +252,11 @@ func PinBundledSpore(dir, commit string) error {
 // Stage copies the bundled flake tree out of bundled into a fresh
 // temp directory under tmpRoot (default os.TempDir when ""), writes a
 // generated local.nix carrying hostname + authorizedKeys, and returns
-// the staging directory path. Caller owns cleanup.
-func Stage(bundled fs.FS, tmpRoot, hostname string, authorizedKeys []string) (string, error) {
+// the staging directory path. When projectBase is non-empty,
+// spore-projects.nix is overwritten with a single-entry attrset
+// pointing at /home/spore/<projectBase> so services.spore-fleet starts
+// reconciling that project on first boot. Caller owns cleanup.
+func Stage(bundled fs.FS, tmpRoot, hostname string, authorizedKeys []string, projectBase string) (string, error) {
 	dir, err := os.MkdirTemp(tmpRoot, "spore-bootstrap-flake-")
 	if err != nil {
 		return "", err
@@ -260,6 +269,13 @@ func Stage(bundled fs.FS, tmpRoot, hostname string, authorizedKeys []string) (st
 	if err := os.WriteFile(filepath.Join(dir, "local.nix"), []byte(local), 0o644); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
+	}
+	if projectBase != "" {
+		projects := RenderSporeProjects(projectBase)
+		if err := os.WriteFile(filepath.Join(dir, "spore-projects.nix"), []byte(projects), 0o644); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", err
+		}
 	}
 	return dir, nil
 }
@@ -306,6 +322,14 @@ func RenderLocalNix(hostname string, authorizedKeys []string) string {
 	}
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// RenderSporeProjects returns the text of the spore-projects.nix file
+// the bundled flake imports into services.spore-fleet.projects. Pure
+// function. base is the project basename Handoff() rsyncs to
+// /home/spore/<base>; the generated attrset matches that target.
+func RenderSporeProjects(base string) string {
+	return fmt.Sprintf("{\n  %s.path = \"/home/spore/%s\";\n}\n", base, base)
 }
 
 // PublicKey reads the .pub sibling of a private SSH key path. Most
@@ -551,23 +575,17 @@ func InstallHandoverScript(c Config, projectBase, remoteTmp string) string {
 	return strings.Join([]string{
 		"set -e",
 		"install -d -m 0755 /etc/spore",
-		"install -d -o spore -g users -m 0755 /home/spore/.claude/hooks /home/spore/.config/systemd/user /home/spore/.local/state/spore",
+		"install -d -o spore -g users -m 0755 /home/spore/.claude/hooks /home/spore/.local/state/spore",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/block-bg-bash.pl") + " /home/spore/.claude/hooks/block-bg-bash.pl",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/load-state-md.pl") + " /home/spore/.claude/hooks/load-state-md.pl",
 		"install -m 0644 " + shellSingleQuote(remoteTmp+"/settings.json") + " /home/spore/.claude/settings.json",
-		"install -m 0644 " + shellSingleQuote(remoteTmp+"/systemd/spore-fleet-reconcile.service") + " /home/spore/.config/systemd/user/spore-fleet-reconcile.service",
-		"install -m 0644 " + shellSingleQuote(remoteTmp+"/systemd/spore-fleet-reconcile.timer") + " /home/spore/.config/systemd/user/spore-fleet-reconcile.timer",
 		"cat > /etc/spore/coordinator.env <<'EOF'\n" + coordinatorEnv + "EOF",
 		"rm -rf " + shellSingleQuote(projectRoot),
 		"mv " + shellSingleQuote(rootCopy) + " " + shellSingleQuote(projectRoot),
 		"install -d -o spore -g users -m 0755 " + shellSingleQuote(projectRoot+"/tasks"),
 		"cat > /home/spore/.bashrc <<'EOF'\nexport PATH=/usr/local/bin:/run/current-system/sw/bin:/run/wrappers/bin:$PATH\nif [ -r /etc/spore/coordinator.env ]; then\n  set -a\n  . /etc/spore/coordinator.env\n  set +a\nfi\nEOF",
-		"chown -R spore:users " + shellSingleQuote(projectRoot) + " /home/spore/.claude /home/spore/.config /home/spore/.local /home/spore/.bashrc",
-		"loginctl enable-linger spore",
+		"chown -R spore:users " + shellSingleQuote(projectRoot) + " /home/spore/.claude /home/spore/.local /home/spore/.bashrc",
 		"runuser -u spore -- env " + firstReconcileEnv + " bash -lc " + shellSingleQuote("cd "+shellSingleQuote(projectRoot)+" && spore fleet enable && spore fleet reconcile"),
-		"systemctl daemon-reload",
-		"systemctl restart spore-coordinator.timer",
-		"systemctl restart spore-coordinator.service",
 	}, "\n")
 }
 

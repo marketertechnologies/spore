@@ -138,11 +138,12 @@ func TestPublicKey(t *testing.T) {
 // asset.
 func fakeBundled() fstest.MapFS {
 	return fstest.MapFS{
-		"bootstrap/flake/flake.nix":         {Data: []byte("{}")},
-		"bootstrap/flake/configuration.nix": {Data: []byte("{}")},
-		"bootstrap/flake/disk-config.nix":   {Data: []byte("{}")},
-		"bootstrap/flake/local.nix.example": {Data: []byte("# example")},
-		"bootstrap/flake/README.md":         {Data: []byte("# bundled")},
+		"bootstrap/flake/flake.nix":          {Data: []byte("{}")},
+		"bootstrap/flake/configuration.nix":  {Data: []byte("{}")},
+		"bootstrap/flake/disk-config.nix":    {Data: []byte("{}")},
+		"bootstrap/flake/spore-projects.nix": {Data: []byte("{ }\n")},
+		"bootstrap/flake/local.nix.example":  {Data: []byte("# example")},
+		"bootstrap/flake/README.md":          {Data: []byte("# bundled")},
 	}
 }
 
@@ -164,11 +165,11 @@ func fakeHandover() fstest.MapFS {
 
 func TestStage(t *testing.T) {
 	tmp := t.TempDir()
-	dir, err := Stage(fakeBundled(), tmp, "myhost", []string{"ssh-ed25519 KKKK op"})
+	dir, err := Stage(fakeBundled(), tmp, "myhost", []string{"ssh-ed25519 KKKK op"}, "myrepo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"flake.nix", "configuration.nix", "disk-config.nix", "README.md", "local.nix"} {
+	for _, name := range []string{"flake.nix", "configuration.nix", "disk-config.nix", "README.md", "local.nix", "spore-projects.nix"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("missing %s in stage dir: %v", name, err)
 		}
@@ -185,6 +186,36 @@ func TestStage(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"ssh-ed25519 KKKK op"`) {
 		t.Fatalf("local.nix missing key: %s", got)
+	}
+	projects, err := os.ReadFile(filepath.Join(dir, "spore-projects.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(projects), `myrepo.path = "/home/spore/myrepo"`) {
+		t.Fatalf("spore-projects.nix missing single-entry override: %s", projects)
+	}
+}
+
+func TestStageWithoutProjectBaseKeepsBundledProjects(t *testing.T) {
+	tmp := t.TempDir()
+	dir, err := Stage(fakeBundled(), tmp, "myhost", []string{"ssh-ed25519 KKKK op"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "spore-projects.nix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "{ }\n" {
+		t.Fatalf("spore-projects.nix should keep bundled default when projectBase is empty: %q", got)
+	}
+}
+
+func TestRenderSporeProjects(t *testing.T) {
+	got := RenderSporeProjects("crm-gateway")
+	want := "{\n  crm-gateway.path = \"/home/spore/crm-gateway\";\n}\n"
+	if got != want {
+		t.Fatalf("spore-projects.nix mismatch:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -368,7 +399,6 @@ func TestRunWithRepoRunsHandoff(t *testing.T) {
 		"mv '/root/project' '/home/spore/project'",
 		"install -d -o spore -g users -m 0755 '/home/spore/project/tasks'",
 		"spore fleet enable && spore fleet reconcile",
-		"systemctl restart spore-coordinator.service",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("handover script missing %q:\n%s", want, script)
@@ -376,8 +406,12 @@ func TestRunWithRepoRunsHandoff(t *testing.T) {
 	}
 	// Shims and the spore binary are delivered by the bundled flake's
 	// nix activation; the install commands that used to live here must
-	// be gone. Pin via source paths (which only appear in install
-	// commands, never in env-var values).
+	// be gone. The per-project reconcile units are now rendered by the
+	// services.spore-fleet NixOS module via home-manager, so the
+	// generic spore-fleet-reconcile.{service,timer} install lines that
+	// used to land here are also gone, and so is the legacy
+	// spore-coordinator.{service,timer} restart pair the bundled flake
+	// no longer declares.
 	for _, banned := range []string{
 		"/tmp/spore-handover/spore-attach.sh",
 		"/tmp/spore-handover/spore-coordinator-launch.sh",
@@ -386,9 +420,13 @@ func TestRunWithRepoRunsHandoff(t *testing.T) {
 		"/tmp/spore-handover/greet-coordinator.sh",
 		"/tmp/spore-handover/greet-worker.sh",
 		"install -m 0755 /tmp/spore /usr/local/bin/spore",
+		"/home/spore/.config/systemd/user/spore-fleet-reconcile.service",
+		"/home/spore/.config/systemd/user/spore-fleet-reconcile.timer",
+		"systemctl restart spore-coordinator.service",
+		"systemctl restart spore-coordinator.timer",
 	} {
 		if strings.Contains(script, banned) {
-			t.Fatalf("handover script should not install %q (delivered by bundled flake nix activation):\n%s", banned, script)
+			t.Fatalf("handover script should not include %q (delivered by bundled flake nix activation):\n%s", banned, script)
 		}
 	}
 }

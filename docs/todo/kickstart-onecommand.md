@@ -65,13 +65,16 @@ auth path. Out of scope for v0.
 - creates an empty `tasks/` directory on the target when the checkout
   does not already contain one, so first reconcile can spawn the
   coordinator even for a kernel checkout
-- installs per-user hooks, settings, and systemd units from
-  embedded CLI assets (the six shims are no longer scp'd; they
-  come from the bundled flake's activation)
+- installs per-user hooks and settings from embedded CLI assets
+  (the six shims are no longer scp'd; they come from the bundled
+  flake's activation, and the per-project reconcile units are
+  now rendered by `services.spore-fleet` via home-manager from a
+  single-entry `spore-projects.nix` written into the staged flake)
 - writes `/etc/spore/coordinator.env` with the selected provider,
   model, and effort
-- enables the fleet flag, runs the first reconcile, and restarts
-  `spore-coordinator.service`
+- enables the fleet flag and runs the first reconcile (lingering
+  and the timer are declared in the bundled flake; no system
+  service to restart any more)
 
 ## Landed Scope
 
