@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,11 +42,24 @@ const (
 
 	bundledRoot = "bootstrap/flake"
 
+	// SporeOwner and SporeRepo identify the github repo backing the
+	// bundled flake's `spore` input. Used to build SporeFlakeURL and
+	// the commits API URL for the push-first guard.
+	SporeOwner = "marketertechnologies"
+	SporeRepo  = "spore"
+
 	// SporeFlakeURL is the bare github URL the bundled flake declares
 	// as its `spore` input. PinBundledSpore overrides this input at
 	// infect time to pin to the local CLI's build commit.
-	SporeFlakeURL = "github:marketertechnologies/spore"
+	SporeFlakeURL = "github:" + SporeOwner + "/" + SporeRepo
 )
+
+// SporeOriginCommitsURL is overridable by tests so RequireSporeCommitOnOrigin
+// can hit a fake server instead of github.com.
+var SporeOriginCommitsURL = "https://api.github.com/repos/" + SporeOwner + "/" + SporeRepo + "/commits/"
+
+// SporeOriginHTTPClient is overridable by tests.
+var SporeOriginHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // Config describes one infect target.
 type Config struct {
@@ -182,6 +196,32 @@ func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 	return c.Flake + "#" + FlakeAttr, func() {}, nil
 }
 
+// RequireSporeCommitOnOrigin verifies that commit exists in the github
+// repo backing SporeFlakeURL by HEADing the commits API. Returns an
+// instructive error when the commit is not pushed (the bundled
+// flake's pin would otherwise point at a non-existent rev that
+// nixos-anywhere on the target cannot resolve).
+func RequireSporeCommitOnOrigin(ctx context.Context, commit string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, SporeOriginCommitsURL+commit, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "spore-infect")
+	resp, err := SporeOriginHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("check spore commit %s on %s: %w", commit, SporeFlakeURL, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound, http.StatusUnprocessableEntity:
+		return fmt.Errorf("spore commit %s is not on %s; run `git push` before `spore infect`", commit, SporeFlakeURL)
+	default:
+		return fmt.Errorf("check spore commit %s on %s: unexpected status %d", commit, SporeFlakeURL, resp.StatusCode)
+	}
+}
+
 // PinBundledSpore rewrites the staged bundled flake's `flake.lock` to
 // pin its `spore` input to commit. Shells out to
 // `nix flake lock --override-input spore github:.../<commit>` against
@@ -302,6 +342,12 @@ func run(ctx context.Context, c Config, bundledFlake, bundledHandover fs.FS, std
 		return err
 	}
 	c.applyDefaults()
+
+	if c.Flake == "" && c.SporeCommit != "" {
+		if err := RequireSporeCommitOnOrigin(ctx, c.SporeCommit); err != nil {
+			return err
+		}
+	}
 
 	flakeRef, cleanup, err := ResolveFlake(c, bundledFlake)
 	if err != nil {

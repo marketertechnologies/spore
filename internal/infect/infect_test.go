@@ -3,6 +3,8 @@ package infect
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -381,4 +383,95 @@ func argAfter(argv []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func TestRequireSporeCommitOnOriginReachable(t *testing.T) {
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("want HEAD, got %s", r.Method)
+		}
+		seen = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	if err := RequireSporeCommitOnOrigin(context.Background(), "abc123"); err != nil {
+		t.Fatalf("reachable commit should pass: %v", err)
+	}
+	if !strings.HasSuffix(seen, "/commits/abc123") {
+		t.Fatalf("request path missing commit: %s", seen)
+	}
+}
+
+func TestRequireSporeCommitOnOriginUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	err := RequireSporeCommitOnOrigin(context.Background(), "deadbeef")
+	if err == nil {
+		t.Fatal("unreachable commit should error")
+	}
+	if !strings.Contains(err.Error(), "git push") {
+		t.Fatalf("error should mention push: %v", err)
+	}
+}
+
+func TestRunSkipsCommitGuardWhenSporeCommitEmpty(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	tmp := t.TempDir()
+	priv := filepath.Join(tmp, "id")
+	if err := os.WriteFile(priv, []byte("priv"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priv+".pub", []byte("ssh-ed25519 KKKK op\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noopRunner := func(context.Context, []string, io.Writer, io.Writer) error { return nil }
+	err := run(
+		context.Background(),
+		Config{IP: "203.0.113.7", SSHKey: priv},
+		fakeBundled(),
+		fakeHandover(),
+		io.Discard,
+		io.Discard,
+		noopRunner,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("guard should not have been called with empty SporeCommit")
+	}
 }
