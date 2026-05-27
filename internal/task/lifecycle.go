@@ -182,6 +182,20 @@ func Verify(tasksDir, slug string) (evidence.Verdict, []string, error) {
 // bypassed; the evidence gate still runs (it has its own soak/env
 // override).
 func Done(tasksDir, slug string, force bool) error {
+	// Resolve to canonical main-repo paths first. When a rover calls
+	// `spore task done` against its own slug, the CLI's hardcoded
+	// "tasks" resolves against the rover's worktree cwd, so tasksDir
+	// arrives as <worktree>/tasks/. projectRootFromTasksDir uses
+	// --git-common-dir to hop back to the main repo; re-derive
+	// tasksDir from that so the status flip lands on the
+	// source-of-truth file (the one `spore task ls` reads) and the
+	// worktree-remove targets the real `<main>/.worktrees/<slug>`.
+	projectRoot, err := projectRootFromTasksDir(tasksDir)
+	if err != nil {
+		return err
+	}
+	tasksDir = filepath.Join(projectRoot, filepath.Base(tasksDir))
+
 	path := filepath.Join(tasksDir, slug+".md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -202,11 +216,6 @@ func Done(tasksDir, slug string, force bool) error {
 		if err := inboxGate(slug); err != nil {
 			return err
 		}
-	}
-
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
-	if err != nil {
-		return err
 	}
 
 	branch := "wt/" + slug
@@ -599,12 +608,36 @@ func flipStatus(tasksDir, slug, from, to string) error {
 	return os.WriteFile(path, frontmatter.Write(m, body), 0o644)
 }
 
+// projectRootFromTasksDir resolves tasksDir to the main repo root.
+// When tasksDir lives inside a linked worktree (the common case for a
+// rover invoking `spore task done` against its own slug), the naive
+// dirname returns the worktree path, not the project root — which in
+// turn makes Done's worktree-remove target a nonexistent
+// "<worktree>/.worktrees/<slug>" and the subsequent `git branch -D`
+// refuses because the branch is still checked out by the actual
+// worktree. `git rev-parse --git-common-dir` returns the main repo's
+// .git path regardless of cwd; its dirname is the main repo root.
+// Falls back to the naive dirname when tasksDir isn't inside a git
+// repo (tests, fresh scaffolds). Mirrors the fix already applied to
+// ProjectName in state.go.
 func projectRootFromTasksDir(tasksDir string) (string, error) {
 	abs, err := filepath.Abs(tasksDir)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Dir(abs), nil
+	naive := filepath.Dir(abs)
+	out, err := gitCmd(naive, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return naive, nil
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return naive, nil
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(naive, common)
+	}
+	return filepath.Dir(common), nil
 }
 
 func copyBriefToWorktree(tasksDir, worktree, slug string) error {
