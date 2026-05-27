@@ -424,21 +424,17 @@ func Handoff(ctx context.Context, c Config, handover fs.FS, stdout, stderr io.Wr
 	}
 	defer cleanup()
 
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
 	remote := "root@" + c.IP
 	remoteTmp := "/tmp/spore-handover"
 
-	fmt.Fprintf(stdout, "[spore] installing spore CLI on %s\n", remote)
-	if err := runner(ctx, ScpArgv(c, exe, remote+":/tmp/spore"), stdout, stderr); err != nil {
-		return fmt.Errorf("copy spore binary: %w", err)
-	}
-	if err := runner(ctx, RootSSHArgv(c, "install -d -m 0755 /usr/local/bin && install -m 0755 /tmp/spore /usr/local/bin/spore"), stdout, stderr); err != nil {
-		return fmt.Errorf("install spore binary: %w", err)
-	}
+	// The spore CLI and the six host shims under /usr/local/bin/
+	// are delivered by the bundled flake's nix activation (see
+	// bootstrap/flake/configuration.nix:spore-shims + systemPackages).
+	// The scp+install pair that used to live here was retired in
+	// favour of that single delivery channel; per-user hooks +
+	// settings + user-systemd units still travel via the handover
+	// staging dir below because the bundled flake does not target
+	// per-user paths.
 
 	fmt.Fprintf(stdout, "[spore] copying repo %s to %s:/root/%s\n", repo, remote, base)
 	if err := runner(ctx, RsyncRepoArgv(c, repo, remote+":/root/"+base+"/"), stdout, stderr); err != nil {
@@ -554,14 +550,7 @@ func InstallHandoverScript(c Config, projectBase, remoteTmp string) string {
 	})
 	return strings.Join([]string{
 		"set -e",
-		"install -d -m 0755 /usr/local/bin",
 		"install -d -m 0755 /etc/spore",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-attach.sh") + " /usr/local/bin/spore-attach",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/greet-coordinator.sh") + " /usr/local/bin/spore-greet-coordinator",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/greet-worker.sh") + " /usr/local/bin/spore-greet-worker",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-coordinator-launch.sh") + " /usr/local/bin/spore-coordinator-launch",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-worker-brief.sh") + " /usr/local/bin/spore-worker-brief",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-fleet-tick.sh") + " /usr/local/bin/spore-fleet-tick",
 		"install -d -o spore -g users -m 0755 /home/spore/.claude/hooks /home/spore/.config/systemd/user /home/spore/.local/state/spore",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/block-bg-bash.pl") + " /home/spore/.claude/hooks/block-bg-bash.pl",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/load-state-md.pl") + " /home/spore/.claude/hooks/load-state-md.pl",
