@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/spore hooks notify-coordinator",
+            "command": "/run/current-system/sw/bin/spore hooks notify-coordinator",
             "timeout": 5,
             "async": true
           }
@@ -44,22 +44,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/spore coordinator token-monitor",
+            "command": "/run/current-system/sw/bin/spore coordinator token-monitor",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "/usr/local/bin/spore worker token-monitor",
+            "command": "/run/current-system/sw/bin/spore worker token-monitor",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "/usr/local/bin/spore fleet replenish-hook",
+            "command": "/run/current-system/sw/bin/spore fleet replenish-hook",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "/usr/local/bin/spore hooks watch-inbox",
+            "command": "/run/current-system/sw/bin/spore hooks watch-inbox",
             "timeout": 604800,
             "asyncRewake": true
           }

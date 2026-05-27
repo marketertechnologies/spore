@@ -94,12 +94,24 @@ returns 0 silently instead of writing
 Other branches unchanged. `TestHooksWatchInboxNoArgsNoEnvSilentNoOp`
 in `cmd/spore/hooks_cmd_test.go` asserts exit 0 and empty stderr.
 
-### Step 2: Stop hooks in the nix-shipped template (ALREADY COVERED)
+### Step 2: Stop hooks in the nix-shipped template
 
 `bootstrap/handover/settings.json` has carried the Stop block since
-commit `2d01536` ("spore-stop-hooks-claude", 2026-05-05). No further
-work in this file. It flows to `$out/share/spore/settings.json` via
-the `shims` derivation.
+commit `2d01536` ("spore-stop-hooks-claude", 2026-05-05) but every
+`command` field used `/usr/local/bin/spore`. That path predates the
+host-shims-via-nix phase 2 work: the canonical binary on a
+phase-2-infected host is `/run/current-system/sw/bin/spore` (from
+`inputs.spore.packages.${system}.spore`), and `/usr/local/bin/spore`
+is either a leftover shadow (now renamed `spore-lattest-hard-linked`
+on this host) or absent on a fresh infect. The shipped Stop hooks
+would silently no-op (binary not found) on every freshly-infected
+host.
+
+Fixed alongside the spec correction: all five `command` entries in
+`bootstrap/handover/settings.json` (Notification, Stop x4) point at
+`/run/current-system/sw/bin/spore`. The two perl hook paths stay as
+they are. It flows to `$out/share/spore/settings.json` via the
+`shims` derivation.
 
 Caveat: today the template only reaches a host once, during
 `spore infect` (`internal/infect/infect.go:557` does
@@ -125,10 +137,10 @@ way it has drifted from the current template). Edit
   {
     "matcher": "",
     "hooks": [
-      { "type": "command", "command": "/usr/local/bin/spore coordinator token-monitor", "timeout": 10 },
-      { "type": "command", "command": "/usr/local/bin/spore worker token-monitor",      "timeout": 10 },
-      { "type": "command", "command": "/usr/local/bin/spore fleet replenish-hook",      "timeout": 30 },
-      { "type": "command", "command": "/usr/local/bin/spore hooks watch-inbox",         "timeout": 604800, "asyncRewake": true }
+      { "type": "command", "command": "/run/current-system/sw/bin/spore coordinator token-monitor", "timeout": 10 },
+      { "type": "command", "command": "/run/current-system/sw/bin/spore worker token-monitor",      "timeout": 10 },
+      { "type": "command", "command": "/run/current-system/sw/bin/spore fleet replenish-hook",      "timeout": 30 },
+      { "type": "command", "command": "/run/current-system/sw/bin/spore hooks watch-inbox",         "timeout": 604800, "asyncRewake": true }
     ]
   }
 ]
@@ -197,7 +209,7 @@ Per-step:
 
 - **Refresh `~/.claude/settings.json` under `nixos-rebuild switch`.**
   Today the file is install-once at infect time. The same logic
-  that made `/usr/local/bin/spore-*` shims refreshable in
+  that made `/run/current-system/sw/bin/spore-*` shims refreshable in
   host-shims-via-nix phase 2 could be applied here: have the
   bundled flake activation script (or a sibling) lay down
   settings.json + hooks symlinked into the `shims` derivation,
