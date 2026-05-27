@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +32,25 @@ func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
 	}
 }
 
-func TestHooksWatchInboxNoArgsRequiresEnv(t *testing.T) {
+func TestHooksWatchInboxNoArgsNoEnvSilentNoOp(t *testing.T) {
 	t.Setenv("SPORE_TASK_INBOX", "")
 
-	if code := runHooksWatchInbox(nil); code != 2 {
-		t.Fatalf("runHooksWatchInbox(nil) = %d, want 2 without SPORE_TASK_INBOX", code)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	code := runHooksWatchInbox(nil)
+	w.Close()
+	stderr, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("runHooksWatchInbox(nil) = %d, want 0 with no slug and no SPORE_TASK_INBOX", code)
+	}
+	if len(stderr) != 0 {
+		t.Fatalf("runHooksWatchInbox(nil) wrote stderr %q, want empty", stderr)
 	}
 }
