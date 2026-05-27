@@ -13,9 +13,9 @@ The README's "Getting started" describes the operator path:
 3. If needed, log the selected agent in interactively, then run
    `spore fleet reconcile` from the recovery pane.
 
-The one-command path now owns the install, repo copy, spore CLI copy,
-handover scripts, initial coordinator provider/model env, and fleet
-reconcile timer.
+The one-command path now owns the install, repo copy, spore CLI
+delivery (via the bundled flake's `inputs.spore`), handover scripts,
+initial coordinator provider/model env, and fleet reconcile timer.
 
 ## Progress
 
@@ -51,17 +51,23 @@ auth path. Out of scope for v0.
 
 `spore infect --repo` now performs the handoff directly:
 
-- installs NixOS with the bundled flake
+- installs NixOS with the bundled flake; `Stage()` pins
+  `inputs.spore` in the staged `flake.lock` to the local CLI's
+  commit (push-first guard HEADs the commit against origin before
+  the rewrite)
 - authorizes the install key for both `root` and `spore`
-- copies the running spore binary to `/usr/local/bin/spore`
+- the bundled flake's activation script puts `spore` on `PATH` at
+  `/run/current-system/sw/bin/spore` and symlinks the six host
+  shims into `/usr/local/bin/spore-*`, both into the nix store
 - rsyncs the local checkout, including `.git/`, to
   `/home/spore/<basename>`
 - excludes `.env*` secrets while preserving `.env.example`
 - creates an empty `tasks/` directory on the target when the checkout
   does not already contain one, so first reconcile can spawn the
   coordinator even for a kernel checkout
-- installs `bootstrap/handover/` scripts, hooks, settings, and user
-  units from embedded CLI assets
+- installs per-user hooks, settings, and systemd units from
+  embedded CLI assets (the six shims are no longer scp'd; they
+  come from the bundled flake's activation)
 - writes `/etc/spore/coordinator.env` with the selected provider,
   model, and effort
 - enables the fleet flag, runs the first reconcile, and restarts
@@ -83,7 +89,8 @@ infect does:
   and build artifacts
 - move the copied repo to `/home/spore/<basename>` and chown it to
   `spore:users`
-- ensure the spore CLI is on `PATH` at `/usr/local/bin/spore`
+- ensure the spore CLI is on `PATH` (via the bundled flake's
+  `inputs.spore`, activated to `/run/current-system/sw/bin/spore`)
 
 Acceptance: `spore infect <ip> --ssh-key <key> --repo <local-path>`
 lands the box in a state where `ssh -t spore@<ip>` reaches the
@@ -101,9 +108,12 @@ coordinator attach surface or a clear first-login recovery pane.
   target
 - `tmux`, `rsync`, and the runtime tools the handoff scripts call
 
-The running local spore binary is copied to `/usr/local/bin/spore`
-after install, so the target uses the exact checkout the operator
-ran.
+The bundled flake declares `inputs.spore.url =
+github:marketertechnologies/spore` and `Stage()` rewrites the staged
+`flake.lock` to pin that input to the local CLI's `BuildCommit`
+(with `-dirty` stripped), so the target still ends up running the
+exact checkout the operator ran -- just delivered through nix
+instead of an `install`-mode binary.
 
 ## Deferred Follow-Up
 
