@@ -40,10 +40,16 @@ spore infect 203.0.113.7 \
   --coordinator-model sonnet
 ```
 
-This installs NixOS, copies the current `spore` binary to
-`/usr/local/bin/spore`, rsyncs `~/projects/myrepo` to
-`/home/spore/myrepo`, installs the attach shell and coordinator
-wrappers, creates `/home/spore/myrepo/tasks` when absent, enables
+This installs NixOS with the bundled flake's `inputs.spore` pinned
+at infect time to the local CLI's commit (`Stage()` rewrites
+`bootstrap/flake/flake.lock`, gated by a push-first guard that
+HEADs the commit against origin). The activation script in the
+bundled `configuration.nix` puts `spore` on `PATH` at
+`/run/current-system/sw/bin/spore` and symlinks the six host shims
+into `/usr/local/bin/spore-*`, both pointing into the nix store.
+Infect then rsyncs `~/projects/myrepo` to `/home/spore/myrepo`,
+installs the per-user attach shell, hooks, settings, and systemd
+units, creates `/home/spore/myrepo/tasks` when absent, enables
 worker reconciliation, and starts the coordinator timer. The same
 public key used for install is authorized for both `root` and `spore`.
 
