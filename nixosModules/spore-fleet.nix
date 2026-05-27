@@ -210,6 +210,22 @@ in
       '';
     };
 
+    shimsPackage = lib.mkOption {
+      type = lib.types.package;
+      defaultText = lib.literalExpression "spore.packages.\${system}.shims";
+      description = ''
+        Spore host shims package. The module adds it to
+        `environment.systemPackages` and symlinks each shim into
+        `/usr/local/bin/spore-*` via a system activation script,
+        so the kernel's hard-coded paths (e.g. the respawn-pane
+        message from `tokenmonitor.Check` and the entries written
+        to `/etc/spore/coordinator.env` by `spore infect`) keep
+        resolving. The activation script sweeps any non-symlink
+        target left over from the original `install -m 0755` from
+        `spore infect`'s `Handoff()`.
+      '';
+    };
+
     user = lib.mkOption {
       type = lib.types.str;
       example = "spore";
@@ -476,6 +492,8 @@ in
       postScript = "${postScript}/bin/spore-fleet-graceful-post";
     };
 
+    environment.systemPackages = [ cfg.shimsPackage ];
+
     # Wire the pre/post hooks into NixOS system activation so a
     # `nixos-rebuild switch` (and colmena, which lifts the same
     # activation flow on the remote) drains workers before the new
@@ -483,21 +501,41 @@ in
     # The NIXOS_ACTION gate keeps boot-time activation a no-op: there
     # is nothing to drain on a fresh boot, and disabling the flag
     # there would leave the reconciler paused until the next deploy.
-    system.activationScripts = lib.mkIf cfg.gracefulDeploy.enable {
-      spore-fleet-pre.text = ''
-        case "''${NIXOS_ACTION:-}" in
-          switch|test) ${preScript}/bin/spore-fleet-graceful-pre || true ;;
-        esac
-      '';
-      spore-fleet-post = {
-        deps = [ "spore-fleet-pre" ];
-        text = ''
+    #
+    # spore-shims runs on every activation: it symlinks the six host
+    # shims into /usr/local/bin/ and sweeps any non-symlink left over
+    # from the original `install -m 0755` from `spore infect`.
+    system.activationScripts = lib.mkMerge [
+      {
+        spore-shims = ''
+          install -d -m 0755 /usr/local/bin
+          for f in spore-attach spore-coordinator-launch spore-worker-brief \
+                   spore-fleet-tick spore-greet-coordinator spore-greet-worker; do
+            target="${cfg.shimsPackage}/bin/$f"
+            link="/usr/local/bin/$f"
+            if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
+              rm -f "$link"
+              ln -s "$target" "$link"
+            fi
+          done
+        '';
+      }
+      (lib.mkIf cfg.gracefulDeploy.enable {
+        spore-fleet-pre.text = ''
           case "''${NIXOS_ACTION:-}" in
-            switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+            switch|test) ${preScript}/bin/spore-fleet-graceful-pre || true ;;
           esac
         '';
-      };
-    };
+        spore-fleet-post = {
+          deps = [ "spore-fleet-pre" ];
+          text = ''
+            case "''${NIXOS_ACTION:-}" in
+              switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+            esac
+          '';
+        };
+      })
+    ];
 
     home-manager.users.${cfg.user} = {
       systemd.user.services = lib.mapAttrs'
