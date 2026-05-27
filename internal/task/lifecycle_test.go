@@ -665,7 +665,7 @@ func TestDoneForceCleansArtifacts(t *testing.T) {
 }
 
 // TestDoneFromWorktreeCleansArtifacts simulates a rover calling
-// `spore task done` against its own slug — the CLI hardcodes
+// `spore task done` against its own slug. The CLI hardcodes
 // `task.Done("tasks", ...)` so the arg arrives as the rover's
 // worktree-relative path. Without the --git-common-dir hop in
 // projectRootFromTasksDir + the tasksDir re-resolution in Done, the
