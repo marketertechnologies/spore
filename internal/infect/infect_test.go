@@ -3,6 +3,8 @@ package infect
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -349,16 +351,16 @@ func TestRunWithRepoRunsHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 8 {
-		t.Fatalf("got %d runner calls, want install + smoke + handoff calls: %v", len(calls), calls)
+	if len(calls) != 6 {
+		t.Fatalf("got %d runner calls, want nixos-anywhere + smoke + 4 handoff calls: %v", len(calls), calls)
 	}
-	if calls[4][0] != "rsync" {
-		t.Fatalf("fifth call should copy repo with rsync, got %v", calls[4])
+	if calls[2][0] != "rsync" {
+		t.Fatalf("third call should copy repo with rsync, got %v", calls[2])
 	}
-	if calls[6][0] != "scp" || !strings.HasSuffix(calls[6][len(calls[6])-2], string(filepath.Separator)+".") {
-		t.Fatalf("handover scp should copy staged contents, got %v", calls[6])
+	if calls[4][0] != "scp" || !strings.HasSuffix(calls[4][len(calls[4])-2], string(filepath.Separator)+".") {
+		t.Fatalf("handover scp should copy staged contents, got %v", calls[4])
 	}
-	script := calls[7][len(calls[7])-1]
+	script := calls[5][len(calls[5])-1]
 	for _, want := range []string{
 		"SPORE_COORDINATOR_PROVIDER=codex",
 		"SPORE_COORDINATOR_MODEL=gpt-5.5",
@@ -372,6 +374,23 @@ func TestRunWithRepoRunsHandoff(t *testing.T) {
 			t.Fatalf("handover script missing %q:\n%s", want, script)
 		}
 	}
+	// Shims and the spore binary are delivered by the bundled flake's
+	// nix activation; the install commands that used to live here must
+	// be gone. Pin via source paths (which only appear in install
+	// commands, never in env-var values).
+	for _, banned := range []string{
+		"/tmp/spore-handover/spore-attach.sh",
+		"/tmp/spore-handover/spore-coordinator-launch.sh",
+		"/tmp/spore-handover/spore-worker-brief.sh",
+		"/tmp/spore-handover/spore-fleet-tick.sh",
+		"/tmp/spore-handover/greet-coordinator.sh",
+		"/tmp/spore-handover/greet-worker.sh",
+		"install -m 0755 /tmp/spore /usr/local/bin/spore",
+	} {
+		if strings.Contains(script, banned) {
+			t.Fatalf("handover script should not install %q (delivered by bundled flake nix activation):\n%s", banned, script)
+		}
+	}
 }
 
 func argAfter(argv []string, key string) string {
@@ -381,4 +400,95 @@ func argAfter(argv []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func TestRequireSporeCommitOnOriginReachable(t *testing.T) {
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("want HEAD, got %s", r.Method)
+		}
+		seen = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	if err := RequireSporeCommitOnOrigin(context.Background(), "abc123"); err != nil {
+		t.Fatalf("reachable commit should pass: %v", err)
+	}
+	if !strings.HasSuffix(seen, "/commits/abc123") {
+		t.Fatalf("request path missing commit: %s", seen)
+	}
+}
+
+func TestRequireSporeCommitOnOriginUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	err := RequireSporeCommitOnOrigin(context.Background(), "deadbeef")
+	if err == nil {
+		t.Fatal("unreachable commit should error")
+	}
+	if !strings.Contains(err.Error(), "git push") {
+		t.Fatalf("error should mention push: %v", err)
+	}
+}
+
+func TestRunSkipsCommitGuardWhenSporeCommitEmpty(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	prevURL := SporeOriginCommitsURL
+	prevClient := SporeOriginHTTPClient
+	SporeOriginCommitsURL = srv.URL + "/commits/"
+	SporeOriginHTTPClient = srv.Client()
+	defer func() {
+		SporeOriginCommitsURL = prevURL
+		SporeOriginHTTPClient = prevClient
+	}()
+
+	tmp := t.TempDir()
+	priv := filepath.Join(tmp, "id")
+	if err := os.WriteFile(priv, []byte("priv"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priv+".pub", []byte("ssh-ed25519 KKKK op\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noopRunner := func(context.Context, []string, io.Writer, io.Writer) error { return nil }
+	err := run(
+		context.Background(),
+		Config{IP: "203.0.113.7", SSHKey: priv},
+		fakeBundled(),
+		fakeHandover(),
+		io.Discard,
+		io.Discard,
+		noopRunner,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("guard should not have been called with empty SporeCommit")
+	}
 }

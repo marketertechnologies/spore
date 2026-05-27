@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +41,25 @@ const (
 	DefaultCoordinatorEffort = "high"
 
 	bundledRoot = "bootstrap/flake"
+
+	// SporeOwner and SporeRepo identify the github repo backing the
+	// bundled flake's `spore` input. Used to build SporeFlakeURL and
+	// the commits API URL for the push-first guard.
+	SporeOwner = "marketertechnologies"
+	SporeRepo  = "spore"
+
+	// SporeFlakeURL is the bare github URL the bundled flake declares
+	// as its `spore` input. PinBundledSpore overrides this input at
+	// infect time to pin to the local CLI's build commit.
+	SporeFlakeURL = "github:" + SporeOwner + "/" + SporeRepo
 )
+
+// SporeOriginCommitsURL is overridable by tests so RequireSporeCommitOnOrigin
+// can hit a fake server instead of github.com.
+var SporeOriginCommitsURL = "https://api.github.com/repos/" + SporeOwner + "/" + SporeRepo + "/commits/"
+
+// SporeOriginHTTPClient is overridable by tests.
+var SporeOriginHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // Config describes one infect target.
 type Config struct {
@@ -53,6 +72,14 @@ type Config struct {
 	CoordinatorAgent  string
 	CoordinatorModel  string
 	CoordinatorEffort string
+
+	// SporeCommit pins the bundled flake's `spore` input to this
+	// commit hash at infect time. The caller (cmd/spore/main.go)
+	// fills this from spore.BuildCommit() so the freshly-installed
+	// system runs the same spore the operator built locally. Empty
+	// skips the pin and falls back to the static lock entry in
+	// bootstrap/flake/flake.lock (only useful for tests).
+	SporeCommit string
 }
 
 // Validate checks required fields and that the SSH key file exists.
@@ -139,7 +166,10 @@ func SmokeArgv(c Config) []string {
 // caller must defer. When c.Flake is empty the bundled flake is
 // staged into a fresh tempdir with a generated local.nix; otherwise
 // c.Flake is used verbatim (with FlakeAttr appended when no '#' is
-// present) and cleanup is a no-op.
+// present) and cleanup is a no-op. When the bundled flake is staged
+// and c.SporeCommit is non-empty, the bundled flake.lock is rewritten
+// to pin its `spore` input to that commit so the target installs the
+// same spore the operator built locally.
 func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 	c.applyDefaults()
 	if c.Flake == "" {
@@ -151,12 +181,66 @@ func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 		if err != nil {
 			return "", nil, err
 		}
-		return "path:" + dir + "#" + FlakeAttr, func() { _ = os.RemoveAll(dir) }, nil
+		cleanup := func() { _ = os.RemoveAll(dir) }
+		if c.SporeCommit != "" {
+			if err := PinBundledSpore(dir, c.SporeCommit); err != nil {
+				cleanup()
+				return "", nil, err
+			}
+		}
+		return "path:" + dir + "#" + FlakeAttr, cleanup, nil
 	}
 	if strings.Contains(c.Flake, "#") {
 		return c.Flake, func() {}, nil
 	}
 	return c.Flake + "#" + FlakeAttr, func() {}, nil
+}
+
+// RequireSporeCommitOnOrigin verifies that commit exists in the github
+// repo backing SporeFlakeURL by HEADing the commits API. Returns an
+// instructive error when the commit is not pushed (the bundled
+// flake's pin would otherwise point at a non-existent rev that
+// nixos-anywhere on the target cannot resolve).
+func RequireSporeCommitOnOrigin(ctx context.Context, commit string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, SporeOriginCommitsURL+commit, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "spore-infect")
+	resp, err := SporeOriginHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("check spore commit %s on %s: %w", commit, SporeFlakeURL, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound, http.StatusUnprocessableEntity:
+		return fmt.Errorf("spore commit %s is not on %s; run `git push` before `spore infect`", commit, SporeFlakeURL)
+	default:
+		return fmt.Errorf("check spore commit %s on %s: unexpected status %d", commit, SporeFlakeURL, resp.StatusCode)
+	}
+}
+
+// PinBundledSpore rewrites the staged bundled flake's `flake.lock` to
+// pin its `spore` input to commit. Shells out to
+// `nix flake lock --override-input spore github:.../<commit>` against
+// the staged directory; nix infers narHash from the github fetcher.
+// Errors when nix is unreachable, the commit is unknown to github
+// (likely an unpushed local commit), or the lock write fails.
+func PinBundledSpore(dir, commit string) error {
+	cmd := exec.Command(
+		"nix",
+		"--extra-experimental-features", "nix-command flakes",
+		"flake", "lock",
+		"--override-input", "spore", SporeFlakeURL+"/"+commit,
+	)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pin bundled spore to %s: %w (%s)", commit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Stage copies the bundled flake tree out of bundled into a fresh
@@ -259,6 +343,12 @@ func run(ctx context.Context, c Config, bundledFlake, bundledHandover fs.FS, std
 	}
 	c.applyDefaults()
 
+	if c.Flake == "" && c.SporeCommit != "" {
+		if err := RequireSporeCommitOnOrigin(ctx, c.SporeCommit); err != nil {
+			return err
+		}
+	}
+
 	flakeRef, cleanup, err := ResolveFlake(c, bundledFlake)
 	if err != nil {
 		return err
@@ -334,21 +424,17 @@ func Handoff(ctx context.Context, c Config, handover fs.FS, stdout, stderr io.Wr
 	}
 	defer cleanup()
 
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
 	remote := "root@" + c.IP
 	remoteTmp := "/tmp/spore-handover"
 
-	fmt.Fprintf(stdout, "[spore] installing spore CLI on %s\n", remote)
-	if err := runner(ctx, ScpArgv(c, exe, remote+":/tmp/spore"), stdout, stderr); err != nil {
-		return fmt.Errorf("copy spore binary: %w", err)
-	}
-	if err := runner(ctx, RootSSHArgv(c, "install -d -m 0755 /usr/local/bin && install -m 0755 /tmp/spore /usr/local/bin/spore"), stdout, stderr); err != nil {
-		return fmt.Errorf("install spore binary: %w", err)
-	}
+	// The spore CLI and the six host shims under /usr/local/bin/
+	// are delivered by the bundled flake's nix activation (see
+	// bootstrap/flake/configuration.nix:spore-shims + systemPackages).
+	// The scp+install pair that used to live here was retired in
+	// favour of that single delivery channel; per-user hooks +
+	// settings + user-systemd units still travel via the handover
+	// staging dir below because the bundled flake does not target
+	// per-user paths.
 
 	fmt.Fprintf(stdout, "[spore] copying repo %s to %s:/root/%s\n", repo, remote, base)
 	if err := runner(ctx, RsyncRepoArgv(c, repo, remote+":/root/"+base+"/"), stdout, stderr); err != nil {
@@ -464,14 +550,7 @@ func InstallHandoverScript(c Config, projectBase, remoteTmp string) string {
 	})
 	return strings.Join([]string{
 		"set -e",
-		"install -d -m 0755 /usr/local/bin",
 		"install -d -m 0755 /etc/spore",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-attach.sh") + " /usr/local/bin/spore-attach",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/greet-coordinator.sh") + " /usr/local/bin/spore-greet-coordinator",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/greet-worker.sh") + " /usr/local/bin/spore-greet-worker",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-coordinator-launch.sh") + " /usr/local/bin/spore-coordinator-launch",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-worker-brief.sh") + " /usr/local/bin/spore-worker-brief",
-		"install -m 0755 " + shellSingleQuote(remoteTmp+"/spore-fleet-tick.sh") + " /usr/local/bin/spore-fleet-tick",
 		"install -d -o spore -g users -m 0755 /home/spore/.claude/hooks /home/spore/.config/systemd/user /home/spore/.local/state/spore",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/block-bg-bash.pl") + " /home/spore/.claude/hooks/block-bg-bash.pl",
 		"install -m 0755 " + shellSingleQuote(remoteTmp+"/hooks/load-state-md.pl") + " /home/spore/.claude/hooks/load-state-md.pl",
