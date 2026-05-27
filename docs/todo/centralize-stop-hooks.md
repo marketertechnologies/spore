@@ -1,4 +1,4 @@
-**Status**: drafting
+**Status**: step 1 landed; template already covered; live-file + per-project cleanup pending
 
 # centralize claude-code Stop hooks at host level
 
@@ -85,31 +85,40 @@ this spec covers.
 
 ## Plan
 
-### Step 1: silent no-op for `spore hooks watch-inbox`
+### Step 1: silent no-op for `spore hooks watch-inbox` (LANDED)
 
-When both the slug positional arg is absent and `$SPORE_TASK_INBOX`
-is empty, exit 0 silently instead of writing the current error to
-stderr and returning non-zero. Behavior in all other branches
-unchanged (an explicit slug, or `$SPORE_TASK_INBOX` set, still
-runs the watcher).
+PR #28 (`6c4bd3d`, merged `5bb97f9`). When both the slug positional
+arg is absent and `$SPORE_TASK_INBOX` is empty, the command now
+returns 0 silently instead of writing
+`SPORE_TASK_INBOX is required when slug is omitted` to stderr.
+Other branches unchanged. `TestHooksWatchInboxNoArgsNoEnvSilentNoOp`
+in `cmd/spore/hooks_cmd_test.go` asserts exit 0 and empty stderr.
 
-Site: `cmd/spore/hooks_cmd.go` near line 173. Wrap the existing
-`SPORE_TASK_INBOX is required` block in an "if we're being invoked
-as a Stop hook with no spore context, just return 0" guard.
+### Step 2: Stop hooks in the nix-shipped template (ALREADY COVERED)
 
-Tests: extend `cmd/spore/hooks_cmd_test.go` (or the package-level
-test in `internal/hooks/watchinbox_test.go`, whichever already
-covers the env-driven path) with one case asserting exit 0 and
-empty stderr when both slug and env are absent.
+`bootstrap/handover/settings.json` has carried the Stop block since
+commit `2d01536` ("spore-stop-hooks-claude", 2026-05-05). No further
+work in this file. It flows to `$out/share/spore/settings.json` via
+the `shims` derivation.
 
-One commit, one PR.
+Caveat: today the template only reaches a host once, during
+`spore infect` (`internal/infect/infect.go:557` does
+`install -m 0644 .../settings.json /home/spore/.claude/settings.json`).
+There is no refresh path. `docs/host-nix-snippet.md` explicitly
+flags this: "per-user hooks at `/home/spore/.claude/hooks/` and
+`/home/spore/.claude/settings.json` still come from the one-shot
+infect install. Not load-bearing for the cap-respawn flow; revisit
+if it becomes important." Making host-level settings refresh under
+`nixos-rebuild switch` -- the way the shims now do -- is a separate
+spec, tracked as the follow-up below.
 
-### Step 2: add Stop hooks to the nix-shipped template
+### Step 3: land the Stop block in the live `~/.claude/settings.json`
 
-Edit `bootstrap/handover/settings.json` to add a `Stop` hooks block
-mirroring the per-project block in marketer/crm-gateway, using
-`/usr/local/bin/spore` paths (matching the existing entries in the
-same file):
+The live host file is missing the Stop block (this host was infected
+before the template was updated, or the file was hand-edited; either
+way it has drifted from the current template). Edit
+`/home/spore/.claude/settings.json` and append a `Stop` entry to
+`hooks` with the four commands:
 
 ```json
 "Stop": [
@@ -125,22 +134,11 @@ same file):
 ]
 ```
 
-This file flows to `$out/share/spore/settings.json` via the `shims`
-derivation in `flake.nix`. New infected hosts pick it up the next
-time `docs/host-nix-snippet.md`'s install path is followed; existing
-hosts pick it up via the next `nix flake update spore &&
-nixos-rebuild switch`.
-
-### Step 3: land the same block in the live `~/.claude/settings.json`
-
-Step 2 is the shipped template. Step 3 is the live file the
-operator's current claude sessions actually read on this specific
-host. Edit `/home/spore/.claude/settings.json` to add the same
-Stop block.
-
-This is outside the spore tree -- operator territory -- but called
-out here so the rollout sequence is on paper. The diff is small;
-the coordinator can prepare it and the operator applies it.
+Preserve the operator's existing customizations in the same file
+(`statusLine`, `theme`, `verbose`, `autoCompactEnabled`, the bare
+`spore hooks notify-coordinator` command without `/usr/local/bin/`).
+This is outside the spore tree -- the coordinator prepares the
+diff, the operator applies it.
 
 ### Step 4: remove redundant per-project Stop hooks
 
@@ -163,11 +161,10 @@ each repo's branch.
 
 Steps land in order; each gates the next.
 
-1. Step 1 merges to spore main. Operator pulls + rebuilds the kernel
-   on this host so the live `/run/current-system/sw/bin/spore`
-   carries the watch-inbox short-circuit.
-2. Step 2 merges to spore main. (Can ride in the same PR as step 1
-   if scope stays small.)
+1. Step 1 -- DONE. Operator rebuilds the kernel on this host so the
+   live `/run/current-system/sw/bin/spore` carries the watch-inbox
+   short-circuit before step 3 fires the hook into non-spore sessions.
+2. Step 2 -- nothing to land in spore.
 3. Step 3: operator edits `~/.claude/settings.json` on this host.
    Verify in a fresh claude session: trigger a Stop event in a
    non-spore directory and confirm zero stderr noise; trigger a
@@ -196,12 +193,20 @@ Per-step:
   turn near cap and confirm a single (not duplicated) wrap-up
   message. Same for crm-gateway.
 
-## Open questions
+## Open questions / follow-ups
 
+- **Refresh `~/.claude/settings.json` under `nixos-rebuild switch`.**
+  Today the file is install-once at infect time. The same logic
+  that made `/usr/local/bin/spore-*` shims refreshable in
+  host-shims-via-nix phase 2 could be applied here: have the
+  bundled flake activation script (or a sibling) lay down
+  settings.json + hooks symlinked into the `shims` derivation,
+  with operator customizations honored via a separate overlay
+  file. Out of scope for this spec; should land as
+  host-settings-via-nix.
 - Should `spore install` (currently drops skills/) also be the
   command that creates `~/.config/spore/<name>/` and chmods it 700?
-  Today the operator does this by hand. Cosmetic; outside this
-  spec.
+  Today the operator does this by hand. Cosmetic.
 - Once host-level Stop hooks land, the only remaining reason for
   marketer/crm-gateway's `.claude/settings.json` is the Rails-specific
   SessionStart + PreToolUse blocks. Whether those should also move
