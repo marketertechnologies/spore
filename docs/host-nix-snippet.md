@@ -107,12 +107,16 @@ After the rebuild:
 - Per-user hooks at `/home/spore/.claude/hooks/` and
   `/home/spore/.claude/settings.json`: these still come from the
   one-shot infect install. Not load-bearing for the cap-respawn
-  flow; revisit in Phase 2.
+  flow; revisit if it becomes important.
 - Per-user systemd units at
   `/home/spore/.config/systemd/user/spore-fleet-reconcile.*`: same
   status as the hooks. The kernel-managed units via
   `services.spore-fleet` are the supported path going forward.
-- Fresh infects: `spore infect` still scp+installs the shims via
-  `Handoff()`. The bundled flake at `bootstrap/flake/` does not
-  reference the parent spore flake. Phase 2 of
-  `docs/todo/host-shims-via-nix.md` covers that case.
+
+Fresh infects do NOT need this snippet: as of PR #24, the bundled
+flake at `bootstrap/flake/` declares `inputs.spore` and inlines the
+same activation script, and `Stage()` pins the staged `flake.lock` to
+the local CLI's commit at infect time. The first `nixos-rebuild
+switch` on the freshly-infected host already symlinks
+`/usr/local/bin/spore-*` into the shims derivation. See
+`docs/todo/host-shims-via-nix.md` for the full record.
