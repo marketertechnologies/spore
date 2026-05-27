@@ -24,19 +24,19 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !hasCommand(settings.Hooks["SessionStart"], "/home/spore/.claude/hooks/load-state-md.pl") {
 		t.Fatal("handover settings lost load-state-md SessionStart hook")
 	}
-	if !hasAsync(settings.Hooks["Notification"], "/usr/local/bin/spore hooks notify-coordinator") {
+	if !hasAsync(settings.Hooks["Notification"], "/run/current-system/sw/bin/spore hooks notify-coordinator") {
 		t.Fatal("handover settings missing async notify-coordinator Notification hook")
 	}
-	if !hasAsyncRewake(settings.Hooks["Stop"], "/usr/local/bin/spore hooks watch-inbox") {
+	if !hasAsyncRewake(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore hooks watch-inbox") {
 		t.Fatal("handover settings missing asyncRewake watch-inbox Stop hook")
 	}
-	if !hasCommand(settings.Hooks["Stop"], "/usr/local/bin/spore coordinator token-monitor") {
+	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore coordinator token-monitor") {
 		t.Fatal("handover settings missing coordinator token-monitor Stop hook")
 	}
-	if !hasCommand(settings.Hooks["Stop"], "/usr/local/bin/spore worker token-monitor") {
+	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore worker token-monitor") {
 		t.Fatal("handover settings missing worker token-monitor Stop hook")
 	}
-	if !hasCommand(settings.Hooks["Stop"], "/usr/local/bin/spore fleet replenish-hook") {
+	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore fleet replenish-hook") {
 		t.Fatal("handover settings missing fleet replenish-hook Stop hook")
 	}
 }
