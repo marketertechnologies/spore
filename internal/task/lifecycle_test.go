@@ -664,6 +664,81 @@ func TestDoneForceCleansArtifacts(t *testing.T) {
 	}
 }
 
+// TestDoneFromWorktreeCleansArtifacts simulates a rover calling
+// `spore task done` against its own slug. The CLI hardcodes
+// `task.Done("tasks", ...)` so the arg arrives as the rover's
+// worktree-relative path. Without the --git-common-dir hop in
+// projectRootFromTasksDir + the tasksDir re-resolution in Done, the
+// status flip would land on the worktree's task file copy (leaving
+// the main repo's source-of-truth file stuck at "active") and
+// `git branch -D wt/<slug>` would fail because the branch is still
+// checked out by the actual worktree.
+func TestDoneFromWorktreeCleansArtifacts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+
+	mainTasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(mainTasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slug := "demo"
+	body := "---\nstatus: draft\nslug: demo\ntitle: Demo\n---\nbody\n"
+	mainTaskPath := filepath.Join(mainTasksDir, slug+".md")
+	if err := os.WriteFile(mainTaskPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+
+	session, err := Start(mainTasksDir, slug)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+
+	// Caller imitates the rover: `spore task done` from inside the
+	// worktree resolves "tasks" against the worktree's cwd. Done must
+	// hop back to the main repo on its own.
+	worktree := filepath.Join(repo, ".worktrees", slug)
+	workerTasksDir := filepath.Join(worktree, "tasks")
+	if _, statErr := os.Stat(filepath.Join(workerTasksDir, slug+".md")); statErr != nil {
+		t.Fatalf("precondition: worker-side task file missing: %v", statErr)
+	}
+
+	if err := Done(workerTasksDir, slug, true); err != nil {
+		t.Fatalf("Done from worktree: %v", err)
+	}
+
+	if _, err := os.Stat(mainTaskPath); !os.IsNotExist(err) {
+		t.Errorf("main-repo task file should be removed after Done, stat err = %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("worktree should be removed after Done, stat err = %v", err)
+	}
+	if branchExists(repo, "wt/"+slug) {
+		t.Errorf("branch wt/%s should be removed after Done", slug)
+	}
+	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
+		t.Errorf("tmux session %q still alive after Done", session)
+	}
+}
+
 func TestBlockFlipsActiveToBlocked(t *testing.T) {
 	tasksDir := t.TempDir()
 	taskPath := filepath.Join(tasksDir, "x.md")
