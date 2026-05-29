@@ -60,6 +60,7 @@
             install -m 0755 $src/spore-fleet-tick.sh         $out/bin/spore-fleet-tick
             install -m 0755 $src/greet-coordinator.sh        $out/bin/spore-greet-coordinator
             install -m 0755 $src/greet-worker.sh             $out/bin/spore-greet-worker
+            install -m 0755 $src/spore-with-secrets.sh       $out/bin/spore-with-secrets
             install -m 0755 $src/hooks/block-bg-bash.pl      $out/share/spore/hooks/block-bg-bash.pl
             install -m 0755 $src/hooks/load-state-md.pl      $out/share/spore/hooks/load-state-md.pl
             install -m 0644 $src/settings.json               $out/share/spore/settings.json
@@ -201,6 +202,7 @@
                 bin/spore-fleet-tick \
                 bin/spore-greet-coordinator \
                 bin/spore-greet-worker \
+                bin/spore-with-secrets \
                 share/spore/hooks/block-bg-bash.pl \
                 share/spore/hooks/load-state-md.pl \
                 share/spore/settings.json \
@@ -218,6 +220,7 @@
                 bin/spore-fleet-tick \
                 bin/spore-greet-coordinator \
                 bin/spore-greet-worker \
+                bin/spore-with-secrets \
                 share/spore/hooks/block-bg-bash.pl \
                 share/spore/hooks/load-state-md.pl; do
                 if [ ! -x "${shims}/$f" ]; then
