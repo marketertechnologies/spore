@@ -505,6 +505,14 @@ in
     # spore-shims runs on every activation: it symlinks the six host
     # shims into /usr/local/bin/ and sweeps any non-symlink left over
     # from the original `install -m 0755` from `spore infect`.
+    #
+    # spore-migrate runs `spore migrate --auto` as cfg.user on every
+    # activation so pending host-state migrations under
+    # bootstrap/migrations/ converge on `nixos-rebuild switch`. The
+    # engine is idempotent and ledger-gated; failures are suppressed
+    # so a single broken migration cannot brick the rebuild path
+    # (visible in `journalctl -u nixos-activation`). See
+    # docs/migrations.md for the authoring contract.
     system.activationScripts = lib.mkMerge [
       {
         spore-shims = ''
@@ -518,6 +526,11 @@ in
               ln -s "$target" "$link"
             fi
           done
+        '';
+        spore-migrate = ''
+          ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
+            ${cfg.package}/bin/spore migrate --auto || \
+            echo "spore migrate: failed (see journal); continuing rebuild" >&2
         '';
       }
       (lib.mkIf cfg.gracefulDeploy.enable {
