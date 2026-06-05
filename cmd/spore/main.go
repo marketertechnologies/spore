@@ -42,6 +42,7 @@ Commands:
   coordinator  Coordinator session lifecycle (start/stop/restart/status) plus support hooks.
   worker     Worker support hooks (token-monitor).
   migrate    Apply pending host-state migrations bundled with the CLI.
+  recipes    Browse the embedded recipe library (ls / show <name>).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -159,6 +160,8 @@ func main() {
 		os.Exit(runWorker(args))
 	case "migrate":
 		os.Exit(runMigrate(args))
+	case "recipes":
+		os.Exit(runRecipes(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)

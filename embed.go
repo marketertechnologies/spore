@@ -67,3 +67,11 @@ var BundledCoordinatorRole []byte
 //
 //go:embed all:bootstrap/migrations
 var BundledMigrations embed.FS
+
+// BundledRecipes is the embedded recipe library browsed via
+// `spore recipes ls` / `spore recipes show <name>`. Each .md file
+// under bootstrap/recipes/ is one recipe; the filename (sans .md) is
+// its canonical name.
+//
+//go:embed all:bootstrap/recipes
+var BundledRecipes embed.FS

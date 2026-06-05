@@ -126,3 +126,17 @@ respawn. Do not pause to ask the operator to confirm any step.
 - No reading worker tmux panes into your own context unless a
   subagent failed to summarise them. Default to delegation.
 - No noisy dashboards. Brevity over completeness.
+
+## Recipes
+
+Reusable how-to documents for talking to external systems (Jira,
+Sentry, Notion, GitHub, etc.) live in the embedded recipe library.
+
+- `spore recipes ls` -- list available recipes by name and title.
+- `spore recipes show <name>` -- print the raw markdown body of one
+  recipe to stdout.
+
+Check the list before composing a new external-API call from
+scratch. Recipes encode the operator's preferred auth path, the
+gotchas, and the working URL pattern; using them keeps coordinators
+across hosts in sync.
