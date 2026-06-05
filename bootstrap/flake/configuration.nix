@@ -133,6 +133,21 @@ in
     done
   '';
 
+  # Apply pending host-state migrations on every rebuild. Migrations
+  # live in the spore repo under bootstrap/migrations/ and are
+  # idempotent shell scripts; see docs/migrations.md for the authoring
+  # contract. Runs as the spore user so the engine can mutate the
+  # spore home; suppresses exit code so a single broken migration
+  # cannot brick the rebuild path. Failures are visible via
+  # `journalctl -u nixos-activation`.
+  system.activationScripts.spore-migrate = ''
+    if [ -x ${sporePkgs.spore}/bin/spore ] && id -u spore >/dev/null 2>&1; then
+      ${pkgs.util-linux}/bin/runuser -u spore -- \
+        ${sporePkgs.spore}/bin/spore migrate --auto || \
+        echo "spore migrate: failed (see journal); continuing rebuild" >&2
+    fi
+  '';
+
   # linger keeps the spore user's systemd --user instance running
   # without an attached login, so the home-manager-rendered fleet
   # reconcile units fire from boot.
