@@ -9,21 +9,24 @@ configuration.
 
 ## How a rebuild applies migrations
 
-The bundled flake's `configuration.nix` carries a
+The `spore-fleet` NixOS module
+(`spore.nixosModules.spore-fleet`) carries a
 `system.activationScripts.spore-migrate` entry that runs
-`runuser -u spore -- /run/current-system/sw/bin/spore migrate --auto`
-on every `nixos-rebuild switch`. The kernel walks the embedded
-migration tree (`bootstrap/migrations/`), runs anything missing from
-the ledger, and appends to the ledger on success.
+`runuser -u <cfg.user> -- spore migrate --auto` on every
+`nixos-rebuild switch`. The kernel walks the embedded migration tree
+(`bootstrap/migrations/`), runs anything missing from the ledger, and
+appends to the ledger on success.
 
 This means: ship a migration in the spore repo, the next
 `nix flake update spore && nixos-rebuild switch` on a downstream host
 runs it, no operator action required.
 
-Hosts whose `/etc/nixos/configuration.nix` is a hand-edited copy of
-the bundled file pre-activation-hook need a one-time sync to pick up
-the activation entry. After that, future migrations land
-automatically.
+Any host that imports `spore.nixosModules.spore-fleet` picks up the
+activation entry; that's the recommended consumer pattern (see
+`docs/host-nix-snippet.md`). Hosts on an older topology that pinned
+to the bundled `bootstrap/flake/configuration.nix` from before
+fleet-module activation need a one-time sync to flake.nix to import
+the module. After that, future migrations land automatically.
 
 ## Authoring a migration
 
