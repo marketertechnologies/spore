@@ -492,7 +492,16 @@ in
       postScript = "${postScript}/bin/spore-fleet-graceful-post";
     };
 
-    environment.systemPackages = [ cfg.shimsPackage ];
+    # jq + python3 are coordinator/worker workhorses (JSON parsing of
+    # gh, MCP, and settings.json output; ad-hoc one-liners that outgrow
+    # bash). Bundling them with the fleet module means every
+    # spore-managed host has them on PATH without each host pinning its
+    # own systemPackages list.
+    environment.systemPackages = [
+      cfg.shimsPackage
+      pkgs.jq
+      pkgs.python3
+    ];
 
     # Wire the pre/post hooks into NixOS system activation so a
     # `nixos-rebuild switch` (and colmena, which lifts the same
