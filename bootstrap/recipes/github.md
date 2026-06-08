@@ -80,6 +80,13 @@ globally.
 
 ## Wire `git` push through `gh`
 
+Skip this section if `git remote -v` shows an SSH URL
+(`git@github.com:<org>/<repo>.git`). With an SSH remote, git
+operations authenticate via the SSH key in the agent and
+`GH_TOKEN` is unused for `git fetch` / `git push`; the token
+still covers every `gh` subcommand. The wiring below applies
+only when the remote is HTTPS (`https://github.com/<org>/<repo>.git`).
+
 `gh` ships a built-in git credential helper (`gh auth
 git-credential`) that resolves the token at call time. Wire it
 once per repo (or globally) so `git push` / `git fetch` over
