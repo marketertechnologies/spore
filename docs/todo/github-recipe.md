@@ -1,4 +1,24 @@
-**Status**: draft -- awaiting operator review of scope + open questions
+**Status**: recipe drafted at `bootstrap/recipes/github.md`; operator
+owes token mint + branch protection per "Operator owes" tail. Open
+questions resolved (see "Resolutions" below).
+
+## Resolutions
+
+- Q1: fine-grained PAT (default). Classic fallback noted only.
+- Q2: `git config credential.https://github.com.helper` shelling
+  out to `spore-with-secrets gh auth git-credential`. Token
+  never lands on disk.
+- Q3: server-side branch protection rule. Recipe documents the
+  exact UI path; operator configures per-repo.
+- Q4: single combined `github` recipe.
+- Token placement (added by operator): `GH_TOKEN` may live in
+  the global secrets file as a default, with per-project
+  overrides where a different identity or repo set is needed.
+  Layered behavior is automatic via `spore-with-secrets` (global
+  sourced first, per-project second, per-project wins on key
+  collisions). Recipe documents both placement options.
+
+
 
 # `github` recipe: scoped `gh` CLI access from a spore pane
 
