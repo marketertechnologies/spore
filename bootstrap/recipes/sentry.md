@@ -54,16 +54,26 @@ to rotate and revoke and are the default this recipe assumes.
 2. Give the token a name that names the host and purpose
    (`spore-coordinator-<hostname>-readonly`); this is what shows
    up in the audit log.
-3. **Scopes** (minimum set for this recipe):
-   - `org:read` -- list projects, releases, environments.
-   - `project:read` -- per-project filters, project details.
+3. **Scopes** -- minimum for the bug-debug loop (search issues,
+   fetch event with stack trace, list releases):
    - `event:read` -- issue details, events, stack traces,
-     breadcrumbs.
-   - `member:read` -- assignee names on issues.
+     breadcrumbs, `/organizations/<org>/issues/` search.
+   - `project:read` -- per-project filters in search; releases.
    - `team:read` -- team names on issues.
-4. Copy the token (starts with `sntrys_` for new tokens; legacy
-   tokens are 64-char hex) and drop it into the chosen secrets
-   file as `SENTRY_AUTH_TOKEN=...`.
+
+   Optional, useful but not strictly required:
+   - `org:read` -- enables `/organizations/<org>/projects/`
+     enumeration and the org-level verify-auth call. Without it,
+     the bug-debug loop still works (search infers the org from
+     the URL path), but `spore-with-secrets ... projects/` will
+     return HTTP 403.
+   - `member:read` -- fills `assignedTo.email` on issues. Without
+     it, that field comes back null but other fields still work.
+4. Copy the token (current-format tokens start with `sntry`; the
+   exact prefix is `sntrys_` for some flows and `sntryu_` for
+   others -- both are personal auth tokens. Legacy tokens are
+   64-char hex.) Drop into the chosen secrets file as
+   `SENTRY_AUTH_TOKEN=...`.
 
 Sentry personal auth tokens do not expire by default. There is no
 rotation reminder; rotate manually on the cadence your team
@@ -79,7 +89,7 @@ NOT interchangeable:
   issues, list releases, or hit `/api/0/...` at all. If you find
   yourself with a DSN, that is the wrong credential for this
   recipe.
-- A **personal auth token** (`sntrys_...`) is what this recipe
+- A **personal auth token** (`sntry...`) is what this recipe
   uses. It carries the read scopes minted above and authenticates
   against `/api/0/...` over HTTPS Bearer.
 
@@ -94,22 +104,27 @@ All examples assume `spore-with-secrets` is on PATH (it is, via
 the nix derivation) and `SENTRY_AUTH_TOKEN`, `SENTRY_BASE_URL`,
 `SENTRY_ORG` all resolve.
 
-### Verify auth
+### Verify auth (and inspect token scopes)
 
 ```
 spore-with-secrets bash -c '
 curl -sS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
-  "${SENTRY_BASE_URL%/}/api/0/organizations/${SENTRY_ORG}/" \
-  | jq "{slug, name, status: .status.id}"
+  "${SENTRY_BASE_URL%/}/api/0/" \
+  | jq "{version, scopes: .auth.scopes, user: .user.email}"
 '
 ```
 
-A successful call returns the org's slug, name, and status. HTTP
+The `/api/0/` root endpoint requires no scope and is the only
+call that reflects the token's own scope list back -- prefer it
+for verification over endpoints that 403 on missing scopes. HTTP
 401 means the token is wrong, revoked, or sent under the wrong
-auth scheme (see "Auth gotcha"). HTTP 403 means the token's scope
-set does not cover the requested endpoint.
+auth scheme (see "Auth gotcha").
 
 ### List projects
+
+Requires `org:read`. If your token omits that scope (see "Scopes"
+above), skip this -- the bug-debug loop below does not need a
+project list.
 
 ```
 spore-with-secrets bash -c '
@@ -135,12 +150,28 @@ curl -sS -G -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
   "${SENTRY_BASE_URL%/}/api/0/organizations/${SENTRY_ORG}/issues/" \
   --data-urlencode "query=is:unresolved project:<project-slug>" \
   --data-urlencode "limit=25" \
-  | jq ".[] | {shortId, title, level, count, lastSeen, permalink}"
+  | jq ".[] | {id, shortId, title, level, count, lastSeen, permalink}"
 '
 ```
 
-`shortId` (e.g. `MARKETER-AB1`) is the human-readable handle the
-UI uses; pass it back to the operator instead of the numeric `id`.
+Project both `id` (numeric) and `shortId` (e.g. `MARKETER-AB1`).
+Pass `shortId` back to the operator -- it is the human-readable
+handle the UI uses -- but keep the numeric `id` for the
+`/issues/<id>/` calls below.
+
+To look up an issue by `shortId` alone, append `shortIdLookup=1`
+to the search:
+
+```
+spore-with-secrets bash -c '
+curl -sS -G -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
+  "${SENTRY_BASE_URL%/}/api/0/organizations/${SENTRY_ORG}/issues/" \
+  --data-urlencode "query=$1" \
+  --data-urlencode "shortIdLookup=1" \
+  --data-urlencode "limit=1" \
+  | jq ".[0] | {id, shortId, title}"
+' _ MARKETER-AB1
+```
 
 ### Fetch one issue's metadata
 
@@ -150,10 +181,14 @@ ISSUE_ID="$1"
 curl -sS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
   "${SENTRY_BASE_URL%/}/api/0/issues/${ISSUE_ID}/" \
   | jq "{shortId, title, status, level, culprit, firstSeen, lastSeen, count, userCount, assignedTo, tags: [.tags[] | {key, value: .topValues[0].name}]}"
-' _ <issue-id-or-short-id>
+' _ <numeric-issue-id>
 ```
 
-Both numeric `id` and `shortId` work as the path segment.
+**Gotcha:** the path segment must be the numeric `id`, not the
+`shortId`. Passing a `shortId` returns HTTP 200 with every field
+set to `null` -- a silent failure that is easy to misread as a
+real "no such issue". Resolve `shortId` -> numeric `id` via the
+`shortIdLookup=1` search above, then call this endpoint.
 
 ### Fetch the latest event with full stack trace
 
@@ -163,8 +198,11 @@ ISSUE_ID="$1"
 curl -sS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
   "${SENTRY_BASE_URL%/}/api/0/issues/${ISSUE_ID}/events/latest/" \
   | jq "{eventID, dateCreated, message, exception: .entries[] | select(.type==\"exception\") | .data.values[0] | {type, value, frames: [.stacktrace.frames[] | {filename, function, lineNo, context: .contextLine}]}}"
-' _ <issue-id-or-short-id>
+' _ <numeric-issue-id>
 ```
+
+Same gotcha as `/issues/<id>/`: pass the numeric `id`, not the
+`shortId`.
 
 `events/latest/` returns the most recent event for the issue.
 `events/oldest/` and `events/<event-id>/` also work. The
@@ -209,17 +247,20 @@ curl -sS -G -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
 
 ## Scope reference
 
-Minimum scopes for the calls above:
+Minimum scopes for the bug-debug loop:
 
-- `org:read` -- `/organizations/<org>/`, `/organizations/<org>/projects/`,
-  `/organizations/<org>/releases/`.
-- `project:read` -- per-project filters in issue search; project
-  details endpoints.
 - `event:read` -- `/issues/<id>/`, `/issues/<id>/events/...`,
-  `/organizations/<org>/issues/`.
-- `member:read`, `team:read` -- assignee and team names embedded
-  in issue payloads. Without these, those fields come back null
-  instead of failing the call.
+  `/organizations/<org>/issues/` search.
+- `project:read` -- per-project filters in issue search;
+  `/organizations/<org>/releases/` (verified empirically).
+- `team:read` -- team names embedded in issue payloads.
+
+Optional, only needed for endpoints outside the core loop:
+
+- `org:read` -- `/organizations/<org>/` direct (the verify-auth
+  alternative) and `/organizations/<org>/projects/` enumeration.
+- `member:read` -- fills assignee fields. Without it those come
+  back null but the call still succeeds.
 
 Out of scope with the read-only set:
 
@@ -233,8 +274,8 @@ Out of scope with the read-only set:
 ## Hygiene
 
 - Never echo `$SENTRY_AUTH_TOKEN` to a pane or log. Use
-  length-and-prefix shape checks (`${#v}`, `${v:0:7}` -- a
-  current-format token starts with `sntrys_`) for debugging.
+  length-and-prefix shape checks (`${#v}`, `${v:0:5}` -- any
+  current-format token starts with `sntry`) for debugging.
 - Rotate on whatever cadence your team prefers. Personal auth
   tokens have no built-in expiry; the audit log entry on the
   Sentry side is the only trail.
