@@ -20,6 +20,7 @@ import (
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
 	"github.com/versality/spore/internal/infect"
+	"github.com/versality/spore/internal/lang"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -188,7 +189,10 @@ func runCompose(args []string) error {
 	if err != nil {
 		return err
 	}
-	opts := composer.Options{Predicates: map[string]bool{"align": alignActive}}
+	opts := composer.Options{Predicates: map[string]bool{
+		"align": alignActive,
+		"rails": lang.IsRails(root),
+	}}
 	out, err := composer.Compose(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err
