@@ -9,6 +9,7 @@ import (
 
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
+	"github.com/versality/spore/internal/lang"
 )
 
 // ClaudeDrift fails when a consumer's on-disk instruction target
@@ -48,7 +49,10 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("claude-drift: read align state: %w", err)
 	}
-	opts := composer.Options{Predicates: map[string]bool{"align": alignActive}}
+	opts := composer.Options{Predicates: map[string]bool{
+		"align": alignActive,
+		"rails": lang.IsRails(root),
+	}}
 
 	var issues []Issue
 	for _, e := range entries {
