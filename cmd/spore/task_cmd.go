@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -169,13 +168,9 @@ func runTaskStatus(args []string) error {
 		return fmt.Errorf("usage: spore task status <slug>")
 	}
 	slug := args[0]
-	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	projectRoot, err := task.MainRepoRoot("")
 	if err != nil {
-		return fmt.Errorf("git rev-parse: %w", err)
-	}
-	projectRoot := strings.TrimSpace(string(root))
-	if i := strings.Index(projectRoot, "/.worktrees/"); i >= 0 {
-		projectRoot = projectRoot[:i]
+		return fmt.Errorf("resolve main repo: %w", err)
 	}
 	snap, err := fleet.DeriveSnapshot(projectRoot, slug)
 	if err != nil {
@@ -390,11 +385,7 @@ func resolveTasksDir() string {
 	if v := os.Getenv("SPORE_TASKS_DIR"); v != "" {
 		return v
 	}
-	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		root := strings.TrimSpace(string(out))
-		if i := strings.Index(root, "/.worktrees/"); i >= 0 {
-			root = root[:i]
-		}
+	if root, err := task.MainRepoRoot(""); err == nil && root != "" {
 		return filepath.Join(root, "tasks")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
