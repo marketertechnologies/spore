@@ -154,24 +154,77 @@ func sessionCreated(name string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// summaryFingerprintPrefix is the leading marker the synthesised
+// summary embeds (after the date line). Encodes the counts of inputs
+// the summary was built from, so a later drive tick can tell whether
+// the on-disk file is stale relative to the current artifact tree.
+const summaryFingerprintPrefix = "<!-- summary-fingerprint:"
+
 // writeSummary synthesises .spore/<slug>/summary.md from the on-disk
-// review threads. Idempotent: a present summary.md is left alone.
+// review threads. Idempotent across drive ticks with stable inputs,
+// but regenerates when the embedded fingerprint disagrees with the
+// current artifact counts: a leftover summary from a previous task
+// lifecycle (different engineer/reviewer round counts) cannot shadow
+// a fresh run, and a hand-edited summary that strips the fingerprint
+// is treated as stale (the marker fence is rebuilt).
 func writeSummary(projectRoot, slug string) error {
 	path := filepath.Join(task.RoleTaskDir(projectRoot, slug), "summary.md")
-	if _, err := os.Stat(path); err == nil {
-		return nil
+	fp, err := computeSummaryFingerprint(projectRoot, slug)
+	if err != nil {
+		return err
 	}
-	body, err := buildSummary(projectRoot, slug)
+	if existing, err := os.ReadFile(path); err == nil {
+		if extractSummaryFingerprint(existing) == fp {
+			return nil
+		}
+	}
+	body, err := buildSummary(projectRoot, slug, fp)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
 }
 
-func buildSummary(projectRoot, slug string) (string, error) {
+// computeSummaryFingerprint returns the artifact-count signature the
+// next writeSummary will compare against the file's embedded marker.
+// Shape: "engineer=<E> A=<NA> B=<NB>".
+func computeSummaryFingerprint(projectRoot, slug string) (string, error) {
+	eng, err := task.ListEngineerRounds(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	a, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerA)
+	if err != nil {
+		return "", err
+	}
+	b, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerB)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("engineer=%d A=%d B=%d", len(eng), len(a), len(b)), nil
+}
+
+// extractSummaryFingerprint reads the embedded marker out of an
+// existing summary.md body. Returns "" when the marker is missing or
+// malformed; the caller treats that as "regenerate".
+func extractSummaryFingerprint(body []byte) string {
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, summaryFingerprintPrefix) {
+			continue
+		}
+		line = strings.TrimPrefix(line, summaryFingerprintPrefix)
+		line = strings.TrimSuffix(line, "-->")
+		return strings.TrimSpace(line)
+	}
+	return ""
+}
+
+func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s: review summary\n\n", slug)
 	fmt.Fprintf(&b, "Generated %s\n\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "%s %s -->\n\n", summaryFingerprintPrefix, fingerprint)
 
 	for _, instance := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		rounds, err := task.ListReviewRounds(projectRoot, slug, instance)

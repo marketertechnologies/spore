@@ -36,12 +36,13 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := buildSummary(root, slug)
+	got, err := buildSummary(root, slug, "engineer=1 A=2 B=1")
 	if err != nil {
 		t.Fatalf("buildSummary: %v", err)
 	}
 	wantSubstrings := []string{
 		"# demo: review summary",
+		"<!-- summary-fingerprint: engineer=1 A=2 B=1 -->",
 		"## reviewer A",
 		"round 1 -> request_changes",
 		"split commit X",
@@ -62,7 +63,7 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 	}
 }
 
-func TestWriteSummaryIsIdempotent(t *testing.T) {
+func TestWriteSummaryIsIdempotentOnStableInputs(t *testing.T) {
 	root := t.TempDir()
 	slug := "demo"
 	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
@@ -81,26 +82,86 @@ func TestWriteSummaryIsIdempotent(t *testing.T) {
 		t.Fatalf("writeSummary #1: %v", err)
 	}
 	summaryPath := filepath.Join(task.RoleTaskDir(root, slug), "summary.md")
-	info1, err := os.Stat(summaryPath)
+	body1, err := os.ReadFile(summaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Mutate an upstream review. A second writeSummary call must not
-	// regenerate the file.
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
-		Verdict: task.VerdictApprove,
-		Summary: "mutated",
-	})
+	// No upstream change between calls: fingerprint matches, body
+	// stays byte-identical (including the embedded timestamp).
 	if err := writeSummary(root, slug); err != nil {
 		t.Fatalf("writeSummary #2: %v", err)
 	}
-	info2, err := os.Stat(summaryPath)
+	body2, err := os.ReadFile(summaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info1.ModTime() != info2.ModTime() {
-		t.Errorf("writeSummary regenerated existing file (mod %v -> %v)", info1.ModTime(), info2.ModTime())
+	if string(body1) != string(body2) {
+		t.Errorf("writeSummary regenerated identical body on stable inputs:\n--- before\n%s\n--- after\n%s", body1, body2)
+	}
+}
+
+func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
+		Verdict:  task.VerdictRequestChanges,
+		Summary:  "needs work",
+		Comments: []string{"fix bug X"},
+	})
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{
+		Addressed: []string{"bug X -> commit Y"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{
+		Verdict: task.VerdictApprove,
+		Summary: "ok",
+	})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{
+		Verdict: task.VerdictApprove,
+		Summary: "ship it",
+	})
+
+	if err := writeSummary(root, slug); err != nil {
+		t.Fatalf("writeSummary #1: %v", err)
+	}
+	body1, err := os.ReadFile(filepath.Join(task.RoleTaskDir(root, slug), "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body1), "engineer=1 A=2 B=1") {
+		t.Errorf("first summary missing expected fingerprint:\n%s", body1)
+	}
+
+	// Drop a leftover summary in with a stale fingerprint to simulate
+	// a previous task lifecycle. The next writeSummary must replace
+	// it, not honour the present-file short-circuit.
+	stale := "# demo: review summary\n\n" +
+		"Generated 2020-01-01T00:00:00Z\n\n" +
+		"<!-- summary-fingerprint: engineer=99 A=99 B=99 -->\n\n" +
+		"leftover from a prior run\n"
+	if err := os.WriteFile(filepath.Join(task.RoleTaskDir(root, slug), "summary.md"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSummary(root, slug); err != nil {
+		t.Fatalf("writeSummary #2: %v", err)
+	}
+	body2, err := os.ReadFile(filepath.Join(task.RoleTaskDir(root, slug), "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body2), "leftover from a prior run") {
+		t.Errorf("writeSummary honoured stale leftover:\n%s", body2)
+	}
+	if !strings.Contains(string(body2), "engineer=1 A=2 B=1") {
+		t.Errorf("regenerated summary missing fresh fingerprint:\n%s", body2)
+	}
+	if !strings.Contains(string(body2), "ship it") {
+		t.Errorf("regenerated summary missing fresh content:\n%s", body2)
 	}
 }
 
