@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -248,6 +249,39 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 	}
 	if got != CoordinatorSessionName(dir) {
 		t.Errorf("EnsureCoordinator returned %q, want kernel session %q", got, CoordinatorSessionName(dir))
+	}
+}
+
+func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
+	got := coordinatorShellCommand("claude", "/tmp/role.md")
+	if !strings.Contains(got, "exec claude --dangerously-skip-permissions -- \"$(cat") {
+		t.Errorf("claude command missing flag injection: %s", got)
+	}
+	if !strings.Contains(got, "else exec claude --dangerously-skip-permissions;") {
+		t.Errorf("claude bare command missing skip-permissions: %s", got)
+	}
+}
+
+func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
+	got := coordinatorShellCommand("sleep 30", "/tmp/role.md")
+	if strings.Contains(got, "dangerously-skip-permissions") {
+		t.Errorf("sleep agent should not get claude flags: %s", got)
+	}
+}
+
+func TestIsClaudeAgent(t *testing.T) {
+	cases := map[string]bool{
+		"claude":                       true,
+		"claude-code":                  true,
+		"/run/current-system/sw/bin/claude": true,
+		"sleep 30":                     false,
+		"codex exec --model foo":       false,
+		"":                             false,
+	}
+	for agent, want := range cases {
+		if got := isClaudeAgent(agent); got != want {
+			t.Errorf("isClaudeAgent(%q) = %v, want %v", agent, got, want)
+		}
 	}
 }
 
