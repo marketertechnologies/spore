@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -37,6 +38,7 @@ Subcommands:
   verify <slug>                Print the evidence verdict for slug.
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
+  status <slug>                Print role-loop phase, round, last verdict.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
@@ -85,6 +87,8 @@ func runTask(args []string) error {
 		return runTaskWaybar(rest)
 	case "drift":
 		return runTaskDrift(rest)
+	case "status":
+		return runTaskStatus(rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", sub, taskUsage)
 	}
@@ -158,6 +162,37 @@ func runTaskWaybar(_ []string) error {
 
 func runTaskDrift(_ []string) error {
 	return task.AutoCommitDrift("tasks")
+}
+
+func runTaskStatus(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: spore task status <slug>")
+	}
+	slug := args[0]
+	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return fmt.Errorf("git rev-parse: %w", err)
+	}
+	projectRoot := strings.TrimSpace(string(root))
+	if i := strings.Index(projectRoot, "/.worktrees/"); i >= 0 {
+		projectRoot = projectRoot[:i]
+	}
+	snap, err := fleet.DeriveSnapshot(projectRoot, slug)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("slug:     %s\n", snap.Slug)
+	fmt.Printf("phase:    %s\n", snap.Phase)
+	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
+	if snap.CurrentReviewer != "" {
+		verdict := snap.LastVerdict
+		if verdict == "" {
+			verdict = "(none)"
+		}
+		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
+			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	}
+	return nil
 }
 
 func runTaskStart(args []string) error {
