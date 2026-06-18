@@ -284,15 +284,3 @@ func TestIsClaudeAgent(t *testing.T) {
 		}
 	}
 }
-
-// sessionCreated returns the tmux #{session_created} for name. Used by
-// the idempotency check to detect a respawn.
-func sessionCreated(name string) (string, error) {
-	out, err := exec.Command(
-		"tmux", "-L", testTmuxSocket, "display-message", "-p", "-t", name, "#{session_created}",
-	).Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}

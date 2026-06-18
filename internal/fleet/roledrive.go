@@ -96,20 +96,15 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 // the path of the latest reviewer verdict, so the agent picks the
 // revision round up without waiting on a manual prompt. The marker
 // file under <roletaskdir>/state/ keeps the wake idempotent across
-// drive passes.
+// drive passes; its filename embeds the engineer session's
+// `#{session_created}` stamp so a respawn (engineer pane crashed,
+// then re-minted by SpawnRole on the next tick) clears the gate and
+// the new pane gets nudged in turn.
 func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
 		return nil
 	}
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
-	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
-	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return err
-	}
-	marker := filepath.Join(markerDir, fmt.Sprintf("woken-%s-%d", snap.CurrentReviewer, snap.ReviewerRound))
-	if _, err := os.Stat(marker); err == nil {
-		return nil
-	}
 
 	session, err := EngineerSpec(projectRoot, slug).SessionName()
 	if err != nil {
@@ -121,6 +116,22 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		// next tick try.
 		return nil
 	}
+	created, err := sessionCreated(session)
+	if err != nil {
+		// `display-message` failure means we cannot tell if this is a
+		// fresh pane or the one we already nudged. Skip rather than
+		// risk spamming send-keys; the next tick retries.
+		return nil
+	}
+
+	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return err
+	}
+	marker := filepath.Join(markerDir, fmt.Sprintf("woken-%s-%d-%s", snap.CurrentReviewer, snap.ReviewerRound, created))
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
 
 	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
 		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
@@ -128,6 +139,19 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		return fmt.Errorf("tmux send-keys: %w", err)
 	}
 	return os.WriteFile(marker, []byte(verdictPath+"\n"), 0o644)
+}
+
+// sessionCreated returns the `#{session_created}` stamp tmux assigns
+// the named session at spawn (a unix timestamp). Used by the engineer
+// wake marker to detect a respawn: a fresh pane gets a different
+// stamp, so the marker name changes and the next drive tick re-fires
+// the send-keys nudge.
+func sessionCreated(name string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_created}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // writeSummary synthesises .spore/<slug>/summary.md from the on-disk
