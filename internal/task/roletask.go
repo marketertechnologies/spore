@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 // RoleTaskRoot is the directory name at projectRoot that holds the
@@ -94,6 +96,36 @@ func WriteSpec(projectRoot, slug string, body []byte) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(root, "spec.md"), body, 0o644)
+}
+
+// SpecExists reports whether `<roletaskdir>/spec.md` is already on
+// disk. Callers driving the loop use this as the "cache is hot"
+// signal: the cache is immutable for the run, so a present spec
+// file short-circuits re-caching from the task file.
+func SpecExists(projectRoot, slug string) bool {
+	_, err := os.Stat(filepath.Join(RoleTaskDir(projectRoot, slug), "spec.md"))
+	return err == nil
+}
+
+// CacheSpecFromTaskFile copies the body of `<tasksDir>/<slug>.md`
+// (frontmatter stripped) into `<roletaskdir>/spec.md`. Idempotent:
+// returns nil without touching the file when spec.md already exists,
+// so callers can invoke it on every drive pass. Returns
+// fs.ErrNotExist (wrapped) when the task file is missing.
+func CacheSpecFromTaskFile(projectRoot, tasksDir, slug string) error {
+	if SpecExists(projectRoot, slug) {
+		return nil
+	}
+	taskPath := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(taskPath)
+	if err != nil {
+		return err
+	}
+	_, body, err := frontmatter.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("roletask: parse %s: %w", taskPath, err)
+	}
+	return WriteSpec(projectRoot, slug, body)
 }
 
 // ReadSpec returns the cached spec body.

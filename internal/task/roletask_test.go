@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,95 @@ func TestEnsureRoleTaskDirCreatesLayout(t *testing.T) {
 func TestEnsureRoleTaskDirEmptySlug(t *testing.T) {
 	if _, err := EnsureRoleTaskDir(t.TempDir(), ""); err == nil {
 		t.Fatal("expected error on empty slug, got nil")
+	}
+}
+
+func TestCacheSpecFromTaskFile(t *testing.T) {
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskBody := []byte(`---
+status: active
+slug: demo
+title: Demo
+---
+# demo
+
+The spec body.
+`)
+	if err := os.WriteFile(filepath.Join(tasksDir, "demo.md"), taskBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CacheSpecFromTaskFile(root, tasksDir, "demo"); err != nil {
+		t.Fatalf("CacheSpecFromTaskFile: %v", err)
+	}
+
+	cached, err := ReadSpec(root, "demo")
+	if err != nil {
+		t.Fatalf("ReadSpec: %v", err)
+	}
+	cachedStr := string(cached)
+	if !strings.Contains(cachedStr, "# demo") {
+		t.Errorf("cached spec missing body: %q", cachedStr)
+	}
+	if !strings.Contains(cachedStr, "The spec body.") {
+		t.Errorf("cached spec missing body text: %q", cachedStr)
+	}
+	if strings.Contains(cachedStr, "status: active") {
+		t.Errorf("cached spec still contains frontmatter: %q", cachedStr)
+	}
+}
+
+func TestCacheSpecFromTaskFileIdempotent(t *testing.T) {
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(tasksDir, "demo.md"),
+		[]byte("---\nstatus: active\nslug: demo\n---\nfirst spec\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := CacheSpecFromTaskFile(root, tasksDir, "demo"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate the task file. A second cache call must not overwrite,
+	// since the cache is immutable for the run.
+	if err := os.WriteFile(
+		filepath.Join(tasksDir, "demo.md"),
+		[]byte("---\nstatus: active\nslug: demo\n---\nsecond spec\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := CacheSpecFromTaskFile(root, tasksDir, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := ReadSpec(root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cached), "first spec") {
+		t.Errorf("expected cache to retain first spec, got %q", cached)
+	}
+}
+
+func TestCacheSpecFromTaskFileMissingTask(t *testing.T) {
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := CacheSpecFromTaskFile(root, tasksDir, "missing")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("CacheSpecFromTaskFile missing: err=%v, want fs.ErrNotExist", err)
 	}
 }
 
