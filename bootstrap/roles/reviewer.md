@@ -81,6 +81,15 @@ Three rounds per reviewer phase. If you reach round 3 and still see
 anyway; the coordinator catches the cap and escalates to the
 operator. Do not soften a verdict to dodge escalation.
 
+## Where you run
+
+The coordinator drops your pane inside the task worktree at
+`<projectRoot>/.worktrees/<slug>/`. Run `git diff <base>...HEAD` from
+this cwd to see the branch. `SPORE_TASK_DIR` in the environment
+points at the absolute `.spore/<slug>/` artifact tree; use it for
+the verdict file path so it lands in the canonical location
+regardless of cwd.
+
 ## Constraints
 
 - Do not read another worker's tmux pane. Files only.

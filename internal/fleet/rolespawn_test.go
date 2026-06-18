@@ -47,8 +47,8 @@ func TestRoleSpawnSpecReviewerArgs(t *testing.T) {
 		if v := flagValue(args, "-s"); v != wantSession {
 			t.Errorf("%s session = %q, want %q", instance, v, wantSession)
 		}
-		if v := flagValue(args, "-c"); v != root {
-			t.Errorf("%s cwd = %q, want project root", instance, v)
+		if v := flagValue(args, "-c"); v != filepath.Join(root, ".worktrees", "feature-x") {
+			t.Errorf("%s cwd = %q, want task worktree", instance, v)
 		}
 		if e := envValue(args, "SPORE_ROLE"); e != "reviewer" {
 			t.Errorf("%s SPORE_ROLE = %q, want reviewer", instance, e)

@@ -27,8 +27,10 @@ type RoleSpawnSpec struct {
 	// Defaults to <ProjectRoot>/bootstrap/roles/<Role>.md.
 	RoleBodyPath string
 	// Cwd is the working directory for the pane. Defaults to the
-	// engineer's worktree for Role=engineer and ProjectRoot for
-	// Role=reviewer.
+	// task worktree at <ProjectRoot>/.worktrees/<Slug>/ for both
+	// roles: the engineer commits there and the reviewer needs to
+	// `git diff` the branch from there. A consumer with a non-
+	// standard worktree layout must set Cwd explicitly.
 	Cwd string
 	// Agent is the binary the pane execs. Defaults to "claude".
 	Agent string
@@ -78,12 +80,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	cwd := s.Cwd
 	if cwd == "" {
-		switch s.Role {
-		case "engineer":
-			cwd = filepath.Join(s.ProjectRoot, ".worktrees", s.Slug)
-		default:
-			cwd = s.ProjectRoot
-		}
+		cwd = filepath.Join(s.ProjectRoot, ".worktrees", s.Slug)
 	}
 	agent := s.Agent
 	if agent == "" {
