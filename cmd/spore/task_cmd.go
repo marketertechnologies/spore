@@ -38,6 +38,10 @@ Subcommands:
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
   status <slug>                Print role-loop phase, round, last verdict.
+  role-drive <slug>            Advance the role-loop by one tick: cache spec,
+                               spawn/reap role panes per phase, wake the
+                               engineer on request_changes, write the summary
+                               on done.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
@@ -88,6 +92,8 @@ func runTask(args []string) error {
 		return runTaskDrift(rest)
 	case "status":
 		return runTaskStatus(rest)
+	case "role-drive":
+		return runTaskRoleDrive(rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", sub, taskUsage)
 	}
@@ -173,6 +179,34 @@ func runTaskStatus(args []string) error {
 		return fmt.Errorf("resolve main repo: %w", err)
 	}
 	snap, err := fleet.DeriveSnapshot(projectRoot, slug)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("slug:     %s\n", snap.Slug)
+	fmt.Printf("phase:    %s\n", snap.Phase)
+	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
+	if snap.CurrentReviewer != "" {
+		verdict := snap.LastVerdict
+		if verdict == "" {
+			verdict = "(none)"
+		}
+		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
+			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	}
+	return nil
+}
+
+func runTaskRoleDrive(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: spore task role-drive <slug>")
+	}
+	slug := args[0]
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	tasksDir := resolveTasksDir()
+	snap, err := fleet.DriveRoleLoop(projectRoot, tasksDir, slug)
 	if err != nil {
 		return err
 	}

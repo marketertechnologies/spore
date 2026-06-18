@@ -212,6 +212,22 @@ func Reconcile(cfg Config) (Result, error) {
 		agentCounts[picked]++
 	}
 
+	// Advance any role-looped tasks. A task is opted into the
+	// role-loop by the presence of `.spore/<slug>/` on disk: an
+	// operator (or coordinator agent) seeds the tree with `spore task
+	// role-drive <slug>` once, and from then on every reconcile pass
+	// ticks the loop forward. Tasks without the tree fall through to
+	// the homogeneous worker fleet above.
+	for _, slug := range actives {
+		dir := task.RoleTaskDir(cfg.ProjectRoot, slug)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
+			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
+		}
+	}
+
 	sort.Strings(res.Spawned)
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
