@@ -126,6 +126,12 @@ func TestDriveRoleLoopCachesSpec(t *testing.T) {
 	if _, err := task.EnsureRoleTaskDir(root, "demo"); err != nil {
 		t.Fatal(err)
 	}
+	// Pre-create the worktree dir so task.EnsureWorktree (called by
+	// DriveRoleLoop) short-circuits without `git worktree add` against
+	// the headless test repo.
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := task.WriteSpec(root, "demo", []byte("pre-existing\n")); err != nil {
 		t.Fatal(err)
 	}

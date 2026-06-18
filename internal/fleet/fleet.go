@@ -185,8 +185,22 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 	agentCounts := agentCountsFromMetas(metas, runningSet)
 
+	// A task with `.spore/<slug>/` on disk is opted into the role-loop
+	// and owned solely by DriveRoleLoop. The homogeneous spawn below
+	// must skip it: otherwise Reconcile would mint a generic worker at
+	// spore/<project>/<slug> (invisible to runningSet, which only tracks
+	// the spore-role/<project>/ prefix) on top of the role panes that
+	// edit the same wt/<slug> branch.
+	isRoleLooped := func(slug string) bool {
+		_, err := os.Stat(task.RoleTaskDir(cfg.ProjectRoot, slug))
+		return err == nil
+	}
+
 	for _, slug := range actives {
 		if runningSet[slug] {
+			continue
+		}
+		if isRoleLooped(slug) {
 			continue
 		}
 		if len(runningSet) >= cfg.MaxWorkers {
@@ -212,15 +226,13 @@ func Reconcile(cfg Config) (Result, error) {
 		agentCounts[picked]++
 	}
 
-	// Advance any role-looped tasks. A task is opted into the
-	// role-loop by the presence of `.spore/<slug>/` on disk: an
-	// operator (or coordinator agent) seeds the tree with `spore task
-	// role-drive <slug>` once, and from then on every reconcile pass
-	// ticks the loop forward. Tasks without the tree fall through to
-	// the homogeneous worker fleet above.
+	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
+	// precondition for these slugs (see the homogeneous-spawn skip
+	// above); a task is opted in by the presence of `.spore/<slug>/`
+	// on disk, seeded once by `spore task role-drive <slug>` or by a
+	// coordinator agent.
 	for _, slug := range actives {
-		dir := task.RoleTaskDir(cfg.ProjectRoot, slug)
-		if _, err := os.Stat(dir); err != nil {
+		if !isRoleLooped(slug) {
 			continue
 		}
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {

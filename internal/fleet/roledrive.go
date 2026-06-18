@@ -35,6 +35,13 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := task.CacheSpecFromTaskFile(projectRoot, tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: cache spec: %w", slug, err)
 	}
+	// Own the worktree precondition explicitly. The role panes cwd
+	// into <projectRoot>/.worktrees/<slug>/; without this call the
+	// loop would rely on the homogeneous fleet's task.Ensure to add
+	// the worktree, which is gated off for role-looped slugs.
+	if _, err := task.EnsureWorktree(tasksDir, slug); err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: ensure worktree: %w", slug, err)
+	}
 	snap, err := DeriveSnapshot(projectRoot, slug)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: snapshot: %w", slug, err)
