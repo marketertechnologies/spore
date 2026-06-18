@@ -90,6 +90,39 @@ func Ensure(tasksDir, slug string) (string, error) {
 	return ensureSession(tasksDir, slug)
 }
 
+// EnsureWorktree creates the wt/<slug> branch and worktree under
+// `<projectRoot>/.worktrees/<slug>/` when missing, without spawning the
+// homogeneous worker tmux session. Idempotent. Used by the role-loop
+// driver to own its worktree precondition instead of riding on
+// Ensure (which also spawns the worker session that the role-looped
+// task explicitly does not want).
+func EnsureWorktree(tasksDir, slug string) (string, error) {
+	projectRoot, err := projectRootFromTasksDir(tasksDir)
+	if err != nil {
+		return "", err
+	}
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	if _, err := os.Stat(worktree); err == nil {
+		return worktree, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	branch := "wt/" + slug
+	args := []string{"worktree", "add", worktree}
+	if branchExists(projectRoot, branch) {
+		args = append(args, branch)
+	} else {
+		args = append(args, "-b", branch)
+	}
+	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
+		return "", fmt.Errorf("copy brief: %w", err)
+	}
+	return worktree, nil
+}
+
 // Reap kills every tmux session matching slug for the project (the
 // frontmatter-recorded one plus any duplicates that drifted during
 // spawn or got minted with a different tier tag). Status, worktree,

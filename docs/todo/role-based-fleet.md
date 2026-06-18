@@ -38,9 +38,13 @@ Two role bodies, three pane spawns per task.
     spec, the branch diff, and the engineer's per-round response.
     Does not see B.
   - **Instance B.** Spawned fresh after A approves. Persistent
-    context across rounds until B approves. Sees only the spec and
-    the current task branch. Does not see A's review thread or the
-    engineer's responses to A.
+    context across rounds until B approves. Round 1 sees only the
+    spec and the current task branch (no A history, no
+    engineer-response thread): fresh eyes is the point of the
+    second pass. Rounds 2+ also read the engineer's response to
+    B's prior verdict so the dialogue can continue. B never sees
+    A's review thread or the engineer responses written during the
+    A phase.
 
 The reviewer role file is generic ("you are a reviewer"); per-spawn
 config (instance label, output path under `reviews/A/` or
@@ -104,9 +108,12 @@ file is the structured handoff, not the work itself.
 5. Cap: 3 rounds with reviewer A. If round 3 does not approve,
    coordinator pauses the loop and pages the operator.
 6. When A approves: coordinator kills A's pane, spawns reviewer B
-   fresh. B reads only `spec.md` and the current task branch. No A
-   history. Same loop with the engineer (still persistent), same
-   3-round cap.
+   fresh. B's round 1 reads only `spec.md` and the current task
+   branch (no A history, no engineer-response thread). From round 2
+   onwards B also reads the engineer's response to B's prior
+   verdict so the dialogue can continue. Same loop with the
+   engineer (still persistent), same 3-round cap. A's review
+   thread stays off-limits to B for the whole phase.
 7. When B approves: coordinator hands the operator a ready branch
    plus a synthesized summary of both review threads. Operator opens
    the PR, runs their own review, merges.

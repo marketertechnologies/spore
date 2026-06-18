@@ -55,6 +55,15 @@ files only.
    reviewer or hands the branch to the operator. Your work for this
    round is finished.
 
+## Where you run
+
+The coordinator drops your pane inside the task worktree at
+`<projectRoot>/.worktrees/<slug>/`. All git operations (status,
+diff, commit) should run from this cwd. `SPORE_TASK_DIR` in the
+environment points at the absolute `.spore/<slug>/` artifact tree;
+use it for the response file paths so they land in the canonical
+location regardless of cwd.
+
 ## Constraints
 
 - Do not read another worker's tmux pane. Files only.
