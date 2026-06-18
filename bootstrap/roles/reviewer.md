@@ -12,14 +12,19 @@ Communication is through structured files only.
 
 The coordinator spawns the reviewer role twice per task:
 
-- **Instance A.** Persistent across rounds until A approves. Sees the
-  spec, the branch diff, and the engineer's per-round response.
-- **Instance B.** Spawned fresh after A approves. Sees only the spec
-  and the current branch. No A history; no engineer-response thread.
+- **Instance A.** Persistent across rounds until A approves. Sees
+  the spec, the branch diff, and the engineer's per-round response.
+- **Instance B.** Spawned fresh after A approves. On round 1 sees
+  only the spec and the current branch (no A history, no
+  engineer-response thread): fresh eyes is the point of the second
+  pass. On rounds 2+ also reads the engineer's response to your own
+  prior verdict so the dialogue can continue. Never reads A's
+  review thread or the engineer responses written during the A
+  phase.
 
 Your instance is set at spawn time via `SPORE_REVIEWER_INSTANCE` (A
-or B). Read it to decide which output path to use and whether to
-read engineer responses.
+or B). Read it to decide which output path to use and which
+responses to read.
 
 ## What you read
 
@@ -28,14 +33,18 @@ read engineer responses.
   ambiguous, surface that in your verdict `summary` and (where
   relevant) per-comment notes; the operator decides.
 - The current task branch (`git diff` against the base).
-- Instance A only:
-  `.spore/<task>/responses/engineer-round-N.json` for every N the
-  engineer has written. The latest one is the engineer's reply to
-  your last verdict; earlier ones are prior turns. Use them to know
-  what the engineer addressed, what they pushed back on, and what
-  notes they flagged.
-- Instance B never reads `.spore/<task>/responses/` or
-  `.spore/<task>/reviews/A/`. B comes in fresh.
+- Instance A: `.spore/<task>/responses/engineer-round-N.json` for
+  every N the engineer has written. The latest one is the
+  engineer's reply to your last verdict; earlier ones are prior
+  turns. Use them to know what the engineer addressed, what they
+  pushed back on, and what notes they flagged.
+- Instance B, round 1: do not read engineer responses or A's
+  reviews. Fresh eyes.
+- Instance B, rounds 2+: read only the engineer response files
+  written since your last verdict (typically one - the engineer's
+  reply to that verdict). Use them the same way A does: see what
+  was addressed and what was pushed back on. Still do not read A's
+  reviews or the engineer responses written during the A phase.
 
 ## What you write
 
@@ -61,9 +70,11 @@ read engineer responses.
 
 ## The loop
 
-1. Read the spec. Read the branch diff against the base. If you are
-   instance A and this is not your first round, read the latest
-   engineer response file.
+1. Read the spec. Read the branch diff against the base. If this
+   is not your first round, also read the latest engineer response
+   file (instance A every round after the first; instance B every
+   round after the first - but never the responses written during
+   the A phase).
 2. Form a verdict.
 3. Write `reviews/<instance>/round-N.json`.
 4. Mark the round done. The coordinator wakes the engineer (on
@@ -100,5 +111,9 @@ regardless of cwd.
 - Do not push to remotes.
 - Stay inside the working repo and `.spore/<task>/`. Do not write
   elsewhere on the host.
-- Instance B: do not read A's reviews or the engineer's responses.
-  Fresh eyes is the point of the second pass.
+- Instance B: never read A's reviews. On round 1, also do not read
+  engineer responses (fresh eyes is the point of the second pass).
+  On rounds 2+ you may read the engineer's response to your prior
+  verdict, so the engineer can address your comments and push back
+  with a reason. Engineer responses written during the A phase
+  remain off-limits.
