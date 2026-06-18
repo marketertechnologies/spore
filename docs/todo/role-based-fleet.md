@@ -5,9 +5,10 @@ operator answers needed before code work starts.
 # role-based-fleet: engineer + two-reviewer loop
 
 Replace the homogeneous worker fleet with role-typed workers behind
-the coordinator. v1 ships three roles: an engineer who writes code,
-and two sequential reviewers who gate the change before the operator
-opens the PR.
+the coordinator. v1 ships two roles: an engineer who writes code,
+and a reviewer who gates the change. The coordinator spawns the
+reviewer role twice (instances A and B) so the change clears two
+independent passes before the operator opens the PR.
 
 ## Motivation
 
@@ -23,20 +24,32 @@ to drive.
 
 ## Roles
 
-- **Engineer.** Persistent for the lifetime of the task. Owns the
-  branch. Reads the spec, writes code, addresses review feedback
-  across rounds. Same instance through both reviewer phases.
-- **Reviewer A.** Spawned after the engineer's first round.
-  Persistent context across rounds until A approves. Sees the spec,
-  the branch diff, and the engineer's per-round response. Does not
-  see B.
-- **Reviewer B.** Spawned fresh after A approves. Persistent context
-  across rounds until B approves. Sees only the spec and the current
-  task branch. Does not see A's review thread or the engineer's
-  responses to A.
+Two role bodies, three pane spawns per task.
 
-Reviewers never see each other's panes or artifacts. The coordinator
-brokers everything. No worker reads another worker's tmux pane.
+- **Engineer** (one instance). Persistent for the lifetime of the
+  task. Owns the branch. Reads the spec, writes code, addresses
+  review feedback across rounds. Same instance through both reviewer
+  phases.
+- **Reviewer** (two instances, A and B). The role contract is
+  identical; the coordinator spawns it twice with different instance
+  config:
+  - **Instance A.** Spawned after the engineer's first round.
+    Persistent context across rounds until A approves. Sees the
+    spec, the branch diff, and the engineer's per-round response.
+    Does not see B.
+  - **Instance B.** Spawned fresh after A approves. Persistent
+    context across rounds until B approves. Sees only the spec and
+    the current task branch. Does not see A's review thread or the
+    engineer's responses to A.
+
+The reviewer role file is generic ("you are a reviewer"); per-spawn
+config (instance label, output path under `reviews/A/` or
+`reviews/B/`, whether to inherit the prior pane's context) is
+supplied by the coordinator at spawn time.
+
+Reviewer instances never see each other's panes or artifacts. The
+coordinator brokers everything. No worker reads another worker's
+tmux pane.
 
 ## Artifacts on disk
 
@@ -144,10 +157,13 @@ another round.
 - `cmd/spore/`: optional CLI surface for inspecting in-flight tasks
   (`spore task status <task-id>` reporting current phase, round,
   last verdict).
-- Role skill bodies (under `bootstrap/skills/` or sibling): three
-  bodies, one per role. Each describes what the role reads, what it
-  writes, and the contract for verdict / response shape. Loaded into
-  the worker's context at spawn.
+- Role bodies under `bootstrap/roles/`: two markdown bodies, one
+  per role (`engineer.md`, `reviewer.md`). Each describes what the
+  role reads, what it writes, and the contract for verdict /
+  response shape. Loaded into the worker's context at spawn. The
+  coordinator passes per-instance config (e.g. `reviewer` instance
+  label A or B, output path) at spawn time so a single reviewer body
+  serves both instances.
 - Composer / rule pool: no changes expected for v1. Role skills live
   alongside the fleet harness, not in the rule pool.
 
