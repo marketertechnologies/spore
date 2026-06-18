@@ -271,12 +271,12 @@ func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
 
 func TestIsClaudeAgent(t *testing.T) {
 	cases := map[string]bool{
-		"claude":                       true,
-		"claude-code":                  true,
+		"claude":                            true,
+		"claude-code":                       true,
 		"/run/current-system/sw/bin/claude": true,
-		"sleep 30":                     false,
-		"codex exec --model foo":       false,
-		"":                             false,
+		"sleep 30":                          false,
+		"codex exec --model foo":            false,
+		"":                                  false,
 	}
 	for agent, want := range cases {
 		if got := isClaudeAgent(agent); got != want {
