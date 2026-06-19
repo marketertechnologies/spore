@@ -28,3 +28,8 @@
 # would create a drift target. Downstream consumers (no embed source
 # in-tree) commit their .claude/skills/; spore-as-project does not.
 /.claude/skills/
+
+# local secrets (never commit)
+secrets.env
+*.local.nix
+*linear*key*
