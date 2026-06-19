@@ -12,15 +12,19 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   branches target it; merge each in as it goes green (operator does not review
   PRs - trust lint + `nix flake check`). `evolved` git remote -> ~/projects/spore.
 - DONE + merged: ROC-2 (sandbox, #44), ROC-3/4/6/8/9 (evolved kernel adopted,
-  #45). The fork's kernel IS evolved spore 0.9.2 now. E2E green: `nix flake
-  check` runs the NixOS fleet VM test.
-- NEXT: **ROC-7** - matter acts as rocky (OAuth actor-app token), delegate (not
-  assign), map ROC states (Todo=ready), and wire `maybeSandboxWrap` into the
-  worker spawn path. Then **ROC-14** (mcom supervisor + token-cap respawn =
-  automatic coordinator rotation).
+  #45), ROC-7 (matter delegates to rocky, not assign + ROC config in spore.toml,
+  #46 - verified live against ROC). The fork's kernel IS evolved spore 0.9.2.
+  E2E green: `nix flake check` runs the NixOS fleet VM test.
+- NEXT: **ROC-14** - mcom supervisor + token-cap respawn = automatic coordinator
+  rotation (the session-rotation answer). Distil from mcom helm-spawn.sh; also
+  tmux config (TMUX_TMPDIR pin, detach-on-destroy off), statusline, headless guard.
 - Then: ROC-5 (collapse multi-project -> single), ROC-10/11/12 (re-apply
   recipes/migrations/marketertechnologies-identity, set aside in #45),
-  ROC-13 (shims reconcile), ROC-15 (mcom guards/blocks), ROC-16 (Hetzner, deferred).
+  ROC-13 (shims reconcile - shims already present+building, likely just verify),
+  ROC-15 (mcom guards/blocks), ROC-16 (Hetzner, deferred).
+- Known flake: internal/coordinator/spawn TestRunSignalShutdownKillsSession is
+  tmux-timing-flaky under parallel `go test ./...`; passes in isolation and in
+  the clean nix sandbox. Not a blocker; could harden later.
 - Validate every commit: `nix develop -c go test ./...` + `spore lint` + the
   full `nix flake check`. Regenerate instruction files with
   `spore compose --consumer spore > CLAUDE.md` (and AGENTS.md) after rule edits.
