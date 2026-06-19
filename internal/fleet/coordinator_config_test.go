@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -19,9 +20,9 @@ func TestParseCoordinatorTOML(t *testing.T) {
 [coordinator]
 driver = "claude"
 model  = "opus"
-brief  = "docs/helm.md"
+brief  = "docs/brief.md"
 `,
-			want: CoordinatorConfig{Driver: "claude", Model: "opus", Brief: "docs/helm.md"},
+			want: CoordinatorConfig{Driver: "claude", Model: "opus", Brief: "docs/brief.md"},
 		},
 		{
 			name:  "single quotes",
@@ -50,8 +51,8 @@ driver = "claude"
 		},
 		{
 			name:  "external_session_pattern",
-			input: "[coordinator]\nexternal_session_pattern = \"^helm-.*\"\n",
-			want:  CoordinatorConfig{ExternalSessionPattern: "^helm-.*"},
+			input: "[coordinator]\nexternal_session_pattern = \"^pilot-.*\"\n",
+			want:  CoordinatorConfig{ExternalSessionPattern: "^pilot-.*"},
 		},
 		{
 			name:    "unknown key errors",
@@ -101,7 +102,7 @@ func TestLoadCoordinatorConfigMissingFile(t *testing.T) {
 
 func TestLoadCoordinatorConfigReadsFile(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("[coordinator]\ndriver = \"codex\"\nmodel = \"gpt-5.5\"\nbrief = \"docs/helm.md\"\n")
+	body := []byte("[coordinator]\ndriver = \"codex\"\nmodel = \"gpt-5.5\"\nbrief = \"docs/brief.md\"\n")
 	if err := os.WriteFile(filepath.Join(dir, "spore.toml"), body, 0o600); err != nil {
 		t.Fatalf("write spore.toml: %v", err)
 	}
@@ -109,16 +110,52 @@ func TestLoadCoordinatorConfigReadsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCoordinatorConfig: %v", err)
 	}
-	want := CoordinatorConfig{Driver: "codex", Model: "gpt-5.5", Brief: "docs/helm.md"}
+	want := CoordinatorConfig{Driver: "codex", Model: "gpt-5.5", Brief: "docs/brief.md"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestLoadCoordinatorConfigFromWorktreeReadsMain(t *testing.T) {
+	main := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		out, err := exec.Command("git", append([]string{"-C", main}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	body := []byte("[coordinator]\nexternal_session_pattern = \"^pilot-.*\"\n")
+	if err := os.WriteFile(filepath.Join(main, "spore.toml"), body, 0o600); err != nil {
+		t.Fatalf("write spore.toml: %v", err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	out, err := exec.Command("git", "-C", main, "worktree", "add", "-q", "-b", "feature", wt).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "spore.toml")); err == nil {
+		if err := os.Remove(filepath.Join(wt, "spore.toml")); err != nil {
+			t.Fatalf("remove worktree spore.toml: %v", err)
+		}
+	}
+	got, err := LoadCoordinatorConfig(wt)
+	if err != nil {
+		t.Fatalf("LoadCoordinatorConfig from worktree: %v", err)
+	}
+	if got.ExternalSessionPattern != "^pilot-.*" {
+		t.Errorf("worktree read missed main spore.toml: got %+v", got)
 	}
 }
 
 func TestCoordinatorRolePathPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
-		[]byte("[coordinator]\nbrief = \"docs/helm.md\"\n"), 0o600); err != nil {
+		[]byte("[coordinator]\nbrief = \"docs/brief.md\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -131,7 +168,7 @@ func TestCoordinatorRolePathPrecedence(t *testing.T) {
 
 	t.Run("toml relative resolves against root", func(t *testing.T) {
 		t.Setenv(CoordinatorRoleEnv, "")
-		want := filepath.Join(dir, "docs/helm.md")
+		want := filepath.Join(dir, "docs/brief.md")
 		if got := CoordinatorRolePath(dir); got != want {
 			t.Errorf("toml relative: got %q, want %q", got, want)
 		}
@@ -139,7 +176,7 @@ func TestCoordinatorRolePathPrecedence(t *testing.T) {
 
 	t.Run("toml absolute passes through", func(t *testing.T) {
 		t.Setenv(CoordinatorRoleEnv, "")
-		abs := filepath.Join(dir, "abs-helm.md")
+		abs := filepath.Join(dir, "abs-brief.md")
 		if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
 			[]byte("[coordinator]\nbrief = \""+abs+"\"\n"), 0o600); err != nil {
 			t.Fatal(err)

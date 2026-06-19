@@ -10,22 +10,20 @@ import (
 	"time"
 
 	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/coordinator"
+	"github.com/versality/spore/internal/coordinator/failuresummary"
 	"github.com/versality/spore/internal/coordinator/loopguard"
+	"github.com/versality/spore/internal/coordinator/reconcilehealth"
+	"github.com/versality/spore/internal/coordinator/spawn"
 	"github.com/versality/spore/internal/coordinator/statedebt"
 	"github.com/versality/spore/internal/coordinator/tokenmonitor"
 	"github.com/versality/spore/internal/coordinator/verify"
+	"github.com/versality/spore/internal/coordinator/workerwatch"
 	"github.com/versality/spore/internal/fleet"
 )
 
-// defaultCoordinatorStateDir resolves the coordinator state dir from
-// the SPORE_COORDINATOR_STATE_DIR env var, falling back to
-// $HOME/.local/state/spore/coordinator.
 func defaultCoordinatorStateDir() string {
-	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "spore", "coordinator")
+	return coordinator.StateDir()
 }
 
 const coordinatorUsage = `spore coordinator - coordinator support commands
@@ -35,6 +33,7 @@ Usage:
 
 Subcommands:
   start           Spawn the coordinator tmux session (idempotent).
+  spawn           systemd-ExecStart entry: tier-gate, ensure, block until death.
   stop            Kill the coordinator tmux session.
   restart         Stop then start.
   status          Print whether the coordinator session is alive.
@@ -44,6 +43,9 @@ Subcommands:
   loop-guard      Check the respawn circuit breaker.
   token-monitor   Stop-hook: check coordinator context budget.
   monitor         Boot-time verdict over the token-monitor ledger.
+  failure-summary Cross-ledger failure aggregator with recovery actions.
+  worker-watch    Diff active-worker set against snapshot; emit transitions.
+  sla-scan        Flag stale / done / orphan state.md entries.
 `
 
 func runCoordinator(args []string) int {
@@ -58,6 +60,8 @@ func runCoordinator(args []string) int {
 		return 0
 	case "start":
 		return runCoordinatorStart(rest)
+	case "spawn":
+		return runCoordinatorSpawn(rest)
 	case "stop":
 		return runCoordinatorStop(rest)
 	case "restart":
@@ -76,6 +80,12 @@ func runCoordinator(args []string) int {
 		return runCoordinatorTokenMonitor(rest)
 	case "monitor":
 		return runCoordinatorMonitor(rest)
+	case "failure-summary":
+		return runCoordinatorFailureSummary(rest)
+	case "worker-watch":
+		return runCoordinatorWorkerWatch(rest)
+	case "sla-scan":
+		return runCoordinatorSlaScan(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "spore coordinator: unknown subcommand %q\n\n%s", sub, coordinatorUsage)
 		return 2
@@ -417,7 +427,7 @@ func runCoordinatorMonitor(args []string) int {
 		return 2
 	}
 	if *help || *helpLong {
-		fmt.Println("spore coordinator monitor - boot-time verdict over the token-monitor ledger")
+		fmt.Println("spore coordinator monitor - boot-time verdict over the token-monitor ledger + reconcile-health")
 		fmt.Println("  --threshold N  consecutive-broken count (default 3)")
 		return 0
 	}
@@ -425,13 +435,43 @@ func runCoordinatorMonitor(args []string) int {
 	cfg := tokenmonitor.Config{Inbox: "self"}
 	cfg = cfg.Defaults()
 
+	rc := 0
+	printedOK := false
+
 	broken, sessions := tokenmonitor.LedgerVerdict(cfg.LedgerFile, cfg.SoftCap, *threshold)
 	if broken {
 		fmt.Fprintf(os.Stderr, "broken-hook: %s\n", sessions)
-		return 2
+		rc = 2
 	}
-	fmt.Println("ok")
-	return 0
+
+	health, herr := reconcilehealth.Read(reconcilehealth.DefaultPath())
+	if herr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile-health: %v\n", herr)
+		if rc < 2 {
+			rc = 2
+		}
+	} else {
+		findings, hrc := reconcilehealth.Verdict(health, time.Now(), reconcilehealth.DefaultStaleAfter)
+		for _, line := range findings {
+			if hrc == 0 {
+				// Informational (paused / unwritten). Prefix with `ok:`
+				// so the boot probe's silent-on-ok matcher folds it into
+				// the rollup; direct callers still see the reason.
+				fmt.Println("ok: " + line)
+				printedOK = true
+			} else {
+				fmt.Fprintln(os.Stderr, line)
+			}
+		}
+		if hrc > rc {
+			rc = hrc
+		}
+	}
+
+	if rc == 0 && !printedOK {
+		fmt.Println("ok")
+	}
+	return rc
 }
 
 func runCoordinatorLoopGuard(args []string) int {
@@ -487,5 +527,156 @@ func runCoordinatorLoopGuard(args []string) int {
 	}
 	fmt.Printf("loop-guard: ok (recent=%d, max=%d)\n",
 		status.RecentCount, status.MaxRespawns)
+	return 0
+}
+
+func runCoordinatorWorkerWatch(args []string) int {
+	fs := flag.NewFlagSet("coordinator worker-watch", flag.ContinueOnError)
+	hook := fs.Bool("hook", false, "Stop-hook mode: drain stdin, gate on SPORE_COORDINATOR_INBOX, emit stderr block + exit 2 on transitions")
+	stateFile := fs.String("state-file", "", "snapshot path (default: $SPORE_WORKER_WATCH_FILE or $SPORE_WORKER_WATCH_DIR/state.ndjson)")
+	projectsFile := fs.String("projects-file", "", "projects-list path (default: $WT_CFG/projects)")
+	help := fs.Bool("h", false, "show help")
+	helpLong := fs.Bool("help", false, "show help")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "spore coordinator worker-watch:", err)
+		return 2
+	}
+	if *help || *helpLong {
+		fmt.Println("spore coordinator worker-watch - diff active workers against snapshot")
+		fmt.Println("  --hook              Stop-hook mode (gate on SPORE_COORDINATOR_INBOX, exit 2 on transitions)")
+		fmt.Println("  --state-file PATH   snapshot path override")
+		fmt.Println("  --projects-file P   projects-list path override")
+		fmt.Println("")
+		fmt.Println("env:")
+		fmt.Println("  SPORE_COORDINATOR_INBOX             gate (must sit under SPORE_COORDINATOR_STATE_DIR)")
+		fmt.Println("  SPORE_WORKER_WATCH_FILE              snapshot path (overrides --state-file default)")
+		fmt.Println("  SPORE_WORKER_WATCH_DIR               snapshot dir (state.ndjson inside)")
+		fmt.Println("  SPORE_WORKER_WATCH_STUCK_OPENCODE_SECS  default 600")
+		fmt.Println("  SPORE_WORKER_WATCH_STUCK_CLAUDE_SECS    default 900")
+		fmt.Println("  SPORE_WORKER_WATCH_DEBOUNCE             default 2")
+		fmt.Println("  SPORE_WORKER_WATCH_HEAD_MOVED           1 enables HEAD-MOVED lines")
+		return 0
+	}
+
+	if *hook {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		inbox := os.Getenv("SPORE_COORDINATOR_INBOX")
+		stateRoot := defaultCoordinatorStateDir()
+		if !inboxUnderState(inbox, stateRoot) {
+			return 0
+		}
+	}
+
+	cfg := workerwatch.Config{
+		StuckOpencodeSecs: envInt("SPORE_WORKER_WATCH_STUCK_OPENCODE_SECS"),
+		StuckClaudeSecs:   envInt("SPORE_WORKER_WATCH_STUCK_CLAUDE_SECS"),
+		Debounce:          envInt("SPORE_WORKER_WATCH_DEBOUNCE"),
+		HeadMovedOn:       os.Getenv("SPORE_WORKER_WATCH_HEAD_MOVED") == "1",
+	}
+	if *stateFile == "" {
+		*stateFile = workerwatch.DefaultStateFile()
+	}
+	if *projectsFile == "" {
+		*projectsFile = workerwatch.DefaultProjectsFile()
+	}
+
+	env := workerwatch.ProductionEnv(time.Now(), *projectsFile, *stateFile)
+	result := workerwatch.Run(cfg, env)
+
+	if len(result.Transitions) == 0 {
+		return 0
+	}
+	if *hook {
+		fmt.Fprint(os.Stderr, workerwatch.FormatBlock(result.Transitions))
+		return 2
+	}
+	fmt.Print(workerwatch.FormatBlock(result.Transitions))
+	return 0
+}
+
+func inboxUnderState(inbox, stateRoot string) bool {
+	if inbox == "" || stateRoot == "" {
+		return false
+	}
+	stateRoot = filepath.Clean(stateRoot)
+	if inbox == stateRoot {
+		return true
+	}
+	return len(inbox) > len(stateRoot) && inbox[:len(stateRoot)] == stateRoot && inbox[len(stateRoot)] == '/'
+}
+
+func runCoordinatorFailureSummary(args []string) int {
+	fs := flag.NewFlagSet("coordinator failure-summary", flag.ContinueOnError)
+	since := fs.Int64("since", 0, "window in seconds (overrides SPORE_FAILURE_WINDOW_SECS)")
+	floor := fs.Int("floor", 0, "active-live floor (overrides SPORE_FLEET_FLOOR)")
+	quiet := fs.Bool("quiet", false, "suppress header + counts; only emit actionable lines")
+	help := fs.Bool("h", false, "show help")
+	helpLong := fs.Bool("help", false, "show help")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "spore coordinator failure-summary:", err)
+		return 2
+	}
+	if *help || *helpLong {
+		fmt.Println("spore coordinator failure-summary - cross-ledger failure aggregator")
+		fmt.Println("  --since SECS  window in seconds (default 86400)")
+		fmt.Println("  --floor N     active-live floor (default 6)")
+		fmt.Println("  --quiet       suppress header + counts; emit actionable lines only")
+		return 0
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: spore coordinator failure-summary [--since SECS] [--floor N] [--quiet]")
+		return 2
+	}
+
+	cfg := failuresummary.Config{
+		WindowSecs: *since,
+		Floor:      *floor,
+		Quiet:      *quiet,
+	}
+	summary := failuresummary.Summarize(cfg)
+	fmt.Print(summary.Format(*quiet))
+	if len(summary.Actions) > 0 {
+		return 2
+	}
+	return 0
+}
+
+func runCoordinatorSpawn(args []string) int {
+	fs := flag.NewFlagSet("coordinator spawn", flag.ContinueOnError)
+	help := fs.Bool("h", false, "show help")
+	helpLong := fs.Bool("help", false, "show help")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "spore coordinator spawn:", err)
+		return 2
+	}
+	if *help || *helpLong {
+		fmt.Println("spore coordinator spawn - systemd-ExecStart entry point")
+		fmt.Println()
+		fmt.Println("Tier-gates (claude requires max), ensures the coordinator")
+		fmt.Println("tmux session is alive (spawn or adopt), then blocks until")
+		fmt.Println("the session dies via an event-driven tmux session-closed")
+		fmt.Println("hook. SIGTERM/SIGINT kill the session and return 0 so a")
+		fmt.Println("Restart=on-success unit cycles cleanly; preflight failures")
+		fmt.Println("(tier mismatch, agent exec failure) exit non-zero so the")
+		fmt.Println("unit stays down until the operator clears state.")
+		return 0
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: spore coordinator spawn")
+		return 2
+	}
+
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore coordinator spawn:", err)
+		return 1
+	}
+	if err := spawn.Run(spawn.Options{ProjectRoot: root}); err != nil {
+		fmt.Fprintln(os.Stderr, "spore coordinator spawn:", err)
+		return 1
+	}
 	return 0
 }

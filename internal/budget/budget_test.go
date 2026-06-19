@@ -53,10 +53,10 @@ func TestAdviceBands(t *testing.T) {
 		{0.79, 0.79, "ok"},
 		{0.80, 0, "tighten"},
 		{0.89, 0.79, "tighten"},
-		{0.90, 0, "ration"},
+		{0.90, 0, "tighten"},
 		{0, 0.80, "tighten"},
-		{0, 0.90, "ration"},
-		{1.5, 0.1, "ration"},
+		{0, 0.90, "tighten"},
+		{1.5, 0.1, "tighten"},
 	}
 	for _, c := range cases {
 		if got := adviceFor(c.short, c.long); got != c.want {
@@ -108,7 +108,6 @@ func TestRefreshAndAggregate(t *testing.T) {
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("AGENT_BUDGET_CREDS", filepath.Join(dir, "no-such-credentials.json"))
-	t.Setenv("AGENT_BUDGET_ACCOUNTS_DIR", filepath.Join(dir, "no-accounts"))
 
 	if err := Refresh(); err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -162,19 +161,14 @@ func TestStateRoundTrip(t *testing.T) {
 	t.Setenv("AGENT_BUDGET_STATE_DIR", dir)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	reset := now.Add(2 * time.Hour)
-	rem := int64(8000)
-	lim := int64(10000)
 	want := &state{
-		Mode:      "api",
+		Mode:      "subscription",
 		UpdatedAt: now,
 		Short: windowState{
 			DurationSeconds: int(shortWindow.Seconds()),
 			Frac:            0.42,
 			ResetAt:         &reset,
-			Source:          "api-headers",
-			TokensRemaining: &rem,
-			TokensLimit:     &lim,
-			TokensBucket:    "tokens",
+			Source:          "usage",
 		},
 		Long: windowState{
 			DurationSeconds: int(longWindow.Seconds()),
@@ -182,7 +176,7 @@ func TestStateRoundTrip(t *testing.T) {
 			CapUSD:          2000.0,
 			Frac:            0.00625,
 			MessageCount:    3,
-			Source:          "transcript-est",
+			Source:          "transcript",
 		},
 		Advice: "ok",
 		Cache: map[string]*fileEntry{
@@ -204,11 +198,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if got.Mode != want.Mode || got.Advice != want.Advice {
 		t.Errorf("mode/advice mismatch: got %+v", got)
 	}
-	if got.Short.Source != "api-headers" || got.Short.TokensBucket != "tokens" {
+	if got.Short.Source != "usage" {
 		t.Errorf("short window mismatch: got %+v", got.Short)
-	}
-	if got.Short.TokensRemaining == nil || *got.Short.TokensRemaining != 8000 {
-		t.Errorf("tokens_remaining round-trip: %+v", got.Short.TokensRemaining)
 	}
 	if got.UsageSnapshot == nil || got.UsageSnapshot.Short.Utilization != 42.0 {
 		t.Errorf("usage_snapshot round-trip: %+v", got.UsageSnapshot)
@@ -243,19 +234,19 @@ func TestStateRoundTrip(t *testing.T) {
 
 func TestBandFor(t *testing.T) {
 	cases := []struct {
-		frac, tighten, ration float64
-		want                  string
+		frac, tighten float64
+		want          string
 	}{
-		{0, 0.7, 0.9, "ok"},
-		{0.69, 0.7, 0.9, "ok"},
-		{0.70, 0.7, 0.9, "tighten"},
-		{0.89, 0.7, 0.9, "tighten"},
-		{0.90, 0.7, 0.9, "ration"},
-		{1.5, 0.7, 0.9, "ration"},
+		{0, 0.7, "ok"},
+		{0.69, 0.7, "ok"},
+		{0.70, 0.7, "tighten"},
+		{0.89, 0.7, "tighten"},
+		{0.90, 0.7, "tighten"},
+		{1.5, 0.7, "tighten"},
 	}
 	for _, c := range cases {
-		if got := bandFor(c.frac, c.tighten, c.ration); got != c.want {
-			t.Errorf("bandFor(%.2f, %.2f, %.2f) = %q want %q", c.frac, c.tighten, c.ration, got, c.want)
+		if got := bandFor(c.frac, c.tighten); got != c.want {
+			t.Errorf("bandFor(%.2f, %.2f) = %q want %q", c.frac, c.tighten, got, c.want)
 		}
 	}
 }
@@ -283,38 +274,17 @@ func TestUpdateMarkersTransitions(t *testing.T) {
 		t.Errorf("first tighten: want fresh=true")
 	}
 	must("short-tighten")
-	mustAbsent("short-ration")
 
 	fresh, _ = updateMarkers(dir, "short", "tighten")
 	if fresh {
 		t.Errorf("repeat tighten: want fresh=false")
 	}
 
-	fresh, _ = updateMarkers(dir, "short", "ration")
-	if !fresh {
-		t.Errorf("crossing into ration: want fresh=true")
-	}
-	must("short-tighten")
-	must("short-ration")
-
-	fresh, _ = updateMarkers(dir, "short", "ration")
-	if fresh {
-		t.Errorf("repeat ration: want fresh=false")
-	}
-
-	fresh, _ = updateMarkers(dir, "short", "tighten")
-	if fresh {
-		t.Errorf("ration -> tighten dip: want fresh=false (tighten marker held)")
-	}
-	must("short-tighten")
-	mustAbsent("short-ration")
-
 	fresh, _ = updateMarkers(dir, "short", "ok")
 	if fresh {
 		t.Errorf("drop to ok must not be fresh")
 	}
 	mustAbsent("short-tighten")
-	mustAbsent("short-ration")
 
 	fresh, _ = updateMarkers(dir, "short", "tighten")
 	if !fresh {
@@ -344,19 +314,15 @@ func TestReminderTextBindingHints(t *testing.T) {
 	if !strings.Contains(got, "long=18%") {
 		t.Errorf("missing long pct: %q", got)
 	}
-	if !strings.Contains(got, "runner") {
-		t.Errorf("missing tighten advice tail (runner mention): %q", got)
+	if !strings.Contains(got, "worker") {
+		t.Errorf("missing tighten advice tail (worker mention): %q", got)
 	}
 
-	rationShort := windowState{Frac: 0.92, OldestEventAt: ptrTime(now.Add(-4*time.Hour - 22*time.Minute))}
-	rationLong := windowState{Frac: 0.22, OldestEventAt: ptrTime(now.Add(-2 * 24 * time.Hour))}
-	r := &state{Short: rationShort, Long: rationLong}
-	gotR := reminderTextFor(r, "ration")
-	if !strings.Contains(gotR, "AGENT BUDGET (ration):") {
-		t.Errorf("missing ration header: %q", gotR)
-	}
-	if !strings.Contains(gotR, "Stop spawning runners") {
-		t.Errorf("missing ration advice tail: %q", gotR)
+	highShort := windowState{Frac: 0.92, OldestEventAt: ptrTime(now.Add(-4*time.Hour - 22*time.Minute))}
+	r := &state{Short: highShort, Long: long}
+	gotHigh := reminderTextFor(r, "tighten")
+	if !strings.Contains(gotHigh, "short=92%") {
+		t.Errorf("missing high-utilization short pct: %q", gotHigh)
 	}
 }
 
@@ -378,7 +344,6 @@ func TestStopHookFiresOnceThenSilent(t *testing.T) {
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("AGENT_BUDGET_CREDS", filepath.Join(dir, "no-such-credentials.json"))
-	t.Setenv("AGENT_BUDGET_ACCOUNTS_DIR", filepath.Join(dir, "no-accounts"))
 	t.Setenv("AGENT_BUDGET_SHORT_CAP", "0.045")
 	t.Setenv("AGENT_BUDGET_LONG_CAP", "10000")
 
@@ -425,7 +390,6 @@ func TestStopHookUnderCapExitsZero(t *testing.T) {
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects-empty"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("AGENT_BUDGET_CREDS", filepath.Join(dir, "no-such-credentials.json"))
-	t.Setenv("AGENT_BUDGET_ACCOUNTS_DIR", filepath.Join(dir, "no-accounts"))
 	t.Setenv("AGENT_BUDGET_SHORT_CAP", "1000")
 	t.Setenv("AGENT_BUDGET_LONG_CAP", "10000")
 

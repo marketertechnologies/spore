@@ -17,27 +17,31 @@ import (
 )
 
 // Meta is the parsed frontmatter view. Status, Slug, Title, Created,
-// Project, Host, Agent, and Session are first-class scalars; Needs is
-// a first-class list. Any other recognised key lands in Extra so a
-// Parse / Write round trip preserves it.
+// Project, Host, Agent, Session, and Gate are first-class scalars;
+// Needs is a first-class list. Any other recognised key lands in Extra
+// so a Parse / Write round trip preserves it.
 //
 // Session is the tmux session name the spawner registered for this
-// task. The kernel's own ensureSession path uses the computed
-// "spore/<project>/<slug>" name, but downstream spawners that mint
-// their own session names (e.g. "🐈 acme/my-task [opus]") write
+// task. The kernel's own ensureSession path uses the computed wt-style
+// name, but downstream spawners that mint their own session names write
 // the real name here so reap/done/merge can target the live session
 // instead of a stale computed one.
 type Meta struct {
-	Status  string
-	Slug    string
-	Title   string
-	Created string
-	Project string
-	Host    string
-	Agent   string
-	Session string
-	Needs   []string
-	Extra   map[string]string
+	Status         string
+	Slug           string
+	Title          string
+	Created        string
+	Project        string
+	Host           string
+	Agent          string
+	Priority       string
+	Session        string
+	Gate           string
+	Needs          []string
+	ConsumerClaims []string
+	Extra          map[string]string
+
+	gateSet bool
 }
 
 // Parse splits content at the leading and closing `---` fence lines
@@ -89,16 +93,27 @@ func Parse(content []byte) (Meta, []byte, error) {
 			m.Host = val
 		case "agent":
 			m.Agent = val
+		case "priority":
+			m.Priority = val
 		case "session":
 			m.Session = val
+		case "gate":
+			m.Gate = val
+			m.gateSet = true
 		case "needs":
 			listTarget = &m.Needs
+		case "consumer-claims":
+			listTarget = &m.ConsumerClaims
 		default:
 			if m.Extra == nil {
 				m.Extra = make(map[string]string)
 			}
 			m.Extra[key] = val
 		}
+	}
+
+	if m.Gate == "" && m.Extra != nil {
+		m.Gate = m.Extra["scheduler"]
 	}
 
 	if !closed {
@@ -127,8 +142,13 @@ func Write(m Meta, body []byte) []byte {
 	writeScalar(&buf, "project", m.Project)
 	writeScalar(&buf, "host", m.Host)
 	writeScalar(&buf, "agent", m.Agent)
+	writeScalar(&buf, "priority", m.Priority)
 	writeScalar(&buf, "session", m.Session)
+	if m.Gate != "" && (m.gateSet || m.Extra == nil || m.Extra["scheduler"] != m.Gate) {
+		writeScalar(&buf, "gate", m.Gate)
+	}
 	writeBlockList(&buf, "needs", m.Needs)
+	writeBlockList(&buf, "consumer-claims", m.ConsumerClaims)
 
 	keys := make([]string, 0, len(m.Extra))
 	for k := range m.Extra {

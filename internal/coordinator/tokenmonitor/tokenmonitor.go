@@ -15,23 +15,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/coordinator"
 	"github.com/versality/spore/internal/transcript"
 )
 
 const (
 	DefaultSoftCap = 150000
 	DefaultHardCap = 190000
-
-	// coordinatorRespawnCommand is the tmux command surfaced to the
-	// coordinator agent on soft/hard cap. respawn-pane -k re-execs the
-	// pane's command without tearing down the session, so an
-	// SSH-attached operator stays connected while the agent process is
-	// replaced. The session-name expression resolves to the current
-	// session, so an external_session_pattern coordinator (running
-	// under a non-spore session name) respawns itself in place too.
-	// The exec target is the host shim that spore infect installs;
-	// keep this in sync with internal/infect/infect.go install paths.
-	coordinatorRespawnCommand = `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /usr/local/bin/spore-coordinator-launch'`
 )
 
 type Config struct {
@@ -72,15 +62,9 @@ func (c Config) Defaults() Config {
 	return c
 }
 
-// defaultStateDir resolves the coordinator state dir from the
-// SPORE_COORDINATOR_STATE_DIR env var, falling back to
-// $HOME/.local/state/spore/coordinator.
+// defaultStateDir delegates to the central resolver.
 func defaultStateDir() string {
-	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "spore", "coordinator")
+	return coordinator.DefaultStateDir()
 }
 
 // IsCoordinator returns true if the inbox path is under the state
@@ -138,10 +122,9 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"Wrap up NOW:\n"+
 				"  1. Flush state.md so the next coordinator boots from it.\n"+
 				"  2. Post a one-line summary to the operator if anything is still open.\n"+
-				"  3. Run: %s\n"+
-				"respawn-pane preserves the tmux session and any attached SSH client;\n"+
-				"only the agent process is replaced. The reconciler is not involved.",
-			ctx, cfg.HardCap, coordinatorRespawnCommand)
+				"  3. Run: tmux kill-session\n"+
+				"The reconciler respawns a fresh coordinator from state.md.",
+			ctx, cfg.HardCap)
 		appendLedger(cfg, sid, ctx, false, true)
 		return result
 	}
@@ -153,9 +136,10 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 		result.Message = fmt.Sprintf(
 			"COORDINATOR TOKEN MONITOR (soft): context %d tokens >= soft warn %d.\n"+
 				"Wrap up at the next natural break: flush state.md, then run\n"+
-				"  %s\n"+
-				"Hard cap is %d; crossing it forces a wrap-up reminder on every Stop.",
-			ctx, cfg.SoftCap, coordinatorRespawnCommand, cfg.HardCap)
+				"  tmux kill-session\n"+
+				"The reconciler respawns a fresh coordinator from state.md. Hard cap is %d;\n"+
+				"crossing it forces a wrap-up reminder on every Stop.",
+			ctx, cfg.SoftCap, cfg.HardCap)
 		appendLedger(cfg, sid, ctx, true, false)
 		return result
 	}

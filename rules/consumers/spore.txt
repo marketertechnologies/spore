@@ -6,6 +6,7 @@ core/roles
 core/source-map
 core/tier-policy
 core/role
+core/worker-autonomy
 core/writing-style
 core/tldr-first
 core/commits
@@ -16,4 +17,5 @@ core/validation
 core/code-comments
 core/tmux-api
 core/worker-etiquette
+core/worker-escalation
 ?align core/alignment-mode
