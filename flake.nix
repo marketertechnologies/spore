@@ -29,7 +29,7 @@
             pname = "spore";
             inherit version;
             src = ./.;
-            subPackages = [ "cmd/spore" ];
+            subPackages = [ "cmd/spore" "cmd/spore-sandbox" ];
             vendorHash = null;
             ldflags = [ "-X=github.com/versality/spore.buildCommit=${commit}" ];
             # Integration tests exec git and tmux directly; without
@@ -113,6 +113,10 @@
               tmux
               fzf
               ripgrep
+              # spore-sandbox wraps agents in a bwrap jail; the worker
+              # spawn path errors hard when the sandbox is enabled but
+              # bwrap is missing, so keep it on the devShell PATH.
+              bubblewrap
             ]) ++ [
               claude-code.packages.${system}.default
             ];
