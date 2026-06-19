@@ -12,7 +12,6 @@
 package fleet
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -20,9 +19,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -68,8 +68,8 @@ type MatterResult struct {
 	Err     error
 }
 
-// Reconcile runs a single pass: list active tasks, list spore-prefix
-// tmux sessions, reap stale sessions, then spawn missing ones up to
+// Reconcile runs a single pass: list active tasks, list managed tmux
+// sessions, reap stale sessions, then spawn missing ones up to
 // the MaxWorkers cap. Honours the kill-switch flag at FlagPath. The
 // singleton coordinator session is ensured alongside the worker fleet
 // when the flag is on, and reaped when the flag goes off.
@@ -106,7 +106,7 @@ func Reconcile(cfg Config) (Result, error) {
 	sortOrderBySlug := map[string]float64{}
 	for _, m := range metas {
 		statusBySlug[m.Slug] = m.Status
-		if m.Status == "active" {
+		if task.IsActive(m.Status) {
 			activeSet[m.Slug] = true
 		}
 		if v := m.Extra[matter.MatterSortOrderKey]; v != "" {
@@ -120,9 +120,9 @@ func Reconcile(cfg Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// The coordinator shares the spore-session prefix but is not a
-	// worker; filter it out before the reap loop and the cap math so
-	// EnsureCoordinator above stays the sole owner of its lifecycle.
+	// The coordinator is not a worker; filter it out before the reap
+	// loop and the cap math so EnsureCoordinator above stays the sole
+	// owner of its lifecycle.
 	var workerSlugs []string
 	runningSet := map[string]bool{}
 	for _, s := range running {
@@ -142,7 +142,7 @@ func Reconcile(cfg Config) (Result, error) {
 	// are reaped.
 	for _, slug := range workerSlugs {
 		switch statusBySlug[slug] {
-		case "active", "paused", "blocked":
+		case task.StatusActive, task.StatusBlocked:
 			res.Kept = append(res.Kept, slug)
 			continue
 		}
@@ -185,11 +185,17 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 	agentCounts := agentCountsFromMetas(metas, runningSet)
 
+	// MaxWorkers caps NEW tmux launches per pass, not the total alive
+	// fleet. Pre-existing-alive sessions are already classified as Kept
+	// in the reap loop above; charging them against the spawn cap would
+	// starve every newly-Ready task on the next pass (under
+	// --max-workers=1, one alive session would skip every active slug).
+	spawnedThisPass := 0
 	for _, slug := range actives {
 		if runningSet[slug] {
 			continue
 		}
-		if len(runningSet) >= cfg.MaxWorkers {
+		if spawnedThisPass >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
@@ -197,18 +203,12 @@ func Reconcile(cfg Config) (Result, error) {
 		if err != nil {
 			return res, fmt.Errorf("assign agent %s: %w", slug, err)
 		}
-		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
+		if _, err := task.Ensure(cfg.TasksDir, slug, nil); err != nil {
 			return res, fmt.Errorf("ensure %s: %w", slug, err)
 		}
-		// Fire OnSpawn now that the session is up: this is the
-		// rover-claim signal matter adapters bind their upstream
-		// "in progress" mirror to (e.g. Linear's Ready -> In
-		// Progress flip). Errors from a matter push do not roll
-		// back the spawn; the worker is real, the kanban catches
-		// up on the next reconcile pass.
-		task.NotifyMatterSpawn(cfg.ProjectRoot, cfg.TasksDir, slug, os.Stderr)
 		res.Spawned = append(res.Spawned, slug)
 		runningSet[slug] = true
+		spawnedThisPass++
 		agentCounts[picked]++
 	}
 
@@ -284,13 +284,20 @@ func syncMatters(projectRoot string) []MatterResult {
 		return nil
 	}
 	out := make([]MatterResult, 0, len(matters))
-	ctx := context.Background()
+	// Per-backend timeout so a hung Linear / GitHub call does not
+	// stall the whole reconcile pass. 30s is generous for normal
+	// API latency and short enough that a wedged backend still gets
+	// re-tried on the next reconcile.
 	for _, m := range matters {
+		ctx, cancel := context.WithTimeout(context.Background(), matterSyncTimeout)
 		c, u, err := m.Sync(ctx, projectRoot)
+		cancel()
 		out = append(out, MatterResult{Name: m.Name(), Created: c, Updated: u, Err: err})
 	}
 	return out
 }
+
+const matterSyncTimeout = 30 * time.Second
 
 // LoadMaxWorkers reads `[fleet] max_workers = N` from a spore.toml
 // at projectRoot, falling back to DefaultMaxWorkers when missing.
@@ -319,36 +326,22 @@ func LoadMaxWorkers(projectRoot string) (int, error) {
 
 func parseFleetTOML(content string) (map[string]int, error) {
 	out := map[string]int{}
-	inFleet := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	err := sporetoml.ScanSections(content, func(l sporetoml.Line) error {
+		if l.Section != "fleet" {
+			return nil
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inFleet = strings.TrimSpace(line[1:len(line)-1]) == "fleet"
-			continue
-		}
-		if !inFleet {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return nil, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		if i := strings.IndexByte(val, '#'); i >= 0 {
-			val = strings.TrimSpace(val[:i])
+		key, val, ok := sporetoml.SplitKeyValue(l.Text)
+		if !ok {
+			return fmt.Errorf("line %d: malformed entry %q", l.LineNum, l.Text)
 		}
 		n, err := strconv.Atoi(val)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: key %q: want integer, got %q", lineNum, key, val)
+			return fmt.Errorf("line %d: key %q: want integer, got %q", l.LineNum, key, val)
 		}
 		out[key] = n
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return out, nil

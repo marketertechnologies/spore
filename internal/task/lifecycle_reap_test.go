@@ -17,7 +17,6 @@ func TestDoneKillsAllMatchingSlugSessions(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")
@@ -30,19 +29,18 @@ func TestDoneKillsAllMatchingSlugSessions(t *testing.T) {
 	slug := "demo"
 	project := filepath.Base(repo)
 	// Recorded session: matches the wt-style "<icon> <project>/<slug> [tag]"
-	// shape the operator's idle haiku rower hit. Two sister sessions
-	// drift the tier tag (haiku vs opus) and the spore-style prefix;
-	// Done must reap all three even though only one is in frontmatter.
+	// shape the operator's idle haiku worker hit. A sister session
+	// drifts the tier tag (haiku vs opus); Done must reap both even
+	// though only one is in frontmatter.
 	recorded := "X " + project + "/" + slug + " [haiku]"
 	drifted := "X " + project + "/" + slug + " [opus]"
-	sporeStyle := "spore/" + project + "/" + slug
 	body := "---\nstatus: active\nslug: demo\ntitle: Demo\nsession: " + recorded + "\n---\nbody\n"
 	taskPath := filepath.Join(tasksDir, slug+".md")
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{recorded, drifted, sporeStyle} {
+	for _, name := range []string{recorded, drifted} {
 		if out, err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", name, "sleep 30").CombinedOutput(); err != nil {
 			t.Fatalf("tmux new-session %q: %v: %s", name, err, out)
 		}
@@ -53,7 +51,7 @@ func TestDoneKillsAllMatchingSlugSessions(t *testing.T) {
 		t.Fatalf("Done: %v", err)
 	}
 
-	for _, name := range []string{recorded, drifted, sporeStyle} {
+	for _, name := range []string{recorded, drifted} {
 		if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", name).Run(); err == nil {
 			t.Errorf("session %q still alive after Done; broad-match reap missed it", name)
 		}
@@ -70,7 +68,6 @@ func TestDoneLeavesUnrelatedSessionsAlone(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test")
@@ -109,7 +106,7 @@ func TestDoneLeavesUnrelatedSessionsAlone(t *testing.T) {
 	}
 }
 
-func TestPauseLeavesActivelyUsedSessionAlive(t *testing.T) {
+func TestBlockLeavesActivelyUsedSessionAlive(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
@@ -142,16 +139,16 @@ func TestPauseLeavesActivelyUsedSessionAlive(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run() })
 
 	// Default 5min idle threshold; the session was just created so
-	// activity is fresh. Pause must NOT reap it.
-	if err := Pause(tasksDir, slug); err != nil {
-		t.Fatalf("Pause: %v", err)
+	// activity is fresh. Block must NOT reap it.
+	if err := Block(tasksDir, slug, "test:fresh"); err != nil {
+		t.Fatalf("Block: %v", err)
 	}
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err != nil {
-		t.Errorf("Pause reaped a fresh session: %v", err)
+		t.Errorf("Block reaped a fresh session: %v", err)
 	}
 }
 
-func TestPauseReapsIdleSession(t *testing.T) {
+func TestBlockReapsIdleSession(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
@@ -187,10 +184,10 @@ func TestPauseReapsIdleSession(t *testing.T) {
 	// enough"; mirrors the >5min idle case without sleeping the test.
 	t.Setenv("SPORE_IDLE_REAP_SECS", "0")
 
-	if err := Pause(tasksDir, slug); err != nil {
-		t.Fatalf("Pause: %v", err)
+	if err := Block(tasksDir, slug, "test:idle"); err != nil {
+		t.Fatalf("Block: %v", err)
 	}
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
-		t.Errorf("Pause did not reap idle session under threshold=0")
+		t.Errorf("Block did not reap idle session under threshold=0")
 	}
 }

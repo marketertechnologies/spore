@@ -1,7 +1,7 @@
 // Package statedebt scans a coordinator state.md file for prose
 // lessons (CRITICAL LESSON / <prefix> SELF-LESSON / RULE blocks under
 // H2/H3 headings) that should have been lifted to the harness. The
-// SELF-LESSON prefix is consumer-supplied (e.g. SKYHELM SELF-LESSON);
+// SELF-LESSON prefix is consumer-supplied (e.g. COORDINATOR SELF-LESSON);
 // any single-word prefix matches.
 package statedebt
 
@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/versality/spore/internal/coordinator"
 )
 
 const DefaultAgeDays = 14
@@ -20,10 +22,10 @@ type Config struct {
 	StateDir  string
 	StateFile string
 	AgeDays   int
-	// Now is the clock used to derive the staleness threshold. Tests
-	// inject a fixed time so fixture dates do not age out as wall-clock
-	// advances. Defaults to time.Now.
-	Now func() time.Time
+	// Now overrides the reference time for the age threshold. Zero
+	// value means time.Now(). Tests inject a fixed clock so the
+	// classifier is deterministic.
+	Now time.Time
 }
 
 type Classification string
@@ -57,9 +59,6 @@ func (c Config) defaults() Config {
 	if c.AgeDays <= 0 {
 		c.AgeDays = DefaultAgeDays
 	}
-	if c.Now == nil {
-		c.Now = time.Now
-	}
 	return c
 }
 
@@ -69,17 +68,11 @@ var (
 	harnessRE = regexp.MustCompile(`harness:\s*\S+`)
 )
 
-// defaultStateDir resolves the coordinator state dir from the
-// SPORE_COORDINATOR_STATE_DIR env var, falling back to
-// $HOME/.local/state/spore/coordinator. Consumers (e.g. an external
-// orchestrator that already has its own state tree) export the env
-// var to point spore at their existing layout.
+// defaultStateDir delegates to the central resolver. Consumers
+// override via SPORE_COORDINATOR_STATE_DIR (host-wide root) and
+// $WT_PROJECT (per-project segment).
 func defaultStateDir() string {
-	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "spore", "coordinator")
+	return coordinator.DefaultStateDir()
 }
 
 // Scan reads the state file and classifies every H2/H3 block whose
@@ -95,7 +88,11 @@ func Scan(cfg Config) (ScanResult, error) {
 		return ScanResult{}, err
 	}
 
-	threshold := cfg.Now().UTC().AddDate(0, 0, -cfg.AgeDays).Format("2006-01-02")
+	now := cfg.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	threshold := now.UTC().AddDate(0, 0, -cfg.AgeDays).Format("2006-01-02")
 
 	return scanContent(string(content), threshold), nil
 }

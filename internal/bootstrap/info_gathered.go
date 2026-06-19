@@ -76,8 +76,7 @@ func detectInfoGathered(root string) (string, error) {
 	if ig.Tickets.Tool != "none" && ig.Tickets.CredsRef == "" {
 		return "", errors.New("tickets.tool is set but tickets.creds_ref is empty; record the broker reference, not the secret")
 	}
-	// docs-tree is the local filesystem; no creds-broker entry exists for it.
-	if ig.Knowledge.Tool != "none" && ig.Knowledge.Tool != "docs-tree" && ig.Knowledge.CredsRef == "" {
+	if ig.Knowledge.Tool != "none" && ig.Knowledge.CredsRef == "" {
 		return "", errors.New("knowledge.tool is set but knowledge.creds_ref is empty; record the broker reference, not the secret")
 	}
 	return fmt.Sprintf("tickets=%s knowledge=%s", ig.Tickets.Tool, ig.Knowledge.Tool), nil

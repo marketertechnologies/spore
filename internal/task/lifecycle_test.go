@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/evidence"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
-func TestLifecycleStartPauseDone(t *testing.T) {
+func TestLifecycleStartBlockDone(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
@@ -22,8 +22,6 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
-	state := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", state)
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -40,17 +38,10 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	servicesDir := filepath.Join(state, "spore", "services", slug)
-	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(servicesDir, "sentinel"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
 
-	session, err := Start(tasksDir, slug)
+	session, err := Start(tasksDir, slug, nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -58,12 +49,9 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
 	})
 
-	wantSuffix := "/" + slug
-	if !strings.HasSuffix(session, wantSuffix) {
-		t.Errorf("session %q missing suffix %q", session, wantSuffix)
-	}
-	if !strings.HasPrefix(session, "spore/") {
-		t.Errorf("session %q missing prefix \"spore/\"", session)
+	wantSession := projectEmoji(filepath.Base(repo)) + " " + filepath.Base(repo) + "/" + slug + " [opus]"
+	if session != wantSession {
+		t.Errorf("session = %q, want %q", session, wantSession)
 	}
 
 	if status := readStatus(t, taskPath); status != "active" {
@@ -94,22 +82,22 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 		t.Errorf("tmux has-session: %v: %s", err, out)
 	}
 
-	if err := Pause(tasksDir, slug); err != nil {
-		t.Fatalf("Pause: %v", err)
+	if err := Block(tasksDir, slug, "test:pause-equivalent"); err != nil {
+		t.Fatalf("Block: %v", err)
 	}
-	if status := readStatus(t, taskPath); status != "paused" {
-		t.Errorf("after Pause: status = %q, want paused", status)
+	if status := readStatus(t, taskPath); status != "blocked" {
+		t.Errorf("after Block: status = %q, want blocked", status)
 	}
 
-	if err := Pause(tasksDir, slug); err == nil {
-		t.Error("Pause from paused should error, got nil")
+	if err := Block(tasksDir, slug, "test:again"); err == nil {
+		t.Error("Block from blocked should error, got nil")
 	}
 
 	if err := Done(tasksDir, slug, false); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("after Done: status = %q, want done", status)
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".worktrees", slug)); !os.IsNotExist(err) {
 		t.Errorf("worktree should be removed after Done, stat err = %v", err)
@@ -120,16 +108,13 @@ func TestLifecycleStartPauseDone(t *testing.T) {
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
 		t.Errorf("tmux session %q still alive after Done", session)
 	}
-	if _, err := os.Stat(servicesDir); !os.IsNotExist(err) {
-		t.Errorf("services dir should be removed after Done, stat err = %v", err)
-	}
 
 	if err := Done(tasksDir, slug, false); err != nil {
-		t.Errorf("Done on already-removed task should be no-op, got %v", err)
+		t.Errorf("Done on already-done task should be no-op, got %v", err)
 	}
 }
 
-func TestStartResumesPaused(t *testing.T) {
+func TestStartResumesBlocked(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
@@ -139,7 +124,6 @@ func TestStartResumesPaused(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -159,7 +143,7 @@ func TestStartResumesPaused(t *testing.T) {
 
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
 
-	session, err := Start(tasksDir, slug)
+	session, err := Start(tasksDir, slug, nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -167,13 +151,13 @@ func TestStartResumesPaused(t *testing.T) {
 		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
 	})
 
-	if err := Pause(tasksDir, slug); err != nil {
-		t.Fatalf("Pause: %v", err)
+	if err := Block(tasksDir, slug, "test:resume-target"); err != nil {
+		t.Fatalf("Block: %v", err)
 	}
 
-	resumed, err := Start(tasksDir, slug)
+	resumed, err := Start(tasksDir, slug, nil)
 	if err != nil {
-		t.Fatalf("Start (resume from paused): %v", err)
+		t.Fatalf("Start (resume from blocked): %v", err)
 	}
 	if resumed != session {
 		t.Errorf("resumed session = %q, want %q", resumed, session)
@@ -190,6 +174,125 @@ func TestStartResumesPaused(t *testing.T) {
 	}
 }
 
+func TestStartSpawnsWtStyleSessionForKnownProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "spore")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slug := "known"
+	body := "---\nstatus: draft\nslug: known\ntitle: Known\nagent: codex\neffort: high\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	session, err := Start(tasksDir, slug, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+
+	want := "\U0001F41D spore/known [codex-high]"
+	if session != want {
+		t.Fatalf("session = %q, want %q", session, want)
+	}
+	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", want).Run(); err != nil {
+		t.Fatalf("expected tmux session %q: %v", want, err)
+	}
+	out, err := exec.Command("tmux", "-L", testTmuxSocket, "show-environment", "-t", want, "WT_SESSION_KIND").Output()
+	if err != nil {
+		t.Fatalf("tmux show-environment: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "WT_SESSION_KIND=worker" {
+		t.Errorf("WT_SESSION_KIND env on worker session = %q, want %q", got, "WT_SESSION_KIND=worker")
+	}
+}
+
+func TestStartRendersCodexHooksIntoWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "spore")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+
+	configsDir := filepath.Join(repo, "configs", "codex")
+	if err := os.MkdirAll(configsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `{"events":{"Stop":[{"command":"coord-only","kinds":["coordinator"]},{"command":"worker-only","kinds":["worker"]}]}}`
+	if err := os.WriteFile(filepath.Join(configsDir, "hooks-config.json"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slug := "codexrender"
+	body := "---\nstatus: draft\nslug: codexrender\ntitle: T\nagent: codex\neffort: high\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	session, err := Start(tasksDir, slug, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+
+	worktree := filepath.Join(repo, ".worktrees", slug)
+	out, err := os.ReadFile(filepath.Join(worktree, ".codex/hooks.json"))
+	if err != nil {
+		t.Fatalf("worker spawn did not render .codex/hooks.json: %v", err)
+	}
+	body2 := string(out)
+	if !strings.Contains(body2, "worker-only") {
+		t.Errorf("rendered .codex/hooks.json missing worker-only: %s", body2)
+	}
+	if strings.Contains(body2, "coord-only") {
+		t.Errorf("rendered .codex/hooks.json leaked coordinator binding into worker render: %s", body2)
+	}
+}
+
 func TestDoneKillsFrontmatterSession(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
@@ -200,7 +303,6 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 
 	repo := t.TempDir()
 	t.Chdir(repo)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	runGit(t, repo, "init", "-q", "-b", "main")
 	runGit(t, repo, "config", "user.email", "test@example.com")
@@ -215,7 +317,7 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 	// Pretend an external spawner registered a custom session name in
 	// the brief. The kernel-computed name "spore/<project>/demo"
 	// would never match; only the frontmatter value should.
-	customSession := "rower-demo-" + filepath.Base(t.TempDir())
+	customSession := "worker-demo-" + filepath.Base(t.TempDir())
 	body := "---\nstatus: active\nslug: demo\ntitle: Demo\nsession: " + customSession + "\n---\nbody\n"
 	taskPath := filepath.Join(tasksDir, slug+".md")
 	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
@@ -234,8 +336,8 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 	if err := Done(tasksDir, slug, false); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("after Done: status = %q, want done", status)
 	}
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", customSession).Run(); err == nil {
 		t.Errorf("custom tmux session %q still alive after Done", customSession)
@@ -280,7 +382,7 @@ func TestStartRefusesActive(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(tasksDir, "x"); err == nil {
+	if _, err := Start(tasksDir, "x", nil); err == nil {
 		t.Fatal("Start on active task should error, got nil")
 	}
 }
@@ -291,7 +393,7 @@ func TestStartRefusesDone(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte("---\nstatus: done\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(tasksDir, "x"); err == nil {
+	if _, err := Start(tasksDir, "x", nil); err == nil {
 		t.Fatal("Start on done task should error, got nil")
 	}
 }
@@ -315,6 +417,24 @@ func TestWorkerAgentCommandCodexUsesEffortPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkerAgentCommandClaudeUsesEffortPolicy(t *testing.T) {
+	t.Setenv("SPORE_AGENT_BINARY", "")
+	m := frontmatter.Meta{
+		Agent: "claude",
+		Extra: map[string]string{
+			"effort": "high",
+		},
+	}
+	got, err := workerAgentCommand(m)
+	if err != nil {
+		t.Fatalf("workerAgentCommand: %v", err)
+	}
+	want := "claude --dangerously-skip-permissions --effort high"
+	if got != want {
+		t.Errorf("command = %q want %q", got, want)
+	}
+}
+
 func TestWorkerAgentCommandOverrideWins(t *testing.T) {
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
 	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"})
@@ -326,14 +446,14 @@ func TestWorkerAgentCommandOverrideWins(t *testing.T) {
 	}
 }
 
-func TestPauseRequiresActive(t *testing.T) {
+func TestBlockRequiresActive(t *testing.T) {
 	tasksDir := t.TempDir()
 	taskPath := filepath.Join(tasksDir, "x.md")
 	if err := os.WriteFile(taskPath, []byte("---\nstatus: draft\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Pause(tasksDir, "x"); err == nil {
-		t.Fatal("Pause on draft task should error, got nil")
+	if err := Block(tasksDir, "x", "test:reason"); err == nil {
+		t.Fatal("Block on draft task should error, got nil")
 	}
 }
 
@@ -369,7 +489,6 @@ func TestDoneAllowsRealImpl(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_EVIDENCE_WARN_ONLY", "0")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	origStart := evidence.ContractStart
 	evidence.ContractStart = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() { evidence.ContractStart = origStart })
@@ -377,8 +496,8 @@ func TestDoneAllowsRealImpl(t *testing.T) {
 	if err := Done(tasksDir, "x", false); err != nil {
 		t.Fatalf("Done with real-impl evidence: %v", err)
 	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("status = %q want done", status)
 	}
 }
 
@@ -391,7 +510,6 @@ func TestDoneWarnOnlyAllowsBlockedVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_EVIDENCE_WARN_ONLY", "1")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	origStart := evidence.ContractStart
 	evidence.ContractStart = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() { evidence.ContractStart = origStart })
@@ -399,8 +517,8 @@ func TestDoneWarnOnlyAllowsBlockedVerdict(t *testing.T) {
 	if err := Done(tasksDir, "x", false); err != nil {
 		t.Fatalf("Done in warn-only mode should pass, got %v", err)
 	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("status = %q want done (warn-only)", status)
 	}
 }
 
@@ -457,36 +575,8 @@ func TestDoneForceBypassesInbox(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done --force should bypass inbox gate: %v", err)
 	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
-	}
-}
-
-func TestPauseRefusesUnreadInbox(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	state := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", state)
-	t.Chdir(filepath.Dir(tasksDir))
-
-	inbox := filepath.Join(state, "spore", filepath.Base(filepath.Dir(tasksDir)), "x", "inbox")
-	if err := os.MkdirAll(inbox, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(inbox, "1.json"), []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err := Pause(tasksDir, "x")
-	if err == nil {
-		t.Fatal("Pause should refuse with unread inbox, got nil")
-	}
-	if !strings.Contains(err.Error(), "unread inbox") {
-		t.Errorf("error %q should mention 'unread inbox'", err)
+	if readStatus(t, taskPath) != "done" {
+		t.Error("status should be done")
 	}
 }
 
@@ -509,7 +599,7 @@ func TestBlockRefusesUnreadInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := Block(tasksDir, "x")
+	err := Block(tasksDir, "x", "operator: waiting on something")
 	if err == nil {
 		t.Fatal("Block should refuse with unread inbox, got nil")
 	}
@@ -582,174 +672,8 @@ func TestDoneForceBypassesUnmergedCommits(t *testing.T) {
 	if err := Done(tasksDir, "x", true); err != nil {
 		t.Fatalf("Done --force should bypass unmerged gate: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tasksDir, "x.md")); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done, stat err = %v", err)
-	}
-}
-
-// TestDoneForceCleansArtifacts walks Done(--force) through the full
-// cleanup chain (worktree, wt/<slug> branch, tmux session, services
-// state dir, task file) and asserts each artifact is gone afterward.
-// Companion to the force=false coverage in TestLifecycleStartPauseDone;
-// both must hit the same cleanup code so a regression in the force
-// path is caught.
-func TestDoneForceCleansArtifacts(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skipf("tmux not available: %v", err)
-	}
-
-	repo := t.TempDir()
-	t.Chdir(repo)
-	state := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", state)
-
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-
-	tasksDir := filepath.Join(repo, "tasks")
-	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	slug := "demo"
-	body := "---\nstatus: draft\nslug: demo\ntitle: Demo\n---\nbody\n"
-	taskPath := filepath.Join(tasksDir, slug+".md")
-	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	servicesDir := filepath.Join(state, "spore", "services", slug)
-	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(servicesDir, "sentinel"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
-
-	session, err := Start(tasksDir, slug)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
-	})
-
-	// Add an unmerged commit on wt/<slug> so the force path is the
-	// only one that can succeed.
-	worktree := filepath.Join(repo, ".worktrees", slug)
-	runGit(t, worktree, "commit", "-q", "--allow-empty", "-m", "unmerged")
-
-	if err := Done(tasksDir, slug, true); err != nil {
-		t.Fatalf("Done --force: %v", err)
-	}
-	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
-		t.Errorf("task file should be removed after Done --force, stat err = %v", err)
-	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Errorf("worktree should be removed after Done --force, stat err = %v", err)
-	}
-	if branchExists(repo, "wt/"+slug) {
-		t.Errorf("branch wt/%s should be removed after Done --force", slug)
-	}
-	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
-		t.Errorf("tmux session %q still alive after Done --force", session)
-	}
-	if _, err := os.Stat(servicesDir); !os.IsNotExist(err) {
-		t.Errorf("services dir should be removed after Done --force, stat err = %v", err)
-	}
-}
-
-// TestDoneFromWorktreeCleansArtifacts simulates a rover calling
-// `spore task done` against its own slug. The CLI hardcodes
-// `task.Done("tasks", ...)` so the arg arrives as the rover's
-// worktree-relative path. Without the --git-common-dir hop in
-// projectRootFromTasksDir + the tasksDir re-resolution in Done, the
-// status flip would land on the worktree's task file copy (leaving
-// the main repo's source-of-truth file stuck at "active") and
-// `git branch -D wt/<slug>` would fail because the branch is still
-// checked out by the actual worktree.
-func TestDoneFromWorktreeCleansArtifacts(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skipf("tmux not available: %v", err)
-	}
-
-	repo := t.TempDir()
-	t.Chdir(repo)
-	state := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", state)
-
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-
-	mainTasksDir := filepath.Join(repo, "tasks")
-	if err := os.MkdirAll(mainTasksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	slug := "demo"
-	body := "---\nstatus: draft\nslug: demo\ntitle: Demo\n---\nbody\n"
-	mainTaskPath := filepath.Join(mainTasksDir, slug+".md")
-	if err := os.WriteFile(mainTaskPath, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
-
-	session, err := Start(mainTasksDir, slug)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
-	})
-
-	// Caller imitates the rover: `spore task done` from inside the
-	// worktree resolves "tasks" against the worktree's cwd. Done must
-	// hop back to the main repo on its own.
-	worktree := filepath.Join(repo, ".worktrees", slug)
-	workerTasksDir := filepath.Join(worktree, "tasks")
-	if _, statErr := os.Stat(filepath.Join(workerTasksDir, slug+".md")); statErr != nil {
-		t.Fatalf("precondition: worker-side task file missing: %v", statErr)
-	}
-
-	if err := Done(workerTasksDir, slug, true); err != nil {
-		t.Fatalf("Done from worktree: %v", err)
-	}
-
-	if _, err := os.Stat(mainTaskPath); !os.IsNotExist(err) {
-		t.Errorf("main-repo task file should be removed after Done, stat err = %v", err)
-	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Errorf("worktree should be removed after Done, stat err = %v", err)
-	}
-	if branchExists(repo, "wt/"+slug) {
-		t.Errorf("branch wt/%s should be removed after Done", slug)
-	}
-	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
-		t.Errorf("tmux session %q still alive after Done", session)
-	}
-}
-
-func TestBlockFlipsActiveToBlocked(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := Block(tasksDir, "x"); err != nil {
-		t.Fatalf("Block: %v", err)
-	}
-	if status := readStatus(t, taskPath); status != "blocked" {
-		t.Errorf("after Block: status = %q, want blocked", status)
+	if readStatus(t, filepath.Join(tasksDir, "x.md")) != "done" {
+		t.Error("status should be done")
 	}
 }
 

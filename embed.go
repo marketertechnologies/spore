@@ -53,25 +53,18 @@ var BundledSkills embed.FS
 //go:embed all:bootstrap/handover
 var BundledHandover embed.FS
 
+// BundledScripts is the harness shell-script tree `spore install`
+// drops into a target project's harness/ directory. These are the
+// generic-core wrappers (hooks-render, auto-commit-tasks, quiet-run,
+// report-main-worktree-dirty) lifted out of nix-config so consumers
+// pick them up via the spore binary instead of vendoring per-project.
+//
+//go:embed all:bootstrap/scripts
+var BundledScripts embed.FS
+
 // BundledCoordinatorRole is the default role file the fleet reconciler
 // uses to boot the singleton coordinator agent. Consumers can override
 // by writing their own bootstrap/coordinator/role.md before bootstrap.
 //
 //go:embed bootstrap/coordinator/role.md
 var BundledCoordinatorRole []byte
-
-// BundledMigrations is the host-migration script tree consumed by
-// `spore migrate` and the bundled flake's activation hook. Each file
-// under bootstrap/migrations/ is a numbered, idempotent shell script.
-// See bootstrap/migrations/README.md for the authoring contract.
-//
-//go:embed all:bootstrap/migrations
-var BundledMigrations embed.FS
-
-// BundledRecipes is the embedded recipe library browsed via
-// `spore recipes ls` / `spore recipes show <name>`. Each .md file
-// under bootstrap/recipes/ is one recipe; the filename (sans .md) is
-// its canonical name.
-//
-//go:embed all:bootstrap/recipes
-var BundledRecipes embed.FS

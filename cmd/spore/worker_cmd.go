@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 
+	"github.com/versality/spore/internal/worker/exitkind"
 	"github.com/versality/spore/internal/worker/tokenmonitor"
 )
 
@@ -16,6 +19,43 @@ Usage:
   spore worker <subcommand> [flags]
 
 Subcommands:
+  exit-kind       Classify a worker wrapper's exit shape into one of
+                  lifecycle | early-exit | sighup-external | crash-rc<n>
+                  and (optionally) emit a single tell envelope to the
+                  coordinator inbox so the coordinator gets one
+                  classified signal per worker end. Flags:
+                    --rc=<N>             wrapper's final rc (required)
+                    --marker=<path>      clean-exit marker the worker
+                                         writes BEFORE its own teardown;
+                                         presence means lifecycle even
+                                         on rc=129
+                    --slug=<slug>        slug to include in tell body
+                    --tell-coordinator   shell out to
+                                         'wt task tell <dest> <body>'
+                                         where dest comes from
+                                         $SPORE_COORDINATOR_TELL_TARGET
+                                         (or --tell-target=<name>) and
+                                         body is
+                                         "<slug> exit kind=<k> rc=<N>"
+                    --tell-target=<name> override tell destination
+                                         (default: $SPORE_COORDINATOR_TELL_TARGET
+                                         or "coordinator")
+                  Prints <kind> on stdout. When --tell-coordinator is
+                  set but wt is unavailable, exits non-zero so the
+                  wrapper can log it; the classify line is still
+                  printed.
+
+  boot-audit      Read a Claude Code session.jsonl and emit a cold-boot
+                  quality profile: turn-1 input-token cost, ToolSearch
+                  round-trips before first useful work, MCP-connect
+                  surface count, boot-time tool errors, brief size.
+                  Sibling to 'spore coordinator sla-scan': pure
+                  read-only, structured one-line output, exit 2 on
+                  findings (e.g. boot-time tool errors > 0). Flags:
+                    --session=<path>  path to ~/.claude/projects/.../<id>.jsonl
+                    --boot-turns=N    turn window for per-turn metrics
+                                      (default 5)
+
   token-monitor   Stop-hook: check the worker's context budget and fire
                   a wrap-up reminder once it crosses the tier-keyed cap.
                   Tier read from $SPORE_ACCOUNT_TIER (defaults to non-max);
@@ -23,6 +63,12 @@ Subcommands:
                   $SPORE_WORKER_TOKEN_WRAP_MAX, $SPORE_WORKER_TOKEN_WRAP_SUB.
                   Skips coordinator inboxes (handled by spore coordinator
                   token-monitor) and sessions with no $SPORE_TASK_INBOX.
+                  On a wrap fire, the per-(slug, session) marker dedups
+                  re-fires inside one session and the per-slug counter
+                  at $WT_STATE/worker-wrap-count/<slug> ticks once per
+                  resume cycle, surfacing in the wrap message and in
+                  $WT_STATE/worker-voluntary-events.jsonl plus
+                  $WT_STATE/events.jsonl.
 `
 
 func runWorker(args []string) int {
@@ -37,6 +83,10 @@ func runWorker(args []string) int {
 		return 0
 	case "token-monitor":
 		return runWorkerTokenMonitor(rest)
+	case "exit-kind":
+		return runWorkerExitKind(rest)
+	case "boot-audit":
+		return runWorkerBootAudit(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "spore worker: unknown subcommand %q\n\n%s", sub, workerUsage)
 		return 2
@@ -65,8 +115,75 @@ func runWorkerTokenMonitor(_ []string) int {
 
 	result := tokenmonitor.Check(cfg, payload)
 	if result.ShouldFire {
-		fmt.Fprint(os.Stderr, result.Message)
+		bk := tokenmonitor.Bookkeep(tokenmonitor.BookkeepingConfig{}, payload.SessionID, result)
+		msg := tokenmonitor.AnnotateMessage(result.Message, bk, result.Slug)
+		fmt.Fprint(os.Stderr, msg)
 		return 2
+	}
+	return 0
+}
+
+// defaultTellTarget is the destination name passed to
+// `wt task tell <dest>` when neither --tell-target nor
+// $SPORE_COORDINATOR_TELL_TARGET is set.
+const defaultTellTarget = "coordinator"
+
+// runWorkerExitKind classifies a worker wrapper exit and (optionally)
+// emits the single coordinator-bound tell that replaces the
+// four-ledger split (worker-voluntary-events.jsonl,
+// respawn-events.jsonl, worker-watch.json, agent.log). The classify is
+// unconditional so a caller can pipe the kind into agent.log even
+// when no tell goes out.
+func runWorkerExitKind(args []string) int {
+	fs := flag.NewFlagSet("exit-kind", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		rc     int
+		marker string
+		slug   string
+		tell   bool
+		target string
+	)
+	fs.IntVar(&rc, "rc", -1, "wrapper final rc")
+	fs.StringVar(&marker, "marker", "", "clean-exit marker path")
+	fs.StringVar(&slug, "slug", "", "worker slug for the tell body")
+	fs.BoolVar(&tell, "tell-coordinator", false, "emit `wt task tell <dest>` envelope")
+	fs.StringVar(&target, "tell-target", "", "destination name for the tell (overrides $SPORE_COORDINATOR_TELL_TARGET)")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "spore worker exit-kind:", err)
+		return 2
+	}
+	if rc < 0 {
+		fmt.Fprintln(os.Stderr, "spore worker exit-kind: --rc is required")
+		return 2
+	}
+	kind := exitkind.Classify(rc, marker)
+	fmt.Println(kind)
+	if !tell {
+		return 0
+	}
+	if slug == "" {
+		fmt.Fprintln(os.Stderr, "spore worker exit-kind: --slug is required with --tell-coordinator")
+		return 2
+	}
+	if _, err := exec.LookPath("wt"); err != nil {
+		fmt.Fprintln(os.Stderr, "spore worker exit-kind: wt not on PATH; tell skipped")
+		return 1
+	}
+	dest := target
+	if dest == "" {
+		dest = os.Getenv("SPORE_COORDINATOR_TELL_TARGET")
+	}
+	if dest == "" {
+		dest = defaultTellTarget
+	}
+	body := fmt.Sprintf("%s exit kind=%s rc=%d", slug, kind, rc)
+	cmd := exec.Command("wt", "task", "tell", dest, body)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "spore worker exit-kind: tell failed:", err)
+		return 1
 	}
 	return 0
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -38,7 +39,7 @@ func TestReconcileSpawnsAndReaps(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	writeTask(t, dirs.tasks, "alpha", "active")
 	writeTask(t, dirs.tasks, "beta", "active")
@@ -93,9 +94,9 @@ func TestReconcileSpawnsAndReaps(t *testing.T) {
 		t.Errorf("Kept (pass 3) = %v, want %v", got, want)
 	}
 
-	// Pause beta: reconcile must keep the session alive (pause is
-	// the operator-attached state, not a teardown signal).
-	flipStatus(t, dirs.tasks, "beta", "paused")
+	// Block beta: reconcile must keep the session alive (blocked is
+	// the operator-attention state, not a teardown signal).
+	flipStatus(t, dirs.tasks, "beta", "blocked")
 
 	r4, err := Reconcile(Config{
 		TasksDir:    dirs.tasks,
@@ -106,10 +107,10 @@ func TestReconcileSpawnsAndReaps(t *testing.T) {
 		t.Fatalf("Reconcile pass 4: %v", err)
 	}
 	if len(r4.Reaped) != 0 {
-		t.Errorf("Reaped (pass 4 / paused) = %v, want []", r4.Reaped)
+		t.Errorf("Reaped (pass 4 / blocked) = %v, want []", r4.Reaped)
 	}
 	if got, want := r4.Kept, []string{"beta"}; !equalSlices(got, want) {
-		t.Errorf("Kept (pass 4 / paused) = %v, want %v", got, want)
+		t.Errorf("Kept (pass 4 / blocked) = %v, want %v", got, want)
 	}
 }
 
@@ -119,7 +120,7 @@ func TestReconcileRespectsMaxWorkers(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	for _, slug := range []string{"a", "b", "c", "d", "e"} {
 		writeTask(t, dirs.tasks, slug, "active")
@@ -142,13 +143,68 @@ func TestReconcileRespectsMaxWorkers(t *testing.T) {
 	}
 }
 
+func TestReconcileKeptDoesNotConsumeMaxWorkers(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	setTestAgentBinary(t)
+
+	writeTask(t, dirs.tasks, "alpha", "active")
+	writeTask(t, dirs.tasks, "bravo", "active")
+	writeTask(t, dirs.tasks, "charlie", "active")
+
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	r1, err := Reconcile(Config{
+		TasksDir:    dirs.tasks,
+		ProjectRoot: dirs.project,
+		MaxWorkers:  1,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile pass 1: %v", err)
+	}
+	if got, want := r1.Spawned, []string{"alpha"}; !equalSlices(got, want) {
+		t.Fatalf("Spawned (pass 1) = %v, want %v", got, want)
+	}
+	if got, want := r1.Skipped, []string{"bravo", "charlie"}; !equalSlices(got, want) {
+		t.Fatalf("Skipped (pass 1) = %v, want %v", got, want)
+	}
+	if len(r1.Kept) != 0 {
+		t.Fatalf("Kept (pass 1) = %v, want []", r1.Kept)
+	}
+
+	// Pass 2: alpha is still alive (Kept). Under the pre-fix accounting
+	// len(runningSet) >= MaxWorkers would skip every active task; with
+	// the per-pass counter the cap applies only to new launches, so
+	// exactly one of the remaining actives spawns.
+	r2, err := Reconcile(Config{
+		TasksDir:    dirs.tasks,
+		ProjectRoot: dirs.project,
+		MaxWorkers:  1,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile pass 2: %v", err)
+	}
+	if got, want := r2.Kept, []string{"alpha"}; !equalSlices(got, want) {
+		t.Errorf("Kept (pass 2) = %v, want %v", got, want)
+	}
+	if got, want := r2.Spawned, []string{"bravo"}; !equalSlices(got, want) {
+		t.Errorf("Spawned (pass 2) = %v, want %v", got, want)
+	}
+	if got, want := r2.Skipped, []string{"charlie"}; !equalSlices(got, want) {
+		t.Errorf("Skipped (pass 2) = %v, want %v", got, want)
+	}
+}
+
 func TestReconcileSpawnsByMatterSortOrder(t *testing.T) {
 	requireToolchain(t)
 
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	// Slug order is alpha < bravo < charlie < delta. matter_sort_order
 	// inverts it: charlie sits at the top of the kanban column. With
@@ -183,7 +239,7 @@ func TestReconcileSortsStampedBeforeUnstamped(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	// "zulu" carries a stamp, "alpha" does not. Stamped tasks sort
 	// before unstamped so a matter-managed ticket beats an ad-hoc
@@ -247,7 +303,7 @@ func TestReconcileAssignsAgentFromMix(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	if err := os.WriteFile(filepath.Join(dirs.project, "spore.toml"), []byte(`
 [fleet.workers]
@@ -416,19 +472,6 @@ func writeTaskWithExtra(t *testing.T, tasksDir, slug, status, key, val string) {
 	}
 }
 
-func writeTaskWithExtras(t *testing.T, tasksDir, slug, status string, extras map[string]string) {
-	t.Helper()
-	m := frontmatter.Meta{
-		Status: status,
-		Slug:   slug,
-		Title:  slug,
-		Extra:  extras,
-	}
-	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), frontmatter.Write(m, nil), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func flipStatus(t *testing.T, tasksDir, slug, status string) {
 	t.Helper()
 	path := filepath.Join(tasksDir, slug+".md")
@@ -456,16 +499,20 @@ func requireToolchain(t *testing.T) {
 	}
 }
 
+func setTestAgentBinary(t *testing.T) {
+	t.Helper()
+	t.Setenv("SPORE_AGENT_BINARY", "sh -c 'sleep 30'")
+}
+
 func killSporeSessions(projectRoot string) {
-	out, err := exec.Command("tmux", "-L", testTmuxSocket, "list-sessions", "-F", "#{session_name}").Output()
-	if err != nil {
-		return
-	}
-	prefix := "spore/" + filepath.Base(projectRoot) + "/"
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.HasPrefix(line, prefix) {
-			_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", line).Run()
+	tasksDir := filepath.Join(projectRoot, "tasks")
+	if slugs, err := task.SpawnedSlugs(projectRoot); err == nil {
+		for _, slug := range slugs {
+			_ = task.Reap(tasksDir, projectRoot, slug)
 		}
+	}
+	if session := CoordinatorSessionName(projectRoot); session != "" {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
 	}
 }
 

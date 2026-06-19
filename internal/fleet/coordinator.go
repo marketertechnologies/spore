@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/hooks/inject"
 	"github.com/versality/spore/internal/task"
+	"github.com/versality/spore/internal/tmuxsess"
 )
 
 // coordinatorSpawnSettleDelay is the wait between `tmux new-session -d`
@@ -20,15 +22,7 @@ import (
 // child to die within a few ms, after which the session is gone. The
 // settle window catches that case so EnsureCoordinator surfaces a real
 // error instead of lying with "spawned".
-//
-// Sized for slow exec paths (shim that resolves shared+project role
-// files via `cat`, then forks again to exec the agent). 150ms tripped
-// on a host where the user-service PATH was missing bashInteractive,
-// causing `#!/usr/bin/env bash` to die before claude was ever exec'd;
-// fixing the service PATH made that the dominant failure mode, but
-// the wider window costs the reconciler nothing on the happy path and
-// shrugs off filesystem-cold reads on the role files.
-const coordinatorSpawnSettleDelay = 300 * time.Millisecond
+const coordinatorSpawnSettleDelay = 150 * time.Millisecond
 
 // CoordinatorSlug is the reserved session slug for the singleton
 // coordinator agent. Workers cannot use it; the fleet reconciler
@@ -47,16 +41,10 @@ const CoordinatorRoleEnv = "SPORE_COORDINATOR_ROLE_FILE"
 const CoordinatorAgentEnv = "SPORE_COORDINATOR_AGENT"
 
 // CoordinatorSessionName returns the tmux session for the singleton
-// coordinator: "spore/<project>/coordinator", parallel to worker
-// session names. Resolves the project name via task.ProjectName so
-// invocations from a worktree cwd still target the main repo session
-// instead of forking a stray "spore/<slug>/coordinator".
+// coordinator. Resolves the project name via task.ProjectName so
+// invocations from a worktree cwd still target the main repo session.
 func CoordinatorSessionName(projectRoot string) string {
-	name, err := task.ProjectName(projectRoot)
-	if err != nil || name == "" {
-		name = filepath.Base(projectRoot)
-	}
-	return fmt.Sprintf("spore/%s/%s", name, CoordinatorSlug)
+	return task.CoordinatorSession(projectRoot)
 }
 
 // CoordinatorRolePath returns the override path from
@@ -90,7 +78,7 @@ func CoordinatorRolePath(projectRoot string) string {
 // happened.
 func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	session := CoordinatorSessionName(projectRoot)
-	if hasSession(session) {
+	if tmuxsess.Has(session) {
 		return session, false, nil
 	}
 
@@ -115,6 +103,13 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return "", false, err
 	}
 
+	if _, _, err := inject.Inject(projectRoot, projectRoot, task.SessionKindCoordinator); err != nil {
+		return "", false, fmt.Errorf("inject settings: %w", err)
+	}
+	if _, _, err := inject.InjectCodex(projectRoot, projectRoot, task.SessionKindCoordinator); err != nil {
+		return "", false, fmt.Errorf("inject codex hooks: %w", err)
+	}
+
 	cmd := coordinatorShellCommand(agent, rolePath)
 	args := []string{
 		"new-session", "-d",
@@ -126,6 +121,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		"-e", "WT_PROJECT=" + project,
 		"-e", "SPORE_TASK_INBOX=" + inbox,
 		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
+		"-e", task.SessionKindEnv + "=" + task.SessionKindCoordinator,
 	}
 	if v := coordinatorProvider(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_PROVIDER="+v)
@@ -136,14 +132,14 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	args = append(args, cmd)
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
-		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
+		return "", false, fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	// tmux registers the session before the inner shell execs the
 	// agent. Wait briefly, then confirm the session survived; an
 	// agent binary that fails to exec tears the session down within
 	// a few ms.
 	time.Sleep(coordinatorSpawnSettleDelay)
-	if !hasSession(session) {
+	if !tmuxsess.Has(session) {
 		return "", false, fmt.Errorf(
 			"coordinator session %s died on spawn (agent=%q): the inner exec failed before the session could settle. Check that the agent binary is on PATH",
 			session, agent,
@@ -233,10 +229,10 @@ func shellSingleQuote(s string) string {
 // kill was attempted.
 func ReapCoordinator(projectRoot string) bool {
 	session := CoordinatorSessionName(projectRoot)
-	if !hasSession(session) {
+	if !tmuxsess.Has(session) {
 		return false
 	}
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	tmuxsess.Kill(session)
 	return true
 }
 
@@ -245,7 +241,7 @@ func ReapCoordinator(projectRoot string) bool {
 // counts as alive so the wait poll does not spin against an
 // operator-managed coordinator at a non-kernel session name.
 func CoordinatorAlive(projectRoot string) bool {
-	if hasSession(CoordinatorSessionName(projectRoot)) {
+	if tmuxsess.Has(CoordinatorSessionName(projectRoot)) {
 		return true
 	}
 	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.ExternalSessionPattern != "" {
@@ -267,21 +263,14 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	names, err := tmuxsess.List()
 	if err != nil {
 		return "", false
 	}
-	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if name == "" {
-			continue
-		}
+	for _, name := range names {
 		if re.MatchString(name) {
 			return name, true
 		}
 	}
 	return "", false
-}
-
-func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
 }
