@@ -5,3 +5,19 @@
 # consumers and must stay canonical. The dogfood file carries the
 # project-specific deltas for spore-as-a-project.
 brief = "bootstrap/coordinator/dogfood-role.md"
+
+[matter.linear]
+# Dogfood: this fork serves its own ROC tickets (newbuilds workspace) as
+# the agent "rocky". ROC has no "Ready" state, so "Todo" is the pickup
+# state. delegate = true sets issueUpdate.delegateId to the authenticated
+# actor (rocky) on claim -- Linear's agent-ownership signal -- and never
+# sets assigneeId (assignment is for humans). The token comes from the
+# LINEAR_API_KEY env: ~/.config/spore/secrets.env locally, agenix on the
+# deployed host.
+enabled = true
+team = "ROC"
+ready_state = "Todo"
+in_progress_state = "In Progress"
+done_state = "Done"
+delegate = true
+api_key_env = "LINEAR_API_KEY"

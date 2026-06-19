@@ -27,6 +27,12 @@ type stubLinear struct {
 	issues          map[string]*stubIssue
 	calls           int
 	lastIssuesQuery string
+	// actorID is what the viewer query returns; lastDelegateID and
+	// lastAssigneeID record what the most recent issueUpdate carried, so
+	// a delegate test can assert delegateId is set and assigneeId is not.
+	actorID        string
+	lastDelegateID string
+	lastAssigneeID string
 }
 
 type stubIssue struct {
@@ -117,6 +123,10 @@ func (s *stubLinear) handler() http.HandlerFunc {
 		switch {
 		case strings.Contains(body.Query, "workflowStates"):
 			s.respondStates(w)
+		case strings.Contains(body.Query, "viewer"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"viewer": map[string]any{"id": s.actorID}},
+			})
 		case strings.Contains(body.Query, "issueUpdate"):
 			s.respondIssueUpdate(w, body.Variables)
 		case strings.Contains(body.Query, "issues("):
@@ -209,6 +219,8 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 func (s *stubLinear) respondIssueUpdate(w http.ResponseWriter, vars map[string]any) {
 	id, _ := vars["id"].(string)
 	stateID, _ := vars["stateId"].(string)
+	s.lastDelegateID, _ = vars["delegateId"].(string)
+	s.lastAssigneeID, _ = vars["assigneeId"].(string)
 	iss, ok := s.issues[id]
 	if !ok {
 		// adoptIssue passes the human identifier (e.g. MAR-12) when
@@ -244,6 +256,39 @@ func newSource(t *testing.T, srvURL string) *Source {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
 	return src
+}
+
+func TestSyncDelegatesClaimedIssues(t *testing.T) {
+	stub := newStub(t)
+	stub.actorID = "rocky-actor-id"
+	stub.addReady("issue-uuid-1", "MAR-12", "Wire up onboarding email", "body")
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	t.Setenv("LINEAR_API_KEY", "lin_test")
+	src, err := NewFromConfig(Config{
+		Team:            "MAR",
+		ReadyState:      "Ready",
+		InProgressState: "In Progress",
+		DoneState:       "Done",
+		APIKeyEnv:       "LINEAR_API_KEY",
+		Endpoint:        srv.URL,
+		Delegate:        true,
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+
+	if _, _, err := src.Sync(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if stub.lastDelegateID != "rocky-actor-id" {
+		t.Errorf("claim delegateId = %q, want rocky-actor-id", stub.lastDelegateID)
+	}
+	if stub.lastAssigneeID != "" {
+		t.Errorf("claim set assigneeId = %q, want empty (delegate, not assign)", stub.lastAssigneeID)
+	}
 }
 
 func TestSyncCreatesTasksAndPushesReady(t *testing.T) {

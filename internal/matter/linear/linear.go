@@ -91,6 +91,12 @@ type Config struct {
 	// the label. Matter only reads the label; it never creates or
 	// modifies labels.
 	ClaimLabel string
+	// Delegate, when true, delegates each claimed issue to the
+	// authenticated actor (the agent the API token belongs to, resolved
+	// via viewer.id) by setting issueUpdate.delegateId on the
+	// ready->in_progress claim. This is Linear's agent-ownership signal;
+	// the adapter never sets assigneeId, which is reserved for humans.
+	Delegate bool
 }
 
 // Source is the Linear adapter. Construct via New (with a parsed
@@ -102,6 +108,9 @@ type Source struct {
 	// stateIDs caches workflow-state name -> id for the configured
 	// team, populated lazily on the first Sync.
 	stateIDs map[string]string
+	// actorID caches the authenticated user's id (viewer.id), resolved
+	// lazily on the first delegated claim.
+	actorID string
 }
 
 // Option tweaks Source construction in tests.
@@ -197,7 +206,7 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		if err != nil {
 			return created, updated, fmt.Errorf("matter.linear: adopt %s: %w", issue.Identifier, err)
 		}
-		if err := s.transitionIssue(issue.ID, inProgressID); err != nil {
+		if err := s.claimIssue(issue.ID, inProgressID); err != nil {
 			return created, updated, fmt.Errorf("matter.linear: transition %s -> in_progress: %w", issue.Identifier, err)
 		}
 		created++
@@ -245,6 +254,12 @@ func (s *Source) OnDone(ctx context.Context, slug string, meta map[string]string
 // matters.linear.credentialFiles.api_key option renders into via
 // SPORE_MATTER_LINEAR__CREDENTIAL_API_KEY=$CREDENTIALS_DIRECTORY/...,
 // so it counts as an api_key_file source.
+// optTrue reads a matter option as a boolean: "1" or "true" (any case)
+// are true, everything else false.
+func optTrue(v string) bool {
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 func parseConfig(c matter.Config) (Config, error) {
 	cfg := Config{
 		Team:            c.Option("team", ""),
@@ -255,6 +270,7 @@ func parseConfig(c matter.Config) (Config, error) {
 		APIKeyFile:      c.Option("api_key_file", ""),
 		Endpoint:        c.Option("endpoint", "https://api.linear.app/graphql"),
 		ClaimLabel:      c.Option("claim_label", ""),
+		Delegate:        optTrue(c.Option("delegate", "")),
 	}
 	if cfg.APIKeyFile == "" {
 		cfg.APIKeyFile = c.Option("credential_api_key", "")
@@ -511,6 +527,63 @@ func (s *Source) transitionIssue(issueID, stateID string) error {
 	if !resp.Data.IssueUpdate.Success {
 		return fmt.Errorf("issueUpdate returned success=false for %s", issueID)
 	}
+	return nil
+}
+
+// claimIssue moves a ready issue into the in-progress state. When
+// Delegate is set it also delegates the issue to the authenticated
+// actor (delegateId = viewer.id) in the same mutation, so the ticket
+// reads as owned by the agent the token belongs to. It never sets
+// assigneeId. With Delegate off it is a plain state transition.
+func (s *Source) claimIssue(issueID, stateID string) error {
+	if !s.cfg.Delegate {
+		return s.transitionIssue(issueID, stateID)
+	}
+	if err := s.loadActorID(); err != nil {
+		return err
+	}
+	const mutation = `mutation IssueClaim($id: String!, $stateId: String!, $delegateId: String!) {
+  issueUpdate(id: $id, input: {stateId: $stateId, delegateId: $delegateId}) { success }
+}`
+	var resp struct {
+		Data struct {
+			IssueUpdate struct {
+				Success bool `json:"success"`
+			} `json:"issueUpdate"`
+		} `json:"data"`
+	}
+	vars := map[string]any{"id": issueID, "stateId": stateID, "delegateId": s.actorID}
+	if err := s.graphQL(mutation, vars, &resp); err != nil {
+		return err
+	}
+	if !resp.Data.IssueUpdate.Success {
+		return fmt.Errorf("issueUpdate(claim) returned success=false for %s", issueID)
+	}
+	return nil
+}
+
+// loadActorID resolves and caches the authenticated user's id via the
+// viewer query. With an actor/app OAuth token this is the agent's own
+// id, which is what delegated claims target.
+func (s *Source) loadActorID() error {
+	if s.actorID != "" {
+		return nil
+	}
+	const q = `query Viewer { viewer { id } }`
+	var resp struct {
+		Data struct {
+			Viewer struct {
+				ID string `json:"id"`
+			} `json:"viewer"`
+		} `json:"data"`
+	}
+	if err := s.graphQL(q, nil, &resp); err != nil {
+		return err
+	}
+	if resp.Data.Viewer.ID == "" {
+		return fmt.Errorf("matter.linear: delegate enabled but viewer.id is empty (token is not a user/actor token)")
+	}
+	s.actorID = resp.Data.Viewer.ID
 	return nil
 }
 
