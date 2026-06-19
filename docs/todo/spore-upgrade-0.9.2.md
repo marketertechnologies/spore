@@ -1,5 +1,29 @@
-**Status**: planning (no code changes yet; this doc is the plan)
+**Status**: in progress - kernel adopted. RESUME POINT below.
 **Priority**: high
+
+## RESUME POINT (read this first on a fresh session)
+
+State lives on disk + the ROC board, not in any session's context. To
+continue: read this doc, run `git log --oneline spore-upgrade-0.9.2`, and
+read the ROC board (team ROC, newbuilds; token at `~/.config/spore/secrets.env`).
+Memory files `three-spore-repos` + `rocky-linear-access` load every session.
+
+- Integration branch: `spore-upgrade-0.9.2` (umbrella PR #43 -> main). Feature
+  branches target it; merge each in as it goes green (operator does not review
+  PRs - trust lint + `nix flake check`). `evolved` git remote -> ~/projects/spore.
+- DONE + merged: ROC-2 (sandbox, #44), ROC-3/4/6/8/9 (evolved kernel adopted,
+  #45). The fork's kernel IS evolved spore 0.9.2 now. E2E green: `nix flake
+  check` runs the NixOS fleet VM test.
+- NEXT: **ROC-7** - matter acts as rocky (OAuth actor-app token), delegate (not
+  assign), map ROC states (Todo=ready), and wire `maybeSandboxWrap` into the
+  worker spawn path. Then **ROC-14** (mcom supervisor + token-cap respawn =
+  automatic coordinator rotation).
+- Then: ROC-5 (collapse multi-project -> single), ROC-10/11/12 (re-apply
+  recipes/migrations/marketertechnologies-identity, set aside in #45),
+  ROC-13 (shims reconcile), ROC-15 (mcom guards/blocks), ROC-16 (Hetzner, deferred).
+- Validate every commit: `nix develop -c go test ./...` + `spore lint` + the
+  full `nix flake check`. Regenerate instruction files with
+  `spore compose --consumer spore > CLAUDE.md` (and AGENTS.md) after rule edits.
 
 # spore upgrade to 0.9.2 - distill evolved spore + mcom wisdom into this fork
 
