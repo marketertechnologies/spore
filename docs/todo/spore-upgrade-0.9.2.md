@@ -118,9 +118,36 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   gates) is MET. The LIVE deploy (provision Hetzner box, ssh-keyscan the
   host key, agenix -e the real ROC token, colmena apply) is operator-bound
   and remains TODO per docs/deploy.md - not blocking ticket closure.
-- Remaining: ROC-18 (cross-repo ship design) open for operator review;
-  the live rocky deploy (operator-bound steps in docs/deploy.md). Phases
-  1-3 complete; Phase 4 layer delivered, live cutover awaiting operator.
+- DONE (this session): **rocky LIVE** on Hetzner 178.105.117.8. Installed
+  via nixos-anywhere from `.#nixosConfigurations.rocky`; coordinator
+  spawns, persists, and serves the ROC board; matter sync runs clean.
+  Bringing up the first real fleet host surfaced four deploy-blocking
+  fleet-module bugs (all fixed declaratively + VM-test green, commits
+  3466b45 + the TMUX pin):
+  - fleetBinPath: unit PATH lacked grep/sed/awk/ripgrep/find; claude-code
+    shells out to them on startup, so the agent died before settling.
+  - SHELL=bash: tmux ran the coordinator command via the user's passwd
+    shell (spore-attach on a deployed host), which hijacked it; pin a
+    real bash.
+  - KillMode=process: the oneshot reconcile's default control-group reap
+    killed the coordinator tmux server the instant reconcile exited.
+  - mkEnvList: unquoted systemd Environment= truncated matter values with
+    spaces ("In Progress" -> "In"), breaking matter sync.
+  - TMUX_TMPDIR=%t: coordinator was on /tmp, spore-attach on /run/user;
+    pin both to the runtime dir so the operator can attach.
+  Auth: Claude Code **subscription only** (operator logged in on the box
+  as spore; org had to enable Claude Code access). HARD RULES now in
+  memory: never `claude -p`, never the Anthropic API, claude always in a
+  tmux session. Secrets host-only (Linear token + the on-box claude
+  creds); nothing secret in the repo. Box state lives in
+  /var/lib/spore-secrets + /home/spore/.claude (not nix). Remaining
+  operability follow-ups (not blocking): the spore-fleet module does not
+  yet provision the spore user's ~/.claude settings/hooks (done manually
+  on rocky) or run `spore migrate` with bash on PATH (activation warning,
+  non-fatal); fold these into the module for a clean reimage.
+- Remaining: ROC-18 (cross-repo ship design) open for operator review.
+  Phases 1-4 complete; rocky is serving ROC. Feed it `Todo` tickets to
+  watch end-to-end worker pickup.
 - ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
   SPORE_COORDINATOR_SUPERVISE); off by default so the spawn settle-check stays
   sharp. `spore coordinator spawn` now returns 64 on unexpected session death;
