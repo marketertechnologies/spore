@@ -126,9 +126,9 @@ var reMemoryPath = regexp.MustCompile(`/\.claude/projects/[^/]+/memory(/|$)`)
 // $HOME-expanded form, or a Bash `cat` of either.
 func defaultSecretPaths() []string {
 	return []string{
-		"/spore-secret-",            // XDG_RUNTIME_DIR decrypt scratch
+		"/spore-secret-",             // XDG_RUNTIME_DIR decrypt scratch
 		"/.config/spore/secrets.env", // local matter-token store
-		"/age-key",                  // age identity (age-key.txt, ...)
+		"/age-key",                   // age identity (age-key.txt, ...)
 	}
 }
 
