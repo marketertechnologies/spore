@@ -39,6 +39,17 @@ Caveat CLEARED by coordinator: live Linear schema probed -
 `Issue.delegate` is a real field, and `issues(filter: {delegate: {id: {eq: $d}}})`
 returns nodes without a schema error. c946eda is safe to merge as-is.
 
+MERGE NOT ATTEMPTED by worker: tried `git -C /home/spore/project merge --ff-only`
+but the main checkout is dirty with overlapping operator work on
+`internal/matter/linear/linear.go` (already includes a `loadActorID()`
+call in Sync plus an unreleased `CreateIssue` API). Operator must
+reconcile my branch with their in-progress edits manually rather than
+fast-forward. Optional optimization for that reconcile: move the
+filter from client-side into the GraphQL query
+(`issues(filter: {state: ..., delegate: {id: {eq: $actor}}})`) per the
+coordinator's probe - saves a round of node fetches for issues
+delegated elsewhere.
+
 ## Resume point (for the next worker)
 
 Branch state (3 commits ahead of spore-upgrade-0.9.2):
