@@ -41,7 +41,10 @@ type CoordinatorConfig struct {
 	// Supervise runs the coordinator driver inside an in-pane respawn
 	// loop so a token-cap wrap rotates the driver without killing the
 	// tmux session (automatic coordinator rotation). Off by default;
-	// SPORE_COORDINATOR_SUPERVISE overrides per-spawn.
+	// SPORE_COORDINATOR_SUPERVISE overrides per-spawn. The kernel
+	// default stays off because the spawn settle-check needs a single-
+	// exec lifecycle to detect a bad agent binary; supervise=true
+	// hides that error inside an infinite respawn loop.
 	Supervise bool
 }
 

@@ -122,9 +122,12 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"Wrap up NOW:\n"+
 				"  1. Flush state.md so the next coordinator boots from it.\n"+
 				"  2. Post a one-line summary to the operator if anything is still open.\n"+
-				"  3. Run: tmux kill-session\n"+
-				"The reconciler respawns a fresh coordinator from state.md.",
-			ctx, cfg.HardCap)
+				"  3. Kill only the driver process; the tmux session and any attached\n"+
+				"     operator client stay alive across the rotation:\n"+
+				"       %s\n"+
+				"The supervisor loop respawns a fresh coordinator from state.md inside\n"+
+				"the same pane.",
+			ctx, cfg.HardCap, DriverKillCommand())
 		appendLedger(cfg, sid, ctx, false, true)
 		return result
 	}
@@ -136,10 +139,11 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 		result.Message = fmt.Sprintf(
 			"COORDINATOR TOKEN MONITOR (soft): context %d tokens >= soft warn %d.\n"+
 				"Wrap up at the next natural break: flush state.md, then run\n"+
-				"  tmux kill-session\n"+
-				"The reconciler respawns a fresh coordinator from state.md. Hard cap is %d;\n"+
-				"crossing it forces a wrap-up reminder on every Stop.",
-			ctx, cfg.SoftCap, cfg.HardCap)
+				"  %s\n"+
+				"The supervisor loop respawns a fresh coordinator from state.md inside\n"+
+				"the same pane, keeping any attached operator client stitched. Hard cap\n"+
+				"is %d; crossing it forces a wrap-up reminder on every Stop.",
+			ctx, cfg.SoftCap, DriverKillCommand(), cfg.HardCap)
 		appendLedger(cfg, sid, ctx, true, false)
 		return result
 	}
@@ -261,4 +265,20 @@ func touch(path string) {
 	if err == nil {
 		f.Close()
 	}
+}
+
+// DriverKillCommand returns the shell snippet a coordinator runs on a
+// wrap fire to terminate the agent driver subtree without tearing
+// down its tmux session. Resolving the pane's tty via tmux and
+// pkilling every process attached to it kills the wrapper sh-c plus
+// its agent child (claude / codex / opencode) without naming the
+// binary. The fleet's supervisor loop catches the clean exit and
+// boots a fresh driver in place; an SSH-attached operator client
+// stays stitched because the session and pane survive.
+//
+// Mirrors internal/worker/tokenmonitor.DriverKillCommand; kept
+// duplicate to avoid a cross-package import that would invert the
+// fleet/worker package dependency.
+func DriverKillCommand() string {
+	return `pkill -TERM -t "$(tmux display-message -p '#{pane_tty}' | sed 's,^/dev/,,')"`
 }
