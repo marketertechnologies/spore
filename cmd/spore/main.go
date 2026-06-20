@@ -338,6 +338,8 @@ func main() {
 		os.Exit(runWorker(args))
 	case "opencode":
 		os.Exit(runOpencode(args))
+	case "matter":
+		os.Exit(runMatter(args))
 	case "merge":
 		os.Exit(runMerge(args))
 	case "recipes":
