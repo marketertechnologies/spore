@@ -46,6 +46,7 @@ Commands:
   worker     Worker support hooks (token-monitor).
   opencode   Opencode-driver lifecycle helpers (fleet-stop, liveness).
   merge      Post-merge integrity helpers (audit, unblock).
+  recipes    Browse the embedded recipe library (ls, show).
   search     Lookup helpers (nix packages / options against search.nixos.org).
   secret     Manage age secrets (add via tmux popup; audit registration / consumers).
   signal     Record warning / error signals from a wrapped command.
@@ -338,6 +339,8 @@ func main() {
 		os.Exit(runOpencode(args))
 	case "merge":
 		os.Exit(runMerge(args))
+	case "recipes":
+		os.Exit(runRecipes(args))
 	case "search":
 		os.Exit(runSearch(args))
 	case "secret":

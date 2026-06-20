@@ -62,6 +62,14 @@ var BundledHandover embed.FS
 //go:embed all:bootstrap/scripts
 var BundledScripts embed.FS
 
+// BundledRecipes is the embedded recipe library `spore recipes ls` and
+// `spore recipes show <name>` read from. Each markdown file under
+// bootstrap/recipes/ is a reusable how-to for talking to an external
+// system (Jira, GitHub, Sentry) from a coordinator or worker pane.
+//
+//go:embed all:bootstrap/recipes
+var BundledRecipes embed.FS
+
 // BundledCoordinatorRole is the default role file the fleet reconciler
 // uses to boot the singleton coordinator agent. Consumers can override
 // by writing their own bootstrap/coordinator/role.md before bootstrap.
