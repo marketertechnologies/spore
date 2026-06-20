@@ -101,6 +101,7 @@ in
   };
 
   environment.systemPackages = with pkgs; [
+    btop
     claude-code
     codex
     git
