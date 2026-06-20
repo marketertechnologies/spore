@@ -15,15 +15,25 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   #45), ROC-7 (matter delegates to rocky, not assign + ROC config in spore.toml,
   #46 - verified live against ROC), ROC-14 (mcom tier-1 wisdom: supervisor loop +
   token-cap rotation, 0/1/64 exit codes, `spore guard`, `spore statusline`, tmux
-  config, #47). The fork's kernel IS evolved spore 0.9.2. E2E green: `nix flake
-  check` runs the NixOS fleet VM test.
-- NEXT: **ROC-5** - collapse multi-project -> single. Drop the fork's
-  "multiple coordinators" divergence; match evolved + mcom single-project.
-  Touches nixosModules/spore-fleet.nix (the `projects.<name>` attr +
-  deprecated `projectRoot`), bootstrap/flake/spore-projects.nix,
-  internal/infect (spore-projects.nix generation), internal/fleet. The VM
-  test currently warns on `services.spore-fleet.projectRoot` deprecation -
-  that is the seam. Confirm no consumer depends on the `projects` attr first.
+  config, #47), ROC-5 (single-coordinator collapse: NixOS module reverted to
+  evolved single-`projectRoot` shape + fork extras re-applied; orphan
+  spore-projects.nix deleted; VM test retargeted, #48). The fork's kernel IS
+  evolved spore 0.9.2. E2E green: `nix flake check` runs the NixOS fleet VM test.
+- ROC-5 scope note: the only real fork divergence was nixosModules/
+  spore-fleet.nix (the `projects.<name>` attr). internal/fleet's
+  `~/.config/wt/projects` list (liveness/reap/wake) and the spore-fleet-tick
+  `$HOME` walk are UPSTREAM (identical in evolved), not divergences - left
+  alone. internal/infect was already single-project and never generated
+  spore-projects.nix. Topology decision (operator): single coordinator per
+  host; multiple repos served by an umbrella `projectRoot` with sub-repos as
+  subdirs (proto-monorepo), NOT a fleet fanned across independent repos.
+- NEXT: cross-repo worker ship design (new ROC ticket). A worker is 1
+  worktree of 1 git repo -> 1 wt/<slug> branch -> 1 PR; the whole ship cycle
+  (wt-check gate, evidence contract, internal/merge, internal/gh) assumes one
+  git history. A feature ticket spanning multiple repos needs a decision:
+  true monorepo/subtree (spore-native, one PR covers all) vs submodules
+  (per-repo PRs, ship cycle does NOT span repos today -> harness work or
+  manual). Design before building.
 - Then: ROC-10/11/12 (re-apply recipes/migrations/marketertechnologies-identity,
   set aside in #45), ROC-13 (shims reconcile - shims already present+building,
   likely just verify), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
