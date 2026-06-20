@@ -59,6 +59,9 @@
     pkgs.golangci-lint
     pkgs.govulncheck
     pkgs.gopls
+    pkgs.gh
+    pkgs.curl
+    pkgs.openssh
   ];
 
   # The Linear token lives only on the host. Declare the directory (perms,

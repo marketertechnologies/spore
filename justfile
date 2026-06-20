@@ -45,6 +45,14 @@ go-build:
 nix-build:
     nix build .
 
+# deploy: rebuild the rocky host from this checkout. Run on the
+# rocky box as root. Picks up any committed (or dirty) changes to
+# flake.nix, nixosModules/, nix/hosts/rocky/, bootstrap/handover/,
+# etc., and atomically activates the new system. The spore binary
+# on the coordinator's PATH ends up matching the source tree.
+deploy:
+    sudo nixos-rebuild switch --flake .#rocky
+
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a
 # dirty tree, a failing `just check`, or an existing tag. Does NOT
 # push -- inspect the commit + tag, then `git push origin main vX.Y.Z`.

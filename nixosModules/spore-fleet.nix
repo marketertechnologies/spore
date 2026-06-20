@@ -32,6 +32,13 @@ let
     pkgs.python3
     pkgs.go
     pkgs.just
+    # gh: GitHub CLI for issue / PR / API access. curl: HTTP probes
+    # against Linear, GitHub, and other matter backends. openssh:
+    # ssh + scp for clone / fetch / push from inside the spawned
+    # agent shell. All three are coordinator + worker hot paths.
+    pkgs.gh
+    pkgs.curl
+    pkgs.openssh
   ];
 
   # Render an attrset into a systemd Environment= list, quoting each
