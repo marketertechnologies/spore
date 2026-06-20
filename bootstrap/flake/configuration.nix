@@ -91,6 +91,13 @@ in
     isNormalUser = true;
     home = "/home/spore";
     shell = "${sporeAttach}/bin/spore-attach";
+    # Linger so the spore user's systemd-user units (the fleet
+    # watchdog, and the coordinator service when supervise is on) keep
+    # running with no interactive login. `spore infect` also enables
+    # this imperatively (loginctl enable-linger); declaring it here
+    # keeps a declarative `nixos-rebuild` from depending on that
+    # one-time bootstrap step.
+    linger = true;
   };
 
   environment.systemPackages = with pkgs; [
