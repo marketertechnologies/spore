@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,18 @@ func TestMain(m *testing.M) {
 	}
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+	// Hermetic env: a coordinator/worker shell or the deployed host
+	// leaks WT_SESSION_KIND (flips block-authorization gates) and
+	// SPORE_MATTER_* (rewires the matter loader) into `go test`. Clear
+	// them so the suite passes regardless of where it runs.
+	_ = os.Unsetenv("WT_SESSION_KIND")
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "SPORE_MATTER_") {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				_ = os.Unsetenv(kv[:i])
+			}
+		}
+	}
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()
