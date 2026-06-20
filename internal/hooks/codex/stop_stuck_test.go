@@ -134,7 +134,7 @@ func TestStop_StuckToolcall_ContextMonitorTakesPriority(t *testing.T) {
 	tpath := writeCodexJSONL(t, dir, []string{
 		`{"type":"session_meta","payload":{"id":"sess-both"}}`,
 		`{"type":"response_item","payload":{"type":"function_call","name":"exec","call_id":"call_A"}}`,
-		`{"type":"token_count","last_token_usage":{"total_tokens":200000}}`,
+		`{"type":"token_count","last_token_usage":{"total_tokens":320000}}`,
 	})
 	cfg := StopConfig{
 		Inbox:               stateDir,

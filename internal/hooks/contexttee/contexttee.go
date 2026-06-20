@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	DefaultCoordSoftCap  = 150000
-	DefaultCoordHardCap  = 190000
-	DefaultWorkerWrapMax = 180000
+	DefaultCoordSoftCap  = 250000
+	DefaultCoordHardCap  = 300000
+	DefaultWorkerWrapMax = 300000
 	DefaultWorkerWrapSub = 120000
 )
 

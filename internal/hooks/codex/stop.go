@@ -128,8 +128,8 @@ func (c StopConfig) stopDefaults() StopConfig {
 // DefaultCoordSoftCap / DefaultCoordHardCap mirror the bash adapter's
 // defaults.
 const (
-	DefaultCoordSoftCap = 150000
-	DefaultCoordHardCap = 190000
+	DefaultCoordSoftCap = 250000
+	DefaultCoordHardCap = 300000
 )
 
 // contextResult captures whether the codex context monitor wants to

@@ -35,7 +35,7 @@ func TestStop_ContextHardCap(t *testing.T) {
 	}
 	tpath := writeCodexJSONL(t, dir, []string{
 		`{"type":"session_meta","payload":{"id":"sess-1"}}`,
-		`{"type":"token_count","last_token_usage":{"total_tokens":200000}}`,
+		`{"type":"token_count","last_token_usage":{"total_tokens":320000}}`,
 	})
 	cfg := StopConfig{
 		Inbox:               stateDir,
@@ -66,7 +66,7 @@ func TestStop_ContextSoftCap_FiresOnce(t *testing.T) {
 	os.MkdirAll(stateDir, 0o700)
 	tpath := writeCodexJSONL(t, dir, []string{
 		`{"type":"session_meta","payload":{"id":"sess-1"}}`,
-		`{"type":"token_count","last_token_usage":{"total_tokens":160000}}`,
+		`{"type":"token_count","last_token_usage":{"total_tokens":260000}}`,
 	})
 	cfg := StopConfig{
 		Inbox:               stateDir,
@@ -285,7 +285,7 @@ func TestStop_SnapshotState_PreservesOperatorQuestionsAndTail(t *testing.T) {
 	}
 	tpath := writeCodexJSONL(t, dir, []string{
 		`{"type":"session_meta","payload":{"id":"sess-1"}}`,
-		`{"type":"token_count","last_token_usage":{"total_tokens":200000}}`,
+		`{"type":"token_count","last_token_usage":{"total_tokens":320000}}`,
 	})
 	cfg := StopConfig{
 		Inbox:               stateDir,
@@ -310,7 +310,7 @@ func TestStop_SnapshotState_PreservesOperatorQuestionsAndTail(t *testing.T) {
 		"2026-05-01T11:00:00Z reaped task-y",
 		"## Directives",
 		"Stand down at 22:00.",
-		"2026-05-10T12:00:00Z codex-context-monitor: auto-snapshotted state before hard wrap prompt; ctx=200000",
+		"2026-05-10T12:00:00Z codex-context-monitor: auto-snapshotted state before hard wrap prompt; ctx=320000",
 		"# coordinator state - last updated 2026-05-10T12:00:00Z",
 	} {
 		if !strings.Contains(got, want) {
@@ -328,7 +328,7 @@ func TestStop_SnapshotState_NoPriorFileWritesFresh(t *testing.T) {
 	os.MkdirAll(stateDir, 0o700)
 	tpath := writeCodexJSONL(t, dir, []string{
 		`{"type":"session_meta","payload":{"id":"sess-1"}}`,
-		`{"type":"token_count","last_token_usage":{"total_tokens":200000}}`,
+		`{"type":"token_count","last_token_usage":{"total_tokens":320000}}`,
 	})
 	cfg := StopConfig{
 		Inbox:               stateDir,

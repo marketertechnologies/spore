@@ -80,8 +80,8 @@ func TestStatuslineLiveTranscript(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	// worker max cap default is 180k -> 95k is 52%.
-	want := "ctx 95k / 180k (52%) max"
+	// worker max cap default is 300k -> 95k is 31%.
+	want := "ctx 95k / 300k (31%) max"
 	if strings.TrimSpace(out) != want {
 		t.Fatalf("got %q want %q", out, want)
 	}

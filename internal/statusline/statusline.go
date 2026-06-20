@@ -15,7 +15,7 @@ import (
 // DefaultCap is the fallback wrap cap when the caller supplies none. It
 // matches the coordinator token-monitor's soft cap so the red zone of
 // the ramp lines up with the wrap reminder.
-const DefaultCap = 150000
+const DefaultCap = 250000
 
 // Config drives a single Render call.
 type Config struct {
