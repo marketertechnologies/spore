@@ -5,6 +5,14 @@
 # consumers and must stay canonical. The dogfood file carries the
 # project-specific deltas for spore-as-a-project.
 brief = "bootstrap/coordinator/dogfood-role.md"
+# Run the driver inside an in-pane respawn loop so a token-cap wrap
+# (or any other clean driver exit) rotates the agent in place without
+# tearing down the tmux session. An operator attached to the
+# coordinator pane keeps their pane and full scrollback across the
+# rotation; without this, a flush kills the session and an SSH login
+# that landed via `spore-attach coord` drops with it. See
+# docs/coordinator-supervisor.md.
+supervise = true
 
 [matter.linear]
 # Dogfood: this fork serves its own ROC tickets (newbuilds workspace) as

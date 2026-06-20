@@ -66,6 +66,17 @@
     user = "spore";
     projectRoot = "/home/spore/project";
     hostId = config.networking.hostName;
+    # Hold the coordinator session open under a long-lived
+    # systemd-user unit (`spore-coordinator`) instead of relying
+    # only on the reconcile-timer watchdog. ExecStart blocks until
+    # the tmux session dies and exits with the 0/1/64 contract:
+    # exit 64 (unexpected session death) triggers a respawn within
+    # ~1s, bounded by StartLimitBurst. Combined with the in-pane
+    # supervisor loop (spore.toml [coordinator].supervise = true),
+    # a token-cap flush stays in-pane (no detach) and a catastrophic
+    # session loss is recovered by systemd, not just by the next
+    # reconcile tick. See docs/coordinator-supervisor.md.
+    supervise.enable = true;
     matters.linear = {
       enable = true;
       settings = {
