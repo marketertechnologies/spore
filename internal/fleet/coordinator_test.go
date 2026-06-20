@@ -55,7 +55,7 @@ func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
 	}
 }
 
-func TestReconcileReapsCoordinatorOnDisable(t *testing.T) {
+func TestReconcileKeepsCoordinatorOnDisable(t *testing.T) {
 	requireToolchain(t)
 
 	dirs := newTestDirs(t)
@@ -89,8 +89,8 @@ func TestReconcileReapsCoordinatorOnDisable(t *testing.T) {
 	if !r.Disabled {
 		t.Errorf("expected Disabled=true after Disable(), got %+v", r)
 	}
-	if tmuxsess.Has(session) {
-		t.Errorf("expected coordinator session %q reaped on flag-disable, still alive", session)
+	if !tmuxsess.Has(session) {
+		t.Errorf("expected coordinator session %q to survive flag-disable, was reaped", session)
 	}
 }
 

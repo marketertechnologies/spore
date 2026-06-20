@@ -79,11 +79,16 @@ func Reconcile(cfg Config) (Result, error) {
 		return Result{}, err
 	}
 	if !enabled {
-		// Worker sessions are kept alive on flag-disable so the
-		// operator stays attached to in-flight work. The coordinator
-		// is a kernel singleton with no operator-attached state worth
-		// preserving, so we tear it down with the flag.
-		ReapCoordinator(cfg.ProjectRoot)
+		// Disable is a worker-fleet pause, not a full stop: it halts
+		// new worker reconciliation but leaves every live session
+		// alone, including the coordinator. The coordinator is a
+		// long-lived singleton owned by its own supervisor (the
+		// spore-coordinator service, with the EnsureCoordinator call
+		// below as an idempotent backstop). The kill-switch must not
+		// reap it, or an operator who pauses the fleet loses the very
+		// session they pilot from. The coordinator session is torn
+		// down only by explicit `spore coordinator stop` or by an
+		// in-pane driver rotation (which keeps the session alive).
 		return Result{Disabled: true}, nil
 	}
 
