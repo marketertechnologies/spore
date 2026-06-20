@@ -100,9 +100,27 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
     nixosConfiguration evaluates clean. Commit on branch.
   All gates green incl. full `nix flake check`. ROC-15 closed on the
   board.
-- Then: ROC-16 (Hetzner, Phase 4, deferred). Phases 1-3 of the upgrade
-  are now complete; ROC-18 (cross-repo ship design) remains open for
-  operator review.
+- DONE (this session): **ROC-16** Phase 4 deploy LAYER (open-source-clean,
+  not the live deploy). Commit 5e05f43. nix/hosts/rocky/ (one coordinator
+  box: disko BIOS-boot+ESP+ext4, EFI GRUB cloud-VM profile, DHCP+sshd,
+  spore user with linger+spore-attach + deploy user for colmena, agenix
+  linear-api-key, services.spore-fleet + matters.linear ROC) +
+  nix/modules/nix-housekeeping.nix + secrets/ (agenix recipients/rules +
+  PLACEHOLDER linear-api-key.age so the tree builds before any box) +
+  flake.nix disko/agenix inputs, nixosConfigurations.rocky (eval/CI gate)
+  + colmena node targeting SSH alias `rocky` (real IP stays out of git
+  via gitignored nix/hosts/rocky/local.nix). docs/deploy.md = operator
+  runbook. Templated lean from mcom helm-coord, dropping the product
+  surface (web/postgres/caddy/container). Token reaches the fleet by file
+  path via LoadCredential, never the store/env (agenix lint guards it).
+  Verified: rocky toplevel BUILDS with placeholders; spore lint + go test
+  + nix flake check all green. The ticket's stated acceptance (3 green
+  gates) is MET. The LIVE deploy (provision Hetzner box, ssh-keyscan the
+  host key, agenix -e the real ROC token, colmena apply) is operator-bound
+  and remains TODO per docs/deploy.md - not blocking ticket closure.
+- Remaining: ROC-18 (cross-repo ship design) open for operator review;
+  the live rocky deploy (operator-bound steps in docs/deploy.md). Phases
+  1-3 complete; Phase 4 layer delivered, live cutover awaiting operator.
 - ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
   SPORE_COORDINATOR_SUPERVISE); off by default so the spawn settle-check stays
   sharp. `spore coordinator spawn` now returns 64 on unexpected session death;
