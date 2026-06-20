@@ -578,6 +578,7 @@ in
         '';
         spore-migrate = ''
           ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
+            ${pkgs.coreutils}/bin/env PATH=${pkgs.bashInteractive}/bin:${pkgs.coreutils}/bin \
             ${cfg.package}/bin/spore migrate --auto || \
             echo "spore migrate: failed (see journal); continuing rebuild" >&2
         '';
