@@ -4,29 +4,27 @@ Once a project reaches `worker-fleet-ready`, a downstream NixOS host
 can autostart the fleet reconciler by importing
 `nixosModules.spore-fleet` from this flake.
 
-The module declares one systemd-user oneshot per project, each driven
-by:
+The module declares one systemd-user oneshot for the project at
+`projectRoot`, driven by:
 
 - a 60-second timer;
-- a path watch on that project's `tasks/` directory;
+- a path watch on the project's `tasks/` directory;
 - a path watch on the host-wide kill-switch flag at
-  `~/.local/state/spore/fleet-enabled` (a flip there triggers every
-  project's reconciler).
+  `~/.local/state/spore/fleet-enabled` (a flip there triggers the
+  reconciler).
 
 This keeps `spore fleet enable` and new active tasks responsive even
 when the timer has not ticked yet. home-manager wiring for the target
 user is assumed.
 
-## Multiple projects on one host
+## Single project per fleet
 
-Set `services.spore-fleet.projects` to an attrset (`name → { path }`)
-to reconcile multiple projects under the same `user`. Each entry
-generates its own `spore-fleet-reconcile-<name>.service` and timer,
-so tasks/, worktrees, and the per-project tmux session prefix
-(`spore/<name>/...`) stay isolated.
-
-The single-project shorthand `projectRoot = "..."` is kept for
-backward compatibility; new consumers should use `projects` directly.
+Set `services.spore-fleet.projectRoot` to the project tree the fleet
+reconciles. One fleet drives one coordinator over one project; a
+worker is a worktree of that one repo. Hosting several repos on the
+box means either making `projectRoot` an umbrella tree that contains
+them as subdirs, or running one host per repo - spore does not fan a
+single fleet out across independent repos.
 
 ## Example
 
@@ -54,10 +52,7 @@ backward compatibility; new consumers should use `projects` directly.
           services.spore-fleet = {
             enable = true;
             user = "spore";
-            projects = {
-              project.path = "/home/spore/project";
-              # extra-project.path = "/home/spore/extra-project";
-            };
+            projectRoot = "/home/spore/project";
             maxWorkers = 6;
           };
         })

@@ -67,9 +67,9 @@ auth path. Out of scope for v0.
   coordinator even for a kernel checkout
 - installs per-user hooks and settings from embedded CLI assets
   (the six shims are no longer scp'd; they come from the bundled
-  flake's activation, and the per-project reconcile units are
-  now rendered by `services.spore-fleet` via home-manager from a
-  single-entry `spore-projects.nix` written into the staged flake)
+  flake's activation, and the single-project reconcile unit is
+  rendered by `services.spore-fleet` via home-manager from the
+  `projectRoot` set in the staged flake)
 - writes `/etc/spore/coordinator.env` with the selected provider,
   model, and effort
 - enables the fleet flag and runs the first reconcile (lingering
