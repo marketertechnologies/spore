@@ -158,7 +158,34 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 			session, agent,
 		)
 	}
+	configureCoordinatorTmux(session)
 	return session, true, nil
+}
+
+// configureCoordinatorTmux applies session-scoped tmux options to a
+// freshly spawned coordinator session: a token-usage status line that
+// refreshes on a timer, and detach-on-destroy off so that killing the
+// driver pane (a supervisor-loop rotation or a manual kill) does not
+// detach an attached operator client. All calls are best-effort: a tmux
+// that rejects an option must not fail the spawn the caller already
+// confirmed is alive.
+func configureCoordinatorTmux(session string) {
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "spore"
+	}
+	statusRight := fmt.Sprintf(
+		`#(CLAUDE_PROJECT_DIR='#{pane_current_path}' %s statusline --label coordinator)`,
+		self,
+	)
+	opts := [][]string{
+		{"set-option", "-t", session, "detach-on-destroy", "off"},
+		{"set-option", "-t", session, "status-interval", "5"},
+		{"set-option", "-t", session, "status-right", statusRight},
+	}
+	for _, o := range opts {
+		_ = exec.Command("tmux", o...).Run()
+	}
 }
 
 // coordinatorAgent picks the binary the coordinator session execs.
