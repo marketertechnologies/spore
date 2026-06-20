@@ -7,14 +7,15 @@
 # runtime container): one box, one coordinator, the worker fleet it
 # dispatches, and the agenix-decrypted Linear token they consume.
 #
-# Phase 4 of the spore-upgrade-0.9.2 plan. Real per-host values (public
-# IP, SSH host key fingerprint, disk device, operator pubkey) live in a
-# gitignored ./local.nix; copy ./local.nix.example to start. The Linear
-# token is NOT in this repo (not even encrypted): it lives only on the
-# box at /var/lib/spore-secrets/linear-api-key, placed out-of-band at
-# deploy time. The repo references that path, never the value. Building
-# system.build.toplevel touches no hardware and reads no secret, so the
-# config evaluates and builds clean before any box exists.
+# Phase 4 of the spore-upgrade-0.9.2 plan. Per-host secrets live only on
+# the box, never in this repo. The operator + deploy SSH pubkeys are read
+# at login from /etc/spore-ssh/<user>; the Linear token lives at
+# /var/lib/spore-secrets/linear-api-key. Both are placed out-of-band at
+# deploy time (see docs/deploy.md); the repo references their paths, never
+# their values. The public IP stays out of git via the `rocky` SSH alias
+# (see flake.nix). Building system.build.toplevel touches no hardware and
+# reads no secret, so the config evaluates and builds clean before any box
+# exists.
 
 {
   imports = [
@@ -23,8 +24,7 @@
     ./disk-config.nix
     ./networking.nix
     ./users.nix
-  ]
-  ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
+  ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
 

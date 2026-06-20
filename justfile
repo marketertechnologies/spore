@@ -59,15 +59,19 @@ deploy:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=/home/spore/project
-    # nix/hosts/rocky/local.nix holds the host SSH keys but is gitignored,
-    # and `nixos-rebuild switch --flake` only reads tracked/staged files. A
-    # plain switch would not see local.nix and would deploy empty authorized
-    # keys, locking the box out. Force-stage it for the build (no commit),
-    # and unstage on exit so it is never accidentally committed or pushed.
-    if [ -f "$repo/nix/hosts/rocky/local.nix" ]; then
-      git -C "$repo" add -f nix/hosts/rocky/local.nix
-      trap 'git -C "$repo" restore --staged nix/hosts/rocky/local.nix 2>/dev/null || true' EXIT
-    fi
+    # Fail-closed guard: the operator + deploy SSH pubkeys live on the box
+    # at /etc/spore-ssh/<user>, never in the repo or the nix build. A switch
+    # never writes them, so it cannot wipe the keys - but only if they are
+    # already present. Refuse to switch when any are missing or empty, so a
+    # box can never be left unreachable. Seed them out-of-band first (see
+    # docs/deploy.md).
+    for u in root spore deploy; do
+      if [ ! -s "/etc/spore-ssh/$u" ]; then
+        echo "refusing to deploy: /etc/spore-ssh/$u missing or empty" >&2
+        echo "seed it out-of-band before switching (see docs/deploy.md)" >&2
+        exit 1
+      fi
+    done
     nixos-rebuild switch --flake "$repo#rocky"
 
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a

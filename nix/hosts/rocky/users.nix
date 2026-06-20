@@ -5,11 +5,15 @@
 # shape the user (it owns only the systemd-user units), so the login
 # shell, linger, and authorized keys live here.
 #
-# Operator and deploy SSH pubkeys are per-deployment, so they come from
-# the gitignored ./local.nix (pubkeys are public, but the operator's key
-# set is not something this open-source repo should pin). Without a
-# local.nix the box builds but is unreachable; that is the intended
-# safe default.
+# Operator and deploy SSH pubkeys are per-deployment and never enter this
+# repo, the nix build, or the store. sshd reads them at login from
+# /etc/spore-ssh/<user>, placed out-of-band on the box at deploy time -
+# the same pattern as the on-host Linear token under /var/lib/spore-secrets.
+# Because a `nixos-rebuild switch` never writes these files, a deploy can
+# no longer wipe the keys and lock the box out, so the empty-keys footgun
+# that once needed a build-time assertion is gone. The fail-closed guard
+# now lives in `just deploy`, which refuses to switch unless
+# /etc/spore-ssh/<user> is present and non-empty.
 
 {
   # Login shell: spore-attach (from the shims package the fleet module
@@ -44,31 +48,15 @@
     }
   ];
 
-  # Placeholder so the option type-checks with no local.nix present;
-  # ./local.nix appends the operator + deploy pubkeys.
-  #
-  # WARNING: ./local.nix is gitignored, and `nixos-rebuild switch --flake`
-  # only sees git-tracked (or staged) files. A plain deploy therefore does
-  # NOT see local.nix, leaving these lists empty and wiping every
-  # authorized key (NixOS manages /etc/ssh/authorized_keys.d/%u). That is
-  # how a switch can silently lock the box out. `just deploy` force-stages
-  # local.nix so the flake reads it; the assertion below fails the build
-  # closed if it still resolves empty, so a keyless switch can never ship.
-  users.users.spore.openssh.authorizedKeys.keys = lib.mkDefault [ ];
-  users.users.deploy.openssh.authorizedKeys.keys = lib.mkDefault [ ];
-
-  assertions = [
-    {
-      assertion = config.users.users.spore.openssh.authorizedKeys.keys != [ ];
-      message = ''
-        rocky: no SSH authorized keys resolved for the `spore` user.
-        local.nix was almost certainly not visible to the flake build (it
-        is gitignored; flakes only read tracked/staged files). Refusing to
-        build a host nobody can log into. Fix: ensure
-        nix/hosts/rocky/local.nix exists, then deploy via `just deploy`
-        (it force-stages local.nix), or run
-        `git add -f nix/hosts/rocky/local.nix` before `nixos-rebuild switch`.
-      '';
-    }
+  # Operator pubkeys reach sshd at login from /etc/spore-ssh/<user>, in
+  # addition to the NixOS-managed /etc/ssh/authorized_keys.d/%u (which
+  # stays empty here - there are no declarative keys). The directory is
+  # created root-owned so sshd StrictModes accepts a file for any target
+  # user; the key files themselves are dropped out-of-band, root-owned
+  # 0644 (see docs/deploy.md). A switch never touches these files, so it
+  # cannot lock the box out.
+  services.openssh.authorizedKeysFiles = lib.mkAfter [ "/etc/spore-ssh/%u" ];
+  systemd.tmpfiles.rules = [
+    "d /etc/spore-ssh 0755 root root -"
   ];
 }

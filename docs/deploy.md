@@ -9,8 +9,8 @@ it dispatches, and the agenix-decrypted Linear token they consume.
 
 The layer builds before any box exists: `nix build
 .#nixosConfigurations.rocky.config.system.build.toplevel` compiles with
-placeholder secrets and a gitignored-but-absent `local.nix`. Activation
-(decrypt + partition + reach the network) only happens on the live host.
+no secrets in tree. Activation (partition, reach the network, read the
+on-host token and authorized keys) only happens on the live host.
 
 ## Layout
 
@@ -23,14 +23,19 @@ nix/
     disk-config.nix              disko: BIOS-boot + ESP + ext4 root
     networking.nix               DHCP, firewall (22 only), sshd
     users.nix                    spore (linger + spore-attach) + deploy (colmena)
-    local.nix.example            real IP/pubkeys/disk - copy to local.nix
 ```
 
-The Linear token is NOT in this repo, not even encrypted. It lives only
-on the box at `/var/lib/spore-secrets/linear-api-key` (owner spore, 0400),
-placed out-of-band at deploy time. The host config declares the directory
-(`systemd.tmpfiles`) and references the path; the value never touches nix
-or git.
+Two pieces of per-host state live only on the box, never in the repo, the
+nix build, or the store:
+
+- The Linear token at `/var/lib/spore-secrets/linear-api-key` (owner
+  spore, 0400). The host config declares the directory (`systemd.tmpfiles`)
+  and references the path; the value never touches nix or git.
+- The operator + deploy SSH pubkeys at `/etc/spore-ssh/<user>` (root-owned,
+  0644). sshd reads them at login via `services.openssh.authorizedKeysFiles`
+  (see users.nix). A `nixos-rebuild switch` never writes these files, so a
+  deploy can never wipe them and lock the box out; `just deploy` refuses to
+  switch unless they are present and non-empty.
 
 `flake.nix` exposes `nixosConfigurations.rocky` (the eval / CI gate) and
 a `colmena` node named `rocky` that targets the SSH alias `rocky`
@@ -55,13 +60,24 @@ token. None of this lives in the repo.
      User deploy
    ```
 
-4. **Fill `local.nix`** (gitignored) from the example:
+4. **Seed the authorized keys** on the box, out-of-band, before any
+   switch. Each file is one or more pubkeys, root-owned 0644. `root` keeps
+   emergency SSH; `spore` lands in the coordinator tmux session via
+   spore-attach; `deploy` is the colmena push target. (On the very first
+   `nixos-anywhere` install, root is reachable via the install key; seed
+   these before the first `colmena apply`.)
 
    ```
-   cp nix/hosts/rocky/local.nix.example nix/hosts/rocky/local.nix
-   # set the operator + deploy authorized keys, and disk device / hostname
-   # if they differ from the defaults.
+   ssh root@rocky 'install -d -m 0755 -o root -g root /etc/spore-ssh'
+   for u in root spore deploy; do
+     printf '%s\n' "$OPERATOR_PUBKEY" \
+       | ssh root@rocky "install -m 0644 -o root -g root /dev/stdin /etc/spore-ssh/$u"
+   done
    ```
+
+   If the disk device or hostname differ from the defaults (`/dev/sda`,
+   `rocky`), edit `disk-config.nix` / `networking.nix` directly; those are
+   not secret.
 
 5. **Deploy:**
 

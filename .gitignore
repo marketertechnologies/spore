@@ -21,7 +21,6 @@
 /.wt/
 /.worktrees/
 /bootstrap/flake/local.nix
-/nix/hosts/rocky/local.nix
 
 # spore-as-project (dogfood) harness artifacts
 /state.md

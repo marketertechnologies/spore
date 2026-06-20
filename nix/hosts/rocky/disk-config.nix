@@ -4,8 +4,9 @@
 # boot partition, a 512M ESP, and an ext4 root filling the rest. Matches
 # the bundled bootstrap flake (bootstrap/flake/disk-config.nix) so a
 # nixos-anywhere install and a later colmena rebuild agree on the disk.
-# The device defaults to /dev/sda; override it from ./local.nix for a
-# box whose root disk enumerates differently (e.g. /dev/nvme0n1).
+# The device defaults to /dev/sda; edit this value for a box whose root
+# disk enumerates differently (e.g. /dev/nvme0n1). It is read only by
+# disko at install time, not by a steady-state `nixos-rebuild switch`.
 
 {
   disko.devices = {
