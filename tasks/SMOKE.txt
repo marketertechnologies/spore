@@ -1,0 +1,4 @@
+smoke-undelegated-should-not-be-picked-up: rocky picked up an undelegated ROC ticket.
+expected: rocky must skip when no delegate is set on the issue.
+actual: a worker was spawned for ROC-20 with no pre-set delegate.
+gap: internal/matter/linear/linear.go listIssuesByState filters by state + optional label only; never by delegateId. cfg.Delegate is write-side only (claim sets delegateId on actor) and never gates pickup.
