@@ -29,6 +29,16 @@
 # fall-through. To do anything privileged, SSH in as root instead.
 set -e
 
+# If we are already inside a tmux session, the caller is splitting a
+# pane or opening a new window. Re-attaching the coordinator from
+# inside itself errors with "sessions should be nested with care" and
+# the pane closes instantly, blocking the operator from spawning panes
+# at all. Drop into an interactive login bash so the new pane is just
+# a shell.
+if [ -n "${TMUX:-}" ]; then
+    exec bash -l
+fi
+
 # When sshd applies a per-key forced command it invokes the login
 # shell as `<shell> -c "<command-string>"`. Reshape argv so the rest
 # of this script can treat it like a direct invocation.

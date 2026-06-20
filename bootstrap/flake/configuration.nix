@@ -3,6 +3,14 @@ let
   sporeAttach = pkgs.writeShellScriptBin "spore-attach" ''
     set -e
 
+    # Splitting a pane / opening a new window inside a coordinator
+    # tmux session would otherwise recurse into "tmux attach" of the
+    # same session and the pane would close instantly. Drop into a
+    # plain login bash when we are already inside a tmux session.
+    if [ -n "''${TMUX:-}" ]; then
+      exec ${pkgs.bashInteractive}/bin/bash -l
+    fi
+
     if [ "''${1:-}" = "-c" ]; then
       set -- ''${2:-}
       shift
