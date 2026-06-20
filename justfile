@@ -56,7 +56,19 @@ nix-build:
 # location but we want the flake path baked in so a stray run from
 # /root behaves the same as one from /home/spore/project).
 deploy:
-    nixos-rebuild switch --flake /home/spore/project#rocky
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=/home/spore/project
+    # nix/hosts/rocky/local.nix holds the host SSH keys but is gitignored,
+    # and `nixos-rebuild switch --flake` only reads tracked/staged files. A
+    # plain switch would not see local.nix and would deploy empty authorized
+    # keys, locking the box out. Force-stage it for the build (no commit),
+    # and unstage on exit so it is never accidentally committed or pushed.
+    if [ -f "$repo/nix/hosts/rocky/local.nix" ]; then
+      git -C "$repo" add -f nix/hosts/rocky/local.nix
+      trap 'git -C "$repo" restore --staged nix/hosts/rocky/local.nix 2>/dev/null || true' EXIT
+    fi
+    nixos-rebuild switch --flake "$repo#rocky"
 
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a
 # dirty tree, a failing `just check`, or an existing tag. Does NOT
