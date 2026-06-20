@@ -309,6 +309,64 @@ in
       };
     };
 
+    supervise = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Run the coordinator as a long-lived systemd-user service
+          (`spore-coordinator`) instead of relying solely on the
+          reconcile timer to respawn it. ExecStart is `spore
+          coordinator spawn`, which ensures the tmux session is alive
+          then blocks until it dies, returning the 0/1/64 exit-code
+          contract. The restart guards below turn that contract into a
+          bounded respawn:
+
+            0  clean shutdown (SIGTERM/SIGINT)   -> no respawn
+            1  preflight failure (tier, exec)    -> no respawn
+                 (pinned by RestartPreventExitStatus=1)
+            64 unexpected session death          -> respawn, bounded
+                 by startLimitBurst within startLimitInterval
+
+          Default off: the bundled deployed model is the reconcile
+          timer (spore-fleet-tick), and the spawn settle-check stays
+          sharper when nothing is racing to respawn the session. Turn
+          this on for a host that should hold a coordinator session
+          open continuously.
+        '';
+      };
+
+      startLimitInterval = lib.mkOption {
+        type = lib.types.str;
+        default = "30s";
+        description = ''
+          Window (StartLimitIntervalSec) over which startLimitBurst
+          respawns are counted. startLimitBurst failures inside this
+          window put the unit in failed state, so an external
+          kill-loop bottoms out instead of respawning forever.
+        '';
+      };
+
+      startLimitBurst = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 3;
+        description = ''
+          Max respawns (StartLimitBurst) allowed within
+          startLimitInterval before the unit fails. With restartSec at
+          1s, three failed starts inside 30s is the no-storm guard.
+        '';
+      };
+
+      restartSec = lib.mkOption {
+        type = lib.types.str;
+        default = "1s";
+        description = ''
+          Delay (RestartSec) before a respawn after an exit-64
+          unexpected death.
+        '';
+      };
+    };
+
     extraEnv = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -548,6 +606,57 @@ in
             (name: path: "${name}:${toString path}")
             (cfg.credentialFiles // matterCredentials);
         };
+      };
+
+      systemd.user.services.spore-coordinator = lib.mkIf cfg.supervise.enable {
+        Unit = {
+          Description = "spore coordinator (long-lived, host=${cfg.hostId})";
+          # StartLimit caps respawn bursts so an external-kill loop
+          # bottoms out in failed state instead of looping forever.
+          # These keys live in [Unit], not [Service]; systemd warns and
+          # ignores them under [Service].
+          StartLimitIntervalSec = cfg.supervise.startLimitInterval;
+          StartLimitBurst = cfg.supervise.startLimitBurst;
+        };
+        Service = {
+          Type = "simple";
+          WorkingDirectory = toString cfg.projectRoot;
+          ExecStart = "${cfg.package}/bin/spore coordinator spawn";
+          Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+            {
+              SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
+              SPORE_HOST_ID = cfg.hostId;
+              PATH = lib.makeBinPath [
+                cfg.package
+                cfg.claudeCodePackage
+                pkgs.bashInteractive
+                pkgs.coreutils
+                pkgs.git
+                pkgs.tmux
+              ];
+            } // matterEnv // cfg.extraEnv
+          );
+          # Exit-code contract from `spore coordinator spawn`:
+          #   0  clean shutdown          -> no respawn (not on-failure)
+          #   1  preflight failure       -> no respawn (pinned below)
+          #   64 unexpected death        -> respawn, bounded by StartLimit
+          Restart = "on-failure";
+          RestartSec = cfg.supervise.restartSec;
+          RestartPreventExitStatus = "1";
+          # The spawn entry point tears down only the coordinator tmux
+          # session on its TERM trap; KillMode=process keeps a unit
+          # restart from reaping sibling worker panes on the shared
+          # tmux server.
+          KillMode = "process";
+          NoNewPrivileges = true;
+          LockPersonality = true;
+          RestrictSUIDSGID = true;
+          ReadWritePaths = [ (toString cfg.projectRoot) ];
+          LoadCredential = lib.mapAttrsToList
+            (name: path: "${name}:${toString path}")
+            (cfg.credentialFiles // matterCredentials);
+        };
+        Install.WantedBy = [ "default.target" ];
       };
 
       systemd.user.timers.spore-fleet-reconcile = {

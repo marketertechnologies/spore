@@ -268,6 +268,7 @@
                     echo "$*" >> "$trace"
                     case "$1 $2" in
                       "fleet reconcile") echo "stub: reconcile" ; exit 0 ;;
+                      "coordinator spawn") echo "stub: spawn" ; exit 0 ;;
                       "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
@@ -276,6 +277,11 @@
                   '';
                   claudeCodePackage = pkgs.writeShellScriptBin "claude" "exit 0";
                   gracefulDeploy.timeout = 5;
+                  # Opt into the long-lived coordinator service so the
+                  # restart-guard wiring (ROC-15) is covered. The stub
+                  # `coordinator spawn` exits 0, so the unit settles
+                  # inactive without a respawn storm.
+                  supervise.enable = true;
                   matters.linear = {
                     enable = true;
                     settings = {
@@ -351,6 +357,20 @@
                   unit = machine.succeed(
                       "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile.service")
                   assert "LoadCredential=matter-linear-api_key:" in unit, unit
+
+                  # supervise.enable wires the long-lived coordinator
+                  # service with the 0/1/64 restart-guard contract.
+                  coord = machine.succeed(
+                      "cat /home/spore-test/.config/systemd/user/spore-coordinator.service")
+                  for needle in [
+                      "ExecStart=",
+                      "coordinator spawn",
+                      "Restart=on-failure",
+                      "RestartPreventExitStatus=1",
+                      "StartLimitBurst=3",
+                      "StartLimitIntervalSec=30s",
+                  ]:
+                      assert needle in coord, f"missing {needle!r} in:\n{coord}"
 
                   # Graceful-deploy: pre-script disables the kill-switch
                   # and tells every active worker to wrap up; post-script
