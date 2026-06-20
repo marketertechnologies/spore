@@ -39,6 +39,18 @@ let
     pkgs.gh
     pkgs.curl
     pkgs.openssh
+    # Build / validation toolchain. CLAUDE.md tells workers to run
+    # `go test ./<pkg>`, `just test`, `just lint`, `just check`
+    # directly; without these on PATH those commands fail. gcc backs
+    # cgo (`go build/test` errors `cgo: C compiler "gcc" not found`
+    # otherwise); golangci-lint + govulncheck back `just lint` /
+    # `just vuln`; nix backs `just check` (`nix develop -c just check`)
+    # and `spore audit-versions`. The flake devShell carries the same
+    # set, but a worker reaching for a bare `go test` is not inside it.
+    pkgs.gcc
+    pkgs.golangci-lint
+    pkgs.govulncheck
+    pkgs.nix
   ];
 
   # Render an attrset into a systemd Environment= list, quoting each
