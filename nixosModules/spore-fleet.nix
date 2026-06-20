@@ -35,10 +35,16 @@ let
     # gh: GitHub CLI for issue / PR / API access. curl: HTTP probes
     # against Linear, GitHub, and other matter backends. openssh:
     # ssh + scp for clone / fetch / push from inside the spawned
-    # agent shell. All three are coordinator + worker hot paths.
+    # agent shell. openssl: RS256-signs the GitHub App JWT in the
+    # installation-token refresh recipe (a coordinator credential hot
+    # path). All four are coordinator + worker hot paths.
     pkgs.gh
     pkgs.curl
     pkgs.openssh
+    pkgs.openssl
+    # systemd: systemctl + journalctl so a coordinator can inspect its
+    # own units before reporting their state (validate-before-reporting).
+    pkgs.systemd
     # Build / validation toolchain. CLAUDE.md tells workers to run
     # `go test ./<pkg>`, `just test`, `just lint`, `just check`
     # directly; without these on PATH those commands fail. gcc backs

@@ -62,6 +62,8 @@
     pkgs.gh
     pkgs.curl
     pkgs.openssh
+    pkgs.openssl
+    pkgs.systemd
   ];
 
   # The Linear token lives only on the host. Declare the directory (perms,
