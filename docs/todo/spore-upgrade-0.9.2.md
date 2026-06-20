@@ -28,9 +28,14 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   host; multiple repos served by an umbrella `projectRoot` with sub-repos as
   subdirs (proto-monorepo), NOT a fleet fanned across independent repos.
 - DONE (this session): **ROC-18** cross-repo ship design written
-  (`docs/cross-repo-ship.md`): decision is subtree-vendored monorepo - one
-  `.git`, ship cycle unchanged, submodule multi-repo ship deferred;
-  flow-back tooling (`spore subtree push`) is a deferred follow-up.
+  (`docs/cross-repo-ship.md`): decision is independent sibling repos
+  (spore harness repo stays code-free; code repos are separate siblings in
+  `~/.config/wt/projects`). The ship cycle is already repo-relative
+  (projectRoot = parent of the tasks dir, lifecycle.go:691), so a ticket
+  targets one code repo and ships there unchanged; a cross-repo feature is
+  decomposed by the coordinator into per-repo child tickets (1:1, blocked-by
+  ordered). No task/ship/merge/gh change - only coordinator routing + a
+  `repo:` ticket field. ROC-18 left OPEN for operator review.
   Also ported the **ctx context statusline** from mcom/wt-go as `spore
   token-status --statusline | --fleet` (internal/tokenstatus): claude-code
   statusLine reader for the contexttee Stop-hook tees, renders

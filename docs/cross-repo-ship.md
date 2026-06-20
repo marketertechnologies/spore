@@ -1,133 +1,146 @@
 # Cross-repo worker ship (ROC-18)
 
-**Status**: design accepted - subtree-vendored monorepo. No ship-cycle
-code changes required for the near term; flow-back tooling deferred to a
-follow-up ticket.
+**Status**: design accepted - independent sibling repos, repo-relative
+ship cycle, cross-repo features decomposed into per-repo child tickets.
+The spore harness repo stays code-free. No `task`/`ship`/`merge`/`gh`
+internals change; the only new work is coordinator-side routing and a
+target-repo field on the ticket.
 
 ## Problem
 
 The operational model is Linear-driven and 1:1: one worker owns one
-ticket. A ticket is a feature that may touch more than one repo. But the
-ship cycle assumes a worker is one worktree of ONE git repo: a single
+ticket. A ticket is a feature that may touch more than one repo. The ship
+cycle assumes a worker is one worktree of ONE git repo: a single
 `wt/<slug>` branch, a single `origin`, a single PR, a single `.git`
 history. A worker can `cd` into a sibling repo and run git by hand, but
-the harness only ships the project-root repo's branch - commits made in a
-sibling repo fall outside auto-PR, the merge audit, and evidence
-projection.
+the question is how a feature spanning repos lands without falling outside
+auto-PR, the merge audit, and evidence projection.
 
-Where "one repo" is hardwired today (from the ship-cycle map):
+## Constraints (operator)
 
-- `internal/task/lifecycle.go:473-474` - worktree is
-  `<projectRoot>/.worktrees/<slug>`, branch is `wt/<slug>`. One repo
-  root, one branch per slug.
-- `internal/task/ship/ship.go:111-149` - `push origin <branch>`,
-  `CreatePR(projectRoot, branch, base, ...)`, then ff-merge
-  `origin/<base>` and delete the branch. One remote (`origin`), one base
-  (`main`), one PR.
-- `internal/task/merge.go:103-124` - merge requires `main` checked out at
-  `projectRoot`, pushes `origin main:main`.
-- `internal/merge/audit` and `internal/merge/unblock` - every git probe
-  runs `git -C <Root>`; one `.git`.
-- `internal/gh/gh.go` - every `gh` call sets `cmd.Dir = projectRoot`; gh
-  infers the repo from cwd. PR number is the only handle and is
-  rediscovered via `gh pr view <branch>`, never persisted per repo.
-- `internal/evidence/verify.go:73-75,192-204` - the evidence contract is
-  already cross-repo-aware: `isCrossRepoRest` *detects* `<repo>:<ref>`
-  tokens and forge URLs and emits a `CrossRepo` verdict. It is purely
-  structural (never shells git), so it needs no change either way.
+- The spore repo (`marketertechnologies/spore`) holds **only the spore
+  harness and spore itself** - no product code vendored in. It stays
+  open-source-clean.
+- The other repos hold **only code**, each an independent git repo with
+  its own remote and its own PRs.
+- spore agents must be able to **navigate away** from the harness repo
+  into a code repo to do the work.
 
-So the only subsystems that hard-assume one repo are the ones that touch
-git/gh directly: task lifecycle/ship/merge, merge audit/unblock, gh.
-Evidence and wt-check are already repo-agnostic.
+This rules out the subtree/monorepo option (it would vendor code into the
+spore repo) and the submodule option (it couples the code repos to a
+parent and still needs multi-repo ship machinery). The repos stay
+independent siblings.
 
-## Topology decision already taken
+## Key fact: the ship cycle is already repo-relative
 
-Single coordinator per host; multiple repos served by an umbrella
-`projectRoot` with sub-repos as subdirs (proto-monorepo). Eventual end
-state is a true monorepo. ROC-5 landed the single-coordinator collapse
-(PR #48). This design only has to choose how the subdirs relate to git,
-not whether to have an umbrella.
+The single-repo assumptions live entirely in the subsystems that touch
+git/gh - `internal/task` (lifecycle/ship/merge), `internal/merge`
+(audit/unblock), `internal/gh`. But none of them hardcode a *global*
+project root. They all derive the repo from the task's location:
 
-## Options
+- `internal/task/lifecycle.go:691` -
+  `ProjectRootFromTasksDir(tasksDir) = filepath.Dir(tasksDir)`. The repo a
+  worker ships into is just the parent of its `tasks/` dir.
+- `lifecycle.go:473-474` - worktree `<projectRoot>/.worktrees/<slug>`,
+  branch `wt/<slug>`, both rooted at that derived projectRoot.
+- `internal/task/ship/ship.go` and `merge.go` - all `git -C projectRoot`
+  / `gh` calls (`cmd.Dir = projectRoot`) run against that same derived
+  root. `origin`/`main` are the per-repo remote and base, not a global.
+- The fleet already drives **multiple** independent project roots: it
+  reads `~/.config/wt/projects`, one project root per line
+  (`internal/fleet/livenessstatus.go:58-105`), and walks each for
+  liveness/reap/wake (`livenessstatus.go:251-263`,
+  `internal/fleet/wake.go:26` uses `<projectRoot>/tasks`).
+- `internal/evidence/verify.go` is purely structural (never shells git)
+  and already cross-repo-aware (`isCrossRepoRest`,
+  verify.go:73-75,192-204). `internal/wtcheck` runs `nix develop -c just
+  check` in whatever root it is handed (wtcheck.go:42). Neither needs a
+  change.
 
-### A. Subtree-vendored monorepo (chosen)
+So "one worker = one repo = one worktree = one branch = one PR" holds per
+ticket *for whatever repo the ticket's tasks dir lives in*. The harness
+does not need a global monorepo; it needs each ticket pointed at the right
+code repo.
 
-Sub-repos are imported into the umbrella's own history as ordinary
-subdirectories (via `git subtree add --prefix=<sub> <sub-remote> <ref>`,
-or a plain squashed import for repos whose history we do not need). After
-import the umbrella has ONE `.git`. A cross-repo feature is edits across
-two subdirs in one worktree, one `wt/<slug>` branch, one PR.
+## Design
 
-- Ship cycle works **unchanged**. Every hardwired "one repo" assumption
-  above is satisfied because there genuinely is one repo. No code in
-  task/ship/merge/gh/audit has to learn about multiple repos.
-- Matches the stated end state (true monorepo) - this *is* the end state,
-  reached incrementally one `subtree add` at a time.
-- Cost: sub-repos lose independent per-repo PRs. Changes made in the
-  umbrella must be flowed back to a sub-repo's own remote (if it still
-  has consumers) with `git subtree push --prefix=<sub> <sub-remote>
-  <branch>`. That flow-back is the only new machinery, and it is a
-  *post-merge* concern, not part of the worker ship cycle.
+### Layout
 
-### B. Submodules / side-by-side clones (rejected for now)
+A host has a workspace directory holding the spore harness repo and each
+code repo as independent siblings:
 
-Sub-repos stay independent git repos with their own remotes and PRs; the
-umbrella references them (submodule pointers or sibling clones).
+```
+workspace/
+  spore/        # harness repo (this repo); NOT in the projects list
+  repo-a/       # code repo, own remote + PRs; has repo-a/tasks/
+  repo-b/       # code repo, own remote + PRs; has repo-b/tasks/
+```
 
-- Matches "keep multiple repos with independent remotes" literally.
-- But the ship machinery does NOT span them. Landing this needs real
-  harness work in exactly the subsystems enumerated above:
-  - branch naming gains a repo discriminator (`wt/<repo>/<slug>`);
-  - ship/merge take a per-repo `(remote, base)` instead of hardcoded
-    `origin`/`main`, and loop over N repos producing N PRs;
-  - the task file must persist a per-repo PR set (today the PR is
-    rediscovered from the single branch);
-  - merge audit and unblock must run per `.git` and aggregate;
-  - gh calls must target each repo's cwd and reconcile N CI runs.
-  That is a multi-week build that we would throw away when the monorepo
-  end state arrives. Deferred unless an external consumer forces a
-  sub-repo to keep a live independent remote.
+`~/.config/wt/projects` lists the **code repos** (`repo-a`, `repo-b`),
+not the spore repo. The coordinator runs from a pinned spore binary
+(per the bootstrap rule: the fleet that schedules workers must not change
+under them) and serves all listed code repos.
 
-## Decision
+### One ticket -> one repo
 
-Adopt **A: subtree-vendored monorepo**. It reaches the declared end state
-directly, requires zero ship-cycle changes, and keeps every existing gate
-(wt-check, evidence, merge audit) valid as-is. Submodule multi-repo ship
-(option B) stays unbuilt; revisit only if a sub-repo must retain a live
-independent remote with its own PR review.
+A ticket names its target code repo (a `repo:` / `target_repo` field,
+resolvable to a project root in the list). The coordinator mints the task
+file into that repo's `tasks/<slug>.md`. The worker spawns into
+`<repo>/.worktrees/<slug>`; its branch, PR, merge audit, and evidence all
+run inside that code repo with no code change - this is exactly the
+existing per-project flow the fleet already supports. The agent "navigates
+away" by `cd`-ing into the code repo's worktree; spore is invoked by path,
+never vendored.
+
+### A feature that spans repos -> per-repo child tickets
+
+A single worker does NOT ship across two repos in one branch/PR (that is
+the N-PR-per-worker machinery this design avoids: per-repo `(remote,
+base)` plumbing, a persisted per-repo PR set, per-`.git` audit, N-CI
+reconciliation - multi-week work thrown away if the repos ever merge).
+
+Instead the coordinator **decomposes** a cross-repo feature into one child
+ticket per repo, each shipped 1:1 by its own worker, linked by a Linear
+dependency (parent feature -> per-repo children, blocked-by edges for
+ordering). Each child is a normal single-repo ship. The parent feature is
+done when its children are. This keeps every gate (wt-check, evidence,
+merge audit) valid as-is and preserves the 1:1 model.
+
+Cross-repo interface contracts (repo-a calls a new repo-b endpoint) are
+handled by ordering the children: ship the provider repo first, then the
+consumer, via the blocked-by edge - the same way a single repo sequences
+dependent commits.
 
 ## What this requires
 
-Near term (this design's scope) - nothing in the ship cycle. To onboard a
-second repo under the umbrella:
+No change to `task`/`ship`/`merge`/`gh`/`evidence`/`wtcheck` internals.
+The new work is coordinator-side:
 
-1. `git subtree add --prefix=<sub> <sub-remote> <ref>` (squash if the
-   sub-repo's history is not worth carrying). Commit on the integration
-   branch.
-2. Workers now edit `<sub>/...` like any other path; the existing
-   `wt/<slug>` + one-PR flow ships cross-repo features with no change.
-3. Briefs that reference a sub-repo path use the normal slug; evidence
-   that cites a sub-repo ref still parses (CrossRepo verdict is benign
-   here because it is all one git history - the `<repo>:` token is just a
-   path).
-
-Follow-up ticket (deferred, not blocking): **flow-back tooling**. A
-`spore subtree push` wrapper around `git subtree push --prefix=<sub>
-<sub-remote> <branch>` so post-merge umbrella changes can be mirrored to a
-sub-repo's origin while that origin still has external consumers. Until a
-sub-repo has such a consumer, the umbrella is the source of truth and no
-flow-back is needed.
+1. **Projects list = code repos.** Bootstrap/infect writes
+   `~/.config/wt/projects` with the code repos (sibling dirs), excluding
+   the spore harness repo. (Mechanism already exists;
+   `livenessstatus.go:58-105`.)
+2. **Target-repo field on the ticket.** A `repo:` value the coordinator
+   maps to a project root, so it mints `tasks/<slug>.md` into the right
+   code repo. Default to the sole code repo when only one is served.
+3. **Cross-repo decomposition in the coordinator brief.** When a feature
+   touches multiple repos, the coordinator creates per-repo child tickets
+   with blocked-by ordering instead of handing one worker two repos. This
+   is brief/runbook guidance plus (optionally) a Linear helper, not
+   kernel code.
 
 ## Open questions
 
-- **History import**: squash vs full history per sub-repo. Default to
-  squash (`--squash`) unless a sub-repo's line history is needed for
-  blame; full import bloats the umbrella and complicates future evolved
-  pulls. Decide per repo at import time.
-- **Flow-back cadence**: manual `spore subtree push` on demand vs a
-  post-merge hook. Defer until the first sub-repo actually needs a live
-  remote; do not build the hook speculatively.
-- **`.worktrees` and subtree prefixes**: confirm a worker worktree
-  (`<projectRoot>/.worktrees/<slug>`) is a clean checkout of the whole
-  umbrella including vendored subdirs - it is, since they are ordinary
-  tracked paths. No `.worktrees` layout change.
+- **Decomposition: automatic vs operator-driven.** Start operator/coord
+  driven (the coordinator proposes the split, the operator confirms the
+  child set). Automating the split from a feature description is a later
+  refinement, not needed to land the model.
+- **Shared-interface contracts across child tickets.** Blocked-by
+  ordering covers sequencing; if a contract needs to be pinned (an API
+  schema, a proto), reference it from both child briefs. No harness
+  mechanism needed beyond the dependency edge.
+- **Whether code repos ever merge into one product monorepo.** Out of
+  scope here and not required: this design works for N independent repos.
+  If they later merge, cross-repo features simply become intra-repo and
+  the child-ticket decomposition stops being needed - no harness rework
+  either way.
