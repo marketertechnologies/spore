@@ -51,6 +51,7 @@ Commands:
   signal     Record warning / error signals from a wrapped command.
   guard      Refuse headless agent spawns; exec the binary inside tmux.
   statusline Render the agent token-usage tmux status line with a ramp.
+  token-status Render claude-code context counts (--statusline / --fleet).
   wt-check   Run the project's lint+test gate (nix develop -c just check).
   audit-versions
              Audit installed tools and flake inputs against versions.json.
@@ -347,6 +348,8 @@ func main() {
 		os.Exit(runGuard(args))
 	case "statusline":
 		os.Exit(runStatusline(args))
+	case "token-status":
+		os.Exit(runTokenStatus(args))
 	case "wt-check":
 		os.Exit(runWtCheck(args))
 	case "audit-versions":
