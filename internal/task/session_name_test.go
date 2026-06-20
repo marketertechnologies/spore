@@ -49,6 +49,44 @@ func TestTmuxSessionNameUsesTierTag(t *testing.T) {
 	}
 }
 
+// TestTmuxSessionNameUsesTicketPrefix pins the operator-mandated
+// layout: when the task carries a matter_id (Linear ticket), the
+// session name leads with the ticket, then tier, then a truncated
+// slug. Hand-minted tasks (no matter_id) keep the legacy shape.
+func TestTmuxSessionNameUsesTicketPrefix(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spore")
+	m := frontmatter.Meta{
+		Agent: "claude",
+		Extra: map[string]string{
+			"matter_id": "ROC-19",
+			"effort":    "xhigh",
+			"model":     "opus",
+		},
+	}
+	got, err := tmuxSessionName(dir, "smoke-delegation-pickup-test", m)
+	if err != nil {
+		t.Fatalf("tmuxSessionName: %v", err)
+	}
+	want := "\U0001F41D spore ROC-19/opus_xhigh/smoke-delegation-pickup"
+	if got != want {
+		t.Errorf("session = %q, want %q", got, want)
+	}
+}
+
+func TestShortSlugTruncatesAtHyphen(t *testing.T) {
+	cases := map[string]string{
+		"short":                             "short",
+		"smoke-delegation-pickup-test":      "smoke-delegation-pickup",
+		"twentyfourcharsexactlyhere":        "twentyfourcharsexactlyhe",
+		"foo-bar-baz-qux-quux-corge-grault": "foo-bar-baz-qux-quux",
+	}
+	for in, want := range cases {
+		if got := shortSlug(in); got != want {
+			t.Errorf("shortSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestParseSessionAcceptsWtShapes(t *testing.T) {
 	type want struct {
 		slug string
@@ -73,6 +111,9 @@ func TestParseSessionAcceptsWtShapes(t *testing.T) {
 		{"spore/demo/extra/slug", "demo", want{}, false},
 		// Slug-with-suffix must not match a different slug.
 		{"\U0001F41D spore/demo-extra", "spore", want{"demo-extra", SessionKindWorker, ""}, true},
+		// Ticket-prefixed shape: "<emoji> <project> <ticket>/<tier>/<slug>".
+		{"\U0001F41D spore ROC-19/opus_xhigh/smoke-delegation", "spore",
+			want{"smoke-delegation", SessionKindWorker, "opus_xhigh"}, true},
 	}
 	for _, c := range cases {
 		p, ok := ParseSession(c.name, c.project)

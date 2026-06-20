@@ -15,7 +15,59 @@ func tmuxSessionName(projectRoot, slug string, m frontmatter.Meta) (string, erro
 		return "", err
 	}
 	project := projectNameOrBase(projectRoot)
+	if ticket := matterTicket(m); ticket != "" {
+		return ticketSessionName(project, ticket, tag, slug), nil
+	}
 	return wtSessionName(project, slug, tag), nil
+}
+
+// matterTicket returns the upstream issue identifier (e.g. "ROC-19")
+// from frontmatter, or "" when the task is not bound to an external
+// work-item. The session-name layout prefers ticket as the human
+// anchor when it exists, falling back to the legacy slug-prefixed
+// layout for hand-minted tasks.
+func matterTicket(m frontmatter.Meta) string {
+	if m.Extra == nil {
+		return ""
+	}
+	return m.Extra["matter_id"]
+}
+
+// shortSlug truncates slug to at most maxLen chars, cutting on a
+// hyphen boundary where possible so a session label stays readable
+// rather than ending in a half-word. Trailing hyphens are stripped so
+// "smoke-delegation-pickup-test" reads as "smoke-delegation-pickup"
+// (truncate at 24, drop trailing hyphen) rather than the raw cut.
+func shortSlug(slug string) string {
+	const maxLen = 24
+	if len(slug) <= maxLen {
+		return slug
+	}
+	cut := slug[:maxLen]
+	if i := strings.LastIndex(cut, "-"); i > maxLen/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, "-")
+}
+
+// ticketSessionName renders the worker tmux session as
+//
+//	"<emoji> <project> <ticket>/<tier>/<short-slug>"
+//
+// The ticket is the primary anchor (per operator policy: "session
+// name starts with ticket"); the tier captures model+effort; the
+// truncated slug is a human hint and stays last. The leading emoji
+// and project keep parity with coordinator sessions so ParseSession
+// can still find the project anchor.
+func ticketSessionName(project, ticket, tier, slug string) string {
+	tail := ticket
+	if tier != "" {
+		tail += "/" + tier
+	}
+	if s := shortSlug(slug); s != "" {
+		tail += "/" + s
+	}
+	return projectEmoji(project) + " " + project + " " + tail
 }
 
 // TaskTmuxSession returns the canonical tmux session name for slug
@@ -145,6 +197,10 @@ type ParsedSession struct {
 	Slug    string
 	Tag     string
 	Kind    string
+	// Ticket is the upstream issue identifier (e.g. "ROC-19") when the
+	// session uses the ticket-prefixed layout. Empty for legacy shapes
+	// and coordinator sessions.
+	Ticket string
 }
 
 // ParseSession decomposes a tmux session name relative to project.
@@ -153,12 +209,15 @@ type ParsedSession struct {
 //
 // Accepted shapes (all project-scoped):
 //
-//	"<rune> <project>/<slug>"           worker
-//	"<rune> <project>/<slug> [tag]"     worker, tagged
-//	"<project>/coordinator"             coordinator (no emoji prefix)
-//	"<rune> <project>/coordinator"      coordinator
+//	"<rune> <project>/<slug>"                  worker (legacy)
+//	"<rune> <project>/<slug> [tag]"            worker, tagged (legacy)
+//	"<rune> <project> <ticket>/<tier>/<slug>"  worker, ticket-prefixed
+//	"<project>/coordinator"                    coordinator (no emoji)
+//	"<rune> <project>/coordinator"             coordinator
 //
-// Returns (zero, false) for anything else.
+// For the ticket-prefixed shape Slug carries the truncated worker
+// hint, Tag carries the tier, and the ticket lands in the Ticket
+// field. Returns (zero, false) for anything else.
 func ParseSession(name, project string) (ParsedSession, bool) {
 	raw := name
 	tag := ""
@@ -178,6 +237,28 @@ func ParseSession(name, project string) (ParsedSession, bool) {
 
 	if name == project+"/"+sessionkind.Coordinator {
 		return mk("", sessionkind.Coordinator)
+	}
+
+	// Ticket-prefixed worker: "<emoji> <project> <ticket>/<tier>/<slug>".
+	// The space-separated <project> is followed by a slash-separated
+	// triple. Detected here before the legacy " <project>/" probe so a
+	// ticket containing a slash never trips the legacy parser.
+	if anchor := " " + project + " "; strings.Contains(name, anchor) {
+		i := strings.Index(name, anchor)
+		tail := name[i+len(anchor):]
+		parts := strings.Split(tail, "/")
+		if len(parts) >= 2 {
+			ticket := parts[0]
+			tier := parts[1]
+			slug := ""
+			if len(parts) >= 3 {
+				slug = strings.Join(parts[2:], "/")
+			}
+			p, _ := mk(slug, sessionkind.Worker)
+			p.Tag = tier
+			p.Ticket = ticket
+			return p, true
+		}
 	}
 
 	needle := " " + project + "/"
