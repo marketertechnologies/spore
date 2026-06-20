@@ -50,8 +50,13 @@ nix-build:
 # flake.nix, nixosModules/, nix/hosts/rocky/, bootstrap/handover/,
 # etc., and atomically activates the new system. The spore binary
 # on the coordinator's PATH ends up matching the source tree.
+#
+# Pinned to /home/spore/project so `just deploy` works from any CWD
+# (root's home has no flake.nix; just changes dir to the justfile
+# location but we want the flake path baked in so a stray run from
+# /root behaves the same as one from /home/spore/project).
 deploy:
-    sudo nixos-rebuild switch --flake .#rocky
+    nixos-rebuild switch --flake /home/spore/project#rocky
 
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a
 # dirty tree, a failing `just check`, or an existing tag. Does NOT
