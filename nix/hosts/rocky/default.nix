@@ -1,4 +1,4 @@
-{ config, lib, ... }:
+{ config, lib, pkgs, ... }:
 
 # rocky: the steady-state spore coordinator host. Runs `services.spore-fleet`
 # against the ROC Linear team (newbuilds workspace) as the agent "rocky".
@@ -35,6 +35,19 @@
   # that survives a host reboot (default Storage=auto is tmpfs-backed
   # until /var/log/journal exists).
   services.journald.storage = "persistent";
+
+  # Interactive system PATH for an operator SSH session. The spore-attach
+  # login shell calls tmux, and a hands-on operator runs spore / git /
+  # claude directly; the fleet systemd units carry these on their own
+  # PATH, but a login shell does not see that, so put them here too.
+  # Without tmux the login shell (spore-attach) cannot attach at all, and
+  # without claude the first-run login cannot be performed.
+  environment.systemPackages = [
+    config.services.spore-fleet.package
+    config.services.spore-fleet.claudeCodePackage
+    pkgs.git
+    pkgs.tmux
+  ];
 
   # The Linear token lives only on the host. Declare the directory (perms,
   # ownership) here; the secret file itself is placed out-of-band at
