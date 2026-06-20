@@ -4,6 +4,35 @@ let
   cfg = config.services.spore-fleet;
   stateRel = ".local/state/spore/fleet-enabled";
 
+  # PATH for the fleet units and the coordinator / worker agent sessions
+  # they spawn. claude-code shells out to grep / sed / awk / ripgrep /
+  # find on startup and for its search tools; without them on PATH the
+  # agent exits before its tmux session settles ("died on spawn"). spore
+  # + claude-code + bash + the standard userland is the minimum a spawned
+  # agent needs. Workers inherit this via the coordinator's tmux session.
+  fleetBinPath = lib.makeBinPath [
+    cfg.package
+    cfg.claudeCodePackage
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.gawk
+    pkgs.ripgrep
+    pkgs.findutils
+    pkgs.which
+    pkgs.git
+    pkgs.tmux
+  ];
+
+  # Render an attrset into a systemd Environment= list, quoting each
+  # assignment so values containing spaces survive (an unquoted
+  # `Environment=KEY=In Progress` is parsed as KEY=In plus a stray
+  # `Progress`; a matter state like Linear's "In Progress" needs the
+  # quotes). systemd strips the outer quotes, so quoting space-free
+  # values is harmless.
+  mkEnvList = attrs: lib.mapAttrsToList (n: v: ''"${n}=${v}"'') attrs;
+
   # Common preamble: re-exec as cfg.user with a clean systemd-user
   # environment when invoked as root (system.activationScripts and
   # colmena pre/postActivation both run as root). When already running
@@ -579,25 +608,29 @@ in
           Type = "oneshot";
           WorkingDirectory = toString cfg.projectRoot;
           ExecStart = "${cfg.package}/bin/spore fleet reconcile";
-          Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+          Environment = mkEnvList (
             {
               SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
               SPORE_HOST_ID = cfg.hostId;
-              # bashInteractive + coreutils land on PATH so the shims
-              # the reconciler spawns (spore-coordinator-launch,
-              # spore-worker-brief) can resolve `#!/usr/bin/env bash`
-              # and call `cat`/`mkdir`/`tee`/`date` without an
-              # in-shim PATH-augment workaround.
-              PATH = lib.makeBinPath [
-                cfg.package
-                cfg.claudeCodePackage
-                pkgs.bashInteractive
-                pkgs.coreutils
-                pkgs.git
-                pkgs.tmux
-              ];
+              # The shims the reconciler spawns (spore-coordinator-launch,
+              # spore-worker-brief) resolve `#!/usr/bin/env bash` and call
+              # the standard userland; the agent sessions need the search
+              # tools too. See fleetBinPath.
+              PATH = fleetBinPath;
+              # tmux runs a new session's command via $SHELL, falling back
+              # to the user's passwd shell - which is spore-attach on a
+              # deployed host. spore-attach would hijack the coordinator /
+              # worker command with its own attach logic, so the agent
+              # never execs and the session dies on spawn. Pin a real bash.
+              SHELL = "${pkgs.bashInteractive}/bin/bash";
             } // matterEnv // cfg.extraEnv
           );
+          # The reconcile is a oneshot that spawns the coordinator (and
+          # worker) tmux server as daemonized children. KillMode=process
+          # leaves them running when the oneshot exits; the default
+          # control-group would reap the whole tree, killing the
+          # coordinator the instant reconcile finishes.
+          KillMode = "process";
           NoNewPrivileges = true;
           LockPersonality = true;
           RestrictSUIDSGID = true;
@@ -622,18 +655,15 @@ in
           Type = "simple";
           WorkingDirectory = toString cfg.projectRoot;
           ExecStart = "${cfg.package}/bin/spore coordinator spawn";
-          Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+          Environment = mkEnvList (
             {
               SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
               SPORE_HOST_ID = cfg.hostId;
-              PATH = lib.makeBinPath [
-                cfg.package
-                cfg.claudeCodePackage
-                pkgs.bashInteractive
-                pkgs.coreutils
-                pkgs.git
-                pkgs.tmux
-              ];
+              PATH = fleetBinPath;
+              # Pin a real bash so tmux does not run the coordinator
+              # command through the spore-attach login shell. See the
+              # reconcile unit for the full rationale.
+              SHELL = "${pkgs.bashInteractive}/bin/bash";
             } // matterEnv // cfg.extraEnv
           );
           # Exit-code contract from `spore coordinator spawn`:
@@ -678,7 +708,7 @@ in
           Type = "oneshot";
           WorkingDirectory = toString cfg.projectRoot;
           ExecStart = "${cfg.package}/bin/spore fleet evict-idle";
-          Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+          Environment = mkEnvList (
             {
               SPORE_HOST_ID = cfg.hostId;
               SPORE_EVICTOR_IDLE_SECS = toString cfg.evictIdle.idleSeconds;
