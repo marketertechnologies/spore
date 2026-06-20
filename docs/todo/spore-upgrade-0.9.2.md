@@ -27,7 +27,7 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   spore-projects.nix. Topology decision (operator): single coordinator per
   host; multiple repos served by an umbrella `projectRoot` with sub-repos as
   subdirs (proto-monorepo), NOT a fleet fanned across independent repos.
-- NEXT: cross-repo worker ship design (new ROC ticket). A worker is 1
+- NEXT: cross-repo worker ship design (**ROC-18**). A worker is 1
   worktree of 1 git repo -> 1 wt/<slug> branch -> 1 PR; the whole ship cycle
   (wt-check gate, evidence contract, internal/merge, internal/gh) assumes one
   git history. A feature ticket spanning multiple repos needs a decision:
