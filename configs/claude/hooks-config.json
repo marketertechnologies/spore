@@ -4,6 +4,7 @@
       { "command": "spore hooks pretooluse", "timeout": 10, "kinds": ["coordinator", "worker"] }
     ],
     "Stop": [
+      { "command": "spore hooks context-tee", "timeout": 10, "kinds": ["coordinator", "worker"] },
       { "command": "spore coordinator token-monitor", "timeout": 10, "kinds": ["coordinator"] },
       { "command": "spore worker token-monitor", "timeout": 10, "kinds": ["worker"] },
       { "command": "spore fleet replenish-hook", "timeout": 30, "kinds": ["coordinator"] },

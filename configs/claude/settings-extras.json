@@ -3,5 +3,9 @@
   "effortLevel": "xhigh",
   "autoMemoryEnabled": false,
   "skipDangerousModePermissionPrompt": true,
-  "theme": "dark"
+  "theme": "dark",
+  "statusLine": {
+    "type": "command",
+    "command": "spore token-status --statusline"
+  }
 }

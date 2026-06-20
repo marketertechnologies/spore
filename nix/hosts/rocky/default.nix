@@ -84,5 +84,10 @@
   home-manager.useUserPackages = true;
   home-manager.users.spore.home.stateVersion = config.system.stateVersion;
 
+  # tmux config for the spore user's sessions (coordinator, workers, and
+  # the operator's spore-attach): mouse scroll + the operator theme +
+  # the spore token-status context panel. See ./tmux.conf.
+  home-manager.users.spore.xdg.configFile."tmux/tmux.conf".source = ./tmux.conf;
+
   system.stateVersion = lib.mkDefault "25.05";
 }
