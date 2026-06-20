@@ -23,58 +23,22 @@ time. When working inside this repo, always use the kernel names.
 ## Source map
 
 ```
-spore/
-|-- cmd/
-|   |-- spore/                  CLI entry point (Go).
-|   `-- spore-sandbox/          bwrap+proxy sandbox launcher for worker agents.
-|-- internal/                   Go internal packages, kernel implementation.
-|   |-- agentpane/              tmux pane capture + classify (idle/typing/tool).
-|   |-- agentpolicy/            Per-agent effort + interactive-argv policy (claude, codex).
-|   |-- align/                  Pilot-agent alignment-mode tracker.
-|   |-- auditversions/          Compare deployed agent binaries to lockfiles.
-|   |-- bootstrap/              Stage-gate driver + per-stage detectors.
-|   |-- budget/                 Account-tier + token-budget gating for coordinator + workers.
-|   |-- composer/               Instruction composer: rule-pool to rendered files.
-|   |-- coordinator/            Coordinator lifecycle (spawn, workerwatch, tokenmonitor, verify).
-|   |-- evidence/               Parse + verify the task-close evidence contract.
-|   |-- evictor/                Idle-worker eviction sweep.
-|   |-- fleet/                  Worker fleet: coordinator + workers consuming the task queue.
-|   |-- gh/                     gh-cli wrapper (PR view/create/merge, run lists).
-|   |-- hooks/                  Stop / PreToolUse / commit-msg hook entry points.
-|   |   `-- wtgit/              Shared worktree git probes used by ship-cycle hooks.
-|   |-- infect/                 nixos-anywhere wrapper for `spore infect`.
-|   |-- initconfig/             `spore init` config file generator.
-|   |-- install/                Drops embedded skills into a target's .claude/skills/.
-|   |-- lints/                  Portable lint set (drift, file-size, comment-noise, em-dash, ...).
-|   |-- matter/                 External-issue backends (Linear, GitHub) for task done/sync.
-|   |-- merge/                  wt/<slug> merge integrity audit + unblock.
-|   |-- opencode/               opencode-specific fleetstop + liveness probes.
-|   |-- sandboxcfg/             `[sandbox]` TOML config loader for spore-sandbox.
-|   |-- scout/                  Healer-task minter: clusters lint findings, writes briefs.
-|   |-- search/                 Token-budgeted search wrapper.
-|   |-- secret/                 age-encrypted operator secret store.
-|   |-- sessionkind/            Coordinator vs worker session-kind constants.
-|   |-- signal/                 Cross-session inbox signal driver.
-|   |-- task/                   Worktree-task driver (lifecycle, inbox, merge, ship, ...).
-|   |-- tmuxsess/               Shared tmux has/kill/list-session helpers.
-|   |-- todo/                   `spore todo` command for the docs/todo epic register.
-|   |-- transcript/             Codex + claude transcript parsing for hooks.
-|   |-- worker/                 Worker-side helpers (bootaudit, exitkind, tokenmonitor).
-|   `-- wtcheck/                `spore wt-check` lint+test gate driver.
-|-- rules/                      Markdown rule pool, composed into CLAUDE.md / AGENTS.md.
-|   |-- consumers/              Per-consumer rule lists (line per fragment id).
-|   |-- core/                   Always-on, language-agnostic fragments.
-|   `-- lang/                   Language-specific fragments (later phase).
-|-- bootstrap/                  spore-bootstrap skill body, stage runbooks, drop-ins.
-|   |-- skills/                 spore-bootstrap and diagram skills.
-|   |-- stages/                 One runbook per stage gate.
-|   |-- mcp/                    MCP server config templates.
-|   `-- flake/                  Minimal NixOS flake used by `spore infect`.
-|-- configs/                    Per-agent hook render sources (claude, codex).
-|   |-- claude/                 hooks-config.json + settings-extras.json.
-|   `-- codex/                  hooks-config.json.
-`-- docs/                       Design notes, rationale.
+cmd/spore/             CLI entry point (Go).
+cmd/spore-sandbox/     bwrap+proxy sandbox launcher for worker agents.
+internal/              Kernel: composer, fleet, task, coordinator, worker,
+                       matter (Linear/GitHub backends), hooks, gh, evidence,
+                       lints, secret, scout, sandboxcfg, sessionkind, signal,
+                       transcript, tmuxsess, wtcheck, ...
+rules/core/            Always-on rule fragments composed into CLAUDE.md.
+rules/consumers/       Per-consumer rule lists (one fragment id per line).
+bootstrap/             Shipped assets: coordinator/role.md, handover hooks,
+                       skills, stages, flake.
+configs/               Per-agent hook render sources (claude, codex).
+docs/                  Design notes; docs/todo/ for multi-session specs.
 ```
+
+`grep -rn` and the package READMEs are the source of truth; this map is a
+top-level pointer, not an index.
 
 ## Tier policy
 
@@ -115,21 +79,6 @@ If you are running off a task brief - you read `tasks/<slug>.md`, you are in a `
   Write commit messages as the human author.
 - Short, declarative, imperative voice in rules. Use "you" or the
   bare imperative.
-
-# Reply shape
-
-**Default to one sentence. Add detail only when explicitly asked.** The operator reads top-down and stops when satisfied. Long replies waste their attention and burn tokens.
-
-Hard rules:
-
-- **Lead with the conclusion or the action.** No preface ("On it", "Sure", "Let me ..."), no plan-narration ("I'll first X then Y").
-- **No status tables, captures, or summaries unless asked.** Don't paste tool output back at the operator. Don't list "what each worker is doing" unless they asked.
-- **No menu of options.** Pick the right action and do it. Only ask when the choice is genuinely operator-bound (security, sudo, product preference) - never to offload a technical call.
-- **No question-restatement.** Don't say "you asked X" before answering.
-- **Cap responses at 3 lines of prose** (or one short bullet list) absent an explicit "explain", "details", "walk me through", "compare". Long-form is opt-in.
-- **Tool-use turns can be silent.** A one-sentence ack before a series of tool calls is fine; an end-of-turn one-sentence summary is fine. Anything between is noise.
-
-Falsifiability test before sending: would removing a sentence change what the operator does next? If no, cut it.
 
 # Commits
 
@@ -269,48 +218,3 @@ recommended: <a|b|c> - <one-line why>
 The coordinator's default is then "approve recommended"; only the
 genuinely operator-bound questions surface to the operator. This
 keeps round trips off the critical path.
-
-## Alignment mode
-
-Alignment mode is on. You and the pilot are still learning to work
-together. Keep things small and slow on purpose until you flip out.
-
-- Use plain words. Short sentences. No jargon. If a word might be
-  unknown to a pilot new to this project, use a simpler one or
-  explain it in one line.
-- Ask one question at a time. Do not bundle. If you have three
-  questions, ask the first, wait, then the next.
-- When you ask, reach for the `AskUserQuestion` tool by default.
-  Most pilots are devs but they still pick faster from a short
-  list of pre-thought options than from a wall of prose. Use a
-  free-form prompt only when the question is open and choices do
-  not fit (clarifying intent, naming, scope).
-- Take the heavy lifting. Do not hand the pilot a blank prompt.
-  Surface 2 to 4 options you already thought through. Pick a
-  recommendation and say why. Let the pilot redirect.
-- Say what you are about to do before you do it, when the action
-  is not trivial. One line: "I am about to do X because Y. OK?"
-  Trivial reads do not need this.
-- Watch for pilot preferences. When you notice one ("I prefer
-  small commits", "do not touch generated files", "ask before
-  installing deps"), log it. Append one short bullet to
-  `~/.local/state/spore/<project>/alignment.md`. Use
-  `spore align note "<line>"`.
-- When a preference comes up more than once, suggest promoting
-  it to a rule-pool entry: "I noticed you prefer X twice now.
-  Should we make this a rule?" If the pilot agrees and a rule is
-  added, mark the note `[promoted]` (run `spore align note
-  "[promoted] <text>"`).
-- Each turn, glance at `spore align status` and surface progress
-  in one short line: "alignment: 4 of 10 notes, 1 of 3 promoted,
-  flip pending".
-
-You exit alignment mode when all three are true:
-
-1. There are at least 10 notes in `alignment.md`.
-2. At least 3 of them are marked `[promoted]`.
-3. The pilot runs `spore align flip`.
-
-Defaults are configurable per project via `spore.toml`
-(`[align]` section). Once you flip out, the next composer render
-drops this block from the instruction files.
