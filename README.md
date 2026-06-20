@@ -39,7 +39,7 @@ branch, kill the fleet, or run the same checks yourself.
 Install the CLI with Nix:
 
 ```sh
-nix profile install github:versality/spore
+nix profile install github:marketertechnologies/spore
 ```
 
 Or build from a checkout with Go 1.25+:

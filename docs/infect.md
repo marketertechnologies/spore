@@ -40,13 +40,17 @@ spore infect 203.0.113.7 \
   --coordinator-model sonnet
 ```
 
-This installs NixOS with the bundled flake's `inputs.spore` pinned
-at infect time to the local CLI's commit (`Stage()` rewrites
-`bootstrap/flake/flake.lock`, gated by a push-first guard that
-HEADs the commit against origin). The activation script in the
-bundled `configuration.nix` puts `spore` on `PATH` at
-`/run/current-system/sw/bin/spore` and symlinks the six host shims
-into `/usr/local/bin/spore-*`, both pointing into the nix store.
+This installs a minimal NixOS from the bundled bootstrap flake (the
+flake itself carries no `spore`; it is a throwaway bring-up config the
+host's own flake replaces later). Before the box is wiped, a push-first
+guard HEADs the running CLI's build commit against
+`github:marketertechnologies/spore` and aborts with "run `git push`
+before `spore infect`" when it is missing: the deployed binary must be
+reproducible from origin so a host flake pinned to that commit can
+rebuild and recover. `spore infect --repo` then copies the local binary
+to `/usr/local/bin/spore`. Steady-state delivery of `spore` plus the
+host shims from the nix store is the host's own flake's job via
+`inputs.spore` (see docs/host-nix-snippet.md).
 Infect then rsyncs `~/projects/myrepo` to `/home/spore/myrepo`,
 installs the per-user attach shell, hooks, settings, and systemd
 units, creates `/home/spore/myrepo/tasks` when absent, enables

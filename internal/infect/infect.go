@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +41,27 @@ const (
 	DefaultCoordinatorEffort = "high"
 
 	bundledRoot = "bootstrap/flake"
+
+	// SporeOwner and SporeRepo identify the github repo this fork's
+	// fleet pulls spore from. A deployed host's steady-state flake
+	// pins `inputs.spore` to a commit on this repo, so the infect-time
+	// push guard (RequireSporeCommitOnOrigin) checks the same repo.
+	// This is the fork's own public origin, not the upstream the go
+	// module path still names.
+	SporeOwner = "marketertechnologies"
+	SporeRepo  = "spore"
+
+	// SporeFlakeURL is the bare github URL a fleet host's flake names
+	// as its `spore` input.
+	SporeFlakeURL = "github:" + SporeOwner + "/" + SporeRepo
 )
+
+// SporeOriginCommitsURL is overridable by tests so RequireSporeCommitOnOrigin
+// can hit a fake server instead of github.com.
+var SporeOriginCommitsURL = "https://api.github.com/repos/" + SporeOwner + "/" + SporeRepo + "/commits/"
+
+// SporeOriginHTTPClient is overridable by tests.
+var SporeOriginHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // Config describes one infect target.
 type Config struct {
@@ -54,6 +75,15 @@ type Config struct {
 	CoordinatorModel  string
 	CoordinatorEffort string
 	Layout            LayoutSpec
+
+	// SporeCommit is the running CLI's build commit. The infect-time
+	// guard verifies it exists on SporeFlakeURL before the box is
+	// wiped, so the deployed binary (copied via --repo) stays
+	// reproducible from origin: a host's steady-state flake pinned to
+	// this commit can rebuild and recover. Empty (e.g. `go run`)
+	// skips the guard. The bundled bootstrap flake is not itself
+	// pinned; that is the host's own flake's job (see ROC-13 shims).
+	SporeCommit string
 }
 
 // LayoutSpec names the deploy user and paths owned by it on the
@@ -190,6 +220,32 @@ func ResolveFlake(c Config, bundled fs.FS) (string, func(), error) {
 	return c.Flake + "#" + FlakeAttr, func() {}, nil
 }
 
+// RequireSporeCommitOnOrigin verifies commit exists in the github repo
+// backing SporeFlakeURL by HEADing the commits API. Returns an
+// instructive error when the commit is not pushed: the deployed binary
+// would then have no reproducible source, and a host flake pinned to
+// the commit could never rebuild it.
+func RequireSporeCommitOnOrigin(ctx context.Context, commit string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, SporeOriginCommitsURL+commit, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "spore-infect")
+	resp, err := SporeOriginHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("check spore commit %s on %s: %w", commit, SporeFlakeURL, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound, http.StatusUnprocessableEntity:
+		return fmt.Errorf("spore commit %s is not on %s; run `git push` before `spore infect`", commit, SporeFlakeURL)
+	default:
+		return fmt.Errorf("check spore commit %s on %s: unexpected status %d", commit, SporeFlakeURL, resp.StatusCode)
+	}
+}
+
 // Stage copies the bundled flake tree out of bundled into a fresh
 // temp directory under tmpRoot (default os.TempDir when ""), writes a
 // generated local.nix carrying hostname + authorizedKeys, and returns
@@ -289,6 +345,12 @@ func run(ctx context.Context, c Config, bundledFlake, bundledHandover fs.FS, std
 		return err
 	}
 	c.applyDefaults()
+
+	if c.Flake == "" && c.SporeCommit != "" {
+		if err := RequireSporeCommitOnOrigin(ctx, c.SporeCommit); err != nil {
+			return err
+		}
+	}
 
 	flakeRef, cleanup, err := ResolveFlake(c, bundledFlake)
 	if err != nil {

@@ -31,7 +31,7 @@ single fleet out across independent repos.
 ```nix
 {
   inputs = {
-    spore.url = "github:versality/spore";
+    spore.url = "github:marketertechnologies/spore";
     home-manager.url = "github:nix-community/home-manager";
   };
 
