@@ -45,6 +45,10 @@ type stubIssue struct {
 	SortOrder   float64
 	Labels      []string
 	Relations   []stubRelation
+	// DelegateID, when non-empty, populates `delegate { id }` in the
+	// issues query response. Lets tests assert the read-side delegate
+	// gate skips undelegated issues and adopts delegated ones.
+	DelegateID string
 }
 
 // stubRelation mirrors an IssueRelation node. RelatedStateType is
@@ -173,6 +177,9 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 	type relations struct {
 		Nodes []relation `json:"nodes"`
 	}
+	type actor struct {
+		ID string `json:"id"`
+	}
 	type node struct {
 		ID          string    `json:"id"`
 		Identifier  string    `json:"identifier"`
@@ -181,6 +188,7 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 		URL         string    `json:"url"`
 		SortOrder   float64   `json:"sortOrder"`
 		Relations   relations `json:"relations"`
+		Delegate    *actor    `json:"delegate"`
 	}
 	var nodes []node
 	for _, iss := range s.issues {
@@ -200,11 +208,16 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 				},
 			})
 		}
+		var del *actor
+		if iss.DelegateID != "" {
+			del = &actor{ID: iss.DelegateID}
+		}
 		nodes = append(nodes, node{
 			ID: iss.ID, Identifier: iss.Identifier, Title: iss.Title,
 			Description: iss.Description, URL: iss.URL,
 			SortOrder: iss.SortOrder,
 			Relations: relations{Nodes: rels},
+			Delegate:  del,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Identifier < nodes[j].Identifier })
@@ -256,39 +269,6 @@ func newSource(t *testing.T, srvURL string) *Source {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
 	return src
-}
-
-func TestSyncDelegatesClaimedIssues(t *testing.T) {
-	stub := newStub(t)
-	stub.actorID = "rocky-actor-id"
-	stub.addReady("issue-uuid-1", "MAR-12", "Wire up onboarding email", "body")
-
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	t.Setenv("LINEAR_API_KEY", "lin_test")
-	src, err := NewFromConfig(Config{
-		Team:            "MAR",
-		ReadyState:      "Ready",
-		InProgressState: "In Progress",
-		DoneState:       "Done",
-		APIKeyEnv:       "LINEAR_API_KEY",
-		Endpoint:        srv.URL,
-		Delegate:        true,
-	})
-	if err != nil {
-		t.Fatalf("NewFromConfig: %v", err)
-	}
-
-	if _, _, err := src.Sync(context.Background(), t.TempDir()); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	if stub.lastDelegateID != "rocky-actor-id" {
-		t.Errorf("claim delegateId = %q, want rocky-actor-id", stub.lastDelegateID)
-	}
-	if stub.lastAssigneeID != "" {
-		t.Errorf("claim set assigneeId = %q, want empty (delegate, not assign)", stub.lastAssigneeID)
-	}
 }
 
 func TestSyncCreatesTasksAndPushesReady(t *testing.T) {

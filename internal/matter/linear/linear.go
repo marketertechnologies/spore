@@ -184,11 +184,23 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		return 0, 0, err
 	}
 
+	// Delegate doubles as the pickup gate: when enabled, only adopt
+	// issues already delegated to this actor. Resolve actorID up front
+	// so the per-issue check below has it cached.
+	if s.cfg.Delegate {
+		if err := s.loadActorID(); err != nil {
+			return 0, 0, err
+		}
+	}
+
 	ready, err := s.listIssuesByState(readyID)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, issue := range ready {
+		if s.cfg.Delegate && (issue.Delegate == nil || issue.Delegate.ID != s.actorID) {
+			continue
+		}
 		if slug, dup := known[issue.Identifier]; dup {
 			resumed, err := resumeIfMatterBlocked(tasksDir, slug)
 			if err != nil {
@@ -628,6 +640,14 @@ type linearIssue struct {
 	URL         string          `json:"url"`
 	SortOrder   float64         `json:"sortOrder"`
 	Relations   linearRelations `json:"relations"`
+	// Delegate is the issue's current agent delegate. Nil when no
+	// delegate is set. Populated by listIssuesByState; used by Sync
+	// to gate pickup when cfg.Delegate is true.
+	Delegate *linearActor `json:"delegate"`
+}
+
+type linearActor struct {
+	ID string `json:"id"`
 }
 
 type linearRelations struct {
@@ -680,6 +700,7 @@ func (s *Source) listIssuesByState(stateID string) ([]linearIssue, error) {
   issues(filter: {state: {id: {eq: $stateId}}}) {
     nodes {
       id identifier title description url sortOrder
+      delegate { id }
       relations {
         nodes {
           type
@@ -695,6 +716,7 @@ func (s *Source) listIssuesByState(stateID string) ([]linearIssue, error) {
   issues(filter: {state: {id: {eq: $stateId}}, labels: {some: {name: {eq: $label}}}}) {
     nodes {
       id identifier title description url sortOrder
+      delegate { id }
       relations {
         nodes {
           type
