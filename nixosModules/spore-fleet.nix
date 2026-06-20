@@ -623,6 +623,12 @@ in
               # worker command with its own attach logic, so the agent
               # never execs and the session dies on spawn. Pin a real bash.
               SHELL = "${pkgs.bashInteractive}/bin/bash";
+              # Pin tmux to the systemd runtime dir (%t = /run/user/<uid>)
+              # so the coordinator + worker sessions share one socket with
+              # the operator's spore-attach login (which uses XDG_RUNTIME_DIR).
+              # Otherwise tmux defaults to /tmp and the operator cannot
+              # attach to the running coordinator.
+              TMUX_TMPDIR = "%t";
             } // matterEnv // cfg.extraEnv
           );
           # The reconcile is a oneshot that spawns the coordinator (and
@@ -664,6 +670,12 @@ in
               # command through the spore-attach login shell. See the
               # reconcile unit for the full rationale.
               SHELL = "${pkgs.bashInteractive}/bin/bash";
+              # Pin tmux to the systemd runtime dir (%t = /run/user/<uid>)
+              # so the coordinator + worker sessions share one socket with
+              # the operator's spore-attach login (which uses XDG_RUNTIME_DIR).
+              # Otherwise tmux defaults to /tmp and the operator cannot
+              # attach to the running coordinator.
+              TMUX_TMPDIR = "%t";
             } // matterEnv // cfg.extraEnv
           );
           # Exit-code contract from `spore coordinator spawn`:
