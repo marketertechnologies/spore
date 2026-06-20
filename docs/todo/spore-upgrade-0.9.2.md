@@ -13,15 +13,27 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   PRs - trust lint + `nix flake check`). `evolved` git remote -> ~/projects/spore.
 - DONE + merged: ROC-2 (sandbox, #44), ROC-3/4/6/8/9 (evolved kernel adopted,
   #45), ROC-7 (matter delegates to rocky, not assign + ROC config in spore.toml,
-  #46 - verified live against ROC). The fork's kernel IS evolved spore 0.9.2.
-  E2E green: `nix flake check` runs the NixOS fleet VM test.
-- NEXT: **ROC-14** - mcom supervisor + token-cap respawn = automatic coordinator
-  rotation (the session-rotation answer). Distil from mcom helm-spawn.sh; also
-  tmux config (TMUX_TMPDIR pin, detach-on-destroy off), statusline, headless guard.
-- Then: ROC-5 (collapse multi-project -> single), ROC-10/11/12 (re-apply
-  recipes/migrations/marketertechnologies-identity, set aside in #45),
-  ROC-13 (shims reconcile - shims already present+building, likely just verify),
-  ROC-15 (mcom guards/blocks), ROC-16 (Hetzner, deferred).
+  #46 - verified live against ROC), ROC-14 (mcom tier-1 wisdom: supervisor loop +
+  token-cap rotation, 0/1/64 exit codes, `spore guard`, `spore statusline`, tmux
+  config, #47). The fork's kernel IS evolved spore 0.9.2. E2E green: `nix flake
+  check` runs the NixOS fleet VM test.
+- NEXT: **ROC-5** - collapse multi-project -> single. Drop the fork's
+  "multiple coordinators" divergence; match evolved + mcom single-project.
+  Touches nixosModules/spore-fleet.nix (the `projects.<name>` attr +
+  deprecated `projectRoot`), bootstrap/flake/spore-projects.nix,
+  internal/infect (spore-projects.nix generation), internal/fleet. The VM
+  test currently warns on `services.spore-fleet.projectRoot` deprecation -
+  that is the seam. Confirm no consumer depends on the `projects` attr first.
+- Then: ROC-10/11/12 (re-apply recipes/migrations/marketertechnologies-identity,
+  set aside in #45), ROC-13 (shims reconcile - shims already present+building,
+  likely just verify), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
+  restart-guard unit settings StartLimitBurst/RestartPreventExitStatus +
+  spore-attach), ROC-16 (Hetzner, deferred).
+- ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
+  SPORE_COORDINATOR_SUPERVISE); off by default so the spawn settle-check stays
+  sharp. `spore coordinator spawn` now returns 64 on unexpected session death;
+  the fork's deployed model is still the watchdog timer (spore-fleet-tick), not
+  the long-lived ExecStart - the exit-code contract just makes ExecStart viable.
 - Known flake: internal/coordinator/spawn TestRunSignalShutdownKillsSession is
   tmux-timing-flaky under parallel `go test ./...`; passes in isolation and in
   the clean nix sandbox. Not a blocker; could harden later.
