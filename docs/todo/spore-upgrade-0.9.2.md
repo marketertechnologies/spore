@@ -71,9 +71,38 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   the obsolete flake-input pinning) + docs/fleet-module.md/README.md (pointed
   fleet hosts at upstream versality, not this fork's origin). All three gates
   green. Commit aa09295.
-- Then: ROC-15 (mcom tier-2: PreToolUse block suite + systemd
-  restart-guard unit settings StartLimitBurst/RestartPreventExitStatus +
-  spore-attach), ROC-16 (Hetzner, deferred).
+- DONE (this session): **ROC-15** mcom tier-2 wisdom distilled. Three
+  commits on the integration branch:
+  - PreToolUse block suite, Go-native in internal/hooks/pretooluse.go
+    (new `Decide(req, PreToolUseConfig)`; `PreToolUse(req, forbidden)`
+    kept as the bash+AskUserQuestion subset). Four mcom blocks
+    translated, generalized, name-swept: secrets-inference (env-dump /
+    set-x / proc-environ bash patterns + secret-path reads of the XDG
+    decrypt scratch, ~/.config/spore/secrets.env, age keys),
+    memory-writes (deny claude auto-memory writes; context tiers into
+    CLAUDE.md/docs), test-gate (deny hand-run `gh pr create` in a worker
+    worktree -> `spore task ship`), tasks-projection (deny minting a NEW
+    tasks/<slug>.md but ALLOW editing an existing one - spore workers
+    report through their own task file's plan section, so mcom's blanket
+    tasks/ write-block would have conflicted). Wired `spore hooks
+    pretooluse` into configs/claude PreToolUse. Commit 20455d7.
+  - Opt-in long-lived coordinator systemd-user service in
+    nixosModules/spore-fleet.nix (`services.spore-fleet.supervise.enable`,
+    default off). ExecStart `spore coordinator spawn` + the 0/1/64
+    exit-code contract (ROC-14) wired to Restart=on-failure /
+    RestartPreventExitStatus=1 / StartLimitBurst over
+    StartLimitIntervalSec, KillMode=process. Default off preserves the
+    bundled reconcile-timer deployed model. VM module test opts in and
+    asserts the guards render. Commit 2d3fe3c.
+  - Declared `users.users.spore.linger = true` in the bootstrap
+    configuration.nix (spore-attach login shell was already there; linger
+    was only set imperatively by `spore infect`). Bootstrap
+    nixosConfiguration evaluates clean. Commit on branch.
+  All gates green incl. full `nix flake check`. ROC-15 closed on the
+  board.
+- Then: ROC-16 (Hetzner, Phase 4, deferred). Phases 1-3 of the upgrade
+  are now complete; ROC-18 (cross-repo ship design) remains open for
+  operator review.
 - ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
   SPORE_COORDINATOR_SUPERVISE); off by default so the spawn settle-check stays
   sharp. `spore coordinator spawn` now returns 64 on unexpected session death;
