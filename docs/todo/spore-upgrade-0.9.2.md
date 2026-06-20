@@ -314,4 +314,5 @@ Phases 1-3 land.
   `bootstrap/flake/`, `internal/infect` (spore-projects.nix generation). Confirm
   no consumer depends on the `projects` attr before removing it.
 - `codexpolicy` vs evolved codex hooks - dedupe decision in Phase 2.
-- VERSION bump strategy: jump 0.4.2 -> 0.9.2-derived line, or restart. TBD.
+- VERSION: bumped 0.4.2 -> 0.9.2 (the fork's kernel IS evolved spore
+  0.9.2). RESOLVED.
