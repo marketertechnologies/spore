@@ -54,8 +54,24 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   BundledRecipes, bundled coordinator role Recipes pointer. Internal Jira/Sentry
   project keys (MT3, MARKETER) genericized to PROJ in worked examples
   (opensource-bound). All three gates green. Commit a45d8d4.
-- Then: ROC-11/12 (re-apply migrations/marketertechnologies-identity,
-  set aside in #45), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
+- DONE (this session): **ROC-11** migrations engine re-applied. internal/migrations
+  (idempotent NNN-slug.sh runner + ledger), bootstrap/migrations/{001,README},
+  `spore migrate [--auto] [--dry-run]` wired into main dispatch + usage, embed.go
+  BundledMigrations, docs/migrations.md. No deployed hosts yet (Phase 4); engine
+  lands ahead of its first live consumer. All three gates green. Commit 22a034d.
+- DONE (this session): **ROC-12** marketertechnologies fleet identity + infect
+  push-first guard. internal/infect gains SporeOwner=marketertechnologies /
+  SporeFlakeURL consts, RequireSporeCommitOnOrigin (aborts the wipe when the
+  build commit is not on origin, keeping the deployed binary reproducible),
+  Config.SporeCommit wired from spore.BuildCommit(). PinBundledSpore + a
+  bundled-flake spore input deliberately NOT re-applied: the bundled bootstrap
+  flake is throwaway, steady-state delivery is the host flake's job (inputs.spore,
+  ROC-13); pinning it would fight ROC-13. codexpolicy already folded into
+  internal/agentpolicy/codex (decision: fold). Fixed docs/infect.md (described
+  the obsolete flake-input pinning) + docs/fleet-module.md/README.md (pointed
+  fleet hosts at upstream versality, not this fork's origin). All three gates
+  green. Commit aa09295.
+- Then: ROC-15 (mcom tier-2: PreToolUse block suite + systemd
   restart-guard unit settings StartLimitBurst/RestartPreventExitStatus +
   spore-attach), ROC-16 (Hetzner, deferred).
 - ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
