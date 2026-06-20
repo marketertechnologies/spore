@@ -23,13 +23,14 @@ nix/
     disk-config.nix              disko: BIOS-boot + ESP + ext4 root
     networking.nix               DHCP, firewall (22 only), sshd
     users.nix                    spore (linger + spore-attach) + deploy (colmena)
-    secrets.nix                  agenix: age.secrets.linear-api-key
     local.nix.example            real IP/pubkeys/disk - copy to local.nix
-secrets/
-  recipients.txt                 age recipients (operator + rocky host key)
-  secrets.nix                    agenix rules (which key encrypts which file)
-  linear-api-key.age             PLACEHOLDER until first encrypt
 ```
+
+The Linear token is NOT in this repo, not even encrypted. It lives only
+on the box at `/var/lib/spore-secrets/linear-api-key` (owner spore, 0400),
+placed out-of-band at deploy time. The host config declares the directory
+(`systemd.tmpfiles`) and references the path; the value never touches nix
+or git.
 
 `flake.nix` exposes `nixosConfigurations.rocky` (the eval / CI gate) and
 a `colmena` node named `rocky` that targets the SSH alias `rocky`
@@ -62,23 +63,20 @@ token. None of this lives in the repo.
    # if they differ from the defaults.
    ```
 
-5. **Encrypt the ROC token.** Grab the box's host pubkey and put it (plus
-   your operator age key) in `secrets/recipients.txt` and
-   `secrets/secrets.nix`, then encrypt:
-
-   ```
-   ssh-keyscan -t ed25519 rocky          # -> rocky host pubkey
-   cd secrets
-   agenix -e linear-api-key.age          # paste: Bearer lin_oauth_...
-   ```
-
-   The token is the ROC Linear OAuth actor-app token (identity "rocky",
-   team ROC, newbuilds). It already includes the `Bearer ` prefix.
-
-6. **Deploy:**
+5. **Deploy:**
 
    ```
    colmena apply --on rocky
+   ```
+
+6. **Place the ROC token on the box** (out-of-band, never in git). The
+   token is the ROC Linear OAuth actor-app token (identity "rocky", team
+   ROC, newbuilds), value including the `Bearer ` prefix:
+
+   ```
+   ssh deploy@rocky 'sudo install -d -o spore -g users -m 0700 /var/lib/spore-secrets'
+   printf '%s' "$LINEAR_API_KEY" \
+     | ssh deploy@rocky 'sudo install -o spore -g users -m 0400 /dev/stdin /var/lib/spore-secrets/linear-api-key'
    ```
 
 7. **Bring the fleet up.** SSH in as `spore` (lands in the coordinator
@@ -92,12 +90,12 @@ token. None of this lives in the repo.
 ## How the token reaches the fleet
 
 `matters.linear.credentialFiles.api_key =
-config.age.secrets.linear-api-key.path` wires the agenix-decrypted file
-(`/run/agenix/linear-api-key`) into the spore-fleet systemd-user unit via
-`LoadCredential`. The loader reads it by path; the value never lands in
-the nix store or the unit environment. The `agenix` lint
-(internal/lints/agenix.go) guards against a regression that would inline
-decrypted bytes into the store.
+"/var/lib/spore-secrets/linear-api-key"` wires the on-host token file into
+the spore-fleet systemd-user unit via `LoadCredential`. The loader reads
+it by path; the value never lands in the nix store, the unit environment,
+or the repo. A `colmena apply` rebuild does not manage the file - it is
+operator-placed state under /var/lib, declared only as a tmpfiles
+directory.
 
 ## Optional: long-lived coordinator
 

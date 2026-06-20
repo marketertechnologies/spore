@@ -15,14 +15,10 @@
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    agenix = {
-      url = "github:ryantm/agenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
-    { self, nixpkgs, flake-utils, home-manager, claude-code, disko, agenix }:
+    { self, nixpkgs, flake-utils, home-manager, claude-code, disko }:
     let
       perSystem = flake-utils.lib.eachDefaultSystem (system:
         let
@@ -412,7 +408,6 @@
       rockyModules = [
         self.nixosModules.spore-fleet
         disko.nixosModules.disko
-        agenix.nixosModules.default
         home-manager.nixosModules.home-manager
         ./nix/hosts/rocky
       ];

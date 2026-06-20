@@ -30,11 +30,8 @@
 # in-tree) commit their .claude/skills/; spore-as-project does not.
 /.claude/skills/
 
-# local secrets (never commit)
+# local secrets (never commit). Deploy credentials live on the host, not
+# the repo (see docs/deploy.md), so nothing secret-bearing is tracked.
 secrets.env
 *.local.nix
 *linear*key*
-# ...but agenix-encrypted secrets ARE safe to commit (the plaintext
-# never is). Re-include the encrypted .age files under secrets/, which
-# the broad *linear*key* guard above would otherwise also catch.
-!/secrets/*.age

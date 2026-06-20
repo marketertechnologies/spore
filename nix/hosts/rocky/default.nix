@@ -9,10 +9,12 @@
 #
 # Phase 4 of the spore-upgrade-0.9.2 plan. Real per-host values (public
 # IP, SSH host key fingerprint, disk device, operator pubkey) live in a
-# gitignored ./local.nix; copy ./local.nix.example to start. Building
-# system.build.toplevel does NOT decrypt secrets or touch hardware, so
-# the config evaluates and builds clean before any box exists; only a
-# `colmena apply` / `nixos-rebuild switch` on the live host activates it.
+# gitignored ./local.nix; copy ./local.nix.example to start. The Linear
+# token is NOT in this repo (not even encrypted): it lives only on the
+# box at /var/lib/spore-secrets/linear-api-key, placed out-of-band at
+# deploy time. The repo references that path, never the value. Building
+# system.build.toplevel touches no hardware and reads no secret, so the
+# config evaluates and builds clean before any box exists.
 
 {
   imports = [
@@ -21,7 +23,6 @@
     ./disk-config.nix
     ./networking.nix
     ./users.nix
-    ./secrets.nix
   ]
   ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
 
@@ -35,11 +36,18 @@
   # until /var/log/journal exists).
   services.journald.storage = "persistent";
 
+  # The Linear token lives only on the host. Declare the directory (perms,
+  # ownership) here; the secret file itself is placed out-of-band at
+  # deploy time (see docs/deploy.md), so nothing secret-bearing is in nix
+  # or the repo. systemd LoadCredential reads it by path at unit start.
+  systemd.tmpfiles.rules = [
+    "d /var/lib/spore-secrets 0700 spore users -"
+  ];
+
   # The fleet itself. The package / shims / claude-code defaults come
   # from self.nixosModules.spore-fleet (wired in flake.nix); the host
   # only sets policy. matters.linear points the loader at the ROC team
-  # and feeds it the agenix-decrypted Linear token by file path, never
-  # by value (see ./secrets.nix for the age.secret declaration).
+  # and feeds it the on-host Linear token by file path, never by value.
   services.spore-fleet = {
     enable = true;
     user = "spore";
@@ -54,7 +62,7 @@
         done_state = "Done";
         delegate = "true";
       };
-      credentialFiles.api_key = config.age.secrets.linear-api-key.path;
+      credentialFiles.api_key = "/var/lib/spore-secrets/linear-api-key";
     };
   };
 
