@@ -42,9 +42,14 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   `ctx 87k / 190k (43%) max`. Live transcript parse -> tee fallback ->
   zero render. The user's `~/.claude/settings.json` can swap
   `wt-task token-status` for `spore token-status` once deployed.
+- DONE (this session): **ROC-13** shims verified + closed on the board.
+  flake.nix `shims` builds (7 host-shim bins + hooks + settings + reconcile
+  units), `shims-layout` check + the spore-fleet VM-test activation assert
+  /usr/local/bin/spore-* symlinks; all three gates green. Minor non-blocking
+  note: handover/systemd has an evict-idle pair the shims package omits;
+  harmless (module declares both units inline).
 - Then: ROC-10/11/12 (re-apply recipes/migrations/marketertechnologies-identity,
-  set aside in #45), ROC-13 (shims reconcile - shims already present+building,
-  likely just verify), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
+  set aside in #45), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
   restart-guard unit settings StartLimitBurst/RestartPreventExitStatus +
   spore-attach), ROC-16 (Hetzner, deferred).
 - ROC-14 note: supervisor loop is opt-in (`[coordinator].supervise` /
