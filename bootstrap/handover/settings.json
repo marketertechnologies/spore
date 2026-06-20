@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/spore/.claude/hooks/load-state-md.pl",
+            "command": "/home/spore/.claude/hooks/load-state-md.sh",
             "timeout": 5
           }
         ]

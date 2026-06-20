@@ -23,6 +23,15 @@ let
     pkgs.which
     pkgs.git
     pkgs.tmux
+    # Frequently reached for by hooks, the dogfood role, and ad-hoc
+    # operator one-liners. perl was the original SessionStart hook
+    # interpreter; jq parses MCP / gh / settings.json output; python3
+    # backs ad-hoc data work; go + just are the project's dev shell.
+    pkgs.perl
+    pkgs.jq
+    pkgs.python3
+    pkgs.go
+    pkgs.just
   ];
 
   # Render an attrset into a systemd Environment= list, quoting each

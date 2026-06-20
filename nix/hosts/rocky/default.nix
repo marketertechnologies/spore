@@ -47,6 +47,18 @@
     config.services.spore-fleet.claudeCodePackage
     pkgs.git
     pkgs.tmux
+    # Frequently reached for by hooks, the dogfood role, and ad-hoc
+    # operator one-liners in spore-attach login shells. Keep in lockstep
+    # with the fleet unit's fleetBinPath so a coordinator and an
+    # interactive shell see the same toolbox.
+    pkgs.perl
+    pkgs.jq
+    pkgs.python3
+    pkgs.go
+    pkgs.just
+    pkgs.golangci-lint
+    pkgs.govulncheck
+    pkgs.gopls
   ];
 
   # The Linear token lives only on the host. Declare the directory (perms,
