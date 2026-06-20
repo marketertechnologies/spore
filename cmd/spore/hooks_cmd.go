@@ -131,7 +131,7 @@ func runHooksPreToolUse() int {
 		fmt.Fprintln(os.Stderr, "spore hooks pretooluse:", err)
 		return 1
 	}
-	resp := hooks.PreToolUse(req, hooks.DefaultForbidden())
+	resp := hooks.Decide(req, hooks.DefaultPreToolUseConfig())
 	return writeHookResponse(resp)
 }
 

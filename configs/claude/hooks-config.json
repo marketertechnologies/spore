@@ -1,5 +1,8 @@
 {
   "events": {
+    "PreToolUse": [
+      { "command": "spore hooks pretooluse", "timeout": 10, "kinds": ["coordinator", "worker"] }
+    ],
     "Stop": [
       { "command": "spore coordinator token-monitor", "timeout": 10, "kinds": ["coordinator"] },
       { "command": "spore worker token-monitor", "timeout": 10, "kinds": ["worker"] },
