@@ -48,7 +48,13 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   /usr/local/bin/spore-* symlinks; all three gates green. Minor non-blocking
   note: handover/systemd has an evict-idle pair the shims package omits;
   harmless (module declares both units inline).
-- Then: ROC-10/11/12 (re-apply recipes/migrations/marketertechnologies-identity,
+- DONE (this session): **ROC-10** recipe library re-applied. internal/recipes
+  (List/Get over embedded tree), bootstrap/recipes/{jira,github,sentry}.md,
+  `spore recipes ls|show` wired into main dispatch + usage, embed.go
+  BundledRecipes, bundled coordinator role Recipes pointer. Internal Jira/Sentry
+  project keys (MT3, MARKETER) genericized to PROJ in worked examples
+  (opensource-bound). All three gates green. Commit a45d8d4.
+- Then: ROC-11/12 (re-apply migrations/marketertechnologies-identity,
   set aside in #45), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
   restart-guard unit settings StartLimitBurst/RestartPreventExitStatus +
   spore-attach), ROC-16 (Hetzner, deferred).
