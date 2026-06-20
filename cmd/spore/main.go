@@ -47,6 +47,7 @@ Commands:
   opencode   Opencode-driver lifecycle helpers (fleet-stop, liveness).
   merge      Post-merge integrity helpers (audit, unblock).
   recipes    Browse the embedded recipe library (ls, show).
+  migrate    Apply pending idempotent host-state migrations.
   search     Lookup helpers (nix packages / options against search.nixos.org).
   secret     Manage age secrets (add via tmux popup; audit registration / consumers).
   signal     Record warning / error signals from a wrapped command.
@@ -341,6 +342,8 @@ func main() {
 		os.Exit(runMerge(args))
 	case "recipes":
 		os.Exit(runRecipes(args))
+	case "migrate":
+		os.Exit(runMigrate(args))
 	case "search":
 		os.Exit(runSearch(args))
 	case "secret":

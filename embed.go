@@ -62,6 +62,14 @@ var BundledHandover embed.FS
 //go:embed all:bootstrap/scripts
 var BundledScripts embed.FS
 
+// BundledMigrations is the embedded tree of idempotent host-state
+// migration scripts `spore migrate` runs against a deployed host. Each
+// NNN-slug.sh under bootstrap/migrations/ runs once per host, tracked
+// in a ledger; see bootstrap/migrations/README.md for the contract.
+//
+//go:embed all:bootstrap/migrations
+var BundledMigrations embed.FS
+
 // BundledRecipes is the embedded recipe library `spore recipes ls` and
 // `spore recipes show <name>` read from. Each markdown file under
 // bootstrap/recipes/ is a reusable how-to for talking to an external
