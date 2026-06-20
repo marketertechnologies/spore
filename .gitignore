@@ -20,6 +20,7 @@
 /tasks/
 /.wt/
 /bootstrap/flake/local.nix
+/nix/hosts/rocky/local.nix
 
 # spore-as-project (dogfood) harness artifacts
 /state.md
@@ -33,3 +34,7 @@
 secrets.env
 *.local.nix
 *linear*key*
+# ...but agenix-encrypted secrets ARE safe to commit (the plaintext
+# never is). Re-include the encrypted .age files under secrets/, which
+# the broad *linear*key* guard above would otherwise also catch.
+!/secrets/*.age

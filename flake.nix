@@ -11,10 +11,18 @@
     claude-code = {
       url = "github:sadjow/claude-code-nix";
     };
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    agenix = {
+      url = "github:ryantm/agenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs, flake-utils, home-manager, claude-code }:
+    { self, nixpkgs, flake-utils, home-manager, claude-code, disko, agenix }:
     let
       perSystem = flake-utils.lib.eachDefaultSystem (system:
         let
@@ -395,6 +403,19 @@
 
           formatter = pkgs.nixpkgs-fmt;
         });
+      # The steady-state deploy layer (Phase 4): a single coordinator
+      # host running the spore-fleet against the ROC Linear team. The
+      # module set is shared by the plain nixosConfiguration (the CI /
+      # `nix build` eval gate) and the colmena node (targeted pushes).
+      # Secrets, disk, and per-host values evaluate from placeholders /
+      # gitignored local.nix, so this builds before any box exists.
+      rockyModules = [
+        self.nixosModules.spore-fleet
+        disko.nixosModules.disko
+        agenix.nixosModules.default
+        home-manager.nixosModules.home-manager
+        ./nix/hosts/rocky
+      ];
     in
     perSystem // {
       nixosModules.spore-fleet = { pkgs, lib, ... }: {
@@ -407,5 +428,28 @@
           lib.mkDefault claude-code.packages.${pkgs.stdenv.hostPlatform.system}.default;
       };
       nixosModules.default = self.nixosModules.spore-fleet;
+
+      nixosConfigurations.rocky = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { inherit self; };
+        modules = rockyModules;
+      };
+
+      # `colmena apply --on rocky` pushes a rebuild to the box. The
+      # target is the SSH alias `rocky`, resolved operator-side in
+      # ~/.ssh/config, so the real public IP stays out of git.
+      colmena = {
+        meta = {
+          nixpkgs = import nixpkgs { system = "x86_64-linux"; };
+          specialArgs = { inherit self; };
+        };
+        rocky = { ... }: {
+          deployment = {
+            targetHost = "rocky";
+            targetUser = "deploy";
+          };
+          imports = rockyModules;
+        };
+      };
     };
 }

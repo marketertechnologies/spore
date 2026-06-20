@@ -1,0 +1,34 @@
+# Per-deployment values for the rocky host. Copy to ./local.nix (which
+# is gitignored) and fill in the real box. None of this belongs in the
+# open-source tree: the public IP and host-key fingerprint are
+# environment-specific, and the operator's authorized-key set is theirs
+# to manage.
+#
+#   cp nix/hosts/rocky/local.nix.example nix/hosts/rocky/local.nix
+#
+# See docs/deploy.md for the full first-deploy runbook.
+{
+  # Hostname for this specific box (optional; defaults to "rocky").
+  # networking.hostName = "rocky-fsn1";
+
+  # Root disk as the box enumerates it (defaults to /dev/sda).
+  # disko.devices.disk.disk1.device = "/dev/nvme0n1";
+
+  # Operator pubkeys. Root SSH stays open for emergency reconcile; the
+  # spore account lands in the coordinator tmux session via spore-attach;
+  # the deploy account is the colmena push target.
+  users.users.root.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAA... operator@workstation"
+  ];
+  users.users.spore.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAA... operator@workstation"
+  ];
+  users.users.deploy.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAA... operator@workstation"
+  ];
+
+  # The colmena node targets the SSH alias `rocky` (see flake.nix), so
+  # the real public IP stays out of git: point `rocky` at it in your
+  # ~/.ssh/config (Host rocky / HostName <ip> / User deploy). Nothing
+  # environment-specific needs to live in this repo.
+}
