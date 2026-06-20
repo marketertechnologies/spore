@@ -55,6 +55,21 @@ driver = "claude"
 			want:  CoordinatorConfig{ExternalSessionPattern: "^pilot-.*"},
 		},
 		{
+			name:  "supervise true",
+			input: "[coordinator]\nsupervise = true\n",
+			want:  CoordinatorConfig{Supervise: true},
+		},
+		{
+			name:  "supervise false",
+			input: "[coordinator]\nsupervise = false\n",
+			want:  CoordinatorConfig{Supervise: false},
+		},
+		{
+			name:    "supervise non-bool errors",
+			input:   "[coordinator]\nsupervise = maybe\n",
+			wantErr: true,
+		},
+		{
 			name:    "unknown key errors",
 			input:   "[coordinator]\nbogus = 1\n",
 			wantErr: true,

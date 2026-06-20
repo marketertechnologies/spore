@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -658,10 +659,13 @@ func runCoordinatorSpawn(args []string) int {
 		fmt.Println("Tier-gates (claude requires max), ensures the coordinator")
 		fmt.Println("tmux session is alive (spawn or adopt), then blocks until")
 		fmt.Println("the session dies via an event-driven tmux session-closed")
-		fmt.Println("hook. SIGTERM/SIGINT kill the session and return 0 so a")
-		fmt.Println("Restart=on-success unit cycles cleanly; preflight failures")
-		fmt.Println("(tier mismatch, agent exec failure) exit non-zero so the")
-		fmt.Println("unit stays down until the operator clears state.")
+		fmt.Println("hook. Exit-code contract for systemd:")
+		fmt.Println("  0  SIGTERM/SIGINT clean shutdown (no respawn)")
+		fmt.Println("  1  preflight failure - tier mismatch, agent exec")
+		fmt.Println("     failure (pin with RestartPreventExitStatus=1)")
+		fmt.Println("  64 unexpected session death - external kill")
+		fmt.Println("     (Restart=on-failure respawns, bounded by")
+		fmt.Println("     StartLimitBurst)")
 		return 0
 	}
 	if fs.NArg() != 0 {
@@ -676,6 +680,12 @@ func runCoordinatorSpawn(args []string) int {
 	}
 	if err := spawn.Run(spawn.Options{ProjectRoot: root}); err != nil {
 		fmt.Fprintln(os.Stderr, "spore coordinator spawn:", err)
+		// Exit-code contract for systemd: 64 = unexpected session
+		// death (Restart=on-failure respawns); 1 = preflight failure
+		// (RestartPreventExitStatus=1 pins as no-respawn).
+		if errors.Is(err, spawn.ErrUnexpectedDeath) {
+			return 64
+		}
 		return 1
 	}
 	return 0

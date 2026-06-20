@@ -28,6 +28,16 @@ import (
 // append a second one.
 const HookSlot = 99
 
+// ErrUnexpectedDeath reports that the coordinator session died while
+// the wrapper was supposed to keep it alive: an external kill (operator
+// `tmux kill-session`, a sibling session running `coordinator stop`
+// without stopping the unit, a tmux-server crash). The "spore
+// coordinator spawn" command maps it to exit 64 so a systemd
+// Restart=on-failure unit respawns it (bounded by StartLimitBurst),
+// distinct from a clean signal shutdown (exit 0) and a preflight
+// failure (exit 1, which RestartPreventExitStatus pins as no-respawn).
+var ErrUnexpectedDeath = errors.New("coordinator session died unexpectedly")
+
 // Options configure a Run invocation. Empty fields fall back to
 // production defaults; tests pass overrides.
 type Options struct {
@@ -112,7 +122,10 @@ func Run(opts Options) error {
 		if err != nil {
 			fmt.Fprintf(stderr, "[coordinator-spawn] wait error: %v\n", err)
 		}
-		return nil
+		// The session died and no shutdown signal arrived: an external
+		// kill, not a planned stop. Report it so the unit respawns.
+		fmt.Fprintf(stderr, "[coordinator-spawn] %s died unexpectedly\n", session)
+		return ErrUnexpectedDeath
 	}
 }
 

@@ -218,8 +218,8 @@ func TestRunSpawnsAdoptsAndReturnsOnSessionDeath(t *testing.T) {
 	killCoordinator(dir)
 	select {
 	case err := <-doneCh:
-		if err != nil {
-			t.Fatalf("Run: %v (stderr=%s)", err, buf.String())
+		if !errors.Is(err, ErrUnexpectedDeath) {
+			t.Fatalf("Run after external kill = %v, want ErrUnexpectedDeath (stderr=%s)", err, buf.String())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Run did not return after session death (stderr=%s)", buf.String())
@@ -302,8 +302,8 @@ func TestRunAdoptsExistingSession(t *testing.T) {
 	killCoordinator(dir)
 	select {
 	case err := <-doneCh:
-		if err != nil {
-			t.Fatalf("Run: %v", err)
+		if !errors.Is(err, ErrUnexpectedDeath) {
+			t.Fatalf("Run after adopted-session kill = %v, want ErrUnexpectedDeath", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Run did not return after adopted-session death")

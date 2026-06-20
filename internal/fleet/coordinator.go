@@ -110,7 +110,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return "", false, fmt.Errorf("inject codex hooks: %w", err)
 	}
 
-	cmd := coordinatorShellCommand(agent, rolePath)
+	cmd := coordinatorShellCommand(agent, rolePath, coordinatorSupervise(tomlCfg))
 	args := []string{
 		"new-session", "-d",
 		"-s", session,
@@ -129,6 +129,19 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	if v := coordinatorModel(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
 	}
+	// Thread the operator's account tier into the session env so the
+	// supervisor loop's inline derivation and the token-monitor Stop
+	// hook agree on the wrap cap. SPORE_ACCOUNT_TIER seeds from
+	// WT_ACCOUNT_TIER when the host only sets the latter.
+	if v := os.Getenv("WT_ACCOUNT_TIER"); v != "" {
+		args = append(args, "-e", "WT_ACCOUNT_TIER="+v)
+		if os.Getenv("SPORE_ACCOUNT_TIER") == "" {
+			args = append(args, "-e", "SPORE_ACCOUNT_TIER="+v)
+		}
+	}
+	if v := os.Getenv("SPORE_ACCOUNT_TIER"); v != "" {
+		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+v)
+	}
 	args = append(args, cmd)
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
@@ -145,7 +158,34 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 			session, agent,
 		)
 	}
+	configureCoordinatorTmux(session)
 	return session, true, nil
+}
+
+// configureCoordinatorTmux applies session-scoped tmux options to a
+// freshly spawned coordinator session: a token-usage status line that
+// refreshes on a timer, and detach-on-destroy off so that killing the
+// driver pane (a supervisor-loop rotation or a manual kill) does not
+// detach an attached operator client. All calls are best-effort: a tmux
+// that rejects an option must not fail the spawn the caller already
+// confirmed is alive.
+func configureCoordinatorTmux(session string) {
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "spore"
+	}
+	statusRight := fmt.Sprintf(
+		`#(CLAUDE_PROJECT_DIR='#{pane_current_path}' %s statusline --label coordinator)`,
+		self,
+	)
+	opts := [][]string{
+		{"set-option", "-t", session, "detach-on-destroy", "off"},
+		{"set-option", "-t", session, "status-interval", "5"},
+		{"set-option", "-t", session, "status-right", statusRight},
+	}
+	for _, o := range opts {
+		_ = exec.Command("tmux", o...).Run()
+	}
 }
 
 // coordinatorAgent picks the binary the coordinator session execs.
@@ -187,6 +227,24 @@ func coordinatorModel(cfg CoordinatorConfig) string {
 	return cfg.Model
 }
 
+// coordinatorSupervise reports whether the coordinator session runs its
+// driver inside the respawn supervisor loop. Env
+// SPORE_COORDINATOR_SUPERVISE (1/true/yes/on vs 0/false/no/off) wins
+// over the spore.toml [coordinator].supervise flag. Default off: the
+// kernel single-exec lifecycle keeps the spawn settle-check sharp and
+// lets a clean driver exit close the session.
+func coordinatorSupervise(cfg CoordinatorConfig) bool {
+	if v := os.Getenv("SPORE_COORDINATOR_SUPERVISE"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return cfg.Supervise
+}
+
 // driverToBinary maps a friendly driver name to the binary to exec.
 // "claude" -> "claude" (the Anthropic CLI binary name; the package is
 // often called "claude-code" but its bin/ entry is "claude"), "codex"
@@ -209,11 +267,33 @@ func driverToBinary(driver string) string {
 // string; the agent token is intentionally left unquoted so callers
 // can pass space-bearing values (e.g. SPORE_AGENT_BINARY="sleep 30")
 // the same way worker spawn does.
-func coordinatorShellCommand(agent, rolePath string) string {
+//
+// When supervise is false the snippet execs the driver once and the
+// session dies with it (the kernel default; keeps the post-spawn
+// settle check able to detect a bad agent binary, and lets a clean
+// driver exit tear the session down).
+//
+// When supervise is true the driver runs inside a respawn loop so a
+// token-cap wrap exits only the driver, not the pane: the loop catches
+// the exit and boots a fresh driver in place, re-reading the role file
+// each iteration, so an attached operator client keeps its pane and
+// full scrollback survives the rotation. SPORE_ACCOUNT_TIER is derived
+// from WT_ACCOUNT_TIER inline on every iteration so a pane spawned
+// before a tier change heals on the next wrap rather than carrying a
+// stale (or unset) tier forever -- the loop's bash text is frozen at
+// new-session time, so the derivation has to live inside the loop body.
+func coordinatorShellCommand(agent, rolePath string, supervise bool) string {
 	q := shellSingleQuote(rolePath)
+	if !supervise {
+		return fmt.Sprintf(
+			`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[2]s; fi`,
+			q, agent,
+		)
+	}
+	tier := `SPORE_ACCOUNT_TIER="${SPORE_ACCOUNT_TIER:-${WT_ACCOUNT_TIER:-}}"`
 	return fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[2]s; fi`,
-		q, agent,
+		`while true; do if [ -r %[1]s ] && [ -s %[1]s ]; then %[3]s %[2]s "$(cat %[1]s)"; else %[3]s %[2]s; fi; sleep 1; done`,
+		q, agent, tier,
 	)
 }
 
