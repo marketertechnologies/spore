@@ -35,10 +35,31 @@ Implementation (commit c946eda):
   while a rocky-delegated issue is claimed.
 - `go test ./...` and `spore lint` both green.
 
-Caveat (operator ack needed before merging this branch into
-spore-upgrade-0.9.2): assumed Linear's read field is `delegate { id }`
-by convention from the existing `delegateId` mutation input. Not
-verified against the live Linear schema (no API key in this worktree).
-If the field name differs, rocky's next sync errors on the issues
-query and stops adopting any ROC tickets. Recommend probing Linear
-once before merging.
+Caveat CLEARED by coordinator: live Linear schema probed -
+`Issue.delegate` is a real field, and `issues(filter: {delegate: {id: {eq: $d}}})`
+returns nodes without a schema error. c946eda is safe to merge as-is.
+
+## Resume point (for the next worker)
+
+Branch state (3 commits ahead of spore-upgrade-0.9.2):
+- `1e711bf` test(smoke): document ROC-20 negative test failure (marker file `tasks/SMOKE.txt`)
+- `c946eda` feat(matter): gate Linear pickup on existing delegate (ROC-20)
+- `a08e936` task(roc-20): document plan + caveat in task brief
+
+Coordinator inbox has two tells from this worker: the initial 3-option
+escalation and a `plan ready: smoke-undelegated-should-not-be-picked-up`
+ack request.
+
+Next action depends on the schema verification:
+- If `delegate { id }` is correct on Linear's Issue type: merge
+  wt/smoke-undelegated-should-not-be-picked-up into spore-upgrade-0.9.2
+  (cannot use `spore task merge` here because that requires the main
+  checkout to be on `main`; the project root is on the integration
+  branch instead - so a direct `git merge --ff-only` from the integration
+  branch is required).
+- If the field name differs (e.g. `delegateUser`, `delegateActor`): fix
+  the query selector + struct tag in `internal/matter/linear/linear.go`
+  (`linearIssue.Delegate` + the two `delegate { id }` selections inside
+  `listIssuesByState`), rerun tests, then merge.
+
+Wrapping due to token cap; no blocker.
