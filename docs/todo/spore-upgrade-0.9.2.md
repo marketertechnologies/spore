@@ -27,13 +27,16 @@ Memory files `three-spore-repos` + `rocky-linear-access` load every session.
   spore-projects.nix. Topology decision (operator): single coordinator per
   host; multiple repos served by an umbrella `projectRoot` with sub-repos as
   subdirs (proto-monorepo), NOT a fleet fanned across independent repos.
-- NEXT: cross-repo worker ship design (**ROC-18**). A worker is 1
-  worktree of 1 git repo -> 1 wt/<slug> branch -> 1 PR; the whole ship cycle
-  (wt-check gate, evidence contract, internal/merge, internal/gh) assumes one
-  git history. A feature ticket spanning multiple repos needs a decision:
-  true monorepo/subtree (spore-native, one PR covers all) vs submodules
-  (per-repo PRs, ship cycle does NOT span repos today -> harness work or
-  manual). Design before building.
+- DONE (this session): **ROC-18** cross-repo ship design written
+  (`docs/cross-repo-ship.md`): decision is subtree-vendored monorepo - one
+  `.git`, ship cycle unchanged, submodule multi-repo ship deferred;
+  flow-back tooling (`spore subtree push`) is a deferred follow-up.
+  Also ported the **ctx context statusline** from mcom/wt-go as `spore
+  token-status --statusline | --fleet` (internal/tokenstatus): claude-code
+  statusLine reader for the contexttee Stop-hook tees, renders
+  `ctx 87k / 190k (43%) max`. Live transcript parse -> tee fallback ->
+  zero render. The user's `~/.claude/settings.json` can swap
+  `wt-task token-status` for `spore token-status` once deployed.
 - Then: ROC-10/11/12 (re-apply recipes/migrations/marketertechnologies-identity,
   set aside in #45), ROC-13 (shims reconcile - shims already present+building,
   likely just verify), ROC-15 (mcom tier-2: PreToolUse block suite + systemd
