@@ -8,10 +8,11 @@
 // the last-turn context stays readable for the operator and for the
 // next reconciler-driven respawn.
 //
-// The threshold is tier-keyed: max-tier sessions wrap at 180k (20k
-// headroom under the 200k quality cliff); sub-max sessions wrap at
-// 120k to dodge the 150k hard block. Tier defaults to non-max so a
-// session with an unknown tier wraps at the safer cap.
+// The threshold is tier-keyed: max-tier sessions wrap at 300k (the
+// 1M-context configuration's working ceiling before quality degrades);
+// sub-max sessions wrap at 120k to dodge the 150k hard block. Tier
+// defaults to non-max so a session with an unknown tier wraps at the
+// safer cap.
 //
 // The worker monitor skips any session whose inbox is under the
 // coordinator state dir (those are owned by the coordinator monitor)
@@ -29,7 +30,7 @@ import (
 )
 
 const (
-	DefaultWrapMax = 180000
+	DefaultWrapMax = 300000
 	DefaultWrapSub = 120000
 )
 
@@ -174,7 +175,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 	result.WrapAction = WrapKillDriver
 	var reason string
 	if cfg.Tier == "max" {
-		reason = fmt.Sprintf("Quality degrades past 200k on max; %d leaves 20k headroom to flush.", wrap)
+		reason = fmt.Sprintf("Quality degrades past the 1M-context working ceiling on max; %d is the wrap target.", wrap)
 	} else {
 		reason = "Sub-max account; the 150k hard block is close."
 	}

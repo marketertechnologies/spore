@@ -120,7 +120,7 @@ func TestCheckOk(t *testing.T) {
 func TestCheckWrapMax(t *testing.T) {
 	dir := t.TempDir()
 	transcriptFile := filepath.Join(dir, "session.jsonl")
-	line := `{"role":"assistant","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	line := `{"role":"assistant","usage":{"input_tokens":305000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
 	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestCheckWrapMax(t *testing.T) {
 func TestCheckWrapAdvisesDriverOnlyKill(t *testing.T) {
 	dir := t.TempDir()
 	transcriptFile := filepath.Join(dir, "session.jsonl")
-	line := `{"role":"assistant","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	line := `{"role":"assistant","usage":{"input_tokens":305000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
 	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

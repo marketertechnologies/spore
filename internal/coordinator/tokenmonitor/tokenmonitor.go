@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	DefaultSoftCap = 150000
-	DefaultHardCap = 190000
+	DefaultSoftCap = 250000
+	DefaultHardCap = 300000
 )
 
 type Config struct {
