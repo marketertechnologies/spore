@@ -49,6 +49,7 @@ Commands:
   search     Lookup helpers (nix packages / options against search.nixos.org).
   secret     Manage age secrets (add via tmux popup; audit registration / consumers).
   signal     Record warning / error signals from a wrapped command.
+  guard      Refuse headless agent spawns; exec the binary inside tmux.
   wt-check   Run the project's lint+test gate (nix develop -c just check).
   audit-versions
              Audit installed tools and flake inputs against versions.json.
@@ -341,6 +342,8 @@ func main() {
 		os.Exit(runSecret(args))
 	case "signal":
 		os.Exit(runSignal(args))
+	case "guard":
+		os.Exit(runGuard(args))
 	case "wt-check":
 		os.Exit(runWtCheck(args))
 	case "audit-versions":
