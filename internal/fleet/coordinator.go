@@ -142,7 +142,13 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	if v := os.Getenv("SPORE_ACCOUNT_TIER"); v != "" {
 		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+v)
 	}
-	args = append(args, cmd)
+	// Wrap the shell snippet in `sh -c` so tmux execs the inner agent
+	// through a real shell instead of the user's passwd shell. On a
+	// deployed host that shell is spore-attach, which only handles
+	// `coord` / `pilot` modes and exits on any other `-c` payload, so
+	// the inner exec would die before the session settled. Worker
+	// spawn does the same wrap for the same reason.
+	args = append(args, "sh", "-c", cmd)
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
