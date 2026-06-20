@@ -58,7 +58,7 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !hasCommand(settings.Hooks["PreToolUse"], "/home/spore/.claude/hooks/block-bg-bash.pl") {
 		t.Fatal("handover settings lost block-bg-bash PreToolUse hook")
 	}
-	if !hasCommand(settings.Hooks["SessionStart"], "/home/spore/.claude/hooks/load-state-md.pl") {
+	if !hasCommand(settings.Hooks["SessionStart"], "/home/spore/.claude/hooks/load-state-md.sh") {
 		t.Fatal("handover settings lost load-state-md SessionStart hook")
 	}
 	if !hasAsync(settings.Hooks["Notification"], "/usr/local/bin/spore hooks notify-coordinator") {
