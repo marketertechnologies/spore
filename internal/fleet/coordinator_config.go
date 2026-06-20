@@ -37,6 +37,12 @@ type CoordinatorConfig struct {
 	// session running outside the kernel's spore/<project>/coordinator
 	// slot). Empty disables the check and the kernel spawns its own.
 	ExternalSessionPattern string
+
+	// Supervise runs the coordinator driver inside an in-pane respawn
+	// loop so a token-cap wrap rotates the driver without killing the
+	// tmux session (automatic coordinator rotation). Off by default;
+	// SPORE_COORDINATOR_SUPERVISE overrides per-spawn.
+	Supervise bool
 }
 
 // LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml.
@@ -83,6 +89,15 @@ func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
 			cfg.Brief = val
 		case "external_session_pattern":
 			cfg.ExternalSessionPattern = val
+		case "supervise":
+			switch val {
+			case "true":
+				cfg.Supervise = true
+			case "false":
+				cfg.Supervise = false
+			default:
+				return fmt.Errorf("line %d: supervise must be true or false, got %q", l.LineNum, val)
+			}
 		default:
 			return fmt.Errorf("line %d: unknown key %q in [coordinator]", l.LineNum, key)
 		}
