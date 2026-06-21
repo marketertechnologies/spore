@@ -34,7 +34,6 @@ const (
 	DefaultPollInterval = 30 * time.Second
 	DefaultMaxPolls     = 60
 	DefaultStrategy     = "squash"
-	DefaultBase         = "main"
 )
 
 // GHClient is the narrow gh surface ship needs. gh.Real satisfies it.
@@ -85,9 +84,6 @@ func Run(opts Options, deps Deps) error {
 	if opts.Strategy == "" {
 		opts.Strategy = DefaultStrategy
 	}
-	if opts.Base == "" {
-		opts.Base = DefaultBase
-	}
 	if opts.Slug == "" {
 		return fmt.Errorf("ship: slug required")
 	}
@@ -98,6 +94,9 @@ func Run(opts Options, deps Deps) error {
 	projectRoot, err := task.ProjectRootFromTasksDir(opts.TasksDir)
 	if err != nil {
 		return err
+	}
+	if opts.Base == "" {
+		opts.Base = task.IntegrationBase(projectRoot)
 	}
 	branch := "wt/" + opts.Slug
 	worktree := filepath.Join(projectRoot, ".worktrees", opts.Slug)
@@ -208,7 +207,7 @@ func waitChecks(deps Deps, projectRoot, branch string) (gh.PRState, error) {
 			return pr, fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
 		}
 		if pr.Mergeable == "CONFLICTING" {
-			return pr, fmt.Errorf("ship: PR #%d has merge conflicts; rebase wt/<slug> on origin/main and re-run ship", pr.Number)
+			return pr, fmt.Errorf("ship: PR #%d has merge conflicts; rebase wt/<slug> on the base branch and re-run ship", pr.Number)
 		}
 		if !pending && pr.Mergeable == "MERGEABLE" {
 			return pr, nil

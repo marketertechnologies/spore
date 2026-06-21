@@ -40,11 +40,11 @@ func (e *MergeGateError) Unwrap() error { return e.Err }
 // ExitCode returns 2, matching `wt merge`'s upstream gate.
 func (e *MergeGateError) ExitCode() int { return 2 }
 
-// Merge fast-forward merges the wt/<slug> branch into main, then
-// cleans up the worktree and branch. The task file's status is
-// flipped to done as part of the merge. Refuses if the merge would
-// not be a fast-forward or if the landed main cannot be pushed to
-// origin.
+// Merge fast-forward merges the wt/<slug> branch into the integration
+// base (spore.toml `[fleet] base`, default main), then cleans up the
+// worktree and branch. The task file's status is flipped to done as
+// part of the merge. Refuses if the merge would not be a fast-forward
+// or if the landed base cannot be pushed to origin.
 func Merge(tasksDir, slug string) error {
 	return MergeWithOptions(tasksDir, slug, MergeOptions{})
 }
@@ -61,7 +61,8 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	if !branchExists(projectRoot, branch) {
 		return fmt.Errorf("branch %s does not exist", branch)
 	}
-	if err := requireMainCheckout(projectRoot); err != nil {
+	base := IntegrationBase(projectRoot)
+	if err := requireBaseCheckout(projectRoot, base); err != nil {
 		return err
 	}
 
@@ -78,7 +79,7 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	if err := closeMergedTask(tasksDir, slug); err != nil {
 		return err
 	}
-	if err := pushAndVerifyMain(projectRoot); err != nil {
+	if err := pushAndVerifyBase(projectRoot, base); err != nil {
 		return err
 	}
 
@@ -94,43 +95,45 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	return nil
 }
 
-func requireMainCheckout(projectRoot string) error {
+func requireBaseCheckout(projectRoot, base string) error {
 	out, err := gitCmd(projectRoot, "branch", "--show-current").Output()
 	if err != nil {
 		return fmt.Errorf("git branch --show-current: %w", err)
 	}
 	current := strings.TrimSpace(string(out))
-	if current != "main" {
+	if current != base {
 		if current == "" {
 			current = "detached HEAD"
 		}
-		return fmt.Errorf("merge must run from the main checkout; current branch is %q", current)
+		return fmt.Errorf("merge must run from the %s checkout; current branch is %q", base, current)
 	}
 	return nil
 }
 
-func pushAndVerifyMain(projectRoot string) error {
-	out, err := gitCmd(projectRoot, "push", "origin", "main:main").CombinedOutput()
+func pushAndVerifyBase(projectRoot, base string) error {
+	refspec := base + ":" + base
+	out, err := gitCmd(projectRoot, "push", "origin", refspec).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git push origin main:main: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git push origin %s: %w: %s", refspec, err, strings.TrimSpace(string(out)))
 	}
 
-	localOut, err := gitCmd(projectRoot, "rev-parse", "main").Output()
+	localOut, err := gitCmd(projectRoot, "rev-parse", base).Output()
 	if err != nil {
-		return fmt.Errorf("git rev-parse main: %w", err)
+		return fmt.Errorf("git rev-parse %s: %w", base, err)
 	}
 	local := strings.TrimSpace(string(localOut))
 
-	remoteOut, err := gitCmd(projectRoot, "ls-remote", "origin", "refs/heads/main").Output()
+	remoteRef := "refs/heads/" + base
+	remoteOut, err := gitCmd(projectRoot, "ls-remote", "origin", remoteRef).Output()
 	if err != nil {
-		return fmt.Errorf("git ls-remote origin refs/heads/main: %w", err)
+		return fmt.Errorf("git ls-remote origin %s: %w", remoteRef, err)
 	}
 	fields := strings.Fields(string(remoteOut))
 	if len(fields) == 0 {
-		return fmt.Errorf("post-push verification failed: origin refs/heads/main not found")
+		return fmt.Errorf("post-push verification failed: origin %s not found", remoteRef)
 	}
 	if fields[0] != local {
-		return fmt.Errorf("post-push verification failed: origin/main=%s, local main=%s", fields[0], local)
+		return fmt.Errorf("post-push verification failed: origin/%s=%s, local %s=%s", base, fields[0], base, local)
 	}
 	return nil
 }

@@ -79,6 +79,55 @@ func TestMergeFastForward(t *testing.T) {
 	}
 }
 
+// TestMergeHonorsConfiguredBase proves merge targets spore.toml's
+// `[fleet] base` rather than a hardcoded main: it runs from the base
+// checkout, fast-forwards the base, and pushes base:base to origin.
+func TestMergeHonorsConfiguredBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+
+	runGit(t, repo, "init", "-q", "-b", "release-9")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "spore.toml"), []byte("[fleet]\nbase = \"release-9\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "spore.toml")
+	runGit(t, repo, "commit", "-q", "-m", "config")
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, t.TempDir(), "init", "--bare", "-q", remote)
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-q", "-u", "origin", "release-9")
+
+	runGit(t, repo, "checkout", "-q", "-b", "wt/demo")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feat: demo work")
+	runGit(t, repo, "checkout", "-q", "release-9")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Merge(tasksDir, "demo"); err != nil {
+		t.Fatalf("Merge against non-main base: %v", err)
+	}
+	if branchExists(repo, "wt/demo") {
+		t.Error("wt/demo still exists after Merge")
+	}
+	// origin/release-9 must now match the local base tip.
+	localTip := strings.Fields(gitOutput(t, repo, "rev-parse", "release-9"))[0]
+	remoteOut := gitOutput(t, repo, "ls-remote", "origin", "refs/heads/release-9")
+	if len(remoteOut) == 0 || strings.Fields(remoteOut)[0] != localTip {
+		t.Errorf("origin/release-9 not advanced to %s: %q", localTip, remoteOut)
+	}
+}
+
 func TestMergeFlipsTaskDoneAndCommitsClose(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)

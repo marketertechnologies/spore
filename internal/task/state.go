@@ -190,17 +190,20 @@ func LastCommitTime(projectRoot, slug string) (time.Time, bool) {
 }
 
 // UnmergedCommits returns the count of commits reachable from
-// refs/heads/<branch> but not from main. Returns 0 when the branch
-// does not exist (already deleted by a prior merge).
+// refs/heads/<branch> but not from the integration base. Returns 0 when
+// the branch does not exist (already deleted by a prior merge) or when
+// no base ref resolves (so a repo with no local main never exits 128 on
+// a rev-list against a missing ref). The base comes from spore.toml's
+// `[fleet] base` key, defaulting to main.
 func UnmergedCommits(projectRoot, branch string) (int, error) {
 	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() != nil {
 		return 0, nil
 	}
-	mainRef := "main"
-	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/main").Run() != nil {
-		mainRef = "master"
+	baseRef, ok := resolveBaseRef(projectRoot, IntegrationBase(projectRoot))
+	if !ok {
+		return 0, nil
 	}
-	out, err := gitCmd(projectRoot, "rev-list", mainRef+".."+branch).Output()
+	out, err := gitCmd(projectRoot, "rev-list", baseRef+".."+branch).Output()
 	if err != nil {
 		return 0, err
 	}
