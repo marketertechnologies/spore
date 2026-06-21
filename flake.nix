@@ -403,8 +403,10 @@
       # host running the spore-fleet against the ROC Linear team. The
       # module set is shared by the plain nixosConfiguration (the CI /
       # `nix build` eval gate) and the colmena node (targeted pushes).
-      # Secrets, disk, and per-host values evaluate from placeholders /
-      # gitignored local.nix, so this builds before any box exists.
+      # Secrets, disk, and per-host values evaluate from placeholders;
+      # operator pubkeys come from a gitignored keys.local.nix that the
+      # host config imports only when present, so this builds before any
+      # box exists (and on a checkout without that file).
       rockyModules = [
         self.nixosModules.spore-fleet
         disko.nixosModules.disko

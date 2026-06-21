@@ -72,6 +72,14 @@ deploy:
         exit 1
       fi
     done
+    # keys.local.nix holds operator pubkeys declaratively, but is gitignored
+    # and `nixos-rebuild switch --flake` only reads tracked/staged files.
+    # Force-stage it for the build (no commit), and unstage on exit so it is
+    # never accidentally committed or pushed.
+    if [ -f "$repo/nix/hosts/rocky/keys.local.nix" ]; then
+      git -C "$repo" add -f nix/hosts/rocky/keys.local.nix
+      trap 'git -C "$repo" restore --staged nix/hosts/rocky/keys.local.nix 2>/dev/null || true' EXIT
+    fi
     nixos-rebuild switch --flake "$repo#rocky"
 
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a

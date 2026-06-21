@@ -18,13 +18,18 @@
 # exists.
 
 {
+  # keys.local.nix (gitignored, matches *.local.nix) carries operator SSH
+  # pubkeys declaratively into /etc/ssh/authorized_keys.d/<user>. It is
+  # imported only when present so the config still evaluates clean on a
+  # checkout without it (the CI / `nix build` eval gate). `just deploy`
+  # force-stages it for the build and unstages it after; see docs/deploy.md.
   imports = [
     ../../modules/nix-housekeeping.nix
     ./hardware.nix
     ./disk-config.nix
     ./networking.nix
     ./users.nix
-  ];
+  ] ++ lib.optional (builtins.pathExists ./keys.local.nix) ./keys.local.nix;
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
 
