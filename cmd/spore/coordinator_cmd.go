@@ -406,7 +406,8 @@ func runCoordinatorTokenMonitor(_ []string) int {
 	}
 
 	cfg := tokenmonitor.Config{
-		Inbox: os.Getenv("SPORE_TASK_INBOX"),
+		Inbox:     os.Getenv("SPORE_TASK_INBOX"),
+		Supervise: fleet.CoordinatorSuperviseEnv(os.Getenv("SPORE_COORDINATOR_SUPERVISE")),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)

@@ -110,7 +110,8 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return "", false, fmt.Errorf("inject codex hooks: %w", err)
 	}
 
-	cmd := coordinatorShellCommand(agent, rolePath, coordinatorSupervise(tomlCfg))
+	supervise := coordinatorSupervise(tomlCfg)
+	cmd := coordinatorShellCommand(agent, rolePath, supervise)
 	args := []string{
 		"new-session", "-d",
 		"-s", session,
@@ -121,6 +122,10 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		"-e", "WT_PROJECT=" + project,
 		"-e", "SPORE_TASK_INBOX=" + inbox,
 		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
+		// Freeze the resolved supervise mode into the session env so the
+		// token-monitor Stop hook picks a wrap kill matching the pane
+		// structure baked in at spawn, not a later spore.toml edit.
+		"-e", "SPORE_COORDINATOR_SUPERVISE=" + superviseEnvValue(supervise),
 		"-e", task.SessionKindEnv + "=" + task.SessionKindCoordinator,
 	}
 	if v := coordinatorProvider(tomlCfg); v != "" {
@@ -249,6 +254,29 @@ func coordinatorSupervise(cfg CoordinatorConfig) bool {
 		}
 	}
 	return cfg.Supervise
+}
+
+// superviseEnvValue renders a resolved supervise bool as the canonical
+// SPORE_COORDINATOR_SUPERVISE session-env value.
+func superviseEnvValue(supervise bool) string {
+	if supervise {
+		return "1"
+	}
+	return "0"
+}
+
+// CoordinatorSuperviseEnv reports whether a SPORE_COORDINATOR_SUPERVISE
+// value requests supervise mode. The token-monitor Stop hook reads the
+// frozen session-env value to pick its wrap kill; empty or unrecognized
+// reads as false (single-exec), matching a session spawned before this
+// env was threaded.
+func CoordinatorSuperviseEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // driverToBinary maps a friendly driver name to the binary to exec.

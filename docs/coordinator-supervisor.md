@@ -31,6 +31,38 @@ exit and boots a fresh driver in place, re-reading the role file. The
 tmux pane stays alive across the rotation, so an attached operator keeps
 its pane and full scrollback.
 
+The wrap kill must be driver-scoped here, not tty-scoped. In supervise
+mode the pane root IS the `while` loop, and the driver is its child:
+
+```
+sh -c 'while true; do <driver> ...; sleep 1; done'   <- pane root (loop)
+  └─ <driver>                                          <- child
+```
+
+Both share the pane's tty, so a tty-scoped kill (`pkill -TERM -t
+$pane_tty`) signals the loop shell too. The loop dies, the only window
+closes, the session is destroyed, and any attached client (including an
+SSH login via `spore-attach coord`) is detached: the operator gets
+"kicked out" on every rotation. The token-monitor therefore emits a
+pane-pid-scoped kill in supervise mode:
+
+```
+pkill -TERM -P "$(tmux display-message -p '#{pane_pid}')"
+```
+
+`#{pane_pid}` is the loop shell; `-P` TERMs only its child (the driver),
+leaving the loop alive to relaunch in place. Single-exec mode keeps the
+tty-scoped kill: there the pane root is the driver (the wrapper `sh`
+`exec`s it), so the tty kill ends the driver and the session as intended
+and the systemd spawn unit boots a fresh one; a pane-pid kill there
+would hit only the driver's tool subshells and leave the driver alive.
+
+`EnsureCoordinator` freezes the resolved supervise mode into the session
+env as `SPORE_COORDINATOR_SUPERVISE` (1/0) so the Stop hook picks the
+kill matching the pane structure baked in at `tmux new-session` time,
+not a later `spore.toml` edit. A session spawned before this env was
+threaded reads as single-exec; it heals on the next coordinator respawn.
+
 `SPORE_ACCOUNT_TIER` is derived from `WT_ACCOUNT_TIER` inline on every
 iteration. The loop's bash text is frozen at `tmux new-session` time, so
 a derivation outside the loop would leave a pane that started before a

@@ -34,6 +34,31 @@ func TestCoordinatorShellCommandSupervised(t *testing.T) {
 	}
 }
 
+func TestSuperviseEnvValueRoundTrip(t *testing.T) {
+	if got := superviseEnvValue(true); !CoordinatorSuperviseEnv(got) {
+		t.Errorf("superviseEnvValue(true)=%q did not round-trip to true", got)
+	}
+	if got := superviseEnvValue(false); CoordinatorSuperviseEnv(got) {
+		t.Errorf("superviseEnvValue(false)=%q did not round-trip to false", got)
+	}
+}
+
+func TestCoordinatorSuperviseEnv(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"1", true}, {"true", true}, {"TRUE", true}, {"yes", true}, {"on", true},
+		{"0", false}, {"false", false}, {"no", false}, {"off", false},
+		{"", false}, {"maybe", false},
+	}
+	for _, tc := range cases {
+		if got := CoordinatorSuperviseEnv(tc.v); got != tc.want {
+			t.Errorf("CoordinatorSuperviseEnv(%q) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}
+
 func TestCoordinatorSuperviseResolution(t *testing.T) {
 	cases := []struct {
 		name string

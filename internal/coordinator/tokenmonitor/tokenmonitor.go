@@ -30,6 +30,12 @@ type Config struct {
 	StateDir   string
 	LedgerFile string
 	Inbox      string
+	// Supervise reports whether this session runs under the in-pane
+	// respawn loop. It selects the wrap-fire kill: driver-scoped when
+	// the pane root is the loop (so the loop survives to relaunch and an
+	// attached operator stays stitched), tty-scoped in single-exec mode
+	// (the pane root is the driver and the session ends with it).
+	Supervise bool
 }
 
 type CheckResult struct {
@@ -114,6 +120,8 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 		HardCap: cfg.HardCap,
 	}
 
+	kill, closing := rotationGuidance(cfg.Supervise)
+
 	if ctx >= cfg.HardCap {
 		result.Level = "hard"
 		result.ShouldFire = true
@@ -122,12 +130,10 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"Wrap up NOW:\n"+
 				"  1. Flush state.md so the next coordinator boots from it.\n"+
 				"  2. Post a one-line summary to the operator if anything is still open.\n"+
-				"  3. Kill only the driver process; the tmux session and any attached\n"+
-				"     operator client stay alive across the rotation:\n"+
+				"  3. End the driver so the rotation fires:\n"+
 				"       %s\n"+
-				"The supervisor loop respawns a fresh coordinator from state.md inside\n"+
-				"the same pane.",
-			ctx, cfg.HardCap, DriverKillCommand())
+				"%s",
+			ctx, cfg.HardCap, kill, closing)
 		appendLedger(cfg, sid, ctx, false, true)
 		return result
 	}
@@ -140,10 +146,8 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 			"COORDINATOR TOKEN MONITOR (soft): context %d tokens >= soft warn %d.\n"+
 				"Wrap up at the next natural break: flush state.md, then run\n"+
 				"  %s\n"+
-				"The supervisor loop respawns a fresh coordinator from state.md inside\n"+
-				"the same pane, keeping any attached operator client stitched. Hard cap\n"+
-				"is %d; crossing it forces a wrap-up reminder on every Stop.",
-			ctx, cfg.SoftCap, DriverKillCommand(), cfg.HardCap)
+				"%s Hard cap is %d; crossing it forces a wrap-up reminder on every Stop.",
+			ctx, cfg.SoftCap, kill, closing, cfg.HardCap)
 		appendLedger(cfg, sid, ctx, true, false)
 		return result
 	}
@@ -267,18 +271,44 @@ func touch(path string) {
 	}
 }
 
+// rotationGuidance returns the wrap-fire kill command and the closing
+// sentence describing what happens after, both keyed on supervise mode.
+func rotationGuidance(supervise bool) (kill, closing string) {
+	if supervise {
+		return DriverKillCommand(true),
+			"The supervisor loop respawns a fresh coordinator from state.md inside\n" +
+				"the same pane, keeping any attached operator client stitched."
+	}
+	return DriverKillCommand(false),
+		"The systemd spawn unit boots a fresh coordinator from state.md in a new\n" +
+			"session; this single-exec session ends with the driver."
+}
+
 // DriverKillCommand returns the shell snippet a coordinator runs on a
-// wrap fire to terminate the agent driver subtree without tearing
-// down its tmux session. Resolving the pane's tty via tmux and
-// pkilling every process attached to it kills the wrapper sh-c plus
-// its agent child (claude / codex / opencode) without naming the
-// binary. The fleet's supervisor loop catches the clean exit and
-// boots a fresh driver in place; an SSH-attached operator client
-// stays stitched because the session and pane survive.
+// wrap fire to end the agent driver.
 //
-// Mirrors internal/worker/tokenmonitor.DriverKillCommand; kept
-// duplicate to avoid a cross-package import that would invert the
-// fleet/worker package dependency.
-func DriverKillCommand() string {
+// In supervise mode the pane root is the in-pane respawn loop, so the
+// kill is driver-scoped: it TERMs the loop's child (the driver) via the
+// pane pid, leaving the loop alive to relaunch in place. A tty-scoped
+// kill here would also signal the loop shell, destroy the only window,
+// tear down the session, and detach any attached (including
+// SSH-via-spore-attach) operator. The driver-scoped kill keeps the
+// operator stitched across the rotation.
+//
+// In single-exec mode the pane root IS the driver (the spawner execs it
+// over the wrapper sh), so the kill is tty-scoped: TERMing the pane's
+// tty ends the driver and the session with it, and the systemd spawn
+// unit boots a fresh coordinator. A pane-pid-scoped kill would only hit
+// the driver's children (the tool subshells) and leave the driver alive.
+//
+// Differs from internal/worker/tokenmonitor.DriverKillCommand on
+// purpose: workers have no respawn loop and set remain-on-exit, so a
+// tty-scoped kill is correct for every worker. The two are kept as
+// separate functions to avoid a cross-package import that would invert
+// the fleet/worker package dependency.
+func DriverKillCommand(supervise bool) string {
+	if supervise {
+		return `pkill -TERM -P "$(tmux display-message -p '#{pane_pid}')"`
+	}
 	return `pkill -TERM -t "$(tmux display-message -p '#{pane_tty}' | sed 's,^/dev/,,')"`
 }
