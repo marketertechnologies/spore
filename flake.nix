@@ -29,7 +29,21 @@
             else if self ? dirtyRev then self.dirtyRev
             else "unknown";
 
-          spore = pkgs.buildGoModule {
+          # Targeted security bump: nixos-unstable still pins go1.26.3,
+          # which carries GO-2026-5037 (crypto/x509) and GO-2026-5039
+          # (net/textproto), both reachable from spore. Override only the
+          # go toolchain to the patched 1.26.4 so the shipped binary and
+          # the govulncheck gate clear them without moving the rest of the
+          # nixpkgs closure. Drop when nixos-unstable advances to >=1.26.4.
+          goPatched = pkgs.go.overrideAttrs (old: rec {
+            version = "1.26.4";
+            src = pkgs.fetchurl {
+              url = "https://go.dev/dl/go${version}.src.tar.gz";
+              hash = "sha256-T2aKMvv8ETLmqIH7lowvHa2mMUkqM5IRc1+7JVpCYC0=";
+            };
+          });
+
+          spore = (pkgs.buildGoModule.override { go = goPatched; }) {
             pname = "spore";
             inherit version;
             src = ./.;
@@ -107,7 +121,7 @@
 
           devShells.default = pkgs.mkShell {
             packages = (with pkgs; [
-              go
+              goPatched
               golangci-lint
               govulncheck
               gopls
