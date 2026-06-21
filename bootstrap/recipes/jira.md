@@ -86,7 +86,7 @@ CLOUD_ID=$(curl -sS "${JIRA_BASE_URL%/}/_edge/tenant_info" | jq -r .cloudId)
 curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
   -H "Accept: application/json" \
   -G "https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3/search/jql" \
-  --data-urlencode "jql=project = MT3 AND statusCategory != Done ORDER BY updated DESC" \
+  --data-urlencode "jql=project = PROJ AND statusCategory != Done ORDER BY updated DESC" \
   --data-urlencode "fields=summary,status,assignee,updated" \
   --data-urlencode "maxResults=50"
 '
@@ -103,7 +103,7 @@ spore-with-secrets bash -c '
 CLOUD_ID=$(curl -sS "${JIRA_BASE_URL%/}/_edge/tenant_info" | jq -r .cloudId)
 curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
   -H "Accept: application/json" \
-  -G "https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3/issue/MT3-9442" \
+  -G "https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3/issue/PROJ-123" \
   --data-urlencode "expand=renderedFields,names"
 '
 ```

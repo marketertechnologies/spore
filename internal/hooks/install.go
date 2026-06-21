@@ -28,6 +28,10 @@ func DefaultGitHooks() []GitHook {
 			Name: "commit-msg",
 			Body: "#!/usr/bin/env bash\nset -euo pipefail\nexec spore hooks commit-msg \"$1\"\n",
 		},
+		{
+			Name: "pre-commit",
+			Body: "#!/usr/bin/env bash\nset -euo pipefail\nexec spore hooks pre-commit\n",
+		},
 	}
 }
 
@@ -98,8 +102,8 @@ func setCoreHooksPath(repoRoot, hooksDir string) error {
 }
 
 // CommitMsg is the hook implementation for git's commit-msg event. It
-// reads msgPath, fails (returning a non-nil error) if the message
-// contains an em-dash or en-dash. Mirrors the writing-style rule.
+// reads msgPath and fails (returning a non-nil error) if the message
+// contains an em-dash or en-dash.
 func CommitMsg(msgPath string) error {
 	body, err := os.ReadFile(msgPath)
 	if err != nil {
@@ -107,6 +111,58 @@ func CommitMsg(msgPath string) error {
 	}
 	if bytes.ContainsAny(body, "\u2014\u2013") {
 		return fmt.Errorf("commit message contains em-dash or en-dash; replace with a hyphen, colon, parentheses, or a new sentence")
+	}
+	return nil
+}
+
+func PreCommit(repoRoot string) error {
+	out, err := exec.Command("git", "-C", repoRoot, "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", "--", "*.go").Output()
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %w", err)
+	}
+	names := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	if len(names) == 1 && names[0] == "" {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "spore-pre-commit-gofmt-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	replacements := make(map[string]string, len(names))
+	args := []string{"-d", "-l"}
+	for _, name := range names {
+		rel := filepath.Clean(filepath.FromSlash(name))
+		if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid staged path %q", name)
+		}
+		path := filepath.Join(tmp, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		blob, err := exec.Command("git", "-C", repoRoot, "show", ":"+name).Output()
+		if err != nil {
+			return fmt.Errorf("git show :%s: %w", name, err)
+		}
+		if err := os.WriteFile(path, blob, 0o644); err != nil {
+			return err
+		}
+		replacements[path] = filepath.ToSlash(name)
+		args = append(args, path)
+	}
+	cmd := exec.Command("gofmt", args...)
+	cmd.Dir = repoRoot
+	out, err = cmd.CombinedOutput()
+	msg := string(out)
+	for path, name := range replacements {
+		msg = strings.ReplaceAll(msg, path, name)
+	}
+	if strings.TrimSpace(msg) != "" {
+		return fmt.Errorf("gofmt needed:\n%s", strings.TrimSpace(msg))
+	}
+	if err != nil {
+		return fmt.Errorf("gofmt -d -l: %w\n%s", err, strings.TrimSpace(msg))
 	}
 	return nil
 }

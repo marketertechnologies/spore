@@ -11,10 +11,14 @@
     claude-code = {
       url = "github:sadjow/claude-code-nix";
     };
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs, flake-utils, home-manager, claude-code }:
+    { self, nixpkgs, flake-utils, home-manager, claude-code, disko }:
     let
       perSystem = flake-utils.lib.eachDefaultSystem (system:
         let
@@ -25,11 +29,25 @@
             else if self ? dirtyRev then self.dirtyRev
             else "unknown";
 
-          spore = pkgs.buildGoModule {
+          # Targeted security bump: nixos-unstable still pins go1.26.3,
+          # which carries GO-2026-5037 (crypto/x509) and GO-2026-5039
+          # (net/textproto), both reachable from spore. Override only the
+          # go toolchain to the patched 1.26.4 so the shipped binary and
+          # the govulncheck gate clear them without moving the rest of the
+          # nixpkgs closure. Drop when nixos-unstable advances to >=1.26.4.
+          goPatched = pkgs.go.overrideAttrs (old: rec {
+            version = "1.26.4";
+            src = pkgs.fetchurl {
+              url = "https://go.dev/dl/go${version}.src.tar.gz";
+              hash = "sha256-T2aKMvv8ETLmqIH7lowvHa2mMUkqM5IRc1+7JVpCYC0=";
+            };
+          });
+
+          spore = (pkgs.buildGoModule.override { go = goPatched; }) {
             pname = "spore";
             inherit version;
             src = ./.;
-            subPackages = [ "cmd/spore" ];
+            subPackages = [ "cmd/spore" "cmd/spore-sandbox" ];
             vendorHash = null;
             ldflags = [ "-X=github.com/versality/spore.buildCommit=${commit}" ];
             # Integration tests exec git and tmux directly; without
@@ -103,7 +121,7 @@
 
           devShells.default = pkgs.mkShell {
             packages = (with pkgs; [
-              go
+              goPatched
               golangci-lint
               govulncheck
               gopls
@@ -113,6 +131,10 @@
               tmux
               fzf
               ripgrep
+              # spore-sandbox wraps agents in a bwrap jail; the worker
+              # spawn path errors hard when the sandbox is enabled but
+              # bwrap is missing, so keep it on the devShell PATH.
+              bubblewrap
             ]) ++ [
               claude-code.packages.${system}.default
             ];
@@ -264,6 +286,7 @@
                     echo "$*" >> "$trace"
                     case "$1 $2" in
                       "fleet reconcile") echo "stub: reconcile" ; exit 0 ;;
+                      "coordinator spawn") echo "stub: spawn" ; exit 0 ;;
                       "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
@@ -272,6 +295,11 @@
                   '';
                   claudeCodePackage = pkgs.writeShellScriptBin "claude" "exit 0";
                   gracefulDeploy.timeout = 5;
+                  # Opt into the long-lived coordinator service so the
+                  # restart-guard wiring (ROC-15) is covered. The stub
+                  # `coordinator spawn` exits 0, so the unit settles
+                  # inactive without a respawn storm.
+                  supervise.enable = true;
                   matters.linear = {
                     enable = true;
                     settings = {
@@ -320,17 +348,17 @@
                       return f"systemctl --machine=spore-test@.host --user {cmd}"
                   # Oneshot; trigger it and assert exit 0 plus that the
                   # timer + path watchers are active.
-                  machine.succeed(usercmd("start spore-fleet-reconcile-project.service"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-project.timer"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag-project.path"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks-project.path"))
+                  machine.succeed(usercmd("start spore-fleet-reconcile.service"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile.timer"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag.path"))
+                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks.path"))
 
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect
                   # the rendered unit env directly so the wire format
                   # stays pinned.
                   env = machine.succeed(usercmd(
-                      "show spore-fleet-reconcile-project.service -p Environment"))
+                      "show spore-fleet-reconcile.service -p Environment"))
                   for needle in [
                       "SPORE_MATTER_LINEAR__ENABLED=1",
                       "SPORE_MATTER_LINEAR__TEAM=MAR",
@@ -345,8 +373,22 @@
                   # file off disk instead. home-manager renders user
                   # units under ~/.config/systemd/user/.
                   unit = machine.succeed(
-                      "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile-project.service")
+                      "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile.service")
                   assert "LoadCredential=matter-linear-api_key:" in unit, unit
+
+                  # supervise.enable wires the long-lived coordinator
+                  # service with the 0/1/64 restart-guard contract.
+                  coord = machine.succeed(
+                      "cat /home/spore-test/.config/systemd/user/spore-coordinator.service")
+                  for needle in [
+                      "ExecStart=",
+                      "coordinator spawn",
+                      "Restart=on-failure",
+                      "RestartPreventExitStatus=1",
+                      "StartLimitBurst=3",
+                      "StartLimitIntervalSec=30s",
+                  ]:
+                      assert needle in coord, f"missing {needle!r} in:\n{coord}"
 
                   # Graceful-deploy: pre-script disables the kill-switch
                   # and tells every active worker to wrap up; post-script
@@ -371,6 +413,20 @@
 
           formatter = pkgs.nixpkgs-fmt;
         });
+      # The steady-state deploy layer (Phase 4): a single coordinator
+      # host running the spore-fleet against the ROC Linear team. The
+      # module set is shared by the plain nixosConfiguration (the CI /
+      # `nix build` eval gate) and the colmena node (targeted pushes).
+      # Secrets, disk, and per-host values evaluate from placeholders;
+      # operator pubkeys come from a gitignored keys.local.nix that the
+      # host config imports only when present, so this builds before any
+      # box exists (and on a checkout without that file).
+      rockyModules = [
+        self.nixosModules.spore-fleet
+        disko.nixosModules.disko
+        home-manager.nixosModules.home-manager
+        ./nix/hosts/rocky
+      ];
     in
     perSystem // {
       nixosModules.spore-fleet = { pkgs, lib, ... }: {
@@ -383,5 +439,28 @@
           lib.mkDefault claude-code.packages.${pkgs.stdenv.hostPlatform.system}.default;
       };
       nixosModules.default = self.nixosModules.spore-fleet;
+
+      nixosConfigurations.rocky = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { inherit self; };
+        modules = rockyModules;
+      };
+
+      # `colmena apply --on rocky` pushes a rebuild to the box. The
+      # target is the SSH alias `rocky`, resolved operator-side in
+      # ~/.ssh/config, so the real public IP stays out of git.
+      colmena = {
+        meta = {
+          nixpkgs = import nixpkgs { system = "x86_64-linux"; };
+          specialArgs = { inherit self; };
+        };
+        rocky = { ... }: {
+          deployment = {
+            targetHost = "rocky";
+            targetUser = "deploy";
+          };
+          imports = rockyModules;
+        };
+      };
     };
 }

@@ -4,6 +4,17 @@
     "gopls-lsp@claude-plugins-official": true
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "${CLAUDE_PROJECT_DIR}/bootstrap/handover/hooks/load-state-md.sh",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

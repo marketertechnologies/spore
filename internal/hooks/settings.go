@@ -10,23 +10,30 @@ import (
 // settings.json. Name is a human label (not emitted into JSON).
 // BinPath is the shell command to run. Matcher is an optional tool
 // name regex (used for PreToolUse/PostToolUse); leave empty for
-// Stop/Notification hooks.
+// Stop/Notification hooks. Kinds is the optional session-kind filter
+// (consumed by SettingsForKind; never emitted to settings.json).
+// An empty Kinds slice means "all kinds".
 type HookBin struct {
 	Name        string
 	BinPath     string
 	Matcher     string
-	Timeout     int  // seconds; 0 omits the field (claude-code default)
-	Async       bool // run without blocking the agent
-	AsyncRewake bool // long-running hook that wakes the agent on exit 2
+	Timeout     int      // seconds; 0 omits the field (claude-code default)
+	Async       bool     // run without blocking the agent
+	AsyncRewake bool     // long-running hook that wakes the agent on exit 2
+	Kinds       []string // session-kind filter; empty means "all kinds"
 }
 
-// Settings emits a complete, deterministic settings.json blob for
-// claude-code. The events map keys are hook event names (Stop,
+// SettingsForKind emits a complete, deterministic settings.json blob
+// for claude-code. The events map keys are hook event names (Stop,
 // Notification, PostToolUse, UserPromptSubmit, PreToolUse, ...).
 // Empty slices are omitted. Keys are sorted at every level.
 // Hooks with the same Matcher within one event are consolidated
 // into a single group.
-func Settings(events map[string][]HookBin) ([]byte, error) {
+//
+// When kind is non-empty, a HookBin is included only if its Kinds
+// is empty (unscoped) or contains kind. When kind is "", every bin
+// is included regardless of Kinds.
+func SettingsForKind(events map[string][]HookBin, kind string) ([]byte, error) {
 	hooksMap := make(map[string][]hookGroup)
 
 	names := make([]string, 0, len(events))
@@ -36,7 +43,8 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	sort.Strings(names)
 
 	for _, name := range names {
-		groups, err := consolidate(events[name])
+		filtered := filterByKind(events[name], kind)
+		groups, err := consolidate(filtered)
 		if err != nil {
 			return nil, err
 		}
@@ -46,7 +54,8 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	}
 
 	top := settingsTop{
-		Schema: "https://json.schemastore.org/claude-code-settings.json",
+		Schema:      "https://json.schemastore.org/claude-code-settings.json",
+		Permissions: &permissions{DefaultMode: "bypassPermissions"},
 	}
 	if len(hooksMap) > 0 {
 		top.Hooks = hooksMap
@@ -60,8 +69,13 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 }
 
 type settingsTop struct {
-	Schema string                 `json:"$schema"`
-	Hooks  map[string][]hookGroup `json:"hooks,omitempty"`
+	Schema      string                 `json:"$schema"`
+	Permissions *permissions           `json:"permissions,omitempty"`
+	Hooks       map[string][]hookGroup `json:"hooks,omitempty"`
+}
+
+type permissions struct {
+	DefaultMode string `json:"defaultMode"`
 }
 
 type hookGroup struct {
@@ -76,6 +90,29 @@ type hookEntry struct {
 	Command     string `json:"command"`
 	Timeout     int    `json:"timeout,omitempty"`
 	Type        string `json:"type"`
+}
+
+// filterByKind drops HookBins that do not apply to kind. kind == ""
+// is the wildcard (every bin passes). Otherwise a bin passes when its
+// Kinds slice is empty (unscoped, applies everywhere) or contains kind.
+func filterByKind(bins []HookBin, kind string) []HookBin {
+	if kind == "" {
+		return bins
+	}
+	out := make([]HookBin, 0, len(bins))
+	for _, b := range bins {
+		if len(b.Kinds) == 0 {
+			out = append(out, b)
+			continue
+		}
+		for _, k := range b.Kinds {
+			if k == kind {
+				out = append(out, b)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // consolidate merges HookBins with the same Matcher into a single

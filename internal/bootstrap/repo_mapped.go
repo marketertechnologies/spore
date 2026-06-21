@@ -15,6 +15,8 @@ import (
 // repoMarkers maps a marker file (project root relative) to a short
 // language / build-system label. Order is irrelevant; the detector
 // reports every marker it finds, sorted, so notes are deterministic.
+// flake.nix is the one mandatory marker (see detectRepoMapped); the
+// rest only enrich the language label.
 var repoMarkers = map[string]string{
 	"flake.nix":      "nix",
 	"Cargo.toml":     "rust",
@@ -50,6 +52,12 @@ func detectRepoMapped(root string) (string, error) {
 	if root == "" {
 		return "", errors.New("repo-mapped: empty root")
 	}
+	if _, err := os.Stat(filepath.Join(root, "flake.nix")); err != nil {
+		if os.IsNotExist(err) {
+			return "", errors.New("no flake.nix at project root: Nix is a hard requirement for spore")
+		}
+		return "", fmt.Errorf("repo-mapped: stat flake.nix: %w", err)
+	}
 	var hits []string
 	seenLabel := map[string]bool{}
 	for marker, label := range repoMarkers {
@@ -60,18 +68,19 @@ func detectRepoMapped(root string) (string, error) {
 			}
 		}
 	}
-	if len(hits) == 0 {
-		return "", errors.New("no recognised project marker (flake.nix / Cargo.toml / go.mod / package.json / pyproject.toml / Gemfile / deps.edn / pom.xml / Makefile / justfile)")
-	}
 	sort.Strings(hits)
 
 	wrote, err := ensureInstructionFiles(root)
 	if err != nil {
 		return "", err
 	}
-	skills, err := install.Install(root, spore.BundledSkills, "bootstrap/skills")
+	skills, err := install.Install(root, spore.BundledSkills, "bootstrap/skills", ".claude/skills")
 	if err != nil {
 		return "", fmt.Errorf("install skills: %w", err)
+	}
+	scripts, err := install.Install(root, spore.BundledScripts, "bootstrap/scripts", "harness")
+	if err != nil {
+		return "", fmt.Errorf("install scripts: %w", err)
 	}
 
 	notes := "detected: " + strings.Join(hits, ",")
@@ -80,6 +89,9 @@ func detectRepoMapped(root string) (string, error) {
 	}
 	if len(skills.Written) > 0 {
 		notes += fmt.Sprintf("; installed %d skill file(s)", len(skills.Written))
+	}
+	if len(scripts.Written) > 0 {
+		notes += fmt.Sprintf("; installed %d harness script(s)", len(scripts.Written))
 	}
 	return notes, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,14 @@ import (
 	"strings"
 
 	"github.com/versality/spore/internal/hooks"
+	"github.com/versality/spore/internal/hooks/contexttee"
+	"github.com/versality/spore/internal/hooks/prfinish"
+	"github.com/versality/spore/internal/hooks/pushpending"
+	"github.com/versality/spore/internal/hooks/settings"
+	"github.com/versality/spore/internal/hooks/stopwatchdog"
+	"github.com/versality/spore/internal/hooks/workercontinue"
+	"github.com/versality/spore/internal/hooks/workerstopforceclosing"
+	"github.com/versality/spore/internal/hooks/wtmergemechanical"
 )
 
 func runHooks(args []string) int {
@@ -26,16 +35,42 @@ func runHooks(args []string) int {
 		return runHooksInstall(rest)
 	case "commit-msg":
 		return runHooksCommitMsg(rest)
+	case "pre-commit":
+		return runHooksPreCommit(rest)
 	case "pretooluse":
 		return runHooksPreToolUse()
 	case "stop":
 		return runHooksStop()
+	case "wtmerge-mechanical":
+		return runHooksWtMergeMechanical()
+	case "push-pending":
+		return runHooksPushPending()
+	case "pr-finish":
+		return runHooksPRFinish()
 	case "settings":
-		return runHooksSettings()
+		return runHooksSettings(rest)
+	case "render":
+		return runHooksRender(rest)
+	case "gate-kind":
+		return runHooksGateKind(rest)
 	case "watch-inbox":
 		return runHooksWatchInbox(rest)
+	case "stop-watchdog":
+		return runHooksStopWatchdog(rest)
+	case "stop-watchdog-tick":
+		return runHooksStopWatchdogTick(rest)
 	case "notify-coordinator":
 		return runHooksNotifyCoordinator(rest)
+	case "plan-ready-mechanical":
+		return runHooksPlanReadyMechanical(rest)
+	case "worker-continue":
+		return runHooksWorkerContinue(rest)
+	case "worker-stop-force-closing":
+		return runHooksWorkerStopForceClosing(rest)
+	case "codex":
+		return runHooksCodex(rest)
+	case "context-tee":
+		return runHooksContextTee(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "spore hooks: unknown subcommand %q\n\n%s", sub, hooksUsage)
 		return 2
@@ -73,13 +108,30 @@ func runHooksCommitMsg(args []string) int {
 	return 0
 }
 
+func runHooksPreCommit(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks pre-commit: takes no args")
+		return 2
+	}
+	root, err := repoRoot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks pre-commit:", err)
+		return 1
+	}
+	if err := hooks.PreCommit(root); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks pre-commit:", err)
+		return 1
+	}
+	return 0
+}
+
 func runHooksPreToolUse() int {
 	req, err := readHookRequest()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks pretooluse:", err)
 		return 1
 	}
-	resp := hooks.PreToolUse(req, hooks.DefaultForbidden())
+	resp := hooks.Decide(req, hooks.DefaultPreToolUseConfig())
 	return writeHookResponse(resp)
 }
 
@@ -91,6 +143,61 @@ func runHooksStop() int {
 	}
 	resp := hooks.Stop(req)
 	return writeHookResponse(resp)
+}
+
+// runHooksWtMergeMechanical is the M1 Stop-hook entry point: when a
+// claude worker stops idle on its wt/<slug> branch with shipped-but-
+// unmerged commits and a clean tree, exit 2 with a deterministic
+// nudge to run `wt merge` (or write the next step and continue).
+// Otherwise exit 0 silently. See docs/todo/worker-lifecycle-fsm.md
+// section 9.
+func runHooksWtMergeMechanical() int {
+	req, err := readHookRequest()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks wtmerge-mechanical:", err)
+		return 1
+	}
+	res := wtmergemechanical.Run(req, wtmergemechanical.Deps{})
+	if res.Stderr != "" {
+		fmt.Fprint(os.Stderr, res.Stderr)
+	}
+	return res.ExitCode
+}
+
+// runHooksPushPending is the M-finish-B Stop-hook entry point: when a
+// worker idles after `wt merge` has fast-forwarded local main but
+// origin/main is still behind, exit 2 with a deterministic nudge to
+// run `git push` (or `wt ship` once it lands). Otherwise exit 0
+// silently. See tasks/spore-worker-finish-contract.md section 5.
+func runHooksPushPending() int {
+	req, err := readHookRequest()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks push-pending:", err)
+		return 1
+	}
+	res := pushpending.Run(req, pushpending.Deps{})
+	if res.Stderr != "" {
+		fmt.Fprint(os.Stderr, res.Stderr)
+	}
+	return res.ExitCode
+}
+
+// runHooksPRFinish is the M-finish-C Stop-hook entry point: when a
+// worker idles on wt/<slug>, inspect the matching PR via `gh pr view`
+// and exit 2 with a deterministic next-step prompt (merge / rebase /
+// fix CI) when the PR needs one. Otherwise exit 0 silently. See
+// tasks/spore-worker-finish-contract.md section 5.
+func runHooksPRFinish() int {
+	req, err := readHookRequest()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks pr-finish:", err)
+		return 1
+	}
+	res := prfinish.Run(req, prfinish.Deps{})
+	if res.Stderr != "" {
+		fmt.Fprint(os.Stderr, res.Stderr)
+	}
+	return res.ExitCode
 }
 
 func readHookRequest() (hooks.Request, error) {
@@ -119,48 +226,205 @@ func writeHookResponse(resp hooks.Response) int {
 	return 0
 }
 
-// settingsInput is the JSON schema read from stdin by `spore hooks settings`.
-type settingsInput struct {
-	Events map[string][]settingsInputBin `json:"events"`
+func runHooksGateKind(args []string) int {
+	err := hooks.GateKind(args, nil)
+	if err == nil {
+		return 0
+	}
+	var exitErr *hooks.GateKindExitError
+	switch {
+	case errors.Is(err, hooks.ErrGateMiss):
+		return 0
+	case errors.As(err, &exitErr):
+		return exitErr.Code
+	case errors.Is(err, hooks.ErrGateUsage):
+		fmt.Fprintln(os.Stderr, "spore hooks gate-kind:", err)
+		return 2
+	default:
+		fmt.Fprintln(os.Stderr, "spore hooks gate-kind:", err)
+		return 1
+	}
 }
 
-type settingsInputBin struct {
-	Command     string `json:"command"`
-	Matcher     string `json:"matcher,omitempty"`
-	Timeout     int    `json:"timeout,omitempty"`
-	Async       bool   `json:"async,omitempty"`
-	AsyncRewake bool   `json:"asyncRewake,omitempty"`
-}
+func runHooksSettings(args []string) int {
+	kind := os.Getenv("SPORE_RENDER_KIND")
+	rest := args[:0:0]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--kind":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "spore hooks settings: --kind needs a value")
+				return 2
+			}
+			kind = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--kind="):
+			kind = strings.TrimPrefix(a, "--kind=")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) > 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks settings: unexpected args:", strings.Join(rest, " "))
+		return 2
+	}
 
-func runHooksSettings() int {
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
 		return 1
 	}
-	var input settingsInput
-	if err := json.Unmarshal(body, &input); err != nil {
+	cfg, err := settings.Parse(body)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings: bad input:", err)
 		return 1
 	}
-	events := make(map[string][]hooks.HookBin, len(input.Events))
-	for name, bins := range input.Events {
-		for _, b := range bins {
-			events[name] = append(events[name], hooks.HookBin{
-				BinPath:     b.Command,
-				Matcher:     b.Matcher,
-				Timeout:     b.Timeout,
-				Async:       b.Async,
-				AsyncRewake: b.AsyncRewake,
-			})
-		}
-	}
-	out, err := hooks.Settings(events)
+	out, err := hooks.SettingsForKind(cfg.HookBins(), kind)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
 		return 1
 	}
 	os.Stdout.Write(out)
+	return 0
+}
+
+// runHooksRender is the full claude-code pipeline: read hooks-config.json,
+// render for --kind, merge settings-extras.json, write to --out. This is
+// the entry point bootstrap/scripts/hooks-render.sh calls so the shell
+// renderer and spawn-time inject share the same package.
+func runHooksRender(args []string) int {
+	var (
+		hooksConfigPath string
+		extrasPath      string
+		outPath         string
+		claudeDir       string
+		codex           bool
+		kind            = os.Getenv("SPORE_RENDER_KIND")
+	)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		take := func() (string, bool) {
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "spore hooks render: %s needs a value\n", a)
+				return "", false
+			}
+			i++
+			return args[i], true
+		}
+		switch {
+		case a == "--kind":
+			v, ok := take()
+			if !ok {
+				return 2
+			}
+			kind = v
+		case strings.HasPrefix(a, "--kind="):
+			kind = strings.TrimPrefix(a, "--kind=")
+		case a == "--hooks-config":
+			v, ok := take()
+			if !ok {
+				return 2
+			}
+			hooksConfigPath = v
+		case strings.HasPrefix(a, "--hooks-config="):
+			hooksConfigPath = strings.TrimPrefix(a, "--hooks-config=")
+		case a == "--extras":
+			v, ok := take()
+			if !ok {
+				return 2
+			}
+			extrasPath = v
+		case strings.HasPrefix(a, "--extras="):
+			extrasPath = strings.TrimPrefix(a, "--extras=")
+		case a == "--out":
+			v, ok := take()
+			if !ok {
+				return 2
+			}
+			outPath = v
+		case strings.HasPrefix(a, "--out="):
+			outPath = strings.TrimPrefix(a, "--out=")
+		case a == "--claude-dir":
+			v, ok := take()
+			if !ok {
+				return 2
+			}
+			claudeDir = v
+		case strings.HasPrefix(a, "--claude-dir="):
+			claudeDir = strings.TrimPrefix(a, "--claude-dir=")
+		case a == "--codex":
+			codex = true
+		default:
+			fmt.Fprintln(os.Stderr, "spore hooks render: unexpected arg:", a)
+			return 2
+		}
+	}
+	if claudeDir != "" {
+		if hooksConfigPath == "" {
+			hooksConfigPath = claudeDir + "/hooks-config.json"
+		}
+		if extrasPath == "" {
+			extrasPath = claudeDir + "/settings-extras.json"
+		}
+		if outPath == "" {
+			outPath = claudeDir + "/settings.json"
+		}
+	}
+	if hooksConfigPath == "" {
+		fmt.Fprintln(os.Stderr, "spore hooks render: --hooks-config (or --claude-dir) is required")
+		return 2
+	}
+	if _, err := os.Stat(hooksConfigPath); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks render: missing", hooksConfigPath)
+		return 2
+	}
+	var (
+		merged []byte
+		ok     bool
+		err    error
+	)
+	if codex {
+		merged, ok, err = settings.RenderCodex(hooksConfigPath, kind)
+	} else {
+		merged, ok, err = settings.RenderClaude(hooksConfigPath, extrasPath, kind)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks render:", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(os.Stderr, "spore hooks render: hooks-config missing")
+		return 2
+	}
+	if outPath == "" {
+		os.Stdout.Write(merged)
+		return 0
+	}
+	if err := os.WriteFile(outPath, merged, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks render: write", outPath+":", err)
+		return 1
+	}
+	return 0
+}
+
+func runHooksStopWatchdog(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-watchdog: takes no args")
+		return 2
+	}
+	if err := stopwatchdog.Spawn(); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-watchdog:", err)
+	}
+	return 0
+}
+
+func runHooksStopWatchdogTick(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-watchdog-tick: takes no args")
+		return 2
+	}
+	_ = stopwatchdog.Tick(stopwatchdog.DefaultConfig())
 	return 0
 }
 
@@ -170,10 +434,9 @@ func runHooksWatchInbox(args []string) int {
 	case 0:
 		inbox := os.Getenv("SPORE_TASK_INBOX")
 		if inbox == "" {
-			// Host-level Stop hooks fire in every claude session,
-			// including non-spore ones. No slug and no inbox env
-			// means there is nothing to watch; exit silently so
-			// the hook produces no stderr noise.
+			// Bare claude (no task context) loads the project settings.json
+			// but has no inbox to watch. Exit 0 so the Stop hook does not
+			// block the operator's interactive session.
 			return 0
 		}
 		err = hooks.WatchInboxAt(inbox)
@@ -211,6 +474,81 @@ func runHooksNotifyCoordinator(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: spore hooks notify-coordinator [project]")
 		return 2
 	}
+}
+
+func runHooksPlanReadyMechanical(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks plan-ready-mechanical: takes no args")
+		return 2
+	}
+	if err := hooks.PlanReadyMechanicalEnv(); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks plan-ready-mechanical:", err)
+		return 1
+	}
+	return 0
+}
+
+func runHooksWorkerContinue(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks worker-continue: takes no args")
+		return 2
+	}
+	res, err := workercontinue.RunEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks worker-continue:", err)
+		return 1
+	}
+	if res.ShouldFire {
+		fmt.Fprint(os.Stderr, res.Message)
+		return 2
+	}
+	return 0
+}
+
+func runHooksWorkerStopForceClosing(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks worker-stop-force-closing: takes no args")
+		return 2
+	}
+	req, err := readHookRequest()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks worker-stop-force-closing:", err)
+		return 1
+	}
+	res, err := workerstopforceclosing.RunEnv(req.TranscriptPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks worker-stop-force-closing:", err)
+		return 1
+	}
+	if res.Stderr != "" {
+		fmt.Fprint(os.Stderr, res.Stderr)
+	}
+	return res.ExitCode
+}
+
+func runHooksContextTee(args []string) int {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "spore hooks context-tee: takes no args")
+		return 2
+	}
+	cfg := contexttee.Config{
+		Inbox:               os.Getenv("SPORE_TASK_INBOX"),
+		CoordinatorStateDir: defaultCoordinatorStateDirEnv(),
+		Tier:                os.Getenv("SPORE_ACCOUNT_TIER"),
+		CoordSoftCap:        envInt("SPORE_COORDINATOR_TOKEN_SOFT"),
+		CoordHardCap:        envInt("SPORE_COORDINATOR_TOKEN_HARD"),
+		WorkerWrapMax:       envInt("SPORE_WORKER_TOKEN_WRAP_MAX"),
+		WorkerWrapSub:       envInt("SPORE_WORKER_TOKEN_WRAP_SUB"),
+		WorkerWrapOverride:  envInt("SPORE_WORKER_TOKEN_WRAP"),
+	}
+	if d := os.Getenv("SPORE_WORKER_TOKEN_DIR"); d != "" {
+		cfg.WorkerTokenDir = d
+	}
+	if _, err := contexttee.Run(cfg, os.Stdin); err != nil {
+		// Best-effort: log and exit 0 so the Stop chain keeps going.
+		fmt.Fprintln(os.Stderr, "spore hooks context-tee:", err)
+	}
+	return 0
 }
 
 func repoRoot() (string, error) {

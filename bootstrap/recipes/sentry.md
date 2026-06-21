@@ -154,7 +154,7 @@ curl -sS -G -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
 '
 ```
 
-Project both `id` (numeric) and `shortId` (e.g. `MARKETER-AB1`).
+Project both `id` (numeric) and `shortId` (e.g. `PROJ-AB1`).
 Pass `shortId` back to the operator -- it is the human-readable
 handle the UI uses -- but keep the numeric `id` for the
 `/issues/<id>/` calls below.
@@ -170,7 +170,7 @@ curl -sS -G -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
   --data-urlencode "shortIdLookup=1" \
   --data-urlencode "limit=1" \
   | jq ".[0] | {id, shortId, title}"
-' _ MARKETER-AB1
+' _ PROJ-AB1
 ```
 
 ### Fetch one issue's metadata

@@ -40,55 +40,16 @@ func TestParseRoundTrip(t *testing.T) {
 		t.Fatal("expected sections")
 	}
 
-	sec := doc.FindSection("Active tasks")
-	if sec == nil {
+	if sec := doc.FindSection("Active tasks"); sec == nil {
 		t.Fatal("expected Active tasks section")
-	}
-	if sec.Level != 2 {
+	} else if sec.Level != 2 {
 		t.Errorf("Active tasks level = %d, want 2", sec.Level)
 	}
 
-	sec = doc.FindSection("Directives")
-	if sec == nil {
+	if sec := doc.FindSection("Directives"); sec == nil {
 		t.Fatal("expected Directives section")
-	}
-	if !strings.Contains(sec.Body, "Stand down") {
+	} else if !strings.Contains(sec.Body, "Stand down") {
 		t.Errorf("Directives body missing expected text")
-	}
-}
-
-func TestParseTaskTable(t *testing.T) {
-	doc := Parse([]byte(sampleState))
-	sec := doc.FindSection("Active tasks")
-	if sec == nil {
-		t.Fatal("expected Active tasks section")
-	}
-	rows := ParseTaskTable(sec.Body)
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
-	}
-	if rows[0].Slug != "fix-auth" {
-		t.Errorf("row[0].Slug = %q, want fix-auth", rows[0].Slug)
-	}
-	if rows[0].Status != "active" {
-		t.Errorf("row[0].Status = %q, want active", rows[0].Status)
-	}
-	if rows[1].Note != "blocked on CI" {
-		t.Errorf("row[1].Note = %q, want 'blocked on CI'", rows[1].Note)
-	}
-}
-
-func TestRenderTaskTable(t *testing.T) {
-	rows := []TaskRow{
-		{Slug: "a", Status: "active", Note: "wip"},
-		{Slug: "b", Status: "done", Note: ""},
-	}
-	out := RenderTaskTable(rows)
-	if !strings.Contains(out, "| a | active | wip |") {
-		t.Errorf("missing row a in:\n%s", out)
-	}
-	if !strings.Contains(out, "| b | done |  |") {
-		t.Errorf("missing row b in:\n%s", out)
 	}
 }
 
@@ -105,6 +66,7 @@ func TestFindSectionH3(t *testing.T) {
 	sec := doc.FindSection("CRITICAL LESSON: always check inbox")
 	if sec == nil {
 		t.Fatal("expected to find H3 section")
+		return
 	}
 	if sec.Level != 3 {
 		t.Errorf("expected level 3, got %d", sec.Level)

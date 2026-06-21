@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/evidence"
 )
 
 func TestMergeNoBranch(t *testing.T) {
@@ -79,6 +79,55 @@ func TestMergeFastForward(t *testing.T) {
 	}
 }
 
+// TestMergeHonorsConfiguredBase proves merge targets spore.toml's
+// `[fleet] base` rather than a hardcoded main: it runs from the base
+// checkout, fast-forwards the base, and pushes base:base to origin.
+func TestMergeHonorsConfiguredBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+
+	runGit(t, repo, "init", "-q", "-b", "release-9")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "spore.toml"), []byte("[fleet]\nbase = \"release-9\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "spore.toml")
+	runGit(t, repo, "commit", "-q", "-m", "config")
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, t.TempDir(), "init", "--bare", "-q", remote)
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-q", "-u", "origin", "release-9")
+
+	runGit(t, repo, "checkout", "-q", "-b", "wt/demo")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feat: demo work")
+	runGit(t, repo, "checkout", "-q", "release-9")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Merge(tasksDir, "demo"); err != nil {
+		t.Fatalf("Merge against non-main base: %v", err)
+	}
+	if branchExists(repo, "wt/demo") {
+		t.Error("wt/demo still exists after Merge")
+	}
+	// origin/release-9 must now match the local base tip.
+	localTip := strings.Fields(gitOutput(t, repo, "rev-parse", "release-9"))[0]
+	remoteOut := gitOutput(t, repo, "ls-remote", "origin", "refs/heads/release-9")
+	if len(remoteOut) == 0 || strings.Fields(remoteOut)[0] != localTip {
+		t.Errorf("origin/release-9 not advanced to %s: %q", localTip, remoteOut)
+	}
+}
+
 func TestMergeFlipsTaskDoneAndCommitsClose(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
@@ -124,6 +173,61 @@ func TestMergeFlipsTaskDoneAndCommitsClose(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "tasks/demo: status -> done") {
 		t.Errorf("last commit should close task, got:\n%s", out)
+	}
+}
+
+func TestMergeWithGitignoredTasksSkipsCloseCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("/tasks/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore tasks")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "demo.md")
+	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: demo\ntitle: Demo\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configureOrigin(t, repo)
+
+	runGit(t, repo, "checkout", "-q", "-b", "wt/demo")
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "feature.txt")
+	runGit(t, repo, "commit", "-q", "-m", "feat: demo work")
+	runGit(t, repo, "checkout", "-q", "main")
+
+	if err := Merge(tasksDir, "demo"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("status = %q want done", status)
+	}
+	if branchExists(repo, "wt/demo") {
+		t.Error("wt/demo branch still exists after merge")
+	}
+	out, err := exec.Command("git", "-C", repo, "log", "--oneline", "-1").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "tasks/demo: status -> done") {
+		t.Errorf("close commit should be skipped when tasks/ is gitignored, got:\n%s", out)
 	}
 }
 
@@ -460,6 +564,37 @@ func TestMergeJustCheckRedRefuses(t *testing.T) {
 	}
 	if status := readStatus(t, taskPath); status != "active" {
 		t.Errorf("status = %q want active", status)
+	}
+}
+
+func TestMergeJustCheckRedRefusesWithoutExistingWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("just"); err != nil {
+		t.Skipf("just not available: %v", err)
+	}
+	repo, _ := setupGateRepo(t, "demo", "@exit 1")
+	runGit(t, repo, "worktree", "remove", "--force", filepath.Join(repo, ".worktrees", "demo"))
+
+	preMain, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergeErr := Merge(filepath.Join(repo, "tasks"), "demo")
+	if mergeErr == nil {
+		t.Fatal("Merge should refuse on red just check")
+	}
+	var gateErr *MergeGateError
+	if !errors.As(mergeErr, &gateErr) {
+		t.Fatalf("error %v should be a *MergeGateError", mergeErr)
+	}
+	postMain, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(preMain) != string(postMain) {
+		t.Errorf("main moved despite red gate: pre=%q post=%q", preMain, postMain)
 	}
 }
 

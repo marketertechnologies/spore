@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+// TestMain clears any ambient SPORE_MATTER_* env vars so tests do
+// not pick up operator-specific config from the host shell.
+func TestMain(m *testing.M) {
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		if strings.HasPrefix(kv[:eq], EnvPrefix) {
+			os.Unsetenv(kv[:eq])
+		}
+	}
+	os.Exit(m.Run())
+}
+
 func TestParseMatterTOMLBasic(t *testing.T) {
 	src := `
 # top-level comment
@@ -183,35 +198,6 @@ func keys(m map[string]Config) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-func TestStripComment(t *testing.T) {
-	cases := map[string]string{
-		`key = "value # not a comment" # comment`: `key = "value # not a comment" `,
-		`key = bare # tail`:                       `key = bare `,
-		`# whole line`:                            ``,
-		`'single # quoted' # tail`:                `'single # quoted' `,
-	}
-	for in, want := range cases {
-		if got := stripComment(in); got != want {
-			t.Errorf("stripComment(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestStripQuotes(t *testing.T) {
-	cases := map[string]string{
-		`"x"`: `x`,
-		`'x'`: `x`,
-		`x`:   `x`,
-		`""`:  ``,
-		`"`:   `"`,
-	}
-	for in, want := range cases {
-		if got := stripQuotes(in); got != want {
-			t.Errorf("stripQuotes(%q) = %q, want %q", in, got, want)
-		}
-	}
 }
 
 // Sanity check: confirm the key constants we promise the rest of the

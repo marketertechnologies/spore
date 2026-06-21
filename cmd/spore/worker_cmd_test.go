@@ -60,7 +60,7 @@ func TestRunWorkerTokenMonitorSkipNoInbox(t *testing.T) {
 func TestRunWorkerTokenMonitorWrap(t *testing.T) {
 	dir := t.TempDir()
 	transcriptFile := filepath.Join(dir, "session.jsonl")
-	line := `{"role":"assistant","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	line := `{"role":"assistant","usage":{"input_tokens":305000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
 	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,61 @@ func TestRunWorkerTokenMonitorOk(t *testing.T) {
 	code, stderr := captureWorkerTokenMonitor(t, payload)
 	if code != 0 {
 		t.Fatalf("expected exit 0 below cap, got %d (stderr=%q)", code, stderr)
+	}
+}
+
+// TestRunWorkerExitKindTellEnvelope is the acceptance "a clean wrap
+// shows one tell envelope reaching coordinator inbox" check. The CLI
+// shells out to `wt task tell <dest> <body>`; we stub `wt` with a
+// script that captures argv to a file so the assertion runs without
+// touching the real operator inbox.
+func TestRunWorkerExitKindTellEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "clean-exit")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	capture := filepath.Join(dir, "wt-args")
+	stub := filepath.Join(dir, "wt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + capture + "\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	origOut := os.Stdout
+	t.Cleanup(func() { os.Stdout = origOut })
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	os.Stdout = devnull
+
+	// Clean wrap: marker present, rc=129 (lifecycle SIGHUP shape).
+	args := []string{
+		"--rc=129",
+		"--marker=" + marker,
+		"--slug=spore-worker-exit-kind",
+		"--tell-coordinator",
+	}
+	if rc := runWorkerExitKind(args); rc != 0 {
+		t.Fatalf("runWorkerExitKind rc=%d, want 0", rc)
+	}
+
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
+	want := []string{"task", "tell", "coordinator", "spore-worker-exit-kind exit kind=lifecycle rc=129"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
+		}
 	}
 }
 
