@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/task"
 )
 
 // fakeReapTmux is a stub tmux runner for reap_test.
@@ -295,6 +297,58 @@ func TestReapPass2KillsOrphanTmuxSession(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "killed orphan session "+orphan) {
 		t.Errorf("expected orphan log, got %s", stdout.String())
+	}
+}
+
+// TestReapPass2KeepsLiveWorkerWithLongSlug guards the spawn/reap thrash:
+// a ticket-prefixed session name carries only a truncated slug hint, so
+// reversing it via .worktrees/<hint> never resolves a slug longer than
+// the 24-char cap. The reaper must match the live session against the
+// canonical name its worktree produces, not the truncated hint, or it
+// kills an actively-working worker every reconcile cycle.
+func TestReapPass2KeepsLiveWorkerWithLongSlug(t *testing.T) {
+	root, projectsFile := newReapSetup(t)
+	slug := "spore-task-done-exits-128-in-repos-without-a-local"
+	wt := mkWorktreeDir(t, root, slug)
+	// Active, ticket-bound task -> spawner uses the ticket-prefixed,
+	// truncated-slug session shape.
+	if err := os.MkdirAll(filepath.Join(root, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nslug: " + slug + "\nstatus: active\nmatter_id: ROC-25\nmodel: opus\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(root, "tasks", slug+".md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := task.TaskTmuxSession(filepath.Join(root, "tasks"), root, slug)
+	if !strings.Contains(session, "spore-task-done-exits") || strings.Contains(session, slug) {
+		t.Fatalf("expected a truncated ticket-prefixed session, got %q", session)
+	}
+
+	tmux := &fakeReapTmux{
+		sessions: map[string]bool{session: true},
+		listOut:  session + "\n",
+	}
+	git := &fakeGit{responses: map[string]gitResp{
+		"worktree prune": {out: ""},
+	}}
+	e := reapEnv{
+		projectsFile:  projectsFile,
+		currentRoot:   func() (string, error) { return root, nil },
+		gitRunner:     git.run,
+		tmuxRunner:    tmux,
+		listWorktrees: func(_ string) ([]string, error) { return []string{wt}, nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc, err := runReap(false, &stdout, &stderr, e)
+	if err != nil {
+		t.Fatalf("runReap: %v", err)
+	}
+	if rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, stderr.String())
+	}
+	if len(tmux.killed) != 0 {
+		t.Fatalf("live worker session must survive, but reap killed %v", tmux.killed)
 	}
 }
 

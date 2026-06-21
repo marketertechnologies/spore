@@ -248,10 +248,26 @@ func reapOne(mainRoot string, forcePublished bool, stdout, stderr io.Writer, e r
 		}
 	}
 
-	// Pass 2: orphan tmux sessions whose worktree is gone. Routes
-	// every wt-emoji session through ParseSession; only worker kinds
-	// are candidates - the coordinator session has no worktree on
-	// purpose.
+	// Pass 2: orphan tmux sessions whose worktree is gone. A worker
+	// session is an orphan only when no present worktree maps to it.
+	// The ticket-prefixed session name carries a truncated slug hint
+	// (shortSlug caps it at 24 chars), so reversing it via
+	// .worktrees/<parsed-slug> never resolves a long slug and would
+	// reap a live worker every reconcile cycle. Match against the
+	// canonical names the spawner produces instead.
+	liveSessions := make(map[string]bool, len(worktrees))
+	for _, wtDir := range worktrees {
+		slug := filepath.Base(wtDir)
+		var meta frontmatter.Meta
+		if raw, rerr := os.ReadFile(filepath.Join(mainRoot, "tasks", slug+".md")); rerr == nil {
+			if m, _, perr := frontmatter.Parse(raw); perr == nil {
+				meta = m
+			}
+		}
+		if name := sessionForReap(mainRoot, slug, meta); name != "" {
+			liveSessions[name] = true
+		}
+	}
 	if sessions, lerr := e.tmuxRunner.listSessions(); lerr == nil {
 		for _, line := range strings.Split(strings.TrimRight(sessions, "\n"), "\n") {
 			if line == "" {
@@ -261,7 +277,7 @@ func reapOne(mainRoot string, forcePublished bool, stdout, stderr io.Writer, e r
 			if !ok || p.Kind != task.SessionKindWorker || p.Slug == "" {
 				continue
 			}
-			if dirExists(filepath.Join(mainRoot, ".worktrees", p.Slug)) {
+			if liveSessions[line] {
 				continue
 			}
 			if e.tmuxRunner.killSession(line) == nil {
