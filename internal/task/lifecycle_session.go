@@ -50,6 +50,14 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 	if recorded != "" && tmuxsess.Has(recorded) {
 		add(recorded)
 	}
+	// The ticket-prefixed session name carries only a truncated slug
+	// hint, so MatchSlug (which compares the full slug) misses it. Add
+	// the canonical name the spawner produces: it round-trips exactly
+	// (ticket + tier + truncated slug), so a long-slugged worker's
+	// session is still found and torn down on done rather than orphaned.
+	if canonical := taskTmuxSession(tasksDir, projectRoot, slug); tmuxsess.Has(canonical) {
+		add(canonical)
+	}
 	return matches
 }
 

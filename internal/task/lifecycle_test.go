@@ -344,6 +344,58 @@ func TestDoneKillsFrontmatterSession(t *testing.T) {
 	}
 }
 
+// TestDoneKillsTicketPrefixedLongSlugSession guards the done-side twin
+// of the reap truncation bug: a ticket-prefixed session name carries
+// only a truncated slug hint, so MatchSlug (full-slug compare) misses
+// it and Done would orphan the worker's tmux session. Done must match
+// the canonical name the spawner produces and tear it down.
+func TestDoneKillsTicketPrefixedLongSlugSession(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slug := "demo-with-a-very-long-slug-that-exceeds-twenty-four"
+	// matter_id drives the ticket-prefixed (truncating) session shape;
+	// no `session:` override, so the kill must find the canonical name.
+	body := "---\nstatus: active\nslug: " + slug + "\ntitle: Demo\nmatter_id: TEST-1\n---\nbody\n"
+	taskPath := filepath.Join(tasksDir, slug+".md")
+	if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	session := TaskTmuxSession(tasksDir, repo, slug)
+	if strings.Contains(session, slug) {
+		t.Fatalf("expected a truncated session name, got the full slug: %q", session)
+	}
+	if out, err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", session, "sleep 30").CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session %q: %v: %s", session, err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+
+	if err := Done(tasksDir, slug, true); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
+		t.Errorf("ticket-prefixed session %q still alive after Done", session)
+	}
+}
+
 func TestReapKillsFrontmatterSession(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skipf("tmux not available: %v", err)
