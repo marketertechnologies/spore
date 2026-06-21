@@ -173,6 +173,12 @@ func TestCoordinatorStartReportsDeadAgent(t *testing.T) {
 	root := gitInitProject(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("SPORE_COORDINATOR_AGENT", "spore-no-such-binary-zzz")
+	// The "died on spawn" settle check only holds in single-exec mode;
+	// a supervise loop is the pane root and keeps the session alive
+	// through a failed agent exec. Pin single-exec so the test does not
+	// inherit an ambient SPORE_COORDINATOR_SUPERVISE from the coordinator
+	// session that runs it (the dogfood `just check` path).
+	t.Setenv("SPORE_COORDINATOR_SUPERVISE", "0")
 	chdirToRoot(t, root)
 
 	session := fleet.CoordinatorSessionName(root)
