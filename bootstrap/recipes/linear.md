@@ -170,10 +170,12 @@ curl -sS -X POST "https://api.linear.app/graphql" \
 '
 ```
 
-Linear's `WorkflowStateType` enum has five values: `triage`,
-`backlog`, `unstarted`, `started`, `completed`, `canceled`.
-Filtering on `type` is portable across teams; filtering on
-`state.name` is not (teams can rename states).
+Linear's `WorkflowStateType` enum has seven values: `triage`,
+`backlog`, `unstarted`, `started`, `completed`, `canceled`,
+`duplicate`. Filtering on `type` is portable across teams;
+filtering on `state.name` is not (teams can rename states). Not
+every team uses every type -- "triage" is opt-in per team -- so
+do not assume a state of a given type exists.
 
 Pagination is cursor-based. The response includes
 `issues.pageInfo.endCursor` and `hasNextPage`; pass `after:
