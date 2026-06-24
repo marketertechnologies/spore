@@ -157,12 +157,38 @@ func runTaskMerge(args []string) error {
 }
 
 func runTaskWaybar(_ []string) error {
-	out, err := task.Waybar(resolveTasksDir())
+	out, err := task.Waybar(resolveTasksDir(), resolveProjectRoot())
 	if err != nil {
 		return err
 	}
 	_, err = os.Stdout.Write(out)
 	return err
+}
+
+// resolveProjectRoot returns the absolute project root for callers
+// (waybar/systemd) that may run outside the repo. Mirrors the
+// resolveTasksDir fallback chain so the chip can find role-task state
+// without a cwd inside the worktree. Returns "" when nothing resolves;
+// the chip degrades gracefully (escalated counter stays zero).
+func resolveProjectRoot() string {
+	if root, err := task.MainRepoRoot(""); err == nil && root != "" {
+		return root
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		data, err := os.ReadFile(filepath.Join(home, ".config", "wt", "projects"))
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				if fi, err := os.Stat(line); err == nil && fi.IsDir() {
+					return line
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func runTaskDrift(_ []string) error {
