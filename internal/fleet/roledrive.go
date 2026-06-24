@@ -80,13 +80,20 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if err := writeSummary(projectRoot, slug); err != nil {
 			return snap, fmt.Errorf("drive %s: write summary: %w", slug, err)
 		}
+		if err := clearEscalationMarkers(projectRoot, slug); err != nil {
+			return snap, fmt.Errorf("drive %s: clear escalation markers: %w", slug, err)
+		}
 		// Operator wants the panes torn down once the branch is
 		// ready; leaving them alive only re-spends tokens.
 		_, _ = ReapRole(EngineerSpec(projectRoot, slug))
 		_, _ = ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerA))
 		_, _ = ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerB))
 	case PhaseEscalated:
-		// Leave panes alive per spec: the operator inspects.
+		// Leave panes alive per spec: the operator inspects. Drop a
+		// marker so the waybar chip can surface the escalation.
+		if err := writeEscalationMarker(projectRoot, slug, snap); err != nil {
+			return snap, fmt.Errorf("drive %s: write escalation marker: %w", slug, err)
+		}
 	}
 
 	return snap, nil
@@ -139,6 +146,48 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		return fmt.Errorf("tmux send-keys: %w", err)
 	}
 	return os.WriteFile(marker, []byte(verdictPath+"\n"), 0o644)
+}
+
+// writeEscalationMarker drops an idempotent marker at
+// `<roletaskdir>/state/escalated-<reviewer>-<round>` so the waybar
+// chip can surface the escalation. Returns nil when the snapshot
+// lacks a reviewer (defensive: PhaseEscalated always carries one).
+func writeEscalationMarker(projectRoot, slug string, snap Snapshot) error {
+	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
+		return nil
+	}
+	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return err
+	}
+	marker := filepath.Join(markerDir, fmt.Sprintf("escalated-%s-%d", snap.CurrentReviewer, snap.ReviewerRound))
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	return os.WriteFile(marker, nil, 0o644)
+}
+
+// clearEscalationMarkers removes any `escalated-*` files under the
+// task's state dir. Called on PhaseDone so an operator force-approve
+// after an escalation clears the chip. A missing state dir is fine.
+func clearEscalationMarkers(projectRoot, slug string) error {
+	dir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "escalated-") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // sessionCreated returns the `#{session_created}` stamp tmux assigns
