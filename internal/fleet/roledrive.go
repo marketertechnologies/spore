@@ -1,7 +1,9 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,7 +176,7 @@ func clearEscalationMarkers(projectRoot, slug string) error {
 	dir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -183,7 +185,7 @@ func clearEscalationMarkers(projectRoot, slug string) error {
 		if !strings.HasPrefix(e.Name(), "escalated-") {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
