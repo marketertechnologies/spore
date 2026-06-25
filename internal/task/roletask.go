@@ -53,6 +53,22 @@ func IsEscalated(projectRoot, slug string) (bool, error) {
 	return false, nil
 }
 
+// IsReady reports whether the `state/ready` marker exists under
+// `<roletaskdir>/state/`. The role-loop driver writes it on the
+// PhaseDone transition; task.Done removes it when the operator
+// finalises the task. A missing role-task or state dir returns
+// (false, nil). Mirrors IsEscalated.
+func IsReady(projectRoot, slug string) (bool, error) {
+	marker := filepath.Join(RoleTaskDir(projectRoot, slug), "state", "ready")
+	if _, err := os.Stat(marker); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // ReviewerInstance is the per-spawn label for a reviewer pane. The
 // coordinator sets SPORE_REVIEWER_INSTANCE at spawn so a single
 // reviewer body serves both passes.

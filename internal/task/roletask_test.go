@@ -223,6 +223,42 @@ func TestListEngineerRoundsSorted(t *testing.T) {
 	}
 }
 
+func TestIsReady(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+
+	got, err := IsReady(root, slug)
+	if err != nil {
+		t.Fatalf("IsReady missing dir: %v", err)
+	}
+	if got {
+		t.Errorf("IsReady = true on missing role-task dir, want false")
+	}
+
+	stateDir := filepath.Join(RoleTaskDir(root, slug), "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err = IsReady(root, slug)
+	if err != nil {
+		t.Fatalf("IsReady empty state dir: %v", err)
+	}
+	if got {
+		t.Errorf("IsReady = true on empty state dir, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(stateDir, "ready"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = IsReady(root, slug)
+	if err != nil {
+		t.Fatalf("IsReady with marker: %v", err)
+	}
+	if !got {
+		t.Errorf("IsReady = false with marker present, want true")
+	}
+}
+
 func TestListReviewRoundsEmpty(t *testing.T) {
 	root := t.TempDir()
 	got, err := ListReviewRounds(root, "demo", ReviewerA)
