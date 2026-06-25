@@ -299,6 +299,10 @@ func Done(tasksDir, slug string, force bool) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, path, err)
 	}
+	readyMarker := filepath.Join(RoleTaskDir(projectRoot, slug), "state", "ready")
+	if err := os.Remove(readyMarker); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, readyMarker, err)
+	}
 	return nil
 }
 
