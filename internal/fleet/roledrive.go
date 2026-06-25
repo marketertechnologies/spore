@@ -85,6 +85,9 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if err := clearEscalationMarkers(projectRoot, slug); err != nil {
 			return snap, fmt.Errorf("drive %s: clear escalation markers: %w", slug, err)
 		}
+		if err := writeReadyMarker(projectRoot, slug); err != nil {
+			return snap, fmt.Errorf("drive %s: write ready marker: %w", slug, err)
+		}
 		// Operator wants the panes torn down once the branch is
 		// ready; leaving them alive only re-spends tokens.
 		_, _ = ReapRole(EngineerSpec(projectRoot, slug))
@@ -163,6 +166,23 @@ func writeEscalationMarker(projectRoot, slug string, snap Snapshot) error {
 		return err
 	}
 	marker := filepath.Join(markerDir, fmt.Sprintf("escalated-%s-%d", snap.CurrentReviewer, snap.ReviewerRound))
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	return os.WriteFile(marker, nil, 0o644)
+}
+
+// writeReadyMarker drops an idempotent marker at
+// `<roletaskdir>/state/ready` so the waybar chip can surface
+// ready-to-claim tasks once the role-loop hits PhaseDone. The marker
+// is a singleton (a slug is either ready or not), cleared by
+// task.Done when the operator finalises the task.
+func writeReadyMarker(projectRoot, slug string) error {
+	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return err
+	}
+	marker := filepath.Join(markerDir, "ready")
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
