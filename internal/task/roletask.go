@@ -29,6 +29,30 @@ import (
 // SPORE_TASK_DIR at spawn time.
 const RoleTaskRoot = ".spore"
 
+// IsEscalated reports whether any `state/escalated-*` marker exists
+// under `<roletaskdir>/state/`. The role-loop driver writes one such
+// marker on a PhaseEscalated transition and removes them on the
+// PhaseDone transition; callers (waybar chip, status) use the presence
+// of any marker as the chip's "escalated" signal. A missing role-task
+// dir returns (false, nil) so the chip stays quiet for slugs without
+// an artifact tree yet.
+func IsEscalated(projectRoot, slug string) (bool, error) {
+	dir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "escalated-") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ReviewerInstance is the per-spawn label for a reviewer pane. The
 // coordinator sets SPORE_REVIEWER_INSTANCE at spawn so a single
 // reviewer body serves both passes.

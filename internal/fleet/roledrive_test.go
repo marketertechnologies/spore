@@ -3,6 +3,7 @@ package fleet
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -242,6 +243,112 @@ func TestDriveRoleLoopColdStartCachesSpec(t *testing.T) {
 		// task.CacheSpecFromTaskFile tests; this guard exists so the
 		// integration path stays exercised on CI hosts that ship tmux.
 		t.Skip("tmux not at /usr/bin/tmux; cold-start path needs a real session host")
+	}
+}
+
+// TestDriveRoleLoopWritesEscalationMarker drives a synthetic
+// PhaseEscalated tree, asserts the marker is dropped under
+// state/escalated-<reviewer>-<round>, a second tick is a no-op, then
+// force-approves to PhaseDone and asserts the marker is cleared. The
+// engineer/reviewer panes never need to spawn because PhaseEscalated
+// and PhaseDone are the only branches that do not call SpawnRole.
+func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	slug := "demo"
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create role-task dir, worktree dir, and spec cache so the
+	// drive call skips tmux/git-touching side effects and runs only
+	// the marker logic we care about.
+	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteSpec(root, slug, []byte("pre-existing\n")); err != nil {
+		t.Fatal(err)
+	}
+	// PhaseEscalated requires: engineer has responded enough rounds
+	// and reviewer A holds MaxReviewerRounds request_changes verdicts
+	// in a row.
+	for i := 1; i <= MaxReviewerRounds; i++ {
+		if err := task.WriteEngineerResponse(root, slug, i, task.EngineerResponse{
+			Notes: "round",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
+			Verdict: task.VerdictRequestChanges,
+			Summary: "more work",
+		})
+	}
+
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop (escalation): %v", err)
+	}
+	if snap.Phase != PhaseEscalated {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseEscalated)
+	}
+	wantMarker := filepath.Join(task.RoleTaskDir(root, slug), "state",
+		"escalated-"+string(task.ReviewerA)+"-"+strconv.Itoa(MaxReviewerRounds))
+	info, err := os.Stat(wantMarker)
+	if err != nil {
+		t.Fatalf("expected marker at %s: %v", wantMarker, err)
+	}
+	firstMtime := info.ModTime()
+
+	esc, err := task.IsEscalated(root, slug)
+	if err != nil {
+		t.Fatalf("IsEscalated: %v", err)
+	}
+	if !esc {
+		t.Errorf("IsEscalated = false, want true after marker write")
+	}
+
+	// Second tick: marker already exists, write should be a no-op
+	// (mtime unchanged).
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatalf("DriveRoleLoop (idempotent): %v", err)
+	}
+	info, err = os.Stat(wantMarker)
+	if err != nil {
+		t.Fatalf("marker disappeared on second tick: %v", err)
+	}
+	if !info.ModTime().Equal(firstMtime) {
+		t.Errorf("marker mtime changed on idempotent tick: %v -> %v", firstMtime, info.ModTime())
+	}
+
+	// Operator force-approval: overwrite A's last verdict to approve
+	// and ship B's approval. Next drive lands in PhaseDone and must
+	// clear the marker.
+	mustWriteReview(t, root, slug, task.ReviewerA, MaxReviewerRounds, task.Review{
+		Verdict: task.VerdictApprove,
+		Summary: "force",
+	})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{
+		Verdict: task.VerdictApprove,
+		Summary: "ship",
+	})
+	snap, err = DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop (done): %v", err)
+	}
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+	if _, err := os.Stat(wantMarker); !os.IsNotExist(err) {
+		t.Errorf("marker still present after PhaseDone: %v", err)
+	}
+	esc, err = task.IsEscalated(root, slug)
+	if err != nil {
+		t.Fatalf("IsEscalated after done: %v", err)
+	}
+	if esc {
+		t.Errorf("IsEscalated = true after PhaseDone cleanup, want false")
 	}
 }
 
