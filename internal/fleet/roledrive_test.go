@@ -352,6 +352,58 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 	}
 }
 
+// TestDriveRoleLoopWritesReadyMarker drives a synthetic PhaseDone
+// tree, asserts the `state/ready` marker is dropped, a second tick is
+// a no-op (mtime preserved), and the marker survives across ticks
+// (nothing in DriveRoleLoop clears it; cleanup belongs to task.Done).
+func TestDriveRoleLoopWritesReadyMarker(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	slug := "demo"
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteSpec(root, slug, []byte("pre-existing\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{Notes: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship"})
+
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop: %v", err)
+	}
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+	marker := filepath.Join(task.RoleTaskDir(root, slug), "state", "ready")
+	info, err := os.Stat(marker)
+	if err != nil {
+		t.Fatalf("expected ready marker at %s: %v", marker, err)
+	}
+	firstMtime := info.ModTime()
+
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatalf("DriveRoleLoop (idempotent): %v", err)
+	}
+	info, err = os.Stat(marker)
+	if err != nil {
+		t.Fatalf("ready marker disappeared on second tick: %v", err)
+	}
+	if !info.ModTime().Equal(firstMtime) {
+		t.Errorf("ready marker mtime changed on idempotent tick: %v -> %v", firstMtime, info.ModTime())
+	}
+}
+
 func mustWriteReview(t *testing.T, root, slug string, instance task.ReviewerInstance, round int, r task.Review) {
 	t.Helper()
 	if err := task.WriteReview(root, slug, instance, round, r); err != nil {

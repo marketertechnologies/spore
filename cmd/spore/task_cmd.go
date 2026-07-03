@@ -166,11 +166,15 @@ func runTaskWaybar(_ []string) error {
 }
 
 // resolveProjectRoot returns the absolute project root for callers
-// (waybar/systemd) that may run outside the repo. Mirrors the
-// resolveTasksDir fallback chain so the chip can find role-task state
-// without a cwd inside the worktree. Returns "" when nothing resolves;
-// the chip degrades gracefully (escalated counter stays zero).
+// (waybar/systemd) that may run outside the repo. Priority:
+//  1. SPORE_PROJECT_ROOT env var (explicit override)
+//  2. git root from cwd
+//  3. first entry in ~/.config/wt/projects (fallback for waybar/systemd callers)
+//  4. "" (chip degrades gracefully; escalated/ready counters stay zero)
 func resolveProjectRoot() string {
+	if v := os.Getenv("SPORE_PROJECT_ROOT"); v != "" {
+		return v
+	}
 	if root, err := task.MainRepoRoot(""); err == nil && root != "" {
 		return root
 	}
