@@ -190,8 +190,14 @@ func wakeSession(spec RoleSpawnSpec, markerStem, msg string) error {
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
-	if err := sendWakeVerified(session, msg); err != nil {
+	delivered, err := sendWakeVerified(session, msg)
+	if err != nil {
 		return err
+	}
+	if !delivered {
+		// Pane is up but its input box is not (agent still booting
+		// after a respawn). Nothing was sent; the next tick retries.
+		return nil
 	}
 	return os.WriteFile(marker, []byte(msg+"\n"), 0o644)
 }
@@ -208,45 +214,69 @@ const wakeSubmitSettle = 500 * time.Millisecond
 
 // sendWakeVerified delivers msg to the tmux session in split calls
 // (text, settle, Enter) and confirms via capture-pane that the text
-// left the input box. One extra Enter is retried on a still-pending
-// capture; after that the error propagates so the caller leaves the
-// wake marker unwritten and the next drive tick starts over.
-func sendWakeVerified(session, msg string) error {
+// left the input box. Returns (false, nil) without sending when the
+// pane shows no input box yet: right after a respawn the agent TUI
+// has not rendered, and text sent then lands in a launch shell or is
+// lost, so the caller must leave the marker unwritten and retry next
+// tick. After sending, a submission that cannot be verified (message
+// still pending, or the box vanished) retries Enter once and then
+// errors, again leaving the marker unwritten.
+func sendWakeVerified(session, msg string) (bool, error) {
+	pane, err := capturePane(session)
+	if err != nil {
+		// Cannot inspect the pane (likely died since hasSession).
+		// Nothing sent; skip and let the next tick retry.
+		return false, nil
+	}
+	if lastInputBox(pane) == "" {
+		return false, nil
+	}
 	if err := exec.Command("tmux", "send-keys", "-t", session, msg).Run(); err != nil {
-		return fmt.Errorf("tmux send-keys text: %w", err)
+		return false, fmt.Errorf("tmux send-keys text: %w", err)
 	}
 	time.Sleep(wakePasteSettle)
 	for range 2 {
 		if err := exec.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
-			return fmt.Errorf("tmux send-keys enter: %w", err)
+			return false, fmt.Errorf("tmux send-keys enter: %w", err)
 		}
 		time.Sleep(wakeSubmitSettle)
-		pane, err := exec.Command("tmux", "capture-pane", "-p", "-t", session).Output()
+		pane, err := capturePane(session)
 		if err != nil {
-			return fmt.Errorf("tmux capture-pane: %w", err)
+			return false, fmt.Errorf("tmux capture-pane: %w", err)
 		}
-		if !wakeStillPending(string(pane), msg) {
-			return nil
+		if wakeSubmitted(pane, msg) {
+			return true, nil
 		}
 	}
-	return fmt.Errorf("wake still pending in %s input box after enter retry", session)
+	return false, fmt.Errorf("wake not verifiably submitted in %s after enter retry", session)
 }
 
-// wakeStillPending reports whether msg still sits unsubmitted in the
-// pane's input box. Only the last bordered box of the capture is
+func capturePane(session string) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", session).Output()
+	return string(out), err
+}
+
+// wakeSubmitted reports whether the capture shows msg cleared from a
+// present input box. Only the last bordered box of the capture is
 // scanned: a submitted message is echoed into the transcript above
 // the box and must not count as pending. Both sides are reduced to
 // alphanumerics so box borders, wrapping, and punctuation cannot
-// break the match. A capture with no input box reads as submitted.
-func wakeStillPending(pane, msg string) bool {
+// break the match. A capture with no input box is NOT submitted:
+// post-send it means the TUI redrew into an unrecognisable state, and
+// counting that as success would silently lose the wake.
+func wakeSubmitted(pane, msg string) bool {
+	box := lastInputBox(pane)
+	if box == "" {
+		return false
+	}
 	frag := alnumOnly(msg)
 	if len(frag) > wakePendingFragLen {
 		frag = frag[:wakePendingFragLen]
 	}
 	if frag == "" {
-		return false
+		return true
 	}
-	return strings.Contains(alnumOnly(lastInputBox(pane)), frag)
+	return !strings.Contains(alnumOnly(box), frag)
 }
 
 // wakePendingFragLen bounds the message fragment matched against the

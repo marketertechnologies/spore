@@ -414,7 +414,7 @@ func TestWakeMarkerStems(t *testing.T) {
 	}
 }
 
-func TestWakeStillPending(t *testing.T) {
+func TestWakeSubmitted(t *testing.T) {
 	msg := "Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision."
 	pendingBox := strings.Join([]string{
 		"earlier transcript output",
@@ -440,14 +440,17 @@ func TestWakeStillPending(t *testing.T) {
 		pane string
 		want bool
 	}{
-		{"pending in input box", pendingBox, true},
-		{"submitted and echoed above empty box", submitted, false},
+		{"pending in input box", pendingBox, false},
+		{"submitted and echoed above empty box", submitted, true},
+		// No box means the TUI is not (or no longer) showing an input
+		// box; success here would silently lose the wake.
+		{"boxless boot output", "Starting agent...\nLoading project context", false},
 		{"no box in capture", "> some echo\nplain shell prompt $", false},
 		{"empty capture", "", false},
 	}
 	for _, c := range cases {
-		if got := wakeStillPending(c.pane, msg); got != c.want {
-			t.Errorf("%s: wakeStillPending = %v, want %v", c.name, got, c.want)
+		if got := wakeSubmitted(c.pane, msg); got != c.want {
+			t.Errorf("%s: wakeSubmitted = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
