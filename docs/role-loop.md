@@ -9,17 +9,25 @@ every command here is safe to re-run.
 
 Create `tasks/<slug>.md` as usual (`spore task new`). The frontmatter
 is the standard task set (`status`, `slug`, `title`, `created`,
-`project`); the body below the frontmatter becomes the spec. Set
-`status: active` so the fleet reconciler keeps driving the loop.
+`project`); the body below the frontmatter becomes the spec.
 
-Opt-in is the presence of `.spore/<slug>/` on disk. Seed it with:
+Opt-in is the presence of `.spore/<slug>/` on disk. Seed it while the
+task is still a draft (`role-drive` has no status gate):
 
     spore task role-drive <slug>
 
-The same command is the manual driver: each run advances the loop by
-one idempotent tick. The fleet reconciler skips role-looped slugs in
-its homogeneous worker spawn and calls the same drive for them on
-every reconcile pass.
+Then flip the frontmatter to `status: active` by editing the file,
+not via `spore task start` (start spawns a homogeneous worker
+session). Order matters: the fleet reconciler skips role-looped slugs
+when minting homogeneous workers, but it detects them by the
+`.spore/<slug>/` dir. An active slug without the dir gets a
+homogeneous worker on the same `wt/<slug>` branch, and that worker
+stays alive once the dir appears. Seed first, activate second.
+
+`role-drive` is also the manual driver: each run advances the loop by
+one idempotent tick. The reconciler calls the same drive for
+role-looped slugs on every pass, so an active task keeps moving
+without manual ticks.
 
 The first tick:
 
@@ -56,7 +64,8 @@ Per-phase side effects of a drive tick:
 - engineer phases: spawn the engineer pane if missing; on revise
   phases, nudge it (tmux send-keys) with the latest verdict path
 - `review-A`: keep engineer and reviewer A panes alive
-- `review-B`: reap reviewer A's pane, spawn reviewer B
+- `review-B`: reap reviewer A's pane, spawn reviewer B; the engineer
+  pane stays alive across the handover
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
 - `escalated`: write the `escalated-*` marker, touch nothing else
@@ -125,9 +134,16 @@ and merge with `spore task merge <slug>`. Then run:
 
     spore task done <slug>
 
-Done flips the status, kills task tmux sessions, removes the worktree
-and the `wt/<slug>` branch, deletes `tasks/<slug>.md`, and clears the
-`state/ready` marker. It refuses while the branch has unmerged
-commits (`--force` discards them). The rest of `.spore/<slug>/` is
-preserved: `spec.md`, `responses/`, `reviews/`, `summary.md`, and the
-remaining state markers stay on disk as the task's audit trail.
+Done flips the status, kills the homogeneous worker session, removes
+the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`,
+and clears the `state/ready` marker. It refuses while the branch has
+unmerged commits (`--force` discards them). It does not kill role
+panes: its session cleanup matches `<project>/<slug>` at a name
+boundary, which `spore-role/...` names never hit. On the normal path
+that is moot (the done tick already reaped all three panes), but when
+you abandon an escalated task, kill the surviving panes yourself with
+`tmux kill-session -t spore-role/<project>/<slug>/<role>`.
+
+The rest of `.spore/<slug>/` is preserved: `spec.md`, `responses/`,
+`reviews/`, `summary.md`, and the remaining state markers stay on
+disk as the task's audit trail.
