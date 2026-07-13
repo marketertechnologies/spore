@@ -27,6 +27,11 @@ import (
 //   - When the snapshot is engineer-revise-*, sends a tmux send-keys
 //     wake to the engineer pane pointing at the latest verdict file.
 //     A delivery marker guards against re-sending the same verdict.
+//   - When the snapshot is review-A / review-B and the reviewer has
+//     already issued a verdict (round >= 1), sends the same style of
+//     wake to the reviewer pane pointing at the latest engineer
+//     response. Round 0 is skipped: a freshly spawned reviewer starts
+//     from its role body.
 //   - When the snapshot is PhaseDone, writes a synthesized summary at
 //     .spore/<slug>/summary.md (idempotent: skip if file already
 //     exists).
@@ -66,6 +71,9 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if _, _, err := SpawnRole(ReviewerSpec(projectRoot, slug, task.ReviewerA)); err != nil {
 			return snap, fmt.Errorf("drive %s: spawn reviewer A: %w", slug, err)
 		}
+		if err := wakeReviewer(projectRoot, slug, snap); err != nil {
+			return snap, fmt.Errorf("drive %s: wake reviewer A: %w", slug, err)
+		}
 	case PhaseReviewB:
 		// A approved; tear down A's pane and bring B up. Engineer
 		// stays alive across the handover.
@@ -77,6 +85,9 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		}
 		if _, _, err := SpawnRole(ReviewerSpec(projectRoot, slug, task.ReviewerB)); err != nil {
 			return snap, fmt.Errorf("drive %s: spawn reviewer B: %w", slug, err)
+		}
+		if err := wakeReviewer(projectRoot, slug, snap); err != nil {
+			return snap, fmt.Errorf("drive %s: wake reviewer B: %w", slug, err)
 		}
 	case PhaseDone:
 		if err := writeSummary(projectRoot, slug); err != nil {
@@ -104,28 +115,63 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	return snap, nil
 }
 
-// wakeEngineer sends a tmux send-keys nudge to the engineer pane with
-// the path of the latest reviewer verdict, so the agent picks the
-// revision round up without waiting on a manual prompt. The marker
-// file under <roletaskdir>/state/ keeps the wake idempotent across
-// drive passes; its filename embeds the engineer session's
-// `#{session_created}` stamp so a respawn (engineer pane crashed,
-// then re-minted by SpawnRole on the next tick) clears the gate and
-// the new pane gets nudged in turn.
+// wakeEngineer nudges the engineer pane with the path of the latest
+// reviewer verdict, so the agent picks the revision round up without
+// waiting on a manual prompt. Delivery and idempotency live in
+// wakeSession.
 func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
 		return nil
 	}
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
+	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
+		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
+	return wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+}
 
-	session, err := EngineerSpec(projectRoot, slug).SessionName()
+// wakeReviewer nudges the persistent reviewer pane with the path of
+// the latest engineer response. Only fires when the reviewer has
+// already issued a verdict (ReviewerRound >= 1): the phase moving back
+// to review-* then means a fresh engineer response landed and the idle
+// pane must be told. Round 0 is a freshly spawned reviewer that starts
+// from its role body; no nudge needed.
+func wakeReviewer(projectRoot, slug string, snap Snapshot) error {
+	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
+		return nil
+	}
+	respPath := task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound)
+	msg := fmt.Sprintf("Engineer responded to your round %d verdict. Read %s and review round %d.",
+		snap.ReviewerRound, respPath, snap.ReviewerRound+1)
+	return wakeSession(ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), reviewerWakeMarkerStem(snap), msg)
+}
+
+// engineerWakeMarkerStem keys the engineer wake on which verdict is
+// being delivered: a new reviewer round re-arms the nudge.
+func engineerWakeMarkerStem(snap Snapshot) string {
+	return fmt.Sprintf("woken-%s-%d", snap.CurrentReviewer, snap.ReviewerRound)
+}
+
+// reviewerWakeMarkerStem keys the reviewer wake on which engineer
+// response is being delivered: a new engineer round re-arms the nudge.
+func reviewerWakeMarkerStem(snap Snapshot) string {
+	return fmt.Sprintf("woken-reviewer-%s-%d", snap.CurrentReviewer, snap.EngineerRound)
+}
+
+// wakeSession delivers msg to the role pane for spec, gated by an
+// idempotency marker at <roletaskdir>/state/<stem>-<created>. The
+// marker name embeds the session's `#{session_created}` stamp so a
+// respawn (pane crashed, then re-minted by SpawnRole on the next
+// tick) clears the gate and the new pane gets nudged in turn. The
+// marker is written only after sendWakeVerified confirms submission;
+// on failure the next drive tick retries the whole wake.
+func wakeSession(spec RoleSpawnSpec, markerStem, msg string) error {
+	session, err := spec.SessionName()
 	if err != nil {
 		return err
 	}
 	if !hasSession(session) {
-		// Engineer pane is not up; the spawn pass above will have
-		// failed if the agent crashed. Skip the wake and let the
-		// next tick try.
+		// Pane is not up; the spawn pass above will have failed if
+		// the agent crashed. Skip the wake and let the next tick try.
 		return nil
 	}
 	created, err := sessionCreated(session)
@@ -136,21 +182,111 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		return nil
 	}
 
-	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	markerDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
 		return err
 	}
-	marker := filepath.Join(markerDir, fmt.Sprintf("woken-%s-%d-%s", snap.CurrentReviewer, snap.ReviewerRound, created))
+	marker := filepath.Join(markerDir, markerStem+"-"+created)
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
-
-	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
-		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
-	if err := exec.Command("tmux", "send-keys", "-t", session, msg, "Enter").Run(); err != nil {
-		return fmt.Errorf("tmux send-keys: %w", err)
+	if err := sendWakeVerified(session, msg); err != nil {
+		return err
 	}
-	return os.WriteFile(marker, []byte(verdictPath+"\n"), 0o644)
+	return os.WriteFile(marker, []byte(msg+"\n"), 0o644)
+}
+
+// wakePasteSettle is how long the agent TUI gets to settle the pasted
+// wake text before the Enter keypress. Sent in one send-keys call, the
+// trailing Enter is swallowed as part of the paste and the message
+// sits unsubmitted in the input box.
+const wakePasteSettle = 500 * time.Millisecond
+
+// wakeSubmitSettle is how long to wait after Enter before capturing
+// the pane to check the input box emptied.
+const wakeSubmitSettle = 500 * time.Millisecond
+
+// sendWakeVerified delivers msg to the tmux session in split calls
+// (text, settle, Enter) and confirms via capture-pane that the text
+// left the input box. One extra Enter is retried on a still-pending
+// capture; after that the error propagates so the caller leaves the
+// wake marker unwritten and the next drive tick starts over.
+func sendWakeVerified(session, msg string) error {
+	if err := exec.Command("tmux", "send-keys", "-t", session, msg).Run(); err != nil {
+		return fmt.Errorf("tmux send-keys text: %w", err)
+	}
+	time.Sleep(wakePasteSettle)
+	for range 2 {
+		if err := exec.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
+			return fmt.Errorf("tmux send-keys enter: %w", err)
+		}
+		time.Sleep(wakeSubmitSettle)
+		pane, err := exec.Command("tmux", "capture-pane", "-p", "-t", session).Output()
+		if err != nil {
+			return fmt.Errorf("tmux capture-pane: %w", err)
+		}
+		if !wakeStillPending(string(pane), msg) {
+			return nil
+		}
+	}
+	return fmt.Errorf("wake still pending in %s input box after enter retry", session)
+}
+
+// wakeStillPending reports whether msg still sits unsubmitted in the
+// pane's input box. Only the last bordered box of the capture is
+// scanned: a submitted message is echoed into the transcript above
+// the box and must not count as pending. Both sides are reduced to
+// alphanumerics so box borders, wrapping, and punctuation cannot
+// break the match. A capture with no input box reads as submitted.
+func wakeStillPending(pane, msg string) bool {
+	frag := alnumOnly(msg)
+	if len(frag) > wakePendingFragLen {
+		frag = frag[:wakePendingFragLen]
+	}
+	if frag == "" {
+		return false
+	}
+	return strings.Contains(alnumOnly(lastInputBox(pane)), frag)
+}
+
+// wakePendingFragLen bounds the message fragment matched against the
+// input box, guarding against the box truncating a long message.
+const wakePendingFragLen = 24
+
+// lastInputBox returns the contents of the last box-drawing bordered
+// region in a pane capture (the agent TUI's input box sits at the
+// bottom), or "" when no box is present.
+func lastInputBox(pane string) string {
+	lines := strings.Split(pane, "\n")
+	top := -1
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "╭") {
+			top = i
+		}
+	}
+	if top == -1 {
+		return ""
+	}
+	var b strings.Builder
+	for _, l := range lines[top+1:] {
+		if strings.HasPrefix(strings.TrimSpace(l), "╰") {
+			break
+		}
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// alnumOnly strips s down to its ASCII letters and digits.
+func alnumOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // writeEscalationMarker drops an idempotent marker at

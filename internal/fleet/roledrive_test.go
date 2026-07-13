@@ -404,6 +404,83 @@ func TestDriveRoleLoopWritesReadyMarker(t *testing.T) {
 	}
 }
 
+func TestWakeMarkerStems(t *testing.T) {
+	snap := Snapshot{CurrentReviewer: task.ReviewerA, ReviewerRound: 2, EngineerRound: 3}
+	if got := engineerWakeMarkerStem(snap); got != "woken-A-2" {
+		t.Errorf("engineerWakeMarkerStem = %q, want %q", got, "woken-A-2")
+	}
+	if got := reviewerWakeMarkerStem(snap); got != "woken-reviewer-A-3" {
+		t.Errorf("reviewerWakeMarkerStem = %q, want %q", got, "woken-reviewer-A-3")
+	}
+}
+
+func TestWakeStillPending(t *testing.T) {
+	msg := "Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision."
+	pendingBox := strings.Join([]string{
+		"earlier transcript output",
+		"╭────────────────────────────────╮",
+		"│ > Reviewer A requested changes  │",
+		"│   at round 1. Read              │",
+		"│   /x/reviews/A/round-1.json and │",
+		"│   start the revision.           │",
+		"╰────────────────────────────────╯",
+		"  ? for shortcuts",
+	}, "\n")
+	submitted := strings.Join([]string{
+		"> Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision.",
+		"",
+		"Working on the revision...",
+		"╭────────────────────────────────╮",
+		"│ >                               │",
+		"╰────────────────────────────────╯",
+		"  ? for shortcuts",
+	}, "\n")
+	cases := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{"pending in input box", pendingBox, true},
+		{"submitted and echoed above empty box", submitted, false},
+		{"no box in capture", "> some echo\nplain shell prompt $", false},
+		{"empty capture", "", false},
+	}
+	for _, c := range cases {
+		if got := wakeStillPending(c.pane, msg); got != c.want {
+			t.Errorf("%s: wakeStillPending = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Round 0 must be a no-op before any tmux or filesystem side effect: a
+// freshly spawned reviewer starts from its role body and needs no
+// nudge.
+func TestWakeReviewerRoundZeroIsNoop(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	snap := Snapshot{Slug: "demo", CurrentReviewer: task.ReviewerA, ReviewerRound: 0, EngineerRound: 1}
+	if err := wakeReviewer(root, "demo", snap); err != nil {
+		t.Fatalf("wakeReviewer: %v", err)
+	}
+	stateDir := filepath.Join(task.RoleTaskDir(root, "demo"), "state")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Errorf("round-0 wake touched state dir %s: %v", stateDir, err)
+	}
+}
+
+// Without a live tmux session the wake skips silently and leaves no
+// marker, so the next drive tick retries once the pane is back.
+func TestWakeReviewerNoSessionWritesNoMarker(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	snap := Snapshot{Slug: "demo", CurrentReviewer: task.ReviewerB, ReviewerRound: 1, EngineerRound: 2}
+	if err := wakeReviewer(root, "demo", snap); err != nil {
+		t.Fatalf("wakeReviewer: %v", err)
+	}
+	stateDir := filepath.Join(task.RoleTaskDir(root, "demo"), "state")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Errorf("session-less wake touched state dir %s: %v", stateDir, err)
+	}
+}
+
 func mustWriteReview(t *testing.T, root, slug string, instance task.ReviewerInstance, round int, r task.Review) {
 	t.Helper()
 	if err := task.WriteReview(root, slug, instance, round, r); err != nil {
