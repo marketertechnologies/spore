@@ -415,42 +415,72 @@ func TestWakeMarkerStems(t *testing.T) {
 }
 
 func TestWakeSubmitted(t *testing.T) {
+	// The claude-code TUI (>= 2.1.199) draws the input area as plain
+	// full-width U+2500 rules around a U+276F prompt line; the
+	// synthetic captures mirror that shape.
 	msg := "Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision."
-	pendingBox := strings.Join([]string{
+	rule := strings.Repeat("─", 40)
+	pending := strings.Join([]string{
 		"earlier transcript output",
-		"╭────────────────────────────────╮",
-		"│ > Reviewer A requested changes  │",
-		"│   at round 1. Read              │",
-		"│   /x/reviews/A/round-1.json and │",
-		"│   start the revision.           │",
-		"╰────────────────────────────────╯",
-		"  ? for shortcuts",
+		rule,
+		"❯ Reviewer A requested changes at round",
+		"  1. Read /x/reviews/A/round-1.json and",
+		"  start the revision.",
+		rule,
+		"  Fable 5  /tmp/scratch",
 	}, "\n")
 	submitted := strings.Join([]string{
-		"> Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision.",
+		"❯ Reviewer A requested changes at round 1. Read /x/reviews/A/round-1.json and start the revision.",
 		"",
 		"Working on the revision...",
-		"╭────────────────────────────────╮",
-		"│ >                               │",
-		"╰────────────────────────────────╯",
-		"  ? for shortcuts",
+		rule,
+		"❯ ",
+		rule,
+		"  Fable 5  /tmp/scratch",
 	}, "\n")
 	cases := []struct {
 		name string
 		pane string
 		want bool
 	}{
-		{"pending in input box", pendingBox, false},
-		{"submitted and echoed above empty box", submitted, true},
-		// No box means the TUI is not (or no longer) showing an input
-		// box; success here would silently lose the wake.
-		{"boxless boot output", "Starting agent...\nLoading project context", false},
-		{"no box in capture", "> some echo\nplain shell prompt $", false},
+		{"pending in input region", pending, false},
+		{"submitted and echoed above empty prompt", submitted, true},
+		// No prompt line means the TUI is not (or no longer) showing
+		// an input line; success here would silently lose the wake.
+		{"promptless boot output", "Starting agent...\nLoading project context", false},
+		{"promptless shell capture", "> some echo\nplain shell prompt $", false},
 		{"empty capture", "", false},
 	}
 	for _, c := range cases {
 		if got := wakeSubmitted(c.pane, msg); got != c.want {
 			t.Errorf("%s: wakeSubmitted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The pre-send gate keys on the same prompt detection: a booting pane
+// with no prompt must be rejected, a rendered TUI accepted.
+func TestHasInputPrompt(t *testing.T) {
+	rule := strings.Repeat("─", 40)
+	rendered := strings.Join([]string{
+		"welcome banner",
+		rule,
+		"❯ ",
+		rule,
+		"  status line",
+	}, "\n")
+	cases := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{"rendered TUI", rendered, true},
+		{"boot output", "Starting agent...\nLoading project context", false},
+		{"empty capture", "", false},
+	}
+	for _, c := range cases {
+		if got := hasInputPrompt(c.pane); got != c.want {
+			t.Errorf("%s: hasInputPrompt = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

@@ -195,7 +195,7 @@ func wakeSession(spec RoleSpawnSpec, markerStem, msg string) error {
 		return err
 	}
 	if !delivered {
-		// Pane is up but its input box is not (agent still booting
+		// Pane is up but its input prompt is not (agent still booting
 		// after a respawn). Nothing was sent; the next tick retries.
 		return nil
 	}
@@ -214,13 +214,13 @@ const wakeSubmitSettle = 500 * time.Millisecond
 
 // sendWakeVerified delivers msg to the tmux session in split calls
 // (text, settle, Enter) and confirms via capture-pane that the text
-// left the input box. Returns (false, nil) without sending when the
-// pane shows no input box yet: right after a respawn the agent TUI
-// has not rendered, and text sent then lands in a launch shell or is
-// lost, so the caller must leave the marker unwritten and retry next
-// tick. After sending, a submission that cannot be verified (message
-// still pending, or the box vanished) retries Enter once and then
-// errors, again leaving the marker unwritten.
+// left the input region. Returns (false, nil) without sending when
+// the pane shows no input prompt yet: right after a respawn the agent
+// TUI has not rendered, and text sent then lands in a launch shell or
+// is lost, so the caller must leave the marker unwritten and retry
+// next tick. After sending, a submission that cannot be verified
+// (message still pending, or the prompt vanished) retries Enter once
+// and then errors, again leaving the marker unwritten.
 func sendWakeVerified(session, msg string) (bool, error) {
 	pane, err := capturePane(session)
 	if err != nil {
@@ -228,7 +228,7 @@ func sendWakeVerified(session, msg string) (bool, error) {
 		// Nothing sent; skip and let the next tick retry.
 		return false, nil
 	}
-	if lastInputBox(pane) == "" {
+	if !hasInputPrompt(pane) {
 		return false, nil
 	}
 	if err := exec.Command("tmux", "send-keys", "-t", session, msg).Run(); err != nil {
@@ -257,16 +257,17 @@ func capturePane(session string) (string, error) {
 }
 
 // wakeSubmitted reports whether the capture shows msg cleared from a
-// present input box. Only the last bordered box of the capture is
+// present input region. Only the last prompt region of the capture is
 // scanned: a submitted message is echoed into the transcript above
-// the box and must not count as pending. Both sides are reduced to
-// alphanumerics so box borders, wrapping, and punctuation cannot
-// break the match. A capture with no input box is NOT submitted:
-// post-send it means the TUI redrew into an unrecognisable state, and
-// counting that as success would silently lose the wake.
+// the input line and must not count as pending. Both sides are
+// reduced to alphanumerics so the prompt glyph, wrapping, and
+// punctuation cannot break the match. A capture with no prompt line
+// is NOT submitted: post-send it means the TUI redrew into an
+// unrecognisable state, and counting that as success would silently
+// lose the wake.
 func wakeSubmitted(pane, msg string) bool {
-	box := lastInputBox(pane)
-	if box == "" {
+	region, ok := lastInputRegion(pane)
+	if !ok {
 		return false
 	}
 	frag := alnumOnly(msg)
@@ -276,36 +277,71 @@ func wakeSubmitted(pane, msg string) bool {
 	if frag == "" {
 		return true
 	}
-	return !strings.Contains(alnumOnly(box), frag)
+	return !strings.Contains(alnumOnly(region), frag)
 }
 
 // wakePendingFragLen bounds the message fragment matched against the
-// input box, guarding against the box truncating a long message.
+// input region, guarding against the region truncating a long message.
 const wakePendingFragLen = 24
 
-// lastInputBox returns the contents of the last box-drawing bordered
-// region in a pane capture (the agent TUI's input box sits at the
-// bottom), or "" when no box is present.
-func lastInputBox(pane string) string {
+// inputPromptRune is the prompt character the claude-code TUI draws at
+// the start of its input line. The TUI (>= 2.1.199) renders the input
+// area as plain full-width U+2500 rules around a U+276F prompt line;
+// there are no box-corner glyphs to key on.
+const inputPromptRune = '❯'
+
+// hasInputPrompt reports whether the capture contains a TUI input
+// line. Known limitation: selection dialogs (trust prompt,
+// AskUserQuestion) also render U+276F lines, so a wake fired at a
+// dialog still types into it.
+func hasInputPrompt(pane string) bool {
+	_, ok := lastInputRegion(pane)
+	return ok
+}
+
+// lastInputRegion returns the contents of the TUI input region: the
+// LAST line whose trimmed content starts with the U+276F prompt
+// character, plus any following lines up to the next full-width rule
+// line or end of capture. Taking the last prompt line matters because
+// submitted messages are echoed into the transcript above with the
+// same glyph. Returns ok=false when no prompt line is present.
+func lastInputRegion(pane string) (string, bool) {
 	lines := strings.Split(pane, "\n")
-	top := -1
+	prompt := -1
 	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "╭") {
-			top = i
+		if strings.HasPrefix(strings.TrimSpace(l), string(inputPromptRune)) {
+			prompt = i
 		}
 	}
-	if top == -1 {
-		return ""
+	if prompt == -1 {
+		return "", false
 	}
 	var b strings.Builder
-	for _, l := range lines[top+1:] {
-		if strings.HasPrefix(strings.TrimSpace(l), "╰") {
+	b.WriteString(lines[prompt])
+	b.WriteString("\n")
+	for _, l := range lines[prompt+1:] {
+		if isRuleLine(l) {
 			break
 		}
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return b.String(), true
+}
+
+// isRuleLine reports whether the line is a full-width horizontal rule:
+// non-empty after trimming and made of U+2500 only.
+func isRuleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	for _, r := range line {
+		if r != '─' {
+			return false
+		}
+	}
+	return true
 }
 
 // alnumOnly strips s down to its ASCII letters and digits.
