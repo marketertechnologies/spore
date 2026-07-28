@@ -65,6 +65,36 @@ func TestWrapCap(t *testing.T) {
 	}
 }
 
+func TestForceCap(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want int
+	}{
+		{"override beats tier", Config{ForceOverride: 99000, Tier: "max"}, 99000},
+		{"max tier", Config{Tier: "max"}, DefaultForceMax},
+		{"sub tier", Config{Tier: "pro"}, DefaultForceSub},
+		{"unknown tier", Config{Tier: ""}, DefaultForceSub},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg.Defaults()
+			if got := cfg.ForceCap(); got != tc.want {
+				t.Errorf("ForceCap = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSoftCap(t *testing.T) {
+	if got := (Config{Tier: "max"}).Defaults().SoftCap(); got != 150000 {
+		t.Errorf("max SoftCap = %d, want 150000", got)
+	}
+	if got := (Config{Tier: "pro"}).Defaults().SoftCap(); got != 90000 {
+		t.Errorf("sub SoftCap = %d, want 90000", got)
+	}
+}
+
 func TestCheckSkipsCoordinator(t *testing.T) {
 	stateDir := t.TempDir()
 	cfg := Config{
@@ -217,6 +247,151 @@ func TestCheckWrapOverride(t *testing.T) {
 	}
 	if got.WrapCap != 40000 {
 		t.Errorf("WrapCap = %d, want 40000", got.WrapCap)
+	}
+}
+
+func TestCheckWrapFinishUnitEveryStop(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Inbox:               filepath.Join(dir, "workers", "fu-slug", "inbox"),
+		CoordinatorStateDir: filepath.Join(dir, "coord"),
+		Tier:                "max",
+	}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: transcriptFile})
+	if got.Level != "wrap" {
+		t.Fatalf("Level = %s, want wrap", got.Level)
+	}
+	if !strings.Contains(got.Message, "Do not start new investigations") ||
+		!strings.Contains(got.Message, "Finish the unit currently in flight") {
+		t.Errorf("wrap message must carry finish-unit semantics, got:\n%s", got.Message)
+	}
+	if !strings.Contains(got.Message, `tmux kill-session -t "$(tmux display-message -p '#S')"`) {
+		t.Errorf("wrap message must keep the kill-session command, got:\n%s", got.Message)
+	}
+	again := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: transcriptFile})
+	if !again.ShouldFire || again.Level != "wrap" {
+		t.Errorf("wrap must fire on every Stop, got level=%s fire=%v", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckForceMax(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":196000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Inbox:               filepath.Join(dir, "workers", "force-slug", "inbox"),
+		CoordinatorStateDir: filepath.Join(dir, "coord"),
+		Tier:                "max",
+	}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: transcriptFile})
+	if got.Level != "force" {
+		t.Fatalf("Level = %s, want force", got.Level)
+	}
+	if !got.ShouldFire {
+		t.Error("ShouldFire = false, want true")
+	}
+	if got.ForceCap != DefaultForceMax {
+		t.Errorf("ForceCap = %d, want %d", got.ForceCap, DefaultForceMax)
+	}
+	if !strings.Contains(got.Message, "regardless of") {
+		t.Errorf("force message must demand an unconditional wrap, got:\n%s", got.Message)
+	}
+	again := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: transcriptFile})
+	if !again.ShouldFire || again.Level != "force" {
+		t.Errorf("force must fire on every Stop, got level=%s fire=%v", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckForceSubTier(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":141000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Inbox:               filepath.Join(dir, "workers", "fsub", "inbox"),
+		CoordinatorStateDir: filepath.Join(dir, "coord"),
+		Tier:                "pro",
+	}
+	got := Check(cfg, HookPayload{TranscriptPath: transcriptFile})
+	if got.Level != "force" {
+		t.Fatalf("Level = %s, want force", got.Level)
+	}
+	if got.ForceCap != DefaultForceSub {
+		t.Errorf("ForceCap = %d, want %d", got.ForceCap, DefaultForceSub)
+	}
+}
+
+func TestCheckSoftWarnOncePerSession(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":151000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inbox := filepath.Join(dir, "workers", "soft-slug", "inbox")
+	if err := os.MkdirAll(inbox, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Inbox:               inbox,
+		CoordinatorStateDir: filepath.Join(dir, "coord"),
+		Tier:                "max",
+	}
+	got := Check(cfg, HookPayload{SessionID: "soft-sid", TranscriptPath: transcriptFile})
+	if got.Level != "soft" {
+		t.Fatalf("Level = %s, want soft", got.Level)
+	}
+	if !got.ShouldFire {
+		t.Error("ShouldFire = false, want true on first soft crossing")
+	}
+	if got.SoftCap != 150000 {
+		t.Errorf("SoftCap = %d, want 150000", got.SoftCap)
+	}
+	if !strings.Contains(got.Message, "next natural break") {
+		t.Errorf("soft message must suggest the next natural break, got:\n%s", got.Message)
+	}
+
+	marker := filepath.Join(dir, "workers", "soft-slug", "token-monitor", "soft-sid.soft")
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected soft marker at %s: %v", marker, err)
+	}
+
+	again := Check(cfg, HookPayload{SessionID: "soft-sid", TranscriptPath: transcriptFile})
+	if again.Level != "ok" || again.ShouldFire {
+		t.Errorf("second soft check: level=%s fire=%v, want ok/false", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckTinyOverrideDisablesSoft(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":10000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		Inbox:               filepath.Join(dir, "workers", "tinyo", "inbox"),
+		CoordinatorStateDir: filepath.Join(dir, "coord"),
+		WrapOverride:        20000,
+	}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: transcriptFile})
+	if got.Level != "ok" || got.ShouldFire {
+		t.Errorf("non-positive soft cap must disable the soft band, got level=%s fire=%v", got.Level, got.ShouldFire)
 	}
 }
 
