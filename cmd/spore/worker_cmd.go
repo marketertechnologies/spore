@@ -17,10 +17,13 @@ Usage:
 
 Subcommands:
   token-monitor   Stop-hook: check the worker's context budget and fire
-                  a wrap-up reminder once it crosses the tier-keyed cap.
+                  banded reminders (soft warn, finish-unit wrap, force)
+                  as it crosses the tier-keyed caps.
                   Tier read from $SPORE_ACCOUNT_TIER (defaults to non-max);
                   override per-tier caps with $SPORE_WORKER_TOKEN_WRAP,
-                  $SPORE_WORKER_TOKEN_WRAP_MAX, $SPORE_WORKER_TOKEN_WRAP_SUB.
+                  $SPORE_WORKER_TOKEN_WRAP_MAX, $SPORE_WORKER_TOKEN_WRAP_SUB
+                  and $SPORE_WORKER_TOKEN_FORCE, $SPORE_WORKER_TOKEN_FORCE_MAX,
+                  $SPORE_WORKER_TOKEN_FORCE_SUB.
                   Skips coordinator inboxes (handled by spore coordinator
                   token-monitor) and sessions with no $SPORE_TASK_INBOX.
 `
@@ -56,11 +59,14 @@ func runWorkerTokenMonitor(_ []string) int {
 	}
 
 	cfg := tokenmonitor.Config{
-		Inbox:        os.Getenv("SPORE_TASK_INBOX"),
-		Tier:         os.Getenv("SPORE_ACCOUNT_TIER"),
-		WrapOverride: envInt("SPORE_WORKER_TOKEN_WRAP"),
-		WrapMax:      envInt("SPORE_WORKER_TOKEN_WRAP_MAX"),
-		WrapSub:      envInt("SPORE_WORKER_TOKEN_WRAP_SUB"),
+		Inbox:         os.Getenv("SPORE_TASK_INBOX"),
+		Tier:          os.Getenv("SPORE_ACCOUNT_TIER"),
+		WrapOverride:  envInt("SPORE_WORKER_TOKEN_WRAP"),
+		WrapMax:       envInt("SPORE_WORKER_TOKEN_WRAP_MAX"),
+		WrapSub:       envInt("SPORE_WORKER_TOKEN_WRAP_SUB"),
+		ForceOverride: envInt("SPORE_WORKER_TOKEN_FORCE"),
+		ForceMax:      envInt("SPORE_WORKER_TOKEN_FORCE_MAX"),
+		ForceSub:      envInt("SPORE_WORKER_TOKEN_FORCE_SUB"),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)
