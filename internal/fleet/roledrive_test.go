@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -168,6 +169,7 @@ func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
 
 func TestDriveRoleLoopCachesSpec(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
 	tasksDir := filepath.Join(root, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -254,6 +256,7 @@ func TestDriveRoleLoopColdStartCachesSpec(t *testing.T) {
 // and PhaseDone are the only branches that do not call SpawnRole.
 func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
 	slug := "demo"
 	tasksDir := filepath.Join(root, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
@@ -358,6 +361,7 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 // (nothing in DriveRoleLoop clears it; cleanup belongs to task.Done).
 func TestDriveRoleLoopWritesReadyMarker(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
 	slug := "demo"
 	tasksDir := filepath.Join(root, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
@@ -401,6 +405,189 @@ func TestDriveRoleLoopWritesReadyMarker(t *testing.T) {
 	}
 	if !info.ModTime().Equal(firstMtime) {
 		t.Errorf("ready marker mtime changed on idempotent tick: %v -> %v", firstMtime, info.ModTime())
+	}
+}
+
+// roleLoopTellEnvelope mirrors the tell protocol shape written by
+// hooks.NotifyCoordinatorEvent.
+type roleLoopTellEnvelope struct {
+	Ts     string `json:"ts"`
+	Source string `json:"source"`
+	Body   string `json:"body"`
+}
+
+// readInboxEnvelopes decodes every *.json envelope in the inbox dir
+// proper (the .tmp and read subdirs are excluded by construction: they
+// are directories). A missing inbox counts as empty.
+func readInboxEnvelopes(t *testing.T, inbox string) []roleLoopTellEnvelope {
+	t.Helper()
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read inbox %s: %v", inbox, err)
+	}
+	var envs []roleLoopTellEnvelope
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(inbox, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var env roleLoopTellEnvelope
+		if err := json.Unmarshal(b, &env); err != nil {
+			t.Fatalf("decode %s: %v", e.Name(), err)
+		}
+		envs = append(envs, env)
+	}
+	return envs
+}
+
+// setupRoleLoopDriveFixture pre-creates the role-task dir, worktree
+// dir, and spec cache so DriveRoleLoop skips tmux/git-touching side
+// effects (same shape as the marker tests above). Returns tasksDir.
+func setupRoleLoopDriveFixture(t *testing.T, root, slug string) string {
+	t.Helper()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", slug), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteSpec(root, slug, []byte("pre-existing\n")); err != nil {
+		t.Fatal(err)
+	}
+	return tasksDir
+}
+
+// TestDriveRoleLoopNotifiesCoordinatorOnDone drives a synthetic
+// PhaseDone tree with the coordinator state dir pointed at a temp dir
+// and asserts exactly one tell envelope lands in the project inbox,
+// keyed off the first ready-marker write. A second tick adds none.
+func TestDriveRoleLoopNotifiesCoordinatorOnDone(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	stateDir := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", stateDir)
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{Notes: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship"})
+
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop: %v", err)
+	}
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+
+	inbox := filepath.Join(stateDir, "demo-project", "inbox")
+	envs := readInboxEnvelopes(t, inbox)
+	if len(envs) != 1 {
+		t.Fatalf("inbox envelopes = %d, want 1: %+v", len(envs), envs)
+	}
+	if envs[0].Source != "role-loop" {
+		t.Errorf("source = %q, want %q", envs[0].Source, "role-loop")
+	}
+	if envs[0].Body != "demo: done" {
+		t.Errorf("body = %q, want %q", envs[0].Body, "demo: done")
+	}
+
+	// Second tick: ready marker already present, no new envelope.
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatalf("DriveRoleLoop (idempotent): %v", err)
+	}
+	if envs := readInboxEnvelopes(t, inbox); len(envs) != 1 {
+		t.Errorf("inbox envelopes after second tick = %d, want 1: %+v", len(envs), envs)
+	}
+}
+
+// TestDriveRoleLoopNotifiesCoordinatorOnEscalation is the
+// PhaseEscalated counterpart: one envelope naming the reviewer and
+// round on the first tick, none on the second.
+func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	stateDir := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", stateDir)
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	for i := 1; i <= MaxReviewerRounds; i++ {
+		if err := task.WriteEngineerResponse(root, slug, i, task.EngineerResponse{Notes: "round"}); err != nil {
+			t.Fatal(err)
+		}
+		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
+			Verdict: task.VerdictRequestChanges,
+			Summary: "more work",
+		})
+	}
+
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop: %v", err)
+	}
+	if snap.Phase != PhaseEscalated {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseEscalated)
+	}
+
+	inbox := filepath.Join(stateDir, "demo-project", "inbox")
+	envs := readInboxEnvelopes(t, inbox)
+	if len(envs) != 1 {
+		t.Fatalf("inbox envelopes = %d, want 1: %+v", len(envs), envs)
+	}
+	if envs[0].Source != "role-loop" {
+		t.Errorf("source = %q, want %q", envs[0].Source, "role-loop")
+	}
+	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) + ")"
+	if envs[0].Body != wantBody {
+		t.Errorf("body = %q, want %q", envs[0].Body, wantBody)
+	}
+
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatalf("DriveRoleLoop (idempotent): %v", err)
+	}
+	if envs := readInboxEnvelopes(t, inbox); len(envs) != 1 {
+		t.Errorf("inbox envelopes after second tick = %d, want 1: %+v", len(envs), envs)
+	}
+}
+
+// TestDriveRoleLoopNotifyFailureDoesNotFailDrive points the
+// coordinator state dir under a regular file so the inbox MkdirAll
+// fails, and asserts the drive still succeeds and the ready marker
+// still lands (notification is best-effort).
+func TestDriveRoleLoopNotifyFailureDoesNotFailDrive(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(blocker, "nested"))
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{Notes: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship"})
+
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatalf("DriveRoleLoop with unwritable notify target: %v", err)
+	}
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+	if _, err := os.Stat(filepath.Join(task.RoleTaskDir(root, slug), "state", "ready")); err != nil {
+		t.Errorf("ready marker missing despite notify failure: %v", err)
 	}
 }
 
