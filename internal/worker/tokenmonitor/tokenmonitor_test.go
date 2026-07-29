@@ -395,6 +395,192 @@ func TestCheckTinyOverrideDisablesSoft(t *testing.T) {
 	}
 }
 
+func TestIsRolePane(t *testing.T) {
+	cases := []struct {
+		role string
+		want bool
+	}{
+		{"engineer", true},
+		{"reviewer", true},
+		{"", false},
+		{"qa", false},
+	}
+	for _, tc := range cases {
+		if got := (Config{Role: tc.role}).IsRolePane(); got != tc.want {
+			t.Errorf("IsRolePane(%q) = %v, want %v", tc.role, got, tc.want)
+		}
+	}
+}
+
+// writeTranscript drops a one-line transcript claiming n context
+// tokens and returns its path.
+func writeTranscript(t *testing.T, n string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":` + n + `,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCheckRolePaneWrapEngineer(t *testing.T) {
+	tpath := writeTranscript(t, "190000")
+	cfg := Config{
+		Role:     "engineer",
+		RoleSlug: "eng-slug",
+		TaskDir:  filepath.Join(t.TempDir(), ".spore", "eng-slug"),
+		Tier:     "max",
+	}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: tpath})
+	if got.Level != "wrap" {
+		t.Fatalf("Level = %s, want wrap", got.Level)
+	}
+	if !got.ShouldFire {
+		t.Error("ShouldFire = false, want true")
+	}
+	if got.Slug != "eng-slug" {
+		t.Errorf("Slug = %q, want eng-slug", got.Slug)
+	}
+	for _, want := range []string{
+		"ROLE TOKEN MONITOR (finish-unit)",
+		"Finish the unit currently in flight",
+		"wt/eng-slug",
+		"responses/engineer-round-N.json",
+		"respawns this phase's pane",
+		`tmux kill-session -t "$(tmux display-message -p '#S')"`,
+		"tier=max",
+	} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("wrap message missing %q:\n%s", want, got.Message)
+		}
+	}
+	if strings.Contains(got.Message, "tasks/") {
+		t.Errorf("role message must not point at tasks/<slug>.md:\n%s", got.Message)
+	}
+	again := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: tpath})
+	if !again.ShouldFire || again.Level != "wrap" {
+		t.Errorf("wrap must fire on every Stop, got level=%s fire=%v", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckRolePaneForceReviewer(t *testing.T) {
+	tpath := writeTranscript(t, "196000")
+	cfg := Config{
+		Role:             "reviewer",
+		ReviewerInstance: "B",
+		RoleSlug:         "rev-slug",
+		Tier:             "max",
+	}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: tpath})
+	if got.Level != "force" {
+		t.Fatalf("Level = %s, want force", got.Level)
+	}
+	if !got.ShouldFire {
+		t.Error("ShouldFire = false, want true")
+	}
+	for _, want := range []string{
+		"ROLE TOKEN MONITOR (force)",
+		"regardless of what is in flight",
+		"reviews/B/round-N.json",
+		"respawns this phase's pane",
+	} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("force message missing %q:\n%s", want, got.Message)
+		}
+	}
+	if strings.Contains(got.Message, "Commit in-flight work") {
+		t.Errorf("reviewer message must not carry the engineer commit step:\n%s", got.Message)
+	}
+	if strings.Contains(got.Message, "tasks/") {
+		t.Errorf("role message must not point at tasks/<slug>.md:\n%s", got.Message)
+	}
+}
+
+func TestCheckRolePaneSubTierCaps(t *testing.T) {
+	tpath := writeTranscript(t, "121000")
+	cfg := Config{Role: "engineer", RoleSlug: "s1", Tier: "pro"}
+	got := Check(cfg, HookPayload{TranscriptPath: tpath})
+	if got.Level != "wrap" {
+		t.Fatalf("Level = %s, want wrap", got.Level)
+	}
+	if got.WrapCap != DefaultWrapSub {
+		t.Errorf("WrapCap = %d, want %d", got.WrapCap, DefaultWrapSub)
+	}
+}
+
+func TestCheckRolePaneSoftOncePerSession(t *testing.T) {
+	tpath := writeTranscript(t, "151000")
+	taskDir := filepath.Join(t.TempDir(), ".spore", "soft-slug")
+	cfg := Config{Role: "engineer", RoleSlug: "soft-slug", TaskDir: taskDir, Tier: "max"}
+
+	got := Check(cfg, HookPayload{SessionID: "soft-sid", TranscriptPath: tpath})
+	if got.Level != "soft" {
+		t.Fatalf("Level = %s, want soft", got.Level)
+	}
+	if !got.ShouldFire {
+		t.Error("ShouldFire = false, want true on first soft crossing")
+	}
+	if !strings.Contains(got.Message, "next natural break") {
+		t.Errorf("soft message must suggest the next natural break, got:\n%s", got.Message)
+	}
+
+	marker := filepath.Join(taskDir, "state", "token-monitor", "soft-sid.soft")
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected soft marker at %s: %v", marker, err)
+	}
+
+	again := Check(cfg, HookPayload{SessionID: "soft-sid", TranscriptPath: tpath})
+	if again.Level != "ok" || again.ShouldFire {
+		t.Errorf("second soft check: level=%s fire=%v, want ok/false", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckRolePaneNoTaskDirDisablesSoft(t *testing.T) {
+	tpath := writeTranscript(t, "151000")
+	cfg := Config{Role: "engineer", RoleSlug: "nodir", Tier: "max"}
+	got := Check(cfg, HookPayload{SessionID: "s", TranscriptPath: tpath})
+	if got.Level != "ok" || got.ShouldFire {
+		t.Errorf("soft without a task dir: level=%s fire=%v, want ok/false", got.Level, got.ShouldFire)
+	}
+}
+
+func TestCheckRolePaneSlugFromTaskDir(t *testing.T) {
+	tpath := writeTranscript(t, "50000")
+	cfg := Config{Role: "engineer", TaskDir: "/proj/.spore/derived-slug", Tier: "max"}
+	got := Check(cfg, HookPayload{TranscriptPath: tpath})
+	if got.Slug != "derived-slug" {
+		t.Errorf("Slug = %q, want derived-slug", got.Slug)
+	}
+}
+
+func TestCheckRolePaneMissingSlugSkips(t *testing.T) {
+	cfg := Config{Role: "engineer"}
+	if got := Check(cfg, HookPayload{}); got.Level != "skip" {
+		t.Errorf("Level = %s, want skip without slug", got.Level)
+	}
+}
+
+func TestCheckRolePanePrecedesInheritedInbox(t *testing.T) {
+	tpath := writeTranscript(t, "190000")
+	stateDir := t.TempDir()
+	cfg := Config{
+		Role:                "engineer",
+		RoleSlug:            "inherit-slug",
+		Tier:                "max",
+		Inbox:               filepath.Join(stateDir, "someproject", "inbox"),
+		CoordinatorStateDir: stateDir,
+	}
+	got := Check(cfg, HookPayload{TranscriptPath: tpath})
+	if got.Level != "wrap" {
+		t.Errorf("Level = %s, want wrap (role path must win over inherited inbox)", got.Level)
+	}
+	if !strings.Contains(got.Message, "ROLE TOKEN MONITOR") {
+		t.Errorf("expected role message, got:\n%s", got.Message)
+	}
+}
+
 func TestCheckMissingTranscript(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{

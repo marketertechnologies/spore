@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,38 @@ func TestRoleSpawnSpecReviewerArgs(t *testing.T) {
 		if e := envValue(args, "SPORE_REVIEWER_INSTANCE"); e != string(instance) {
 			t.Errorf("%s SPORE_REVIEWER_INSTANCE = %q, want %q", instance, e, instance)
 		}
+	}
+}
+
+func TestRoleSpawnSpecInjectsAccountTier(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	toml := "[fleet]\naccount_tier = \"max\"\n"
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, spec := range []RoleSpawnSpec{
+		EngineerSpec(root, "feature-x"),
+		ReviewerSpec(root, "feature-x", task.ReviewerA),
+	} {
+		args, err := spec.TmuxArgs()
+		if err != nil {
+			t.Fatalf("TmuxArgs %s: %v", spec.Role, err)
+		}
+		if e := envValue(args, "SPORE_ACCOUNT_TIER"); e != "max" {
+			t.Errorf("%s SPORE_ACCOUNT_TIER = %q, want max", spec.Role, e)
+		}
+	}
+}
+
+func TestRoleSpawnSpecOmitsTierWithoutKnob(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	args, err := EngineerSpec(root, "feature-x").TmuxArgs()
+	if err != nil {
+		t.Fatalf("TmuxArgs: %v", err)
+	}
+	if e := envValue(args, "SPORE_ACCOUNT_TIER"); e != "" {
+		t.Errorf("SPORE_ACCOUNT_TIER = %q, want unset without the knob", e)
 	}
 }
 

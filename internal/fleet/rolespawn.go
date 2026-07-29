@@ -103,6 +103,9 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 		"-e", "SPORE_TASK_DIR=" + taskDir,
 		"-e", "SPORE_ROLE=" + s.Role,
 	}
+	if tier := task.LoadAccountTier(s.ProjectRoot); tier != "" {
+		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+tier)
+	}
 	if s.Role == "reviewer" {
 		args = append(args, "-e", "SPORE_REVIEWER_INSTANCE="+string(s.ReviewerInstance))
 	}
