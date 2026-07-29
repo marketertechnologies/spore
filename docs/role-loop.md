@@ -7,22 +7,29 @@ every command here is safe to re-run.
 
 ## Minting a task
 
-Create `tasks/<slug>.md` as usual (`spore task new`). The frontmatter
-is the standard task set (`status`, `slug`, `title`, `created`,
-`project`); the body below the frontmatter becomes the spec.
+Create `tasks/<slug>.md` with the role opt-in:
 
-Opt-in is the presence of `.spore/<slug>/` on disk. Seed it while the
-task is still a draft (`role-drive` has no status gate):
+    spore task new "<title>" --role
 
-    spore task role-drive <slug>
+The frontmatter is the standard task set (`status`, `slug`, `title`,
+`created`, `project`) plus `loop: role`; the body below the
+frontmatter becomes the spec. When editing a task file by hand, add
+`loop: role` to the frontmatter yourself.
 
 Then flip the frontmatter to `status: active` by editing the file,
 not via `spore task start` (start spawns a homogeneous worker
-session). Order matters: the fleet reconciler skips role-looped slugs
-when minting homogeneous workers, but it detects them by the
-`.spore/<slug>/` dir. An active slug without the dir gets a
-homogeneous worker on the same `wt/<slug>` branch, and that worker
-stays alive once the dir appears. Seed first, activate second.
+session, and refuses on a `loop: role` task). The key makes the
+opt-in atomic with the status flip: the reconciler pass that reacts
+to the file write already sees `loop: role`, never mints a
+homogeneous worker for the slug, and drives the role loop instead.
+No pre-seeding is needed; the first drive tick creates
+`.spore/<slug>/`.
+
+Legacy opt-in: a `.spore/<slug>/` dir on disk also marks the slug
+role-looped, keyed or not. Tasks minted before the `loop:` key relied
+on seeding the dir (`spore task role-drive <slug>`) while the task
+was still a draft; that path still works but is racy if you activate
+before seeding, so prefer the key for new tasks.
 
 `role-drive` is also the manual driver: each run advances the loop by
 one idempotent tick. The reconciler calls the same drive for

@@ -29,6 +29,14 @@ import (
 // SPORE_TASK_DIR at spawn time.
 const RoleTaskRoot = ".spore"
 
+// LoopRole is the frontmatter `loop:` value that opts a task into the
+// role-based loop. Carried in tasks/<slug>.md so the opt-in travels
+// in the same write that flips `status: active`: the fleet reconciler
+// sees both atomically and never homogeneous-spawns the slug, even
+// before `.spore/<slug>/` exists on disk. Dir presence remains the
+// legacy opt-in signal alongside this key.
+const LoopRole = "role"
+
 // IsEscalated reports whether any `state/escalated-*` marker exists
 // under `<roletaskdir>/state/`. The role-loop driver writes one such
 // marker on a PhaseEscalated transition and removes them on the

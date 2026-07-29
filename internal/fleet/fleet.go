@@ -185,13 +185,28 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 	agentCounts := agentCountsFromMetas(metas, runningSet)
 
-	// A task with `.spore/<slug>/` on disk is opted into the role-loop
-	// and owned solely by DriveRoleLoop. The homogeneous spawn below
-	// must skip it: otherwise Reconcile would mint a generic worker at
+	// A task with `loop: role` in its frontmatter or `.spore/<slug>/`
+	// on disk is opted into the role-loop and owned solely by
+	// DriveRoleLoop. The homogeneous spawn below must skip it:
+	// otherwise Reconcile would mint a generic worker at
 	// spore/<project>/<slug> (invisible to runningSet, which only tracks
 	// the spore-role/<project>/ prefix) on top of the role panes that
-	// edit the same wt/<slug> branch.
+	// edit the same wt/<slug> branch. The frontmatter key is the
+	// race-free opt-in: it rides in the same file write that flips
+	// status to active, so the watcher-triggered pass that reacts to
+	// that write already sees it, with no window where the slug looks
+	// generic because the dir has not been seeded yet. Dir presence
+	// stays as the legacy opt-in for tasks seeded by hand.
+	roleLoopKeyed := map[string]bool{}
+	for _, m := range metas {
+		if m.Loop == task.LoopRole {
+			roleLoopKeyed[m.Slug] = true
+		}
+	}
 	isRoleLooped := func(slug string) bool {
+		if roleLoopKeyed[slug] {
+			return true
+		}
 		_, err := os.Stat(task.RoleTaskDir(cfg.ProjectRoot, slug))
 		return err == nil
 	}
@@ -228,9 +243,9 @@ func Reconcile(cfg Config) (Result, error) {
 
 	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
 	// precondition for these slugs (see the homogeneous-spawn skip
-	// above); a task is opted in by the presence of `.spore/<slug>/`
-	// on disk, seeded once by `spore task role-drive <slug>` or by a
-	// coordinator agent.
+	// above) and creates `.spore/<slug>/` itself on the first tick, so
+	// a task opted in via `loop: role` alone starts moving on the same
+	// pass that classified it.
 	for _, slug := range actives {
 		if !isRoleLooped(slug) {
 			continue
