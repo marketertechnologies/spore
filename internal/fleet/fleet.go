@@ -337,16 +337,24 @@ func LoadMaxWorkers(projectRoot string) (int, error) {
 		return DefaultMaxWorkers, fmt.Errorf("fleet: parse %s: %w", tomlPath, err)
 	}
 	if v, ok := overrides["max_workers"]; ok {
-		if v < 1 {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", v)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers: want integer, got %q", v)
 		}
-		return v, nil
+		if n < 1 {
+			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
+		}
+		return n, nil
 	}
 	return DefaultMaxWorkers, nil
 }
 
-func parseFleetTOML(content string) (map[string]int, error) {
-	out := map[string]int{}
+// parseFleetTOML collects the scalar entries of the [fleet] section as
+// raw strings (comments stripped, quotes kept for the caller to strip)
+// so integer knobs (max_workers) and string knobs (account_tier) can
+// share the section.
+func parseFleetTOML(content string) (map[string]string, error) {
+	out := map[string]string{}
 	inFleet := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for lineNum := 1; scanner.Scan(); lineNum++ {
@@ -370,11 +378,7 @@ func parseFleetTOML(content string) (map[string]int, error) {
 		if i := strings.IndexByte(val, '#'); i >= 0 {
 			val = strings.TrimSpace(val[:i])
 		}
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return nil, fmt.Errorf("line %d: key %q: want integer, got %q", lineNum, key, val)
-		}
-		out[key] = n
+		out[key] = val
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

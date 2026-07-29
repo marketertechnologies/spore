@@ -342,6 +342,20 @@ func TestLoadMaxWorkersTOML(t *testing.T) {
 	if got != 7 {
 		t.Errorf("max_workers = %d, want 7", got)
 	}
+
+	// String knobs share the [fleet] section; max_workers must still
+	// parse alongside account_tier.
+	mixed := "[fleet]\naccount_tier = \"max\"\nmax_workers = 5\n"
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LoadMaxWorkers(root)
+	if err != nil {
+		t.Fatalf("LoadMaxWorkers with account_tier: %v", err)
+	}
+	if got != 5 {
+		t.Errorf("max_workers = %d, want 5", got)
+	}
 }
 
 type testDirs struct {

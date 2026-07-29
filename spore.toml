@@ -5,3 +5,9 @@
 # consumers and must stay canonical. The dogfood file carries the
 # project-specific deltas for spore-as-a-project.
 brief = "bootstrap/coordinator/dogfood-role.md"
+
+[fleet]
+# Dogfood host runs a max-tier account: workers get the max-tier token
+# caps (wrap 180k / force 195k) instead of the safer sub-max defaults.
+# Injected into worker sessions as SPORE_ACCOUNT_TIER at spawn.
+account_tier = "max"
