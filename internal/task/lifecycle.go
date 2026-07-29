@@ -49,6 +49,15 @@ func Start(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
+	// A role-looped task must never get the homogeneous worker session
+	// Start spawns: its panes are owned by DriveRoleLoop and share the
+	// same wt/<slug> branch.
+	if m.Loop == LoopRole {
+		return "", fmt.Errorf(
+			"task %s: has loop: role; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
+			slug, slug,
+		)
+	}
 	prev := m.Status
 	switch prev {
 	case "draft", "paused", "blocked":
