@@ -381,13 +381,7 @@ func writeEscalationMarker(projectRoot, slug string, snap Snapshot) (bool, error
 		return false, err
 	}
 	marker := filepath.Join(markerDir, fmt.Sprintf("escalated-%s-%d", snap.CurrentReviewer, snap.ReviewerRound))
-	if _, err := os.Stat(marker); err == nil {
-		return false, nil
-	}
-	if err := os.WriteFile(marker, nil, 0o644); err != nil {
-		return false, err
-	}
-	return true, nil
+	return createMarkerExcl(marker)
 }
 
 // writeReadyMarker drops an idempotent marker at
@@ -402,13 +396,22 @@ func writeReadyMarker(projectRoot, slug string) (bool, error) {
 		return false, err
 	}
 	marker := filepath.Join(markerDir, "ready")
-	if _, err := os.Stat(marker); err == nil {
-		return false, nil
-	}
-	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+	return createMarkerExcl(marker)
+}
+
+// createMarkerExcl creates the marker file with O_EXCL so first
+// creation is atomic: concurrent drives (path-watcher Reconcile plus
+// the replenish hook or the role-drive CLI) cannot both observe
+// "missing" and both claim the once-per-transition notify.
+func createMarkerExcl(marker string) (bool, error) {
+	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
 		return false, err
 	}
-	return true, nil
+	return true, f.Close()
 }
 
 // notifyRoleLoop drops a tell envelope into the coordinator inbox for
