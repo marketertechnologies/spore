@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -96,8 +97,12 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if err := clearEscalationMarkers(projectRoot, slug); err != nil {
 			return snap, fmt.Errorf("drive %s: clear escalation markers: %w", slug, err)
 		}
-		if err := writeReadyMarker(projectRoot, slug); err != nil {
+		created, err := writeReadyMarker(projectRoot, slug)
+		if err != nil {
 			return snap, fmt.Errorf("drive %s: write ready marker: %w", slug, err)
+		}
+		if created {
+			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: done", slug))
 		}
 		// Operator wants the panes torn down once the branch is
 		// ready; leaving them alive only re-spends tokens.
@@ -107,8 +112,13 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	case PhaseEscalated:
 		// Leave panes alive per spec: the operator inspects. Drop a
 		// marker so the waybar chip can surface the escalation.
-		if err := writeEscalationMarker(projectRoot, slug, snap); err != nil {
+		created, err := writeEscalationMarker(projectRoot, slug, snap)
+		if err != nil {
 			return snap, fmt.Errorf("drive %s: write escalation marker: %w", slug, err)
+		}
+		if created {
+			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: escalated (reviewer %s, round %d)",
+				slug, snap.CurrentReviewer, snap.ReviewerRound))
 		}
 	}
 
@@ -357,38 +367,62 @@ func alnumOnly(s string) string {
 
 // writeEscalationMarker drops an idempotent marker at
 // `<roletaskdir>/state/escalated-<reviewer>-<round>` so the waybar
-// chip can surface the escalation. Returns nil when the snapshot
-// lacks a reviewer (defensive: PhaseEscalated always carries one).
-func writeEscalationMarker(projectRoot, slug string, snap Snapshot) error {
+// chip can surface the escalation. Reports whether this call created
+// the marker: the first write is the once-per-transition signal the
+// coordinator notification keys on. Returns (false, nil) when the
+// snapshot lacks a reviewer (defensive: PhaseEscalated always carries
+// one).
+func writeEscalationMarker(projectRoot, slug string, snap Snapshot) (bool, error) {
 	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
-		return nil
+		return false, nil
 	}
 	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return err
+		return false, err
 	}
 	marker := filepath.Join(markerDir, fmt.Sprintf("escalated-%s-%d", snap.CurrentReviewer, snap.ReviewerRound))
 	if _, err := os.Stat(marker); err == nil {
-		return nil
+		return false, nil
 	}
-	return os.WriteFile(marker, nil, 0o644)
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // writeReadyMarker drops an idempotent marker at
 // `<roletaskdir>/state/ready` so the waybar chip can surface
 // ready-to-claim tasks once the role-loop hits PhaseDone. The marker
 // is a singleton (a slug is either ready or not), cleared by
-// task.Done when the operator finalises the task.
-func writeReadyMarker(projectRoot, slug string) error {
+// task.Done when the operator finalises the task. Reports whether
+// this call created the marker (see writeEscalationMarker).
+func writeReadyMarker(projectRoot, slug string) (bool, error) {
 	markerDir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return err
+		return false, err
 	}
 	marker := filepath.Join(markerDir, "ready")
 	if _, err := os.Stat(marker); err == nil {
-		return nil
+		return false, nil
 	}
-	return os.WriteFile(marker, nil, 0o644)
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// notifyRoleLoop drops a tell envelope into the coordinator inbox for
+// this project so the coordinator pane wakes on terminal role-loop
+// transitions instead of polling. Best-effort by design: a failure
+// logs to stderr and never fails the drive. Uses the explicit
+// project-path variant, not NotifyCoordinatorEnv: the envelope must
+// land even when the coordinator's own replenish hook drives the
+// transition (the marker guard upstream already prevents repeats).
+func notifyRoleLoop(projectRoot, body string) {
+	project := filepath.Base(projectRoot)
+	if err := hooks.NotifyCoordinatorEvent(project, "role-loop", body); err != nil {
+		fmt.Fprintf(os.Stderr, "role-loop notify coordinator: %v\n", err)
+	}
 }
 
 // clearEscalationMarkers removes any `escalated-*` files under the
