@@ -76,6 +76,15 @@ All panes run in the task worktree with `SPORE_TASK_DIR` pointing at
 the absolute `.spore/<slug>/` tree, plus `SPORE_TASK_SLUG`,
 `SPORE_PROJECT_ROOT`, `WT_PROJECT`, and `SPORE_ROLE` in the
 environment. Role bodies come from `bootstrap/roles/<role>.md`.
+When `[fleet] account_tier` is set in spore.toml, panes also get
+`SPORE_ACCOUNT_TIER`, and `spore worker token-monitor` meters them
+with the same three bands as workers (soft warn, finish-unit, force)
+at the same tier-keyed caps. The wrap instructions are role-shaped:
+commit in-flight work to the task branch, write the phase artifact
+only if it is complete, then kill the pane session; the drive loop
+respawns the phase's pane on its next tick and it resumes from the
+branch plus artifacts. The soft warn fires once per session via a
+marker at `.spore/<slug>/state/token-monitor/<session_id>.soft`.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
