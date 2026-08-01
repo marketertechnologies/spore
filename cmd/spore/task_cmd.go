@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -37,10 +37,19 @@ Subcommands:
   verify <slug>                Print the evidence verdict for slug.
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
+  status <slug>                Print role-loop phase, round, last verdict.
+  role-drive <slug>            Advance the role-loop by one tick: cache spec,
+                               spawn/reap role panes per phase, wake the
+                               engineer on request_changes, write the summary
+                               on done.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
   --start                      Set status=active and launch agent after creation.
+  --role                       Opt into the role-based loop (writes loop: role).
+                               Activate by editing status to active; the fleet
+                               reconciler drives the loop from there. Not
+                               combinable with --start.
   --body <text>                Inline body text (skips editor).
   --body-stdin                 Read body from stdin (skips editor).
   --needs <slug>               Add a dependency (repeatable).
@@ -85,6 +94,10 @@ func runTask(args []string) error {
 		return runTaskWaybar(rest)
 	case "drift":
 		return runTaskDrift(rest)
+	case "status":
+		return runTaskStatus(rest)
+	case "role-drive":
+		return runTaskRoleDrive(rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", sub, taskUsage)
 	}
@@ -148,7 +161,7 @@ func runTaskMerge(args []string) error {
 }
 
 func runTaskWaybar(_ []string) error {
-	out, err := task.Waybar(resolveTasksDir())
+	out, err := task.Waybar(resolveTasksDir(), resolveProjectRoot())
 	if err != nil {
 		return err
 	}
@@ -156,8 +169,93 @@ func runTaskWaybar(_ []string) error {
 	return err
 }
 
+// resolveProjectRoot returns the absolute project root for callers
+// (waybar/systemd) that may run outside the repo. Priority:
+//  1. SPORE_PROJECT_ROOT env var (explicit override)
+//  2. git root from cwd
+//  3. first entry in ~/.config/wt/projects (fallback for waybar/systemd callers)
+//  4. "" (chip degrades gracefully; escalated/ready counters stay zero)
+func resolveProjectRoot() string {
+	if v := os.Getenv("SPORE_PROJECT_ROOT"); v != "" {
+		return v
+	}
+	if root, err := task.MainRepoRoot(""); err == nil && root != "" {
+		return root
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		data, err := os.ReadFile(filepath.Join(home, ".config", "wt", "projects"))
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				if fi, err := os.Stat(line); err == nil && fi.IsDir() {
+					return line
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func runTaskDrift(_ []string) error {
 	return task.AutoCommitDrift("tasks")
+}
+
+func runTaskStatus(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: spore task status <slug>")
+	}
+	slug := args[0]
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	snap, err := fleet.DeriveSnapshot(projectRoot, slug)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("slug:     %s\n", snap.Slug)
+	fmt.Printf("phase:    %s\n", snap.Phase)
+	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
+	if snap.CurrentReviewer != "" {
+		verdict := snap.LastVerdict
+		if verdict == "" {
+			verdict = "(none)"
+		}
+		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
+			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	}
+	return nil
+}
+
+func runTaskRoleDrive(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: spore task role-drive <slug>")
+	}
+	slug := args[0]
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	tasksDir := resolveTasksDir()
+	snap, err := fleet.DriveRoleLoop(projectRoot, tasksDir, slug)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("slug:     %s\n", snap.Slug)
+	fmt.Printf("phase:    %s\n", snap.Phase)
+	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
+	if snap.CurrentReviewer != "" {
+		verdict := snap.LastVerdict
+		if verdict == "" {
+			verdict = "(none)"
+		}
+		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
+			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	}
+	return nil
 }
 
 func runTaskStart(args []string) error {
@@ -238,6 +336,7 @@ func runTaskNew(args []string) error {
 	bodyStdin := fs.Bool("body-stdin", false, "read body from stdin")
 	bodyText := fs.String("body", "", "inline body text")
 	startFlag := fs.Bool("start", false, "set status=active and launch agent")
+	roleFlag := fs.Bool("role", false, "opt into the role-based loop (writes loop: role)")
 	_ = fs.Bool("draft", true, "set status=draft (default)")
 	editFlag := fs.Bool("edit", false, "force editor open")
 	noEdit := fs.Bool("no-edit", false, "suppress editor")
@@ -248,6 +347,9 @@ func runTaskNew(args []string) error {
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("expected exactly one positional <title>, got %d", fs.NArg())
+	}
+	if *roleFlag && *startFlag {
+		return fmt.Errorf("--role does not combine with --start: start spawns a homogeneous worker session; edit status to active and let the reconciler drive the role loop")
 	}
 	title := fs.Arg(0)
 	if strings.TrimSpace(title) == "" {
@@ -278,12 +380,17 @@ func runTaskNew(args []string) error {
 	}
 
 	project, _ := task.ProjectName("")
+	loop := ""
+	if *roleFlag {
+		loop = task.LoopRole
+	}
 	m := frontmatter.Meta{
 		Status:  "draft",
 		Slug:    slug,
 		Title:   title,
 		Created: time.Now().UTC().Format(time.RFC3339),
 		Project: project,
+		Loop:    loop,
 		Needs:   []string(needs),
 	}
 	out := frontmatter.Write(m, body)
@@ -355,11 +462,7 @@ func resolveTasksDir() string {
 	if v := os.Getenv("SPORE_TASKS_DIR"); v != "" {
 		return v
 	}
-	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		root := strings.TrimSpace(string(out))
-		if i := strings.Index(root, "/.worktrees/"); i >= 0 {
-			root = root[:i]
-		}
+	if root, err := task.MainRepoRoot(""); err == nil && root != "" {
 		return filepath.Join(root, "tasks")
 	}
 	if home, err := os.UserHomeDir(); err == nil {

@@ -50,6 +50,7 @@ func TestCheckHardCap(t *testing.T) {
 	cfg := Config{
 		SoftCap:  150000,
 		HardCap:  190000,
+		ForceCap: 200000,
 		StateDir: stateDir,
 		Inbox:    stateDir,
 	}
@@ -64,7 +65,55 @@ func TestCheckHardCap(t *testing.T) {
 	if result.Ctx != 195000 {
 		t.Errorf("Ctx = %d, want 195000", result.Ctx)
 	}
+	if !strings.Contains(result.Message, "Do not start new investigations") {
+		t.Errorf("hard message must carry finish-unit semantics, got:\n%s", result.Message)
+	}
+	if !strings.Contains(result.Message, "Finish the unit currently in flight") {
+		t.Errorf("hard message must allow finishing the in-flight unit, got:\n%s", result.Message)
+	}
 	assertRespawnPaneMessage(t, result.Message)
+
+	// No marker for the hard band: fires again on the next Stop.
+	again := Check(cfg, HookPayload{SessionID: "test", TranscriptPath: f})
+	if !again.ShouldFire || again.Level != "hard" {
+		t.Errorf("hard must fire on every Stop, got level=%s fire=%v", again.Level, again.ShouldFire)
+	}
+}
+
+func TestCheckForceCap(t *testing.T) {
+	dir := t.TempDir()
+	transcriptDir := filepath.Join(dir, "transcript")
+	os.MkdirAll(transcriptDir, 0o700)
+	f := filepath.Join(transcriptDir, "session.jsonl")
+
+	line := `{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":205000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`
+	os.WriteFile(f, []byte(line+"\n"), 0o644)
+
+	stateDir := filepath.Join(dir, "state")
+	cfg := Config{
+		SoftCap:  150000,
+		HardCap:  190000,
+		ForceCap: 200000,
+		StateDir: stateDir,
+		Inbox:    stateDir,
+	}
+
+	result := Check(cfg, HookPayload{SessionID: "test-force", TranscriptPath: f})
+	if result.Level != "force" {
+		t.Errorf("expected force, got %s", result.Level)
+	}
+	if !result.ShouldFire {
+		t.Error("expected ShouldFire = true")
+	}
+	if !strings.Contains(result.Message, "regardless of") {
+		t.Errorf("force message must demand an unconditional wrap, got:\n%s", result.Message)
+	}
+	assertRespawnPaneMessage(t, result.Message)
+
+	again := Check(cfg, HookPayload{SessionID: "test-force", TranscriptPath: f})
+	if !again.ShouldFire || again.Level != "force" {
+		t.Errorf("force must fire on every Stop, got level=%s fire=%v", again.Level, again.ShouldFire)
+	}
 }
 
 func TestCheckSoftCap(t *testing.T) {
@@ -152,13 +201,47 @@ func TestAppendLedger(t *testing.T) {
 		LedgerFile: ledgerFile,
 	}
 	cfg = cfg.Defaults()
-	appendLedger(cfg, "sess1", 100000, false, false)
+	appendLedger(cfg, "sess1", 100000, false, false, false)
+	appendLedger(cfg, "sess1", 201000, false, false, true)
 
 	content, err := os.ReadFile(ledgerFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(content) == 0 {
-		t.Error("expected ledger content")
+	if !strings.Contains(string(content), `"force_fired":true`) {
+		t.Errorf("expected a force_fired row, got:\n%s", content)
+	}
+}
+
+// LedgerVerdict must read rows written before the force band existed
+// (no force_cap / force_fired keys) and count a force-only firing as a
+// working hook.
+func TestLedgerVerdictOldAndForceRows(t *testing.T) {
+	dir := t.TempDir()
+	ledgerFile := filepath.Join(dir, "ledger.jsonl")
+	rows := "" +
+		// Old-shape row: session crossed soft cap, fired hard. Not broken.
+		`{"ts":"t","session_id":"old-ok","ctx":191000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":true}` + "\n" +
+		// New-shape row: crossed soft cap, only force fired. Not broken.
+		`{"ts":"t","session_id":"force-ok","ctx":201000,"soft_cap":150000,"hard_cap":190000,"force_cap":200000,"soft_fired":false,"hard_fired":false,"force_fired":true}` + "\n"
+	if err := os.WriteFile(ledgerFile, []byte(rows), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if broken, sids := LedgerVerdict(ledgerFile, 150000, 2); broken {
+		t.Errorf("verdict broken=%v (%s), want working hook", broken, sids)
+	}
+
+	// Two trailing signal sessions that never fired anything: broken.
+	rows += `{"ts":"t","session_id":"dead1","ctx":160000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":false}` + "\n"
+	rows += `{"ts":"t","session_id":"dead2","ctx":160000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":false}` + "\n"
+	if err := os.WriteFile(ledgerFile, []byte(rows), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken, sids := LedgerVerdict(ledgerFile, 150000, 2)
+	if !broken {
+		t.Fatal("verdict working, want broken after two silent signal sessions")
+	}
+	if !strings.Contains(sids, "dead1") || !strings.Contains(sids, "dead2") {
+		t.Errorf("broken sessions = %q, want dead1 dead2", sids)
 	}
 }

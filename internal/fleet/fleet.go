@@ -185,8 +185,37 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 	agentCounts := agentCountsFromMetas(metas, runningSet)
 
+	// A task with `loop: role` in its frontmatter or `.spore/<slug>/`
+	// on disk is opted into the role-loop and owned solely by
+	// DriveRoleLoop. The homogeneous spawn below must skip it:
+	// otherwise Reconcile would mint a generic worker at
+	// spore/<project>/<slug> (invisible to runningSet, which only tracks
+	// the spore-role/<project>/ prefix) on top of the role panes that
+	// edit the same wt/<slug> branch. The frontmatter key is the
+	// race-free opt-in: it rides in the same file write that flips
+	// status to active, so the watcher-triggered pass that reacts to
+	// that write already sees it, with no window where the slug looks
+	// generic because the dir has not been seeded yet. Dir presence
+	// stays as the legacy opt-in for tasks seeded by hand.
+	roleLoopKeyed := map[string]bool{}
+	for _, m := range metas {
+		if m.Loop == task.LoopRole {
+			roleLoopKeyed[m.Slug] = true
+		}
+	}
+	isRoleLooped := func(slug string) bool {
+		if roleLoopKeyed[slug] {
+			return true
+		}
+		_, err := os.Stat(task.RoleTaskDir(cfg.ProjectRoot, slug))
+		return err == nil
+	}
+
 	for _, slug := range actives {
 		if runningSet[slug] {
+			continue
+		}
+		if isRoleLooped(slug) {
 			continue
 		}
 		if len(runningSet) >= cfg.MaxWorkers {
@@ -210,6 +239,20 @@ func Reconcile(cfg Config) (Result, error) {
 		res.Spawned = append(res.Spawned, slug)
 		runningSet[slug] = true
 		agentCounts[picked]++
+	}
+
+	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
+	// precondition for these slugs (see the homogeneous-spawn skip
+	// above) and creates `.spore/<slug>/` itself on the first tick, so
+	// a task opted in via `loop: role` alone starts moving on the same
+	// pass that classified it.
+	for _, slug := range actives {
+		if !isRoleLooped(slug) {
+			continue
+		}
+		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
+			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
+		}
 	}
 
 	sort.Strings(res.Spawned)
@@ -309,16 +352,24 @@ func LoadMaxWorkers(projectRoot string) (int, error) {
 		return DefaultMaxWorkers, fmt.Errorf("fleet: parse %s: %w", tomlPath, err)
 	}
 	if v, ok := overrides["max_workers"]; ok {
-		if v < 1 {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", v)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers: want integer, got %q", v)
 		}
-		return v, nil
+		if n < 1 {
+			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
+		}
+		return n, nil
 	}
 	return DefaultMaxWorkers, nil
 }
 
-func parseFleetTOML(content string) (map[string]int, error) {
-	out := map[string]int{}
+// parseFleetTOML collects the scalar entries of the [fleet] section as
+// raw strings (comments stripped, quotes kept for the caller to strip)
+// so integer knobs (max_workers) and string knobs (account_tier) can
+// share the section.
+func parseFleetTOML(content string) (map[string]string, error) {
+	out := map[string]string{}
 	inFleet := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for lineNum := 1; scanner.Scan(); lineNum++ {
@@ -342,11 +393,7 @@ func parseFleetTOML(content string) (map[string]int, error) {
 		if i := strings.IndexByte(val, '#'); i >= 0 {
 			val = strings.TrimSpace(val[:i])
 		}
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			return nil, fmt.Errorf("line %d: key %q: want integer, got %q", lineNum, key, val)
-		}
-		out[key] = n
+		out[key] = val
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

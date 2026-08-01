@@ -212,13 +212,37 @@ func driverToBinary(driver string) string {
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers
 // can pass space-bearing values (e.g. SPORE_AGENT_BINARY="sleep 30")
-// the same way worker spawn does.
+// the same way worker spawn does. The claude CLI needs
+// `--dangerously-skip-permissions` to boot non-interactively and `--`
+// to keep the role body out of flag parsing (matches
+// bootstrap/handover/spore-worker-brief.sh); we inject those flags
+// only for claude-shaped agents so a sleep-based test agent still
+// boots clean.
 func coordinatorShellCommand(agent, rolePath string) string {
 	q := shellSingleQuote(rolePath)
+	cmdWithBody := agent
+	cmdBare := agent
+	if isClaudeAgent(agent) {
+		cmdWithBody = agent + " --dangerously-skip-permissions --"
+		cmdBare = agent + " --dangerously-skip-permissions"
+	}
 	return fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[2]s; fi`,
-		q, agent,
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[3]s; fi`,
+		q, cmdWithBody, cmdBare,
 	)
+}
+
+// isClaudeAgent reports whether the agent string resolves to the
+// claude CLI. The agent value can carry trailing args (sleep 30,
+// codex exec --model ...), so we tokenise and check field 0's
+// basename.
+func isClaudeAgent(agent string) bool {
+	fields := strings.Fields(agent)
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	return base == "claude" || base == "claude-code"
 }
 
 // shellSingleQuote returns s wrapped in single quotes, with embedded

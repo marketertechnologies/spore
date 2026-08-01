@@ -92,23 +92,41 @@ func stateBaseDir() (string, error) {
 // the worktree path and silently rename the project to the worktree
 // slug from any rover cwd.
 func ProjectName(projectRoot string) (string, error) {
-	if projectRoot == "" {
+	root, err := MainRepoRoot(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(root), nil
+}
+
+// MainRepoRoot returns the absolute path of the main repo containing
+// start. When start is inside a linked worktree, this returns the
+// main repo root (not the worktree). Pass "" to use the current
+// working directory. Falls back to start (or cwd) when not a git
+// repo.
+//
+// Resolved via `git rev-parse --git-common-dir`: in a linked worktree
+// the common dir is the main repo's .git path, so dirname yields the
+// main repo root regardless of cwd. Centralised here so callers like
+// the task CLI do not re-roll `strings.Index(p, "/.worktrees/")`.
+func MainRepoRoot(start string) (string, error) {
+	if start == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			return "", err
 		}
-		projectRoot = wd
+		start = wd
 	}
-	if out, err := gitCmd(projectRoot, "rev-parse", "--git-common-dir").Output(); err == nil {
+	if out, err := gitCmd(start, "rev-parse", "--git-common-dir").Output(); err == nil {
 		common := strings.TrimSpace(string(out))
 		if common != "" {
 			if !filepath.IsAbs(common) {
-				common = filepath.Join(projectRoot, common)
+				common = filepath.Join(start, common)
 			}
-			return filepath.Base(filepath.Dir(common)), nil
+			return filepath.Dir(common), nil
 		}
 	}
-	return filepath.Base(projectRoot), nil
+	return start, nil
 }
 
 // CountUnreadInbox returns the number of *.json files sitting at the
