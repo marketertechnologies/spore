@@ -1,0 +1,16 @@
+# Consumer for crm-gateway-ruby-client.
+# target: AGENTS.md
+# target: CLAUDE.md
+core/role
+core/writing-style
+core/tldr-first
+core/ask-via-tool
+core/tier-policy
+core/commits
+core/commit-no-attrib
+core/code-comments
+core/validate-before-report
+core/fetch-files
+core/search-kagi
+core/tmux-api
+?align core/alignment-mode
