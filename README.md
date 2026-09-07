@@ -329,6 +329,8 @@ Main extension points:
   task close gates.
 - [docs/budget.md](docs/budget.md) - rolling Anthropic spend tracking
   and budget advice.
+- [docs/updating-claude-code.md](docs/updating-claude-code.md) - three
+  ways to move claude-code to a newer version on a spore host.
 - [bootstrap/README.md](bootstrap/README.md) - bootstrap layout,
   skills, stage runbooks, and smoke test.
 
