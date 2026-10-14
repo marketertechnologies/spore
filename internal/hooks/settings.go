@@ -20,6 +20,16 @@ type HookBin struct {
 	AsyncRewake bool // long-running hook that wakes the agent on exit 2
 }
 
+// deniedTools lists claude-code native tools blocked in every
+// spore-spawned session. SendMessage is denied so inter-pane
+// messaging flows only through the file-inbox convention
+// (notify-coordinator + watch-inbox), never through claude-code's
+// own agent-to-agent channel. The deny ships as permissions.deny,
+// not the top-level disallowedTools key: on claude-code 2.1.299 the
+// latter is inert (the tool stays loadable), while permissions.deny
+// removes the tool even under --dangerously-skip-permissions.
+var deniedTools = []string{"SendMessage"}
+
 // Settings emits a complete, deterministic settings.json blob for
 // claude-code. The events map keys are hook event names (Stop,
 // Notification, PostToolUse, UserPromptSubmit, PreToolUse, ...).
@@ -46,7 +56,8 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	}
 
 	top := settingsTop{
-		Schema: "https://json.schemastore.org/claude-code-settings.json",
+		Schema:      "https://json.schemastore.org/claude-code-settings.json",
+		Permissions: &settingsPermissions{Deny: deniedTools},
 	}
 	if len(hooksMap) > 0 {
 		top.Hooks = hooksMap
@@ -59,9 +70,16 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	return b, nil
 }
 
+// settingsTop field order is alphabetical by JSON key for
+// deterministic output.
 type settingsTop struct {
-	Schema string                 `json:"$schema"`
-	Hooks  map[string][]hookGroup `json:"hooks,omitempty"`
+	Schema      string                 `json:"$schema"`
+	Hooks       map[string][]hookGroup `json:"hooks,omitempty"`
+	Permissions *settingsPermissions   `json:"permissions,omitempty"`
+}
+
+type settingsPermissions struct {
+	Deny []string `json:"deny"`
 }
 
 type hookGroup struct {
