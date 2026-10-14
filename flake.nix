@@ -19,13 +19,20 @@
       perSystem = flake-utils.lib.eachDefaultSystem (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          # go_1_26 in nixpkgs is 1.26.8, but the GO-2026-66xx
+          # advisories need the 1.26.9 security release, which nixpkgs
+          # has not packaged. go_1_27 (1.27.2) carries the same fixes.
+          # Drop back to pkgs.go / pkgs.buildGoModule once the default
+          # Go moves past these advisories.
+          go = pkgs.go_1_27;
+          buildGoModule = pkgs.buildGo127Module;
           version = pkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION);
           commit =
             if self ? rev then self.rev
             else if self ? dirtyRev then self.dirtyRev
             else "unknown";
 
-          spore = pkgs.buildGoModule {
+          spore = buildGoModule {
             pname = "spore";
             inherit version;
             src = ./.;
@@ -102,8 +109,7 @@
           };
 
           devShells.default = pkgs.mkShell {
-            packages = (with pkgs; [
-              go
+            packages = [ go ] ++ (with pkgs; [
               golangci-lint
               govulncheck
               gopls
@@ -121,7 +127,7 @@
           checks = {
             go-fmt = pkgs.runCommand "spore-go-fmt"
               {
-                nativeBuildInputs = [ pkgs.go ];
+                nativeBuildInputs = [ go ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -136,7 +142,7 @@
             '';
             go-vet = pkgs.runCommand "spore-go-vet"
               {
-                nativeBuildInputs = [ pkgs.go ];
+                nativeBuildInputs = [ go ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -150,7 +156,7 @@
             '';
             golangci-lint = pkgs.runCommand "spore-golangci-lint"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
+                nativeBuildInputs = [ go pkgs.golangci-lint ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -164,7 +170,7 @@
             '';
             go-test = pkgs.runCommand "spore-go-test"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.git pkgs.just ];
+                nativeBuildInputs = [ go pkgs.git pkgs.just ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -178,7 +184,7 @@
             '';
             spore-lint = pkgs.runCommand "spore-lint"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.git ];
+                nativeBuildInputs = [ go pkgs.git ];
               } ''
               cp -r ${./.}/. ./src
               cd src
