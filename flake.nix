@@ -301,7 +301,20 @@
                   postScript = nodes.machine.services.spore-fleet.gracefulDeploy.postScript;
                 in
                 ''
+                  import datetime as dt
+
+                  # Upper bound for user-manager unit probes. Generous
+                  # against slow CI boots, but far below the driver's
+                  # 15 minute default so a real regression fails fast.
+                  USER_UNIT_TIMEOUT = dt.timedelta(seconds=120)
+
                   machine.wait_for_unit("multi-user.target")
+                  # home-manager installs and starts the user units from
+                  # this oneshot (RemainAfterExit) system service. The
+                  # lingered user manager can reach default.target before
+                  # it has run, so wait on it explicitly. systemd escapes
+                  # the hyphen in the username, hence the raw string.
+                  machine.wait_for_unit(r"home-manager-spore\x2dtest.service")
                   machine.wait_for_unit("default.target", user="spore-test")
 
                   # spore-shims activation: every host shim resolves
@@ -324,12 +337,17 @@
                   # without an interactive login.
                   def usercmd(cmd):
                       return f"systemctl --machine=spore-test@.host --user {cmd}"
+                  def user_wait(cmd):
+                      return machine.wait_until_succeeds(
+                          usercmd(cmd), timeout=USER_UNIT_TIMEOUT)
                   # Oneshot; trigger it and assert exit 0 plus that the
-                  # timer + path watchers are active.
-                  machine.succeed(usercmd("start spore-fleet-reconcile-project.service"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-project.timer"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag-project.path"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks-project.path"))
+                  # timer + path watchers are active. Every probe is a
+                  # bounded retry: a one-shot is-active right after boot
+                  # raced user-session startup in CI (exit 3, inactive).
+                  user_wait("start spore-fleet-reconcile-project.service")
+                  user_wait("is-active spore-fleet-reconcile-project.timer")
+                  user_wait("is-active spore-fleet-reconcile-flag-project.path")
+                  user_wait("is-active spore-fleet-reconcile-tasks-project.path")
 
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect
