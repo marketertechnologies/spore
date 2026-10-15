@@ -84,6 +84,25 @@ server. Today:
 Phase 0 cannot start until a VS Code access path exists. Choosing it
 is a privileged host change (operator, `/etc/nixos`).
 
+### Decision (2026-10-15): second unrestricted key
+
+- Operator adds a second laptop key to the spore user's
+  `authorizedKeys` with no `command=` and no `no-port-forwarding`.
+  Pilot keys keep their forced `spore-attach pilot <name>`.
+- `spore-attach` falls through to bash for any `-c` command that is
+  not an attach mode (PR #71, v0.11.0), so Remote-SSH can run its
+  install and start commands.
+- Rejected: a separate editor user (the `~/.claude/ide` lock dir is
+  per-user, which breaks `/ide`), SSH as root (wrong user for `/ide`
+  and file ownership).
+- Open follow-up: the inline `sporeAttach` in
+  `bootstrap/flake/configuration.nix` (used by `spore infect` hosts)
+  lacks the fall-through.
+
+Operator steps before phase 0: generate the laptop key, add it as a
+plain line in the host's spore `authorizedKeys`, rebuild once the
+host's spore input carries v0.11.0, add a `~/.ssh/config` Host entry.
+
 ## Options compared
 
 | | Live diffs before push | Jump to file:line | Cost to operator |
