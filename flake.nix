@@ -278,6 +278,7 @@
                   '';
                   claudeCodePackage = pkgs.writeShellScriptBin "claude" "exit 0";
                   gracefulDeploy.timeout = 5;
+                  tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
                     enable = true;
                     settings = {
@@ -287,6 +288,10 @@
                     credentialFiles.api_key = pkgs.writeText "fake-linear-key" "lin_api_test";
                   };
                 };
+
+                # A host's own tmux.conf lines render after spore's
+                # baseline, so this override must win at runtime.
+                environment.etc."tmux.conf".text = "set -g history-limit 4321\n";
 
                 systemd.tmpfiles.rules = [
                   "d /home/spore-test/project 0750 spore-test users -"
@@ -299,6 +304,8 @@
                 let
                   preScript = nodes.machine.services.spore-fleet.gracefulDeploy.preScript;
                   postScript = nodes.machine.services.spore-fleet.gracefulDeploy.postScript;
+                  tmuxShell = nodes.machine.services.spore-fleet.tmux.defaultShell;
+                  tmux = "${pkgs.tmux}/bin/tmux";
                 in
                 ''
                   import datetime as dt
@@ -332,6 +339,17 @@
                       assert target.startswith("/nix/store/"), \
                           f"{shim} not a /nix/store symlink: {target!r}"
                       machine.succeed(f"test -x /usr/local/bin/{shim}")
+                  # tmux baseline: rendered ahead of host lines, and
+                  # the host's own history-limit wins in a live server.
+                  conf = machine.succeed("cat /etc/tmux.conf")
+                  assert "set -g history-limit 250000" in conf, conf
+                  assert "set -g default-shell ${tmuxShell}" in conf, conf
+                  assert conf.index("250000") < conf.index("4321"), conf
+                  machine.succeed("${tmux} -L t new-session -d")
+                  limit = machine.succeed("${tmux} -L t show-options -gv history-limit").strip()
+                  assert limit == "4321", limit
+                  machine.succeed("${tmux} -L t kill-server")
+
                   # Talk to the lingered user instance via systemctl
                   # --machine so the call uses the right XDG_RUNTIME_DIR
                   # without an interactive login.
