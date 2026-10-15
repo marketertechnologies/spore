@@ -1,4 +1,4 @@
-**Status**: design; phase 0 (manual spike) not started; nothing implemented
+**Status**: design; decisions taken 2026-10-15; phase 0 blocked on SSH access model; nothing implemented
 
 # Editor integration: see and navigate agent work in an IDE
 
@@ -57,6 +57,32 @@ Not documented, must be tested:
   `--dangerously-skip-permissions` (all workers run this way).
 - Opening a file at a line from the CLI. The integration does not
   offer it; problem 2 needs a spore-side mechanism.
+
+## Operator decisions (2026-10-15)
+
+- Editor: desktop VS Code over Remote-SSH (option A).
+- Diffs: watch only. No approval step in the editor; panes stay in
+  bypass mode.
+- Windows: one VS Code window per project.
+- Rollout: pilot the editor rule on the marketer consumer first, not
+  spore and not crm-gateway.
+
+## Blocker: SSH access model (found 2026-10-15)
+
+Operator keys in `/etc/ssh/authorized_keys.d/spore` carry
+`command="/usr/local/bin/spore-attach pilot <name>",no-port-forwarding`,
+and the spore user's login shell is `spore-attach`. Remote-SSH needs
+to run its own install/start commands and to forward a port to its
+server. Today:
+
+- The forced command replaces whatever VS Code asks to run with a
+  tmux attach.
+- `no-port-forwarding` blocks the tunnel to the VS Code server.
+- Even without the forced command, `spore-attach -c "<cmd>"` reshapes
+  argv and exits `unknown mode` for anything that is not an attach.
+
+Phase 0 cannot start until a VS Code access path exists. Choosing it
+is a privileged host change (operator, `/etc/nixos`).
 
 ## Options compared
 
