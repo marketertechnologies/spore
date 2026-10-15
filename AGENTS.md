@@ -79,6 +79,14 @@ The operator is here for product-level decisions (which approach, which tradeoff
 
 Don't summarize the question back. Don't enumerate when one sentence works. Don't preface ("Sure, I can help with..."). The bar: same content, single sentence plus a follow-up offer.
 
+# Diagnosis before proposal
+
+**When reporting a problem, explain it fully and stop.** Cover what is wrong, where it lives, why it happens, and the evidence (command output, log lines, the failing test). Let the operator digest it before you propose anything.
+
+- Do not tack "options" or "next steps" onto a diagnosis. Propose implementation or scope only after the operator reacts.
+- If you already know the fix, say so in one line ("one-line fix in X, say the word") and wait.
+- The diagnosis is the deliverable. Do not apply a fix the operator has not asked for.
+
 # Commits
 
 Commit your own work when a unit lands. Don't ask. Overrides the default harness rule.
@@ -108,6 +116,13 @@ Stating intent ("I'm minting a runner to do X") is fine; stating outcome ("X is 
 Spore self-validates with the same lint set it ships: drift,
 agent mirrors, file-size, comment-noise, em-dash. Run `spore lint` plus
 `go test ./...` before push; both must be green.
+
+# Fix vulns at the root
+
+**When a vuln gate (govulncheck or similar) is red and a real fix exists upstream, fix at the root.** Bump the toolchain, nixpkgs, or the dependency. Do not skip, allowlist, or suppress the gate to get green.
+
+- Fix released upstream but not yet packaged (a Go stdlib advisory whose fix is not in nixpkgs-unstable yet): merging red is allowed. Record the advisory IDs in the PR, then land the bump in a follow-up as soon as it is packaged. Precedent: PRs #34-#38, #65.
+- No real fix upstream: report the advisory IDs and let the operator decide. Do not quietly mute the gate.
 
 # Code comments
 
