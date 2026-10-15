@@ -51,3 +51,19 @@ func TestSporeAttachKeepsAttachModes(t *testing.T) {
 		}
 	}
 }
+
+func TestSporeAttachPipedLoginRunsStdin(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	c := exec.Command(bash, "bootstrap/handover/spore-attach.sh")
+	c.Stdin = strings.NewReader("echo ok\n")
+	out, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run spore-attach: %v, output: %s", err, out)
+	}
+	if !strings.HasSuffix(string(out), "ok\n") {
+		t.Fatalf("output = %q, want trailing %q", out, "ok\n")
+	}
+}

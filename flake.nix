@@ -339,6 +339,10 @@
                       assert target.startswith("/nix/store/"), \
                           f"{shim} not a /nix/store symlink: {target!r}"
                       machine.succeed(f"test -x /usr/local/bin/{shim}")
+                  # A no-command login with piped stdin (VS Code
+                  # Remote-SSH) falls through to bash reading stdin.
+                  out = machine.succeed("echo 'echo ok' | /usr/local/bin/spore-attach")
+                  assert out.strip().endswith("ok"), out
                   # tmux baseline: rendered ahead of host lines, and
                   # the host's own history-limit wins in a live server.
                   conf = machine.succeed("cat /etc/tmux.conf")
