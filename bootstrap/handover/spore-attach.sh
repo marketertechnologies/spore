@@ -25,18 +25,35 @@
 #   tmux attach -d -t spore/<project>/coordinator   # take over
 #   tmux attach -r -t spore/<project>/coordinator   # read-only
 #
-# Detach (Ctrl-b d) ends the SSH session because there is no shell
-# fall-through. To do anything privileged, SSH in as root instead.
+# Detach (Ctrl-b d) ends the SSH session. To do anything privileged,
+# SSH in as root instead.
+#
+# Non-attach commands fall through to bash: when the `-c` string does
+# not start with spore-attach, it runs as `bash -lc "<string>"`. This
+# serves editor keys with no `command=` (VS Code Remote-SSH installs
+# and runs its server this way). Forced-command keys never reach the
+# fall-through: sshd always hands the forced string, not the client's.
 set -e
 
-# When sshd applies a per-key forced command it invokes the login
-# shell as `<shell> -c "<command-string>"`. Reshape argv so the rest
-# of this script can treat it like a direct invocation.
+# sshd invokes the login shell as `<shell> -c "<command-string>"`,
+# both for forced commands and for client-supplied ones.
 if [ "${1:-}" = "-c" ]; then
-    # word-split the forced-command string on purpose
-    # shellcheck disable=SC2086
-    set -- $2
-    shift   # drop the leading script path
+    cmd="${2:-}"
+    first="${cmd#"${cmd%%[![:space:]]*}"}"
+    first="${first%%[[:space:]]*}"
+    case "${first##*/}" in
+        spore-attach|spore-attach.sh)
+            # word-split the attach string on purpose
+            # shellcheck disable=SC2086
+            set -- $cmd
+            shift   # drop the leading script path
+            ;;
+        *)
+            # $BASH is the interpreter running this script; it survives
+            # a minimal sshd PATH on NixOS.
+            exec "${BASH:-bash}" -lc "$cmd"
+            ;;
+    esac
 fi
 
 mode="${1:-coord}"
@@ -67,7 +84,7 @@ EOF
                 ;;
             *)
                 echo "spore-attach: multiple coordinator sessions present:" >&2
-                printf '  %s\n' $sessions >&2
+                printf '%s\n' "$sessions" | sed 's/^/  /' >&2
                 echo "spore-attach: ssh in as root to reconcile." >&2
                 exit 1
                 ;;
