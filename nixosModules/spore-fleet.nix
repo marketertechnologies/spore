@@ -457,183 +457,261 @@ in
         and on a NixOS deployment via this option set.
       '';
     };
+
+    tmux = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = cfg.enable;
+        defaultText = lib.literalExpression "config.services.spore-fleet.enable";
+        description = ''
+          Prepend spore's tmux baseline to `/etc/tmux.conf`: deep
+          scrollback, mouse wheel into copy-mode, Claude Code TUI
+          passthrough and extended keys, and half-page wheel scroll
+          in copy-mode. Lines the host adds to
+          `environment.etc."tmux.conf".text` render after this block,
+          so a host's own `set` lines win.
+        '';
+      };
+
+      historyLimit = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 250000;
+        description = ''
+          Scrollback lines per pane. tmux's own default (2000) loses
+          long agent output. Also seeds `programs.tmux.historyLimit`
+          (at mkDefault) so enabling the stock NixOS tmux module does
+          not reset it to 2000.
+        '';
+      };
+
+      mouse = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Wheel enters copy-mode and pages history. Shift+drag keeps
+          terminal-native selection.
+        '';
+      };
+
+      defaultShell = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = lib.literalExpression ''"''${pkgs.bashInteractive}/bin/bash"'';
+        description = ''
+          Pin tmux's default-shell. Set this when the operator user's
+          login shell is `spore-attach`: tmux otherwise inherits it
+          and mis-parses the `-c CMD` it uses for new panes.
+        '';
+      };
+
+      extraConfig = lib.mkOption {
+        type = lib.types.lines;
+        default = "";
+        description = "Extra tmux lines appended to spore's baseline block.";
+      };
+    };
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = !(cfg.projectRoot != null && cfg.projects != { });
-        message = ''
-          services.spore-fleet: set either `projectRoot` (deprecated)
-          or `projects`, not both. Migrate `projectRoot = X` to
-          `projects.<name>.path = X`.
-        '';
-      }
-      {
-        assertion = effectiveProjects != { };
-        message = ''
-          services.spore-fleet.enable is true but no projects are
-          configured. Set `services.spore-fleet.projects.<name>.path`
-          for each project this fleet should reconcile.
-        '';
-      }
-    ];
+  config = lib.mkMerge [
+    (lib.mkIf cfg.tmux.enable {
+      programs.tmux.historyLimit = lib.mkDefault cfg.tmux.historyLimit;
 
-    warnings = lib.optional (cfg.projectRoot != null) ''
-      services.spore-fleet.projectRoot is deprecated. Migrate to
-      services.spore-fleet.projects.<name>.path. The current value
-      is being surfaced as
-      services.spore-fleet.projects."${baseNameOf (toString cfg.projectRoot)}".path
-      so existing deployments keep working.
-    '';
+      environment.etc."tmux.conf".text = lib.mkBefore (
+        lib.optionalString (cfg.tmux.defaultShell != null) ''
+          set -g default-shell ${cfg.tmux.defaultShell}
+        ''
+        + ''
+          set -g history-limit ${toString cfg.tmux.historyLimit}
+          set -g mouse ${if cfg.tmux.mouse then "on" else "off"}
+          set -g allow-passthrough on
+          set -s extended-keys on
+          set -as terminal-features 'xterm*:extkeys'
+          bind -n S-PageUp copy-mode -eu
+          bind -T copy-mode WheelUpPane send -N25 -X scroll-up
+          bind -T copy-mode WheelDownPane send -N25 -X scroll-down
+          bind -T copy-mode-vi WheelUpPane send -N25 -X scroll-up
+          bind -T copy-mode-vi WheelDownPane send -N25 -X scroll-down
+        ''
+        + cfg.tmux.extraConfig
+      );
+    })
 
-    services.spore-fleet.gracefulDeploy = {
-      preScript = "${preScript}/bin/spore-fleet-graceful-pre";
-      postScript = "${postScript}/bin/spore-fleet-graceful-post";
-    };
+    (lib.mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = !(cfg.projectRoot != null && cfg.projects != { });
+          message = ''
+            services.spore-fleet: set either `projectRoot` (deprecated)
+            or `projects`, not both. Migrate `projectRoot = X` to
+            `projects.<name>.path = X`.
+          '';
+        }
+        {
+          assertion = effectiveProjects != { };
+          message = ''
+            services.spore-fleet.enable is true but no projects are
+            configured. Set `services.spore-fleet.projects.<name>.path`
+            for each project this fleet should reconcile.
+          '';
+        }
+      ];
 
-    # jq + python3 are coordinator/worker workhorses (JSON parsing of
-    # gh, MCP, and settings.json output; ad-hoc one-liners that outgrow
-    # bash). Bundling them with the fleet module means every
-    # spore-managed host has them on PATH without each host pinning its
-    # own systemPackages list.
-    environment.systemPackages = [
-      cfg.shimsPackage
-      pkgs.jq
-      pkgs.python3
-    ];
+      warnings = lib.optional (cfg.projectRoot != null) ''
+        services.spore-fleet.projectRoot is deprecated. Migrate to
+        services.spore-fleet.projects.<name>.path. The current value
+        is being surfaced as
+        services.spore-fleet.projects."${baseNameOf (toString cfg.projectRoot)}".path
+        so existing deployments keep working.
+      '';
 
-    # Wire the pre/post hooks into NixOS system activation so a
-    # `nixos-rebuild switch` (and colmena, which lifts the same
-    # activation flow on the remote) drains workers before the new
-    # systemd-user units load and re-enables the kill-switch after.
-    # The NIXOS_ACTION gate keeps boot-time activation a no-op: there
-    # is nothing to drain on a fresh boot, and disabling the flag
-    # there would leave the reconciler paused until the next deploy.
-    #
-    # spore-shims runs on every activation: it symlinks the six host
-    # shims into /usr/local/bin/ and sweeps any non-symlink left over
-    # from the original `install -m 0755` from `spore infect`.
-    #
-    # spore-migrate runs `spore migrate --auto` as cfg.user on every
-    # activation so pending host-state migrations under
-    # bootstrap/migrations/ converge on `nixos-rebuild switch`. The
-    # engine is idempotent and ledger-gated; failures are suppressed
-    # so a single broken migration cannot brick the rebuild path
-    # (visible in `journalctl -u nixos-activation`). See
-    # docs/migrations.md for the authoring contract.
-    system.activationScripts = lib.mkMerge [
-      {
-        spore-shims = ''
-          install -d -m 0755 /usr/local/bin
-          for f in spore-attach spore-coordinator-launch spore-worker-brief \
-                   spore-fleet-tick spore-greet-coordinator spore-greet-worker; do
-            target="${cfg.shimsPackage}/bin/$f"
-            link="/usr/local/bin/$f"
-            if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
-              rm -f "$link"
-              ln -s "$target" "$link"
-            fi
-          done
-        '';
-        spore-migrate = ''
-          ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
-            ${cfg.package}/bin/spore migrate --auto || \
-            echo "spore migrate: failed (see journal); continuing rebuild" >&2
-        '';
-      }
-      (lib.mkIf cfg.gracefulDeploy.enable {
-        spore-fleet-pre.text = ''
-          case "''${NIXOS_ACTION:-}" in
-            switch|test) ${preScript}/bin/spore-fleet-graceful-pre || true ;;
-          esac
-        '';
-        spore-fleet-post = {
-          deps = [ "spore-fleet-pre" ];
-          text = ''
+      services.spore-fleet.gracefulDeploy = {
+        preScript = "${preScript}/bin/spore-fleet-graceful-pre";
+        postScript = "${postScript}/bin/spore-fleet-graceful-post";
+      };
+
+      # jq + python3 are coordinator/worker workhorses (JSON parsing of
+      # gh, MCP, and settings.json output; ad-hoc one-liners that outgrow
+      # bash). Bundling them with the fleet module means every
+      # spore-managed host has them on PATH without each host pinning its
+      # own systemPackages list.
+      environment.systemPackages = [
+        cfg.shimsPackage
+        pkgs.jq
+        pkgs.python3
+      ];
+
+      # Wire the pre/post hooks into NixOS system activation so a
+      # `nixos-rebuild switch` (and colmena, which lifts the same
+      # activation flow on the remote) drains workers before the new
+      # systemd-user units load and re-enables the kill-switch after.
+      # The NIXOS_ACTION gate keeps boot-time activation a no-op: there
+      # is nothing to drain on a fresh boot, and disabling the flag
+      # there would leave the reconciler paused until the next deploy.
+      #
+      # spore-shims runs on every activation: it symlinks the six host
+      # shims into /usr/local/bin/ and sweeps any non-symlink left over
+      # from the original `install -m 0755` from `spore infect`.
+      #
+      # spore-migrate runs `spore migrate --auto` as cfg.user on every
+      # activation so pending host-state migrations under
+      # bootstrap/migrations/ converge on `nixos-rebuild switch`. The
+      # engine is idempotent and ledger-gated; failures are suppressed
+      # so a single broken migration cannot brick the rebuild path
+      # (visible in `journalctl -u nixos-activation`). See
+      # docs/migrations.md for the authoring contract.
+      system.activationScripts = lib.mkMerge [
+        {
+          spore-shims = ''
+            install -d -m 0755 /usr/local/bin
+            for f in spore-attach spore-coordinator-launch spore-worker-brief \
+                     spore-fleet-tick spore-greet-coordinator spore-greet-worker; do
+              target="${cfg.shimsPackage}/bin/$f"
+              link="/usr/local/bin/$f"
+              if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
+                rm -f "$link"
+                ln -s "$target" "$link"
+              fi
+            done
+          '';
+          spore-migrate = ''
+            ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
+              ${cfg.package}/bin/spore migrate --auto || \
+              echo "spore migrate: failed (see journal); continuing rebuild" >&2
+          '';
+        }
+        (lib.mkIf cfg.gracefulDeploy.enable {
+          spore-fleet-pre.text = ''
             case "''${NIXOS_ACTION:-}" in
-              switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+              switch|test) ${preScript}/bin/spore-fleet-graceful-pre || true ;;
             esac
           '';
-        };
-      })
-    ];
-
-    home-manager.users.${cfg.user} = {
-      systemd.user.services = lib.mapAttrs'
-        (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
-          Unit = {
-            Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
-          };
-          Service = {
-            Type = "oneshot";
-            WorkingDirectory = toString project.path;
-            ExecStart = "${cfg.package}/bin/spore fleet reconcile";
-            Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
-              {
-                SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
-                SPORE_HOST_ID = cfg.hostId;
-                # bashInteractive + coreutils land on PATH so the shims
-                # the reconciler spawns (spore-coordinator-launch,
-                # spore-worker-brief) can resolve `#!/usr/bin/env bash`
-                # and call `cat`/`mkdir`/`tee`/`date` without an
-                # in-shim PATH-augment workaround.
-                PATH = lib.makeBinPath [
-                  cfg.package
-                  cfg.claudeCodePackage
-                  pkgs.bashInteractive
-                  pkgs.coreutils
-                  pkgs.git
-                  pkgs.tmux
-                ];
-              } // matterEnv // cfg.extraEnv
-            );
-            NoNewPrivileges = true;
-            LockPersonality = true;
-            RestrictSUIDSGID = true;
-            ReadWritePaths = [ (toString project.path) ];
-            LoadCredential = lib.mapAttrsToList
-              (n: path: "${n}:${toString path}")
-              (cfg.credentialFiles // matterCredentials);
+          spore-fleet-post = {
+            deps = [ "spore-fleet-pre" ];
+            text = ''
+              case "''${NIXOS_ACTION:-}" in
+                switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+              esac
+            '';
           };
         })
-        effectiveProjects;
+      ];
 
-      systemd.user.timers = lib.mapAttrs'
-        (name: _: lib.nameValuePair "spore-fleet-reconcile-${name}" {
-          Unit.Description = "Periodic spore fleet reconcile [${name}]";
-          Timer = {
-            OnBootSec = "30s";
-            OnUnitInactiveSec = cfg.interval;
-            AccuracySec = "5s";
-            Unit = "spore-fleet-reconcile-${name}.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        })
-        effectiveProjects;
+      home-manager.users.${cfg.user} = {
+        systemd.user.services = lib.mapAttrs'
+          (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
+            Unit = {
+              Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
+            };
+            Service = {
+              Type = "oneshot";
+              WorkingDirectory = toString project.path;
+              ExecStart = "${cfg.package}/bin/spore fleet reconcile";
+              Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
+                {
+                  SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
+                  SPORE_HOST_ID = cfg.hostId;
+                  # bashInteractive + coreutils land on PATH so the shims
+                  # the reconciler spawns (spore-coordinator-launch,
+                  # spore-worker-brief) can resolve `#!/usr/bin/env bash`
+                  # and call `cat`/`mkdir`/`tee`/`date` without an
+                  # in-shim PATH-augment workaround.
+                  PATH = lib.makeBinPath [
+                    cfg.package
+                    cfg.claudeCodePackage
+                    pkgs.bashInteractive
+                    pkgs.coreutils
+                    pkgs.git
+                    pkgs.tmux
+                  ];
+                } // matterEnv // cfg.extraEnv
+              );
+              NoNewPrivileges = true;
+              LockPersonality = true;
+              RestrictSUIDSGID = true;
+              ReadWritePaths = [ (toString project.path) ];
+              LoadCredential = lib.mapAttrsToList
+                (n: path: "${n}:${toString path}")
+                (cfg.credentialFiles // matterCredentials);
+            };
+          })
+          effectiveProjects;
 
-      systemd.user.paths = lib.foldlAttrs
-        (acc: name: project: acc // {
-          "spore-fleet-reconcile-flag-${name}" = {
-            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
-            Path = {
-              PathChanged = "%h/${stateRel}";
+        systemd.user.timers = lib.mapAttrs'
+          (name: _: lib.nameValuePair "spore-fleet-reconcile-${name}" {
+            Unit.Description = "Periodic spore fleet reconcile [${name}]";
+            Timer = {
+              OnBootSec = "30s";
+              OnUnitInactiveSec = cfg.interval;
+              AccuracySec = "5s";
               Unit = "spore-fleet-reconcile-${name}.service";
             };
-            Install.WantedBy = [ "default.target" ];
-          };
+            Install.WantedBy = [ "timers.target" ];
+          })
+          effectiveProjects;
 
-          "spore-fleet-reconcile-tasks-${name}" = {
-            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when tasks/ changes";
-            Path = {
-              PathChanged = "${toString project.path}/tasks";
-              Unit = "spore-fleet-reconcile-${name}.service";
+        systemd.user.paths = lib.foldlAttrs
+          (acc: name: project: acc // {
+            "spore-fleet-reconcile-flag-${name}" = {
+              Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
+              Path = {
+                PathChanged = "%h/${stateRel}";
+                Unit = "spore-fleet-reconcile-${name}.service";
+              };
+              Install.WantedBy = [ "default.target" ];
             };
-            Install.WantedBy = [ "default.target" ];
-          };
-        })
-        { }
-        effectiveProjects;
-    };
-  };
+
+            "spore-fleet-reconcile-tasks-${name}" = {
+              Unit.Description = "Trigger spore-fleet-reconcile [${name}] when tasks/ changes";
+              Path = {
+                PathChanged = "${toString project.path}/tasks";
+                Unit = "spore-fleet-reconcile-${name}.service";
+              };
+              Install.WantedBy = [ "default.target" ];
+            };
+          })
+          { }
+          effectiveProjects;
+      };
+    })
+  ];
 }

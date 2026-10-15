@@ -177,5 +177,15 @@ in
     };
   };
 
+  # spore's tmux baseline (deep scrollback, wheel scroll, Claude Code
+  # TUI compat). Enabled explicitly so it renders even before the
+  # fleet itself is (no --repo at infect time). default-shell is
+  # pinned because spore-attach is the spore user's login shell and
+  # cannot run tmux's `-c CMD` for new panes.
+  services.spore-fleet.tmux = {
+    enable = true;
+    defaultShell = "${pkgs.bashInteractive}/bin/bash";
+  };
+
   system.stateVersion = "24.05";
 }
