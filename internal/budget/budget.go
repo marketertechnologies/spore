@@ -2,21 +2,14 @@
 // sessions for the current user on this host into rolling short (5h)
 // and long (7d) windows.
 //
-// Two collection modes:
+// The primary signal is Anthropic's OAuth /usage endpoint (account-wide,
+// sees every host's claude-code activity). It falls back to
+// ~/.claude/projects/*/*.jsonl cost-weighted transcript aggregation when
+// /usage is unreachable.
 //
-//	subscription  primary signal is Anthropic's OAuth /usage endpoint
-//	              (account-wide, sees every host's claude-code activity).
-//	              Falls back to ~/.claude/projects/*/*.jsonl cost-weighted
-//	              transcript aggregation when /usage is unreachable.
-//	api           short window read from response-header spool
-//	              ($AGENT_BUDGET_STATE_DIR/api-headers.jsonl); long
-//	              window falls back to transcript-est until Anthropic
-//	              exposes a weekly header.
-//
-// Mode is picked from $AGENT_BUDGET_MODE or auto-detected (recent
-// api-headers line wins). State at $AGENT_BUDGET_STATE_DIR/state.json
-// is byte-compatible with the basecamp agent-budget binary so the two
-// can shadow-soak against the same file.
+// State at $AGENT_BUDGET_STATE_DIR/state.json is byte-compatible with
+// the basecamp agent-budget binary so the two can shadow-soak against
+// the same file.
 package budget
 
 import (
@@ -41,8 +34,6 @@ const (
 	defaultLongCap   = 2000.0
 	tightenShortFrac = 0.8
 	tightenLongFrac  = 0.8
-	rationShortFrac  = 0.9
-	rationLongFrac   = 0.9
 	stateFileMode    = 0o600
 	stateDirMode     = 0o700
 )
@@ -70,20 +61,16 @@ type windowState struct {
 	ResetAt         *time.Time `json:"reset_at,omitempty"`
 	MessageCount    int        `json:"message_count"`
 	Source          string     `json:"source,omitempty"`
-	TokensRemaining *int64     `json:"tokens_remaining,omitempty"`
-	TokensLimit     *int64     `json:"tokens_limit,omitempty"`
-	TokensBucket    string     `json:"tokens_bucket,omitempty"`
 }
 
 type state struct {
-	Mode             string                    `json:"mode"`
-	UpdatedAt        time.Time                 `json:"updated_at"`
-	Short            windowState               `json:"short"`
-	Long             windowState               `json:"long"`
-	Advice           string                    `json:"advice"`
-	Cache            map[string]*fileEntry     `json:"cache"`
-	UsageSnapshot    *usageSnapshot            `json:"usage_snapshot,omitempty"`
-	AccountSnapshots map[string]*usageSnapshot `json:"account_snapshots,omitempty"`
+	Mode          string                `json:"mode"`
+	UpdatedAt     time.Time             `json:"updated_at"`
+	Short         windowState           `json:"short"`
+	Long          windowState           `json:"long"`
+	Advice        string                `json:"advice"`
+	Cache         map[string]*fileEntry `json:"cache"`
+	UsageSnapshot *usageSnapshot        `json:"usage_snapshot,omitempty"`
 }
 
 func stateDir() (string, error) {
@@ -174,10 +161,9 @@ func writeState(s *state) error {
 	return os.Rename(tmp, p)
 }
 
-// Refresh recomputes state.json from the configured collection mode.
-// In subscription mode it polls /usage (subject to a freshness gate)
-// and walks ~/.claude/projects/*/*.jsonl as a transcript fallback. In
-// api mode it reads the most recent api-headers.jsonl line.
+// Refresh recomputes state.json. It polls /usage (subject to a
+// freshness gate) and walks ~/.claude/projects/*/*.jsonl as a
+// transcript fallback.
 func Refresh() error {
 	s, err := loadState()
 	if err != nil {
@@ -247,27 +233,13 @@ func Refresh() error {
 
 // usageMinInterval is the minimum gap between successive /usage hits.
 // The Stop hook fires per consumer turn (could be many per minute);
-// dispatcher band decisions tolerate ~minute-old data, and Anthropic
+// coordinator band decisions tolerate ~minute-old data, and Anthropic
 // rate-limits /usage with multi-minute retry-after (observed 429s with
 // retry-after ~280s). Tunable via $AGENT_BUDGET_USAGE_MIN_INTERVAL_SEC
 // for test or operator override.
 const usageMinInterval = 60 * time.Second
 
 func refreshUsageSnapshot(s *state, now time.Time) {
-	mode, err := resolveMode(now)
-	if err != nil {
-		mode = "subscription"
-	}
-	if mode != "subscription" {
-		return
-	}
-
-	storeDir, serr := accountsStoreDir()
-	if serr == nil && hasAccountFiles(storeDir) {
-		refreshAllAccountSnapshots(s, now, storeDir)
-		return
-	}
-
 	if s.UsageSnapshot != nil && !s.UsageSnapshot.Stale {
 		minInterval := usageMinInterval
 		if v := os.Getenv("AGENT_BUDGET_USAGE_MIN_INTERVAL_SEC"); v != "" {
@@ -307,12 +279,11 @@ func Query() error {
 	}
 	computeAggregates(s, now)
 	out := map[string]any{
-		"mode":              s.Mode,
-		"updated_at":        s.UpdatedAt,
-		"short":             s.Short,
-		"long":              s.Long,
-		"advice":            s.Advice,
-		"account_snapshots": s.AccountSnapshots,
+		"mode":       s.Mode,
+		"updated_at": s.UpdatedAt,
+		"short":      s.Short,
+		"long":       s.Long,
+		"advice":     s.Advice,
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -395,42 +366,21 @@ func formatDuration(d time.Duration) string {
 	}
 }
 
-// computeAggregates fills s.Mode / s.Short / s.Long / s.Advice. Mode is
-// resolved per call so the same on-disk cache supports both
-// subscription (transcript-cost-weighted) and api (header-driven short
-// window + transcript-est long window) consumers without a separate
-// state file. Idempotent; safe to run on each query.
+// computeAggregates fills s.Mode / s.Short / s.Long / s.Advice. It
+// prefers the /usage snapshot and falls back to the transcript-cost
+// aggregate. Idempotent; safe to run on each query.
 func computeAggregates(s *state, now time.Time) {
 	short, long := transcriptWindows(s, now)
 
-	mode, err := resolveMode(now)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "spore budget: %v; falling back to subscription\n", err)
-		mode = "subscription"
-	}
-
 	s.UpdatedAt = now
-	s.Mode = mode
+	s.Mode = "subscription"
 
-	switch mode {
-	case "api":
-		shortAPI, ok := apiShortWindow(now)
-		if ok {
-			s.Short = shortAPI
-		} else {
-			s.Short = short.finalize("transcript-est")
-		}
-		s.Long = long.finalize("transcript-est")
-	default:
-		if len(s.AccountSnapshots) > 0 {
-			s.Short, s.Long = aggregateAccountSnapshots(s.AccountSnapshots)
-		} else if s.UsageSnapshot != nil {
-			s.Short = usageWindowState(s.UsageSnapshot.Short, shortWindow, s.UsageSnapshot.Stale)
-			s.Long = usageWindowState(s.UsageSnapshot.Long, longWindow, s.UsageSnapshot.Stale)
-		} else {
-			s.Short = short.finalize("transcript")
-			s.Long = long.finalize("transcript")
-		}
+	if s.UsageSnapshot != nil {
+		s.Short = usageWindowState(s.UsageSnapshot.Short, shortWindow, s.UsageSnapshot.Stale)
+		s.Long = usageWindowState(s.UsageSnapshot.Long, longWindow, s.UsageSnapshot.Stale)
+	} else {
+		s.Short = short.finalize("transcript")
+		s.Long = long.finalize("transcript")
 	}
 	s.Advice = adviceFor(s.Short.Frac, s.Long.Frac)
 }
@@ -461,35 +411,6 @@ func transcriptWindows(s *state, now time.Time) (windowAccum, windowAccum) {
 		}
 	}
 	return short, long
-}
-
-func apiShortWindow(now time.Time) (windowState, bool) {
-	hl, err := readLatestHeaderLine(os.Getenv("AGENT_BUDGET_IDENTITY"))
-	if err != nil || hl == nil {
-		return windowState{}, false
-	}
-	r, ok := parseRateLimitReading(hl.Headers)
-	if !ok {
-		return windowState{}, false
-	}
-	dur := shortWindow
-	if r.ResetAt != nil {
-		left := r.ResetAt.Sub(now)
-		if left > 0 {
-			dur = left
-		}
-	}
-	rem := r.TokensRemaining
-	lim := r.TokensLimit
-	return windowState{
-		DurationSeconds: int(dur.Seconds()),
-		Frac:            r.Frac,
-		ResetAt:         r.ResetAt,
-		Source:          "api-headers",
-		TokensRemaining: &rem,
-		TokensLimit:     &lim,
-		TokensBucket:    r.Bucket,
-	}, true
 }
 
 type windowAccum struct {
@@ -531,9 +452,6 @@ func (a *windowAccum) finalize(source string) windowState {
 }
 
 func adviceFor(shortFrac, longFrac float64) string {
-	if shortFrac >= rationShortFrac || longFrac >= rationLongFrac {
-		return "ration"
-	}
 	if shortFrac >= tightenShortFrac || longFrac >= tightenLongFrac {
 		return "tighten"
 	}
@@ -630,18 +548,11 @@ func costForUsage(model string, u *usageBlock) (cost float64, totalTokens int64)
 	return cost, totalTokens
 }
 
-// bandFor maps a single window's frac to its band. Mirrors the
-// OR-of-windows logic in adviceFor but applied per window so the
-// stop-hook can detect per-window crossings independently.
-func bandFor(frac, tighten, ration float64) string {
-	switch {
-	case frac >= ration:
-		return "ration"
-	case frac >= tighten:
+func bandFor(frac, tighten float64) string {
+	if frac >= tighten {
 		return "tighten"
-	default:
-		return "ok"
 	}
+	return "ok"
 }
 
 func markersDir() (string, error) {
@@ -652,31 +563,14 @@ func markersDir() (string, error) {
 	return filepath.Join(d, "markers"), nil
 }
 
-// updateMarkers reconciles the on-disk per-window-per-band markers
-// with the current band and reports whether this is a fresh crossing
-// for window. Marker invariants:
-//   - band == "ok":      both tighten + ration markers absent.
-//   - band == "tighten": tighten marker present, ration marker absent.
-//   - band == "ration":  both markers present (so a future drop to
-//     tighten does not re-fire the tighten reminder).
-//
-// "Fresh" = the marker for the current band did not exist on entry.
 func updateMarkers(dir, window, band string) (bool, error) {
 	tighten := filepath.Join(dir, window+"-tighten")
-	ration := filepath.Join(dir, window+"-ration")
 	switch band {
 	case "ok":
 		_ = os.Remove(tighten)
-		_ = os.Remove(ration)
 		return false, nil
 	case "tighten":
-		_ = os.Remove(ration)
 		return createMarker(tighten)
-	case "ration":
-		if _, err := createMarker(tighten); err != nil {
-			return false, err
-		}
-		return createMarker(ration)
 	}
 	return false, nil
 }
@@ -695,11 +589,10 @@ func createMarker(path string) (bool, error) {
 
 func reminderTextFor(s *state, band string) string {
 	tail := map[string]string{
-		"tighten": "Defer non-urgent runner starts. Route lightweight turns through a cheaper model. Reserve top-tier models for tool-use loops and code edits.",
-		"ration":  "Stop spawning runners this window. Only spend top-tier model time on turns that genuinely need it. Post the blocker and idle until reset otherwise.",
+		"tighten": "Defer non-urgent worker starts. Route lightweight turns through a cheaper model. Reserve top-tier models for tool-use loops and code edits.",
 	}
-	short := windowFragment("short", s.Short, shortWindow, band, tightenShortFrac, rationShortFrac)
-	long := windowFragment("long", s.Long, longWindow, band, tightenLongFrac, rationLongFrac)
+	short := windowFragment("short", s.Short, shortWindow, band, tightenShortFrac)
+	long := windowFragment("long", s.Long, longWindow, band, tightenLongFrac)
 	return fmt.Sprintf("AGENT BUDGET (%s): %s, %s.\n%s", band, short, long, tail[band])
 }
 
@@ -707,12 +600,9 @@ func reminderTextFor(s *state, band string) string {
 // "(resets in ...)" only when this window is the one that triggered
 // band. Without that gate every reminder would carry two reset hints;
 // the brief prefers the binding window only.
-func windowFragment(label string, w windowState, dur time.Duration, band string, tighten, ration float64) string {
+func windowFragment(label string, w windowState, dur time.Duration, band string, tighten float64) string {
 	binding := false
-	switch band {
-	case "ration":
-		binding = w.Frac >= ration
-	case "tighten":
+	if band == "tighten" {
 		binding = w.Frac >= tighten
 	}
 	if binding {
@@ -722,10 +612,7 @@ func windowFragment(label string, w windowState, dur time.Duration, band string,
 }
 
 // StopHook is the spore-budget Stop-hook entry. It refreshes state,
-// recomputes bands, and returns the desired process exit code:
-//   - 0 silent (no fresh band crossing or band == ok).
-//   - 2 with a reminder line on stderr (fresh crossing into tighten or
-//     ration).
+// recomputes bands, and returns the desired process exit code.
 //
 // Spore does not gate this on an orchestrator-identity env: consumers
 // wire the hook into settings.json only for the agents they want
@@ -751,8 +638,8 @@ func StopHook() int {
 		return 0
 	}
 
-	shortBand := bandFor(s.Short.Frac, tightenShortFrac, rationShortFrac)
-	longBand := bandFor(s.Long.Frac, tightenLongFrac, rationLongFrac)
+	shortBand := bandFor(s.Short.Frac, tightenShortFrac)
+	longBand := bandFor(s.Long.Frac, tightenLongFrac)
 
 	freshShort, _ := updateMarkers(dir, "short", shortBand)
 	freshLong, _ := updateMarkers(dir, "long", longBand)

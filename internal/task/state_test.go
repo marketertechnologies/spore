@@ -128,7 +128,7 @@ func TestProjectNameResolvesMainRepoFromWorktree(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	parent := t.TempDir()
-	main := filepath.Join(parent, "marketercom")
+	main := filepath.Join(parent, "exampleproj")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -143,16 +143,16 @@ func TestProjectNameResolvesMainRepoFromWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectName(worktree): %v", err)
 	}
-	if got != "marketercom" {
-		t.Errorf("ProjectName(worktree) = %q, want %q", got, "marketercom")
+	if got != "exampleproj" {
+		t.Errorf("ProjectName(worktree) = %q, want %q", got, "exampleproj")
 	}
 
 	gotMain, err := ProjectName(main)
 	if err != nil {
 		t.Fatalf("ProjectName(main): %v", err)
 	}
-	if gotMain != "marketercom" {
-		t.Errorf("ProjectName(main) = %q, want %q", gotMain, "marketercom")
+	if gotMain != "exampleproj" {
+		t.Errorf("ProjectName(main) = %q, want %q", gotMain, "exampleproj")
 	}
 
 	t.Chdir(worktree)
@@ -160,8 +160,8 @@ func TestProjectNameResolvesMainRepoFromWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectName(\"\"): %v", err)
 	}
-	if gotCwd != "marketercom" {
-		t.Errorf("ProjectName(\"\") from worktree cwd = %q, want %q", gotCwd, "marketercom")
+	if gotCwd != "exampleproj" {
+		t.Errorf("ProjectName(\"\") from worktree cwd = %q, want %q", gotCwd, "exampleproj")
 	}
 }
 
@@ -170,7 +170,7 @@ func TestStateDirForProjectFromWorktree(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	parent := t.TempDir()
-	main := filepath.Join(parent, "marketercom")
+	main := filepath.Join(parent, "exampleproj")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestStateDirForProjectFromWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StateDirForProject(worktree): %v", err)
 	}
-	want := filepath.Join("/tmp/xdg-spore-test", "spore", "marketercom")
+	want := filepath.Join("/tmp/xdg-spore-test", "spore", "exampleproj")
 	if got != want {
 		t.Errorf("StateDirForProject(worktree) = %q, want %q", got, want)
 	}
@@ -228,113 +228,5 @@ func TestCoordinatorInboxDirForProject(t *testing.T) {
 	want := filepath.Join("/tmp/xdg-spore-test", "spore", "coordinator", "project", "inbox")
 	if got != want {
 		t.Errorf("CoordinatorInboxDirForProject = %q, want %q", got, want)
-	}
-}
-
-func TestDefaultBranchPrefersMain(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-
-	got, err := defaultBranch(repo)
-	if err != nil {
-		t.Fatalf("defaultBranch: %v", err)
-	}
-	if got != "main" {
-		t.Errorf("defaultBranch = %q, want main", got)
-	}
-}
-
-func TestDefaultBranchFallsBackToMaster(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "master")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-
-	got, err := defaultBranch(repo)
-	if err != nil {
-		t.Fatalf("defaultBranch: %v", err)
-	}
-	if got != "master" {
-		t.Errorf("defaultBranch = %q, want master", got)
-	}
-}
-
-func TestDefaultBranchFallsBackToOriginHead(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	// Bare upstream with HEAD on development.
-	upstream := t.TempDir()
-	runGit(t, upstream, "init", "-q", "--bare", "-b", "development")
-	// Local clone: no local main/master, only development.
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "development")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, repo, "remote", "add", "origin", upstream)
-	runGit(t, repo, "push", "-q", "-u", "origin", "development")
-	runGit(t, repo, "remote", "set-head", "origin", "development")
-
-	got, err := defaultBranch(repo)
-	if err != nil {
-		t.Fatalf("defaultBranch: %v", err)
-	}
-	if got != "development" {
-		t.Errorf("defaultBranch = %q, want development", got)
-	}
-}
-
-func TestDefaultBranchFailsWhenNoCandidate(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "feature")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-
-	_, err := defaultBranch(repo)
-	if err == nil {
-		t.Fatal("defaultBranch should fail when no candidate resolves")
-	}
-}
-
-func TestUnmergedCommitsResolvesAgainstOriginHead(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	upstream := t.TempDir()
-	runGit(t, upstream, "init", "-q", "--bare", "-b", "development")
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "development")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
-	runGit(t, repo, "remote", "add", "origin", upstream)
-	runGit(t, repo, "push", "-q", "-u", "origin", "development")
-	runGit(t, repo, "remote", "set-head", "origin", "development")
-	runGit(t, repo, "checkout", "-q", "-b", "wt/x")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feature-1")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feature-2")
-	runGit(t, repo, "checkout", "-q", "development")
-
-	n, err := UnmergedCommits(repo, "wt/x")
-	if err != nil {
-		t.Fatalf("UnmergedCommits: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("UnmergedCommits = %d, want 2", n)
 	}
 }

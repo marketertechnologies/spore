@@ -20,9 +20,9 @@ func TestSettings_GoldenFile(t *testing.T) {
 		},
 	}
 
-	got, err := Settings(events)
+	got, err := SettingsForKind(events, "")
 	if err != nil {
-		t.Fatalf("Settings: %v", err)
+		t.Fatalf("SettingsForKind: %v", err)
 	}
 
 	golden, err := os.ReadFile("testdata/settings.golden.json")
@@ -35,29 +35,29 @@ func TestSettings_GoldenFile(t *testing.T) {
 }
 
 func TestSettings_EmptyEventsOmitHooks(t *testing.T) {
-	got, err := Settings(nil)
+	got, err := SettingsForKind(nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "{\n  \"$schema\": \"https://json.schemastore.org/claude-code-settings.json\"\n}\n"
+	want := "{\n  \"$schema\": \"https://json.schemastore.org/claude-code-settings.json\",\n  \"permissions\": {\n    \"defaultMode\": \"bypassPermissions\"\n  }\n}\n"
 	if string(got) != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 func TestSettings_EmptyBinPathErrors(t *testing.T) {
-	_, err := Settings(map[string][]HookBin{
+	_, err := SettingsForKind(map[string][]HookBin{
 		"Stop": {{Name: "bad"}},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected error for empty BinPath")
 	}
 }
 
 func TestSettings_SingleEvent(t *testing.T) {
-	got, err := Settings(map[string][]HookBin{
+	got, err := SettingsForKind(map[string][]HookBin{
 		"Notification": {{Name: "x", BinPath: "/bin/x"}},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,14 +71,14 @@ func TestSettings_SingleEvent(t *testing.T) {
 }
 
 func TestSettings_AsyncFields(t *testing.T) {
-	got, err := Settings(map[string][]HookBin{
+	got, err := SettingsForKind(map[string][]HookBin{
 		"Stop": {
 			{Name: "watcher", BinPath: "/bin/watch", AsyncRewake: true, Timeout: 604800},
 		},
 		"Notification": {
 			{Name: "notify", BinPath: "/bin/notify", Async: true, Timeout: 10},
 		},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,13 +92,13 @@ func TestSettings_AsyncFields(t *testing.T) {
 }
 
 func TestSettings_Consolidation(t *testing.T) {
-	got, err := Settings(map[string][]HookBin{
+	got, err := SettingsForKind(map[string][]HookBin{
 		"Stop": {
 			{Name: "a", BinPath: "/bin/a"},
 			{Name: "b", BinPath: "/bin/b"},
 			{Name: "c", BinPath: "/bin/c", Matcher: "Write"},
 		},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,12 +114,53 @@ func TestSettings_Consolidation(t *testing.T) {
 	}
 }
 
+func TestSettingsForKind_DropsMismatchedAndKeepsUnscoped(t *testing.T) {
+	events := map[string][]HookBin{
+		"Stop": {
+			{Name: "coord-watch", BinPath: "/bin/coord-watch", Kinds: []string{"coordinator"}},
+			{Name: "worker-token", BinPath: "/bin/worker-token", Kinds: []string{"worker"}},
+			{Name: "lint-noise", BinPath: "/bin/lint-noise"}, // unscoped
+		},
+	}
+
+	cases := []struct {
+		kind         string
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{"coordinator", []string{"/bin/coord-watch", "/bin/lint-noise"}, []string{"/bin/worker-token"}},
+		{"worker", []string{"/bin/worker-token", "/bin/lint-noise"}, []string{"/bin/coord-watch"}},
+		{"operator", []string{"/bin/lint-noise"}, []string{"/bin/coord-watch", "/bin/worker-token"}},
+		{"", []string{"/bin/coord-watch", "/bin/worker-token", "/bin/lint-noise"}, nil},
+	}
+	for _, tc := range cases {
+		got, err := SettingsForKind(events, tc.kind)
+		if err != nil {
+			t.Fatalf("kind=%q: %v", tc.kind, err)
+		}
+		s := string(got)
+		for _, want := range tc.wantContains {
+			if !strings.Contains(s, want) {
+				t.Errorf("kind=%q: missing %q\n%s", tc.kind, want, s)
+			}
+		}
+		for _, absent := range tc.wantAbsent {
+			if strings.Contains(s, absent) {
+				t.Errorf("kind=%q: unexpected %q\n%s", tc.kind, absent, s)
+			}
+		}
+		if strings.Contains(s, `"kinds"`) || strings.Contains(s, `"Kinds"`) {
+			t.Errorf("kind=%q: rendered output leaks Kinds field\n%s", tc.kind, s)
+		}
+	}
+}
+
 func TestSettings_UserPromptSubmit(t *testing.T) {
-	got, err := Settings(map[string][]HookBin{
+	got, err := SettingsForKind(map[string][]HookBin{
 		"UserPromptSubmit": {
 			{Name: "feedback", BinPath: "/bin/feedback", Timeout: 5},
 		},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

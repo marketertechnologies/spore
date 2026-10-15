@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -21,23 +21,18 @@ import (
 // drive the Sync paths. State and issues are mutable so a test can
 // verify a transition mutation actually moved the issue.
 type stubLinear struct {
-	t        *testing.T
-	team     string
-	states   map[string]string // name -> id
-	issues   map[string]*stubIssue
-	comments map[string][]stubComment // identifier -> comments, oldest first
-	calls    int
-}
-
-// stubComment is the test-side shape of a Linear comment. Identifier
-// keys the parent issue (matches comments map). CreatedAt is the
-// server-side timestamp the cursor compares against.
-type stubComment struct {
-	ID         string
-	Body       string
-	URL        string
-	AuthorName string
-	CreatedAt  time.Time
+	t               *testing.T
+	team            string
+	states          map[string]string // name -> id
+	issues          map[string]*stubIssue
+	calls           int
+	lastIssuesQuery string
+	// actorID is what the viewer query returns; lastDelegateID and
+	// lastAssigneeID record what the most recent issueUpdate carried, so
+	// a delegate test can assert delegateId is set and assigneeId is not.
+	actorID        string
+	lastDelegateID string
+	lastAssigneeID string
 }
 
 type stubIssue struct {
@@ -48,6 +43,22 @@ type stubIssue struct {
 	URL         string
 	StateID     string
 	SortOrder   float64
+	Labels      []string
+	Relations   []stubRelation
+	// DelegateID, when non-empty, populates `delegate { id }` in the
+	// issues query response. Lets tests assert the read-side delegate
+	// gate skips undelegated issues and adopts delegated ones.
+	DelegateID string
+}
+
+// stubRelation mirrors an IssueRelation node. RelatedStateType is
+// Linear's state.type enum value (e.g. "started", "completed"); the
+// stub keeps a flat shape and embeds it directly rather than chasing
+// IDs through stub.issues.
+type stubRelation struct {
+	Type             string
+	RelatedID        string
+	RelatedStateType string
 }
 
 func newStub(t *testing.T) *stubLinear {
@@ -60,8 +71,7 @@ func newStub(t *testing.T) *stubLinear {
 			"In Progress": "state-doing",
 			"Done":        "state-done",
 		},
-		issues:   map[string]*stubIssue{},
-		comments: map[string][]stubComment{},
+		issues: map[string]*stubIssue{},
 	}
 }
 
@@ -117,12 +127,15 @@ func (s *stubLinear) handler() http.HandlerFunc {
 		switch {
 		case strings.Contains(body.Query, "workflowStates"):
 			s.respondStates(w)
+		case strings.Contains(body.Query, "viewer"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"viewer": map[string]any{"id": s.actorID}},
+			})
 		case strings.Contains(body.Query, "issueUpdate"):
 			s.respondIssueUpdate(w, body.Variables)
 		case strings.Contains(body.Query, "issues("):
+			s.lastIssuesQuery = body.Query
 			s.respondIssues(w, body.Variables)
-		case strings.Contains(body.Query, "IssueComments"):
-			s.respondComments(w, body.Variables)
 		default:
 			http.Error(w, "unrecognised query: "+body.Query, http.StatusBadRequest)
 		}
@@ -149,23 +162,62 @@ func (s *stubLinear) respondStates(w http.ResponseWriter) {
 
 func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 	stateID, _ := vars["stateId"].(string)
+	label, _ := vars["label"].(string)
+	type stateNode struct {
+		Type string `json:"type"`
+	}
+	type relatedIssue struct {
+		ID    string    `json:"id"`
+		State stateNode `json:"state"`
+	}
+	type relation struct {
+		Type         string       `json:"type"`
+		RelatedIssue relatedIssue `json:"relatedIssue"`
+	}
+	type relations struct {
+		Nodes []relation `json:"nodes"`
+	}
+	type actor struct {
+		ID string `json:"id"`
+	}
 	type node struct {
-		ID          string  `json:"id"`
-		Identifier  string  `json:"identifier"`
-		Title       string  `json:"title"`
-		Description string  `json:"description"`
-		URL         string  `json:"url"`
-		SortOrder   float64 `json:"sortOrder"`
+		ID          string    `json:"id"`
+		Identifier  string    `json:"identifier"`
+		Title       string    `json:"title"`
+		Description string    `json:"description"`
+		URL         string    `json:"url"`
+		SortOrder   float64   `json:"sortOrder"`
+		Relations   relations `json:"relations"`
+		Delegate    *actor    `json:"delegate"`
 	}
 	var nodes []node
 	for _, iss := range s.issues {
 		if iss.StateID != stateID {
 			continue
 		}
+		if label != "" && !slices.Contains(iss.Labels, label) {
+			continue
+		}
+		rels := make([]relation, 0, len(iss.Relations))
+		for _, r := range iss.Relations {
+			rels = append(rels, relation{
+				Type: r.Type,
+				RelatedIssue: relatedIssue{
+					ID:    r.RelatedID,
+					State: stateNode{Type: r.RelatedStateType},
+				},
+			})
+		}
+		var del *actor
+		if iss.DelegateID != "" {
+			del = &actor{ID: iss.DelegateID}
+		}
 		nodes = append(nodes, node{
 			ID: iss.ID, Identifier: iss.Identifier, Title: iss.Title,
 			Description: iss.Description, URL: iss.URL,
 			SortOrder: iss.SortOrder,
+			Relations: relations{Nodes: rels},
+			Delegate:  del,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Identifier < nodes[j].Identifier })
@@ -180,6 +232,8 @@ func (s *stubLinear) respondIssues(w http.ResponseWriter, vars map[string]any) {
 func (s *stubLinear) respondIssueUpdate(w http.ResponseWriter, vars map[string]any) {
 	id, _ := vars["id"].(string)
 	stateID, _ := vars["stateId"].(string)
+	s.lastDelegateID, _ = vars["delegateId"].(string)
+	s.lastAssigneeID, _ = vars["assigneeId"].(string)
 	iss, ok := s.issues[id]
 	if !ok {
 		// adoptIssue passes the human identifier (e.g. MAR-12) when
@@ -195,47 +249,6 @@ func (s *stubLinear) respondIssueUpdate(w http.ResponseWriter, vars map[string]a
 	resp := map[string]any{
 		"data": map[string]any{
 			"issueUpdate": map[string]any{"success": true},
-		},
-	}
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// respondComments serves the IssueComments query the comment-projection
-// path issues. The test sets s.comments[<identifier>] to the comments
-// it wants returned for a given ticket, so production code's
-// fetchComments($id, $since) returns only the comments with
-// CreatedAt strictly greater than $since.
-func (s *stubLinear) respondComments(w http.ResponseWriter, vars map[string]any) {
-	id, _ := vars["id"].(string)
-	sinceStr, _ := vars["since"].(string)
-	since, _ := time.Parse(time.RFC3339Nano, sinceStr)
-
-	type user struct {
-		Name string `json:"name"`
-	}
-	type node struct {
-		ID        string    `json:"id"`
-		Body      string    `json:"body"`
-		URL       string    `json:"url"`
-		CreatedAt time.Time `json:"createdAt"`
-		User      user      `json:"user"`
-	}
-	var nodes []node
-	for _, c := range s.comments[id] {
-		if !since.IsZero() && !c.CreatedAt.After(since) {
-			continue
-		}
-		nodes = append(nodes, node{
-			ID: c.ID, Body: c.Body, URL: c.URL,
-			CreatedAt: c.CreatedAt,
-			User:      user{Name: c.AuthorName},
-		})
-	}
-	resp := map[string]any{
-		"data": map[string]any{
-			"issue": map[string]any{
-				"comments": map[string]any{"nodes": nodes},
-			},
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
@@ -258,7 +271,7 @@ func newSource(t *testing.T, srvURL string) *Source {
 	return src
 }
 
-func TestSyncProjectsTasksWithoutFlippingState(t *testing.T) {
+func TestSyncCreatesTasksAndPushesReady(t *testing.T) {
 	stub := newStub(t)
 	stub.addReady("issue-uuid-1", "MAR-12", "Wire up onboarding email", "Send welcome email on signup.")
 	stub.addReady("issue-uuid-2", "MAR-13", "Crash on empty cart", "Repro: open cart without items.")
@@ -277,13 +290,9 @@ func TestSyncProjectsTasksWithoutFlippingState(t *testing.T) {
 		t.Errorf("Sync = (created=%d, updated=%d), want (2, 0)", created, updated)
 	}
 
-	// Sync MUST leave Linear state alone: the rover-claim signal
-	// (OnSpawn) owns the Ready -> In Progress transition. A pre-
-	// MCOM-85 Sync flipped issues here at projection time and the
-	// kanban no longer matched reality.
 	for id, iss := range stub.issues {
-		if iss.StateID != stub.states["Ready"] {
-			t.Errorf("issue %s state = %s, want Ready (Sync must not flip)", id, iss.StateID)
+		if iss.StateID != stub.states["In Progress"] {
+			t.Errorf("issue %s state = %s, want In Progress", id, iss.StateID)
 		}
 	}
 
@@ -450,113 +459,6 @@ func TestSyncPushesDoneTasks(t *testing.T) {
 	}
 }
 
-func TestSyncRecognisesLegacyLinearKey(t *testing.T) {
-	stub := newStub(t)
-	iss := stub.addReady("issue-uuid-8", "MAR-30", "Legacy task", "")
-	iss.StateID = stub.states["In Progress"]
-
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	root := t.TempDir()
-	tasksDir := filepath.Join(root, "tasks")
-	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Pre-rename frontmatter shape: only the legacy `linear:` key.
-	m := frontmatter.Meta{
-		Status: "done", Slug: "legacy-task", Title: "Legacy task",
-		Extra: map[string]string{"linear": "MAR-30"},
-	}
-	if err := os.WriteFile(filepath.Join(tasksDir, "legacy-task.md"),
-		frontmatter.Write(m, []byte("\nbody\n")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	src := newSource(t, srv.URL)
-	if _, _, err := src.Sync(context.Background(), root); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	if iss.StateID != stub.states["Done"] {
-		t.Errorf("legacy task should have pushed Done, got state %q", iss.StateID)
-	}
-}
-
-func TestOnSpawnFlipsReadyToInProgress(t *testing.T) {
-	stub := newStub(t)
-	iss := stub.addReady("issue-uuid-50", "MAR-50", "Claim me", "")
-
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	src := newSource(t, srv.URL)
-	err := src.OnSpawn(context.Background(), "claim-me", map[string]string{
-		matter.MatterKey:   "linear",
-		matter.MatterIDKey: "MAR-50",
-	})
-	if err != nil {
-		t.Fatalf("OnSpawn: %v", err)
-	}
-	if iss.StateID != stub.states["In Progress"] {
-		t.Errorf("OnSpawn should have flipped issue to In Progress, got state %q", iss.StateID)
-	}
-}
-
-func TestOnSpawnIdempotentForAlreadyInProgress(t *testing.T) {
-	stub := newStub(t)
-	iss := stub.addReady("issue-uuid-51", "MAR-51", "Already claimed", "")
-	iss.StateID = stub.states["In Progress"]
-
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	src := newSource(t, srv.URL)
-	err := src.OnSpawn(context.Background(), "already-claimed", map[string]string{
-		matter.MatterKey:   "linear",
-		matter.MatterIDKey: "MAR-51",
-	})
-	if err != nil {
-		t.Fatalf("OnSpawn (idempotent): %v", err)
-	}
-	if iss.StateID != stub.states["In Progress"] {
-		t.Errorf("issue should remain In Progress, got %q", iss.StateID)
-	}
-}
-
-func TestOnSpawnIgnoresUnrelatedMatter(t *testing.T) {
-	stub := newStub(t)
-	stub.addReady("issue-uuid-52", "MAR-52", "Wrong adapter", "")
-
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	src := newSource(t, srv.URL)
-	err := src.OnSpawn(context.Background(), "wrong-adapter", map[string]string{
-		matter.MatterKey:   "jira",
-		matter.MatterIDKey: "MAR-52",
-	})
-	if err != nil {
-		t.Fatalf("OnSpawn: %v", err)
-	}
-	if stub.calls != 0 {
-		t.Errorf("OnSpawn should make 0 GraphQL calls when matter != linear, got %d", stub.calls)
-	}
-}
-
-func TestOnSpawnNoOpWithoutID(t *testing.T) {
-	stub := newStub(t)
-	srv := httptest.NewServer(stub.handler())
-	defer srv.Close()
-
-	src := newSource(t, srv.URL)
-	if err := src.OnSpawn(context.Background(), "no-id", map[string]string{}); err != nil {
-		t.Fatalf("OnSpawn: %v", err)
-	}
-	if stub.calls != 0 {
-		t.Errorf("want 0 calls, got %d", stub.calls)
-	}
-}
-
 func TestOnDonePushesImmediately(t *testing.T) {
 	stub := newStub(t)
 	iss := stub.addReady("issue-uuid-9", "MAR-42", "Ship matter plugin", "")
@@ -677,17 +579,143 @@ func TestParseConfigDefaultsAndValidation(t *testing.T) {
 	if cfg.ReadyState != "Ready" || cfg.DoneState != "Done" {
 		t.Errorf("defaults not applied: %#v", cfg)
 	}
+	if cfg.ClaimLabel != "" {
+		t.Errorf("claim_label should default to empty, got %q", cfg.ClaimLabel)
+	}
+
+	// explicit claim_label is parsed through
+	cfg2, err := parseConfig(matter.Config{
+		Name: "linear",
+		Options: map[string]string{
+			"team":        "MAR",
+			"api_key_env": "LINEAR_API_KEY",
+			"claim_label": "team-foo",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.ClaimLabel != "team-foo" {
+		t.Errorf("claim_label not parsed: %#v", cfg2)
+	}
+}
+
+// TestSyncResumesMatterBlockedTaskOnReady exercises the edge-triggered
+// resume: a local task carrying a matter-set blocker flips back to
+// active when its linked ticket returns to Ready.
+func TestSyncResumesMatterBlockedTaskOnReady(t *testing.T) {
+	stub := newStub(t)
+	stub.addReady("issue-uuid-50", "MAR-77", "Resume me", "Was paused, now back.")
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := frontmatter.Meta{
+		Status: "blocked", Slug: "resume-me", Title: "Resume me",
+		Extra: map[string]string{
+			matter.MatterKey:   "linear",
+			matter.MatterIDKey: "MAR-77",
+			"blocker":          "matter:Done",
+		},
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "resume-me.md"),
+		frontmatter.Write(m, []byte("\nbody\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := newSource(t, srv.URL)
+	created, updated, err := src.Sync(context.Background(), root)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if created != 0 {
+		t.Errorf("created = %d, want 0 (task already exists)", created)
+	}
+	if updated != 1 {
+		t.Errorf("updated = %d, want 1 (one resume)", updated)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tasksDir, "resume-me.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.Status != "active" {
+		t.Errorf("status = %q, want active", m2.Status)
+	}
+	if _, ok := m2.Extra["blocker"]; ok {
+		t.Errorf("blocker still set: %q", m2.Extra["blocker"])
+	}
+}
+
+// TestSyncDoesNotStompOperatorBlocker locks in the stickiness side:
+// a blocker without the matter: prefix is operator-owned and matter
+// projection must leave the task alone even when its ticket sits in
+// Ready upstream.
+func TestSyncDoesNotStompOperatorBlocker(t *testing.T) {
+	stub := newStub(t)
+	stub.addReady("issue-uuid-51", "MAR-78", "Stay blocked", "")
+
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := frontmatter.Meta{
+		Status: "blocked", Slug: "stay-blocked", Title: "Stay blocked",
+		Extra: map[string]string{
+			matter.MatterKey:   "linear",
+			matter.MatterIDKey: "MAR-78",
+			"blocker":          "manual-investigation",
+		},
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "stay-blocked.md"),
+		frontmatter.Write(m, []byte("\nbody\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := newSource(t, srv.URL)
+	if _, updated, err := src.Sync(context.Background(), root); err != nil {
+		t.Fatalf("Sync: %v", err)
+	} else if updated != 0 {
+		t.Errorf("updated = %d, want 0 (operator blocker must stick)", updated)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tasksDir, "stay-blocked.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", m2.Status)
+	}
+	if m2.Extra["blocker"] != "manual-investigation" {
+		t.Errorf("blocker = %q, want manual-investigation", m2.Extra["blocker"])
+	}
 }
 
 func TestRegisteredViaInit(t *testing.T) {
-	found := false
-	for _, n := range matter.Registered() {
-		if n == "linear" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("linear should self-register via init(); registered = %v", matter.Registered())
+	// The adapter self-registers under "linear" from init(). Resolve it
+	// through the registry: FromConfig looks the factory up before
+	// invoking it, so a missing registration surfaces as a
+	// "no adapter registered" error. Any other outcome (success, or a
+	// factory-level config error) proves the name was registered.
+	_, err := matter.FromConfig([]matter.Config{{Name: "linear", Enabled: true}})
+	if err != nil && strings.Contains(err.Error(), "no adapter registered") {
+		t.Errorf("linear should self-register via init(): %v", err)
 	}
 }

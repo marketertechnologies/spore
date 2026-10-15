@@ -4,18 +4,68 @@ let
   cfg = config.services.spore-fleet;
   stateRel = ".local/state/spore/fleet-enabled";
 
-  # effectiveProjects collapses the legacy single-project schema and
-  # the multi-project schema into one attrset of { <name> = { path }; }.
-  # When cfg.projectRoot is set (deprecated), it surfaces under its
-  # basename so existing consumers keep working without renames.
-  # Otherwise cfg.projects is used directly. The assertion below
-  # guarantees at most one of the two is in effect at a time.
-  effectiveProjects =
-    if cfg.projectRoot != null
-    then { ${baseNameOf (toString cfg.projectRoot)} = { path = cfg.projectRoot; }; }
-    else cfg.projects;
+  # PATH for the fleet units and the coordinator / worker agent sessions
+  # they spawn. claude-code shells out to grep / sed / awk / ripgrep /
+  # find on startup and for its search tools; without them on PATH the
+  # agent exits before its tmux session settles ("died on spawn"). spore
+  # + claude-code + bash + the standard userland is the minimum a spawned
+  # agent needs. Workers inherit this via the coordinator's tmux session.
+  fleetBinPath = lib.makeBinPath [
+    cfg.package
+    cfg.claudeCodePackage
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.gawk
+    pkgs.ripgrep
+    pkgs.findutils
+    pkgs.which
+    pkgs.git
+    pkgs.tmux
+    # Frequently reached for by hooks, the dogfood role, and ad-hoc
+    # operator one-liners. perl was the original SessionStart hook
+    # interpreter; jq parses MCP / gh / settings.json output; python3
+    # backs ad-hoc data work; go + just are the project's dev shell.
+    pkgs.perl
+    pkgs.jq
+    pkgs.python3
+    pkgs.go
+    pkgs.just
+    # gh: GitHub CLI for issue / PR / API access. curl: HTTP probes
+    # against Linear, GitHub, and other matter backends. openssh:
+    # ssh + scp for clone / fetch / push from inside the spawned
+    # agent shell. openssl: RS256-signs the GitHub App JWT in the
+    # installation-token refresh recipe (a coordinator credential hot
+    # path). All four are coordinator + worker hot paths.
+    pkgs.gh
+    pkgs.curl
+    pkgs.openssh
+    pkgs.openssl
+    # systemd: systemctl + journalctl so a coordinator can inspect its
+    # own units before reporting their state (validate-before-reporting).
+    pkgs.systemd
+    # Build / validation toolchain. CLAUDE.md tells workers to run
+    # `go test ./<pkg>`, `just test`, `just lint`, `just check`
+    # directly; without these on PATH those commands fail. gcc backs
+    # cgo (`go build/test` errors `cgo: C compiler "gcc" not found`
+    # otherwise); golangci-lint + govulncheck back `just lint` /
+    # `just vuln`; nix backs `just check` (`nix develop -c just check`)
+    # and `spore audit-versions`. The flake devShell carries the same
+    # set, but a worker reaching for a bare `go test` is not inside it.
+    pkgs.gcc
+    pkgs.golangci-lint
+    pkgs.govulncheck
+    pkgs.nix
+  ];
 
-  projectNames = lib.attrNames effectiveProjects;
+  # Render an attrset into a systemd Environment= list, quoting each
+  # assignment so values containing spaces survive (an unquoted
+  # `Environment=KEY=In Progress` is parsed as KEY=In plus a stray
+  # `Progress`; a matter state like Linear's "In Progress" needs the
+  # quotes). systemd strips the outer quotes, so quoting space-free
+  # values is harmless.
+  mkEnvList = attrs: lib.mapAttrsToList (n: v: ''"${n}=${v}"'') attrs;
 
   # Common preamble: re-exec as cfg.user with a clean systemd-user
   # environment when invoked as root (system.activationScripts and
@@ -43,58 +93,57 @@ let
   '';
 
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
-        ${asUserPreamble}
+    ${asUserPreamble}
 
-        timeout=${toString cfg.gracefulDeploy.timeout}
-        message='${cfg.gracefulDeploy.message}'
-        sporecli='${cfg.package}/bin/spore'
-        tmuxcli='${pkgs.tmux}/bin/tmux'
+    project_root='${toString cfg.projectRoot}'
+    project="$(${pkgs.coreutils}/bin/basename "$project_root")"
+    timeout=${toString cfg.gracefulDeploy.timeout}
+    message='${cfg.gracefulDeploy.message}'
+    sporecli='${cfg.package}/bin/spore'
+    tmuxcli='${pkgs.tmux}/bin/tmux'
 
-        echo "spore-fleet-graceful: disabling kill-switch" >&2
-        "$sporecli" fleet disable || true
+    cd "$project_root"
 
-        drain_project() {
-          local project="$1" project_root="$2"
-          cd "$project_root"
+    echo "spore-fleet-graceful: disabling kill-switch" >&2
+    "$sporecli" fleet disable || true
 
-          list_workers() {
-            "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
-              | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
-              | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
-          }
+    # list_workers prints "session<TAB>slug" for every worker session
+    # in this project, regardless of name shape (current wt-emoji or
+    # legacy spore-prefixed). `spore fleet list-sessions` does the
+    # parsing - the shell never greps tmux names directly.
+    list_workers() {
+      "$sporecli" fleet list-sessions --project "$project" --kind worker \
+        2>/dev/null \
+        | ${pkgs.gawk}/bin/awk -F'\t' '{ print $1 "\t" $3 }' || true
+    }
 
-          sessions="$(list_workers)"
-          if [ -z "$sessions" ]; then
-            echo "spore-fleet-graceful: [$project] no active workers" >&2
-            return 0
-          fi
+    sessions="$(list_workers)"
+    if [ -z "$sessions" ]; then
+      echo "spore-fleet-graceful: no active workers" >&2
+      exit 0
+    fi
 
-          while IFS= read -r s; do
-            slug="''${s##spore/$project/}"
-            echo "spore-fleet-graceful: [$project] signalling $slug" >&2
-            "$sporecli" task tell "$slug" "$message" || true
-          done <<< "$sessions"
+    while IFS=$'\t' read -r session slug; do
+      [ -z "$session" ] && continue
+      echo "spore-fleet-graceful: signalling $slug" >&2
+      "$sporecli" task tell "$slug" "$message" || true
+    done <<< "$sessions"
 
-          deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
-          while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
-            remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
-            if [ "$remaining" = "0" ]; then
-              echo "spore-fleet-graceful: [$project] workers drained" >&2
-              return 0
-            fi
-            ${pkgs.coreutils}/bin/sleep 2
-          done
+    deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
+    while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
+      remaining="$(list_workers | ${pkgs.gnugrep}/bin/grep -c '^' || true)"
+      if [ "$remaining" = "0" ]; then
+        echo "spore-fleet-graceful: workers drained" >&2
+        exit 0
+      fi
+      ${pkgs.coreutils}/bin/sleep 2
+    done
 
-          echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
-          list_workers | while IFS= read -r s; do
-            [ -z "$s" ] && continue
-            "$tmuxcli" kill-session -t "$s" || true
-          done
-        }
-
-    ${lib.concatMapStringsSep "\n" (name: ''
-        drain_project '${name}' '${toString effectiveProjects.${name}.path}'
-      '') projectNames}
+    echo "spore-fleet-graceful: timeout (''${timeout}s); killing remaining workers" >&2
+    list_workers | while IFS=$'\t' read -r session _; do
+      [ -z "$session" ] && continue
+      "$tmuxcli" kill-session -t "$session" || true
+    done
   '';
 
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
@@ -239,58 +288,13 @@ in
     };
 
     projectRoot = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
+      type = lib.types.path;
       example = "/home/spore/project";
       description = ''
-        DEPRECATED. Single-project shorthand for the multi-project
-        `services.spore-fleet.projects` schema; setting this is
-        equivalent to declaring one project under
-        `projects.''${baseNameOf projectRoot}.path`. Setting both
-        `projectRoot` and `projects` is an error.
-
-        Existing single-project consumers can keep this as-is for
-        now; new consumers should set `projects` directly.
-      '';
-    };
-
-    projects = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          path = lib.mkOption {
-            type = lib.types.path;
-            example = "/home/spore/project";
-            description = ''
-              Project tree containing tasks/. The reconciler scans
-              `''${path}/tasks` and creates worker worktrees under
-              `''${path}/.worktrees/<slug>`. Must be writable by
-              `services.spore-fleet.user`.
-            '';
-          };
-        };
-      });
-      default = { };
-      example = lib.literalExpression ''
-        {
-          crm-gateway.path = "/home/spore/crm-gateway";
-          crm-webapp.path  = "/home/spore/crm-webapp";
-        }
-      '';
-      description = ''
-        Projects this fleet reconciles. Each entry generates its
-        own `spore-fleet-reconcile-<name>` systemd-user service +
-        timer + path watchers, with `WorkingDirectory` and the
-        tasks/ watcher scoped to the project's path.
-
-        The kill-switch flag at `~/.local/state/spore/fleet-enabled`
-        remains host-wide; flipping it (`spore fleet enable` /
-        `disable`) triggers reconciles across every project. Tmux
-        session naming (`spore/<name>/coordinator`,
-        `spore/<name>/<slug>`) is already namespaced by project,
-        so coordinator and worker sessions stay isolated.
-
-        Exactly one of `projects` and `projectRoot` (deprecated)
-        must be set.
+        Project tree containing tasks/. The reconciler scans
+        `''${projectRoot}/tasks` and creates worker worktrees under
+        `''${projectRoot}/.worktrees/<slug>`. Must be writable by
+        `services.spore-fleet.user`.
       '';
     };
 
@@ -327,6 +331,103 @@ in
         against the same project tree. Disambiguation only; spore
         does not coordinate across hosts.
       '';
+    };
+
+    evictIdle = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Wire a sibling systemd-user timer (spore-fleet-evict-idle)
+          that periodically flips genuinely idle workers to
+          `status: blocked / blocker: auto:idle-no-progress`. Idle
+          means: tmux pane inactive for longer than `idleSeconds`,
+          inbox drained, and no commit on `wt/<slug>` within the same
+          window. Pairs with the reconcile unit but fails
+          independently (a broken sweep cannot mask reconcile).
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "2min";
+        description = ''
+          Timer interval between eviction sweeps. The sweep is
+          O(active tasks) and finishes in well under a second; a
+          slower cadence than reconcile is fine because the soak
+          window itself is much larger than the tick.
+        '';
+      };
+
+      idleSeconds = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 600;
+        description = ''
+          Soak window in seconds. A worker must be inactive for at
+          least this long across all three signals (tmux idle, no
+          unread inbox, no recent commit) before the evictor flips
+          it. Wired through `SPORE_EVICTOR_IDLE_SECS` so the same
+          override works for ad-hoc CLI invocations.
+        '';
+      };
+    };
+
+    supervise = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Run the coordinator as a long-lived systemd-user service
+          (`spore-coordinator`) instead of relying solely on the
+          reconcile timer to respawn it. ExecStart is `spore
+          coordinator spawn`, which ensures the tmux session is alive
+          then blocks until it dies, returning the 0/1/64 exit-code
+          contract. The restart guards below turn that contract into a
+          bounded respawn:
+
+            0  clean shutdown (SIGTERM/SIGINT)   -> no respawn
+            1  preflight failure (tier, exec)    -> no respawn
+                 (pinned by RestartPreventExitStatus=1)
+            64 unexpected session death          -> respawn, bounded
+                 by startLimitBurst within startLimitInterval
+
+          Default off: the bundled deployed model is the reconcile
+          timer (spore-fleet-tick), and the spawn settle-check stays
+          sharper when nothing is racing to respawn the session. Turn
+          this on for a host that should hold a coordinator session
+          open continuously.
+        '';
+      };
+
+      startLimitInterval = lib.mkOption {
+        type = lib.types.str;
+        default = "30s";
+        description = ''
+          Window (StartLimitIntervalSec) over which startLimitBurst
+          respawns are counted. startLimitBurst failures inside this
+          window put the unit in failed state, so an external
+          kill-loop bottoms out instead of respawning forever.
+        '';
+      };
+
+      startLimitBurst = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 3;
+        description = ''
+          Max respawns (StartLimitBurst) allowed within
+          startLimitInterval before the unit fails. With restartSec at
+          1s, three failed starts inside 30s is the no-storm guard.
+        '';
+      };
+
+      restartSec = lib.mkOption {
+        type = lib.types.str;
+        default = "1s";
+        description = ''
+          Delay (RestartSec) before a respawn after an exit-64
+          unexpected death.
+        '';
+      };
     };
 
     extraEnv = lib.mkOption {
@@ -460,33 +561,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = !(cfg.projectRoot != null && cfg.projects != { });
-        message = ''
-          services.spore-fleet: set either `projectRoot` (deprecated)
-          or `projects`, not both. Migrate `projectRoot = X` to
-          `projects.<name>.path = X`.
-        '';
-      }
-      {
-        assertion = effectiveProjects != { };
-        message = ''
-          services.spore-fleet.enable is true but no projects are
-          configured. Set `services.spore-fleet.projects.<name>.path`
-          for each project this fleet should reconcile.
-        '';
-      }
-    ];
-
-    warnings = lib.optional (cfg.projectRoot != null) ''
-      services.spore-fleet.projectRoot is deprecated. Migrate to
-      services.spore-fleet.projects.<name>.path. The current value
-      is being surfaced as
-      services.spore-fleet.projects."${baseNameOf (toString cfg.projectRoot)}".path
-      so existing deployments keep working.
-    '';
-
     services.spore-fleet.gracefulDeploy = {
       preScript = "${preScript}/bin/spore-fleet-graceful-pre";
       postScript = "${postScript}/bin/spore-fleet-graceful-post";
@@ -538,6 +612,7 @@ in
         '';
         spore-migrate = ''
           ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
+            ${pkgs.coreutils}/bin/env PATH=${pkgs.bashInteractive}/bin:${pkgs.coreutils}/bin \
             ${cfg.package}/bin/spore migrate --auto || \
             echo "spore migrate: failed (see journal); continuing rebuild" >&2
         '';
@@ -560,80 +635,165 @@ in
     ];
 
     home-manager.users.${cfg.user} = {
-      systemd.user.services = lib.mapAttrs'
-        (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
-          Unit = {
-            Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
-          };
-          Service = {
-            Type = "oneshot";
-            WorkingDirectory = toString project.path;
-            ExecStart = "${cfg.package}/bin/spore fleet reconcile";
-            Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
-              {
-                SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
-                SPORE_HOST_ID = cfg.hostId;
-                # bashInteractive + coreutils land on PATH so the shims
-                # the reconciler spawns (spore-coordinator-launch,
-                # spore-worker-brief) can resolve `#!/usr/bin/env bash`
-                # and call `cat`/`mkdir`/`tee`/`date` without an
-                # in-shim PATH-augment workaround.
-                PATH = lib.makeBinPath [
-                  cfg.package
-                  cfg.claudeCodePackage
-                  pkgs.bashInteractive
-                  pkgs.coreutils
-                  pkgs.git
-                  pkgs.tmux
-                ];
-              } // matterEnv // cfg.extraEnv
-            );
-            NoNewPrivileges = true;
-            LockPersonality = true;
-            RestrictSUIDSGID = true;
-            ReadWritePaths = [ (toString project.path) ];
-            LoadCredential = lib.mapAttrsToList
-              (n: path: "${n}:${toString path}")
-              (cfg.credentialFiles // matterCredentials);
-          };
-        })
-        effectiveProjects;
+      systemd.user.services.spore-fleet-reconcile = {
+        Unit = {
+          Description = "spore fleet reconciler (host=${cfg.hostId})";
+        };
+        Service = {
+          Type = "oneshot";
+          WorkingDirectory = toString cfg.projectRoot;
+          ExecStart = "${cfg.package}/bin/spore fleet reconcile";
+          Environment = mkEnvList (
+            {
+              SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
+              SPORE_HOST_ID = cfg.hostId;
+              # The shims the reconciler spawns (spore-coordinator-launch,
+              # spore-worker-brief) resolve `#!/usr/bin/env bash` and call
+              # the standard userland; the agent sessions need the search
+              # tools too. See fleetBinPath.
+              PATH = fleetBinPath;
+              # tmux runs a new session's command via $SHELL, falling back
+              # to the user's passwd shell - which is spore-attach on a
+              # deployed host. spore-attach would hijack the coordinator /
+              # worker command with its own attach logic, so the agent
+              # never execs and the session dies on spawn. Pin a real bash.
+              SHELL = "${pkgs.bashInteractive}/bin/bash";
+            } // matterEnv // cfg.extraEnv
+          );
+          # The reconcile is a oneshot that spawns the coordinator (and
+          # worker) tmux server as daemonized children. KillMode=process
+          # leaves them running when the oneshot exits; the default
+          # control-group would reap the whole tree, killing the
+          # coordinator the instant reconcile finishes.
+          KillMode = "process";
+          NoNewPrivileges = true;
+          LockPersonality = true;
+          RestrictSUIDSGID = true;
+          ReadWritePaths = [ (toString cfg.projectRoot) ];
+          LoadCredential = lib.mapAttrsToList
+            (name: path: "${name}:${toString path}")
+            (cfg.credentialFiles // matterCredentials);
+        };
+      };
 
-      systemd.user.timers = lib.mapAttrs'
-        (name: _: lib.nameValuePair "spore-fleet-reconcile-${name}" {
-          Unit.Description = "Periodic spore fleet reconcile [${name}]";
-          Timer = {
-            OnBootSec = "30s";
-            OnUnitInactiveSec = cfg.interval;
-            AccuracySec = "5s";
-            Unit = "spore-fleet-reconcile-${name}.service";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        })
-        effectiveProjects;
+      systemd.user.services.spore-coordinator = lib.mkIf cfg.supervise.enable {
+        Unit = {
+          Description = "spore coordinator (long-lived, host=${cfg.hostId})";
+          # StartLimit caps respawn bursts so an external-kill loop
+          # bottoms out in failed state instead of looping forever.
+          # These keys live in [Unit], not [Service]; systemd warns and
+          # ignores them under [Service].
+          StartLimitIntervalSec = cfg.supervise.startLimitInterval;
+          StartLimitBurst = cfg.supervise.startLimitBurst;
+        };
+        Service = {
+          Type = "simple";
+          WorkingDirectory = toString cfg.projectRoot;
+          ExecStart = "${cfg.package}/bin/spore coordinator spawn";
+          Environment = mkEnvList (
+            {
+              SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
+              SPORE_HOST_ID = cfg.hostId;
+              PATH = fleetBinPath;
+              # Pin a real bash so tmux does not run the coordinator
+              # command through the spore-attach login shell. See the
+              # reconcile unit for the full rationale.
+              SHELL = "${pkgs.bashInteractive}/bin/bash";
+            } // matterEnv // cfg.extraEnv
+          );
+          # Exit-code contract from `spore coordinator spawn`:
+          #   0  clean shutdown          -> no respawn (not on-failure)
+          #   1  preflight failure       -> no respawn (pinned below)
+          #   64 unexpected death        -> respawn, bounded by StartLimit
+          Restart = "on-failure";
+          RestartSec = cfg.supervise.restartSec;
+          RestartPreventExitStatus = "1";
+          # The spawn entry point tears down only the coordinator tmux
+          # session on its TERM trap; KillMode=process keeps a unit
+          # restart from reaping sibling worker panes on the shared
+          # tmux server.
+          KillMode = "process";
+          NoNewPrivileges = true;
+          LockPersonality = true;
+          RestrictSUIDSGID = true;
+          ReadWritePaths = [ (toString cfg.projectRoot) ];
+          LoadCredential = lib.mapAttrsToList
+            (name: path: "${name}:${toString path}")
+            (cfg.credentialFiles // matterCredentials);
+        };
+        Install.WantedBy = [ "default.target" ];
+      };
 
-      systemd.user.paths = lib.foldlAttrs
-        (acc: name: project: acc // {
-          "spore-fleet-reconcile-flag-${name}" = {
-            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
-            Path = {
-              PathChanged = "%h/${stateRel}";
-              Unit = "spore-fleet-reconcile-${name}.service";
-            };
-            Install.WantedBy = [ "default.target" ];
-          };
+      systemd.user.timers.spore-fleet-reconcile = {
+        Unit.Description = "Periodic spore fleet reconcile";
+        Timer = {
+          OnBootSec = "30s";
+          OnUnitInactiveSec = cfg.interval;
+          AccuracySec = "5s";
+          Unit = "spore-fleet-reconcile.service";
+        };
+        Install.WantedBy = [ "timers.target" ];
+      };
 
-          "spore-fleet-reconcile-tasks-${name}" = {
-            Unit.Description = "Trigger spore-fleet-reconcile [${name}] when tasks/ changes";
-            Path = {
-              PathChanged = "${toString project.path}/tasks";
-              Unit = "spore-fleet-reconcile-${name}.service";
-            };
-            Install.WantedBy = [ "default.target" ];
+      systemd.user.services.spore-fleet-evict-idle = lib.mkIf cfg.evictIdle.enable {
+        Unit = {
+          Description = "spore fleet evict-idle (auto-block idle workers, host=${cfg.hostId})";
+        };
+        Service = {
+          Type = "oneshot";
+          WorkingDirectory = toString cfg.projectRoot;
+          ExecStart = "${cfg.package}/bin/spore fleet evict-idle";
+          Environment = mkEnvList (
+            {
+              SPORE_HOST_ID = cfg.hostId;
+              SPORE_EVICTOR_IDLE_SECS = toString cfg.evictIdle.idleSeconds;
+              PATH = lib.makeBinPath [
+                cfg.package
+                pkgs.git
+                pkgs.tmux
+              ];
+            } // cfg.extraEnv
+          );
+          # No Restart= - a failed sweep must not propagate; the
+          # next timer tick will retry. Mirrors the
+          # SuccessExitStatus=0 contract on the bundled unit.
+          NoNewPrivileges = true;
+          LockPersonality = true;
+          RestrictSUIDSGID = true;
+          ReadWritePaths = [ (toString cfg.projectRoot) ];
+        };
+      };
+
+      systemd.user.timers.spore-fleet-evict-idle = lib.mkIf cfg.evictIdle.enable {
+        Unit.Description = "Periodic spore fleet evict-idle";
+        Timer = {
+          OnBootSec = "2min";
+          OnUnitInactiveSec = cfg.evictIdle.interval;
+          AccuracySec = "15s";
+          Unit = "spore-fleet-evict-idle.service";
+        };
+        Install.WantedBy = [ "timers.target" ];
+      };
+
+      systemd.user.paths = {
+        spore-fleet-reconcile-flag = {
+          Unit.Description = "Trigger spore-fleet-reconcile when the kill-switch flag changes";
+          Path = {
+            PathChanged = "%h/${stateRel}";
+            Unit = "spore-fleet-reconcile.service";
           };
-        })
-        { }
-        effectiveProjects;
+          Install.WantedBy = [ "default.target" ];
+        };
+
+        spore-fleet-reconcile-tasks = {
+          Unit.Description = "Trigger spore-fleet-reconcile when tasks/ changes";
+          Path = {
+            PathChanged = "${toString cfg.projectRoot}/tasks";
+            Unit = "spore-fleet-reconcile.service";
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
+      };
     };
   };
 }

@@ -3,6 +3,7 @@ package tokenmonitor
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -64,7 +65,6 @@ func TestCheckHardCap(t *testing.T) {
 	if result.Ctx != 195000 {
 		t.Errorf("Ctx = %d, want 195000", result.Ctx)
 	}
-	assertRespawnPaneMessage(t, result.Message)
 }
 
 func TestCheckSoftCap(t *testing.T) {
@@ -91,7 +91,6 @@ func TestCheckSoftCap(t *testing.T) {
 	if !result.ShouldFire {
 		t.Error("expected ShouldFire = true on first soft crossing")
 	}
-	assertRespawnPaneMessage(t, result.Message)
 
 	result2 := Check(cfg, HookPayload{SessionID: "test-soft", TranscriptPath: f})
 	if result2.Level != "ok" {
@@ -125,23 +124,67 @@ func TestCheckOk(t *testing.T) {
 	}
 }
 
-// assertRespawnPaneMessage checks the wrap-up message instructs the
-// coordinator agent to respawn the pane (preserving the tmux session
-// and any attached SSH client) rather than killing the session.
-func assertRespawnPaneMessage(t *testing.T, msg string) {
-	t.Helper()
-	if !strings.Contains(msg, "tmux respawn-pane -k") {
-		t.Errorf("message must instruct respawn-pane -k, got:\n%s", msg)
+func TestDriverKillCommandScope(t *testing.T) {
+	// Supervise mode must spare the pane root (the respawn loop) and kill
+	// only its child driver, else the loop dies, the session is torn down,
+	// and an attached operator is detached. Single-exec mode kills the
+	// tty, ending the driver and the session as designed.
+	sup := DriverKillCommand(true)
+	if !strings.Contains(sup, "pane_pid") || !strings.Contains(sup, "-P") {
+		t.Errorf("supervise kill must be pane-pid-scoped (driver only): %q", sup)
 	}
-	if !strings.Contains(msg, `"$(tmux display-message -p '#S'):0"`) {
-		t.Errorf("message must self-target via display-message, got:\n%s", msg)
+	if strings.Contains(sup, "pane_tty") {
+		t.Errorf("supervise kill must not be tty-scoped (would kill the loop): %q", sup)
 	}
-	if !strings.Contains(msg, "/usr/local/bin/spore-coordinator-launch") {
-		t.Errorf("message must exec the coordinator-launch shim, got:\n%s", msg)
+	single := DriverKillCommand(false)
+	if !strings.Contains(single, "pane_tty") || !strings.Contains(single, "-t") {
+		t.Errorf("single-exec kill must be tty-scoped: %q", single)
 	}
-	if strings.Contains(msg, "tmux kill-session") {
-		t.Errorf("message must not instruct kill-session (drops attached SSH), got:\n%s", msg)
+	if strings.Contains(single, "pane_pid") {
+		t.Errorf("single-exec kill must not target pane_pid (driver is the pane root): %q", single)
 	}
+}
+
+func TestCheckEmbedsSuperviseAwareKill(t *testing.T) {
+	mkTranscript := func(t *testing.T, tokens int) (string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		tdir := filepath.Join(dir, "transcript")
+		os.MkdirAll(tdir, 0o700)
+		f := filepath.Join(tdir, "session.jsonl")
+		line := `{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":` +
+			itoa(tokens) + `,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`
+		os.WriteFile(f, []byte(line+"\n"), 0o644)
+		return filepath.Join(dir, "state"), f
+	}
+
+	t.Run("hard supervise", func(t *testing.T) {
+		stateDir, f := mkTranscript(t, 195000)
+		cfg := Config{SoftCap: 150000, HardCap: 190000, StateDir: stateDir, Inbox: stateDir, Supervise: true}
+		res := Check(cfg, HookPayload{SessionID: "h-sup", TranscriptPath: f})
+		if res.Level != "hard" {
+			t.Fatalf("level = %s, want hard", res.Level)
+		}
+		if !strings.Contains(res.Message, "pane_pid") {
+			t.Errorf("supervise hard message must carry pane-pid kill:\n%s", res.Message)
+		}
+	})
+
+	t.Run("hard single-exec", func(t *testing.T) {
+		stateDir, f := mkTranscript(t, 195000)
+		cfg := Config{SoftCap: 150000, HardCap: 190000, StateDir: stateDir, Inbox: stateDir, Supervise: false}
+		res := Check(cfg, HookPayload{SessionID: "h-single", TranscriptPath: f})
+		if res.Level != "hard" {
+			t.Fatalf("level = %s, want hard", res.Level)
+		}
+		if !strings.Contains(res.Message, "pane_tty") {
+			t.Errorf("single-exec hard message must carry tty kill:\n%s", res.Message)
+		}
+	})
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 func TestAppendLedger(t *testing.T) {

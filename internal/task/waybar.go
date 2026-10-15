@@ -15,7 +15,7 @@ type WaybarChip struct {
 
 // Waybar scans tasksDir and returns a JSON chip for waybar's custom
 // module. Counts tasks by status, filters to host-local tasks (host
-// matches hostname or is empty), and renders d/a/p/b counts.
+// matches hostname or is empty), and renders d/a/b counts.
 func Waybar(tasksDir string) ([]byte, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -26,19 +26,17 @@ func Waybar(tasksDir string) ([]byte, error) {
 		return nil, err
 	}
 
-	var draft, active, paused, blocked int
+	var draft, active, blocked int
 	for _, m := range metas {
 		if m.Host != "" && m.Host != hostname {
 			continue
 		}
 		switch m.Status {
-		case "draft":
+		case StatusDraft:
 			draft++
-		case "active":
+		case StatusActive:
 			active++
-		case "paused":
-			paused++
-		case "blocked":
+		case StatusBlocked:
 			blocked++
 		}
 	}
@@ -52,9 +50,9 @@ func Waybar(tasksDir string) ([]byte, error) {
 	}
 
 	chip := WaybarChip{
-		Text:    fmt.Sprintf("%d/%d/%d/%d", draft, active, paused, blocked),
+		Text:    fmt.Sprintf("%d/%d/%d", draft, active, blocked),
 		Class:   class,
-		Tooltip: fmt.Sprintf("draft:%d active:%d paused:%d blocked:%d", draft, active, paused, blocked),
+		Tooltip: fmt.Sprintf("draft:%d active:%d blocked:%d", draft, active, blocked),
 	}
 	return json.Marshal(chip)
 }

@@ -108,14 +108,29 @@ func TestList(t *testing.T) {
 	}
 }
 
-func TestListMissingDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "tasks")
+func TestListPreservesRawStatus(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("blocked.md", "---\nstatus: blocked\nslug: blocked\ntitle: Blocked\n---\n")
+	write("draft.md", "---\nstatus: draft\nslug: draft\ntitle: Draft\ngate: waiting\n---\n")
+
 	metas, err := List(dir)
 	if err != nil {
-		t.Fatalf("List on missing dir: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	if len(metas) != 0 {
-		t.Fatalf("expected empty metas, got %d (%v)", len(metas), metas)
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 metas, got %d", len(metas))
+	}
+	if metas[0].Status != StatusBlocked {
+		t.Errorf("blocked status = %q, want %q", metas[0].Status, StatusBlocked)
+	}
+	if metas[1].Status != StatusDraft || metas[1].Gate != "waiting" {
+		t.Errorf("draft meta = %+v, want status=draft gate=waiting", metas[1])
 	}
 }
 

@@ -5,7 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/versality/spore/internal/coordinator"
 )
 
 // StateDir returns "$XDG_STATE_HOME/spore/<project>" if XDG_STATE_HOME
@@ -43,31 +47,21 @@ func InboxDirForProject(projectRoot, slug string) (string, error) {
 	return filepath.Join(s, slug, "inbox"), nil
 }
 
-// CoordinatorStateDir returns the state root used by the singleton
-// coordinator inboxes.
+// CoordinatorStateDir returns the host-wide coordinator root. It
+// delegates to the central resolver in internal/coordinator so every
+// coordinator package agrees on one layout.
 func CoordinatorStateDir() (string, error) {
-	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
-		return d, nil
-	}
-	base, err := stateBaseDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "spore", "coordinator"), nil
+	return coordinator.StateDir(), nil
 }
 
 // CoordinatorInboxDirForProject returns the singleton coordinator
-// inbox path for projectRoot.
+// inbox path for projectRoot. The layout is <CoordinatorStateDir>/<project>/inbox.
 func CoordinatorInboxDirForProject(projectRoot string) (string, error) {
 	project, err := ProjectName(projectRoot)
 	if err != nil {
 		return "", err
 	}
-	root, err := CoordinatorStateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, project, "inbox"), nil
+	return coordinator.ProjectInbox(project), nil
 }
 
 func stateBaseDir() (string, error) {
@@ -90,7 +84,7 @@ func stateBaseDir() (string, error) {
 // this returns the main repo's .git path, so dirname yields the main
 // repo root regardless of cwd. Using --show-toplevel here would return
 // the worktree path and silently rename the project to the worktree
-// slug from any rover cwd.
+// slug from any sandboxed-agent cwd.
 func ProjectName(projectRoot string) (string, error) {
 	if projectRoot == "" {
 		wd, err := os.Getwd()
@@ -111,11 +105,44 @@ func ProjectName(projectRoot string) (string, error) {
 	return filepath.Base(projectRoot), nil
 }
 
+// MainCheckoutRoot returns the main checkout that owns projectRoot's
+// repo: the parent of `git -C projectRoot rev-parse --git-common-dir`.
+// In a linked worktree this resolves to the main checkout (the source
+// of truth for spore.toml and tasks/), regardless of cwd. Falls back to
+// projectRoot for non-git layouts or any git error so callers outside a
+// repo keep current behaviour. Does not resolve symlinks; callers that
+// need a canonical path apply filepath.EvalSymlinks themselves.
+func MainCheckoutRoot(projectRoot string) string {
+	out, err := gitCmd(projectRoot, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return projectRoot
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return projectRoot
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(projectRoot, common)
+	}
+	main := filepath.Dir(common)
+	if main == "" {
+		return projectRoot
+	}
+	return main
+}
+
 // CountUnreadInbox returns the number of *.json files sitting at the
 // top level of slug's inbox (unread). Returns 0 when the directory
 // does not exist. Mirrors wt-go internal/inbox.CountUnread.
 func CountUnreadInbox(slug string) (int, string, error) {
-	dir, err := InboxDir(slug)
+	return CountUnreadInboxForProject("", slug)
+}
+
+// CountUnreadInboxForProject is the project-rooted variant of
+// CountUnreadInbox. Used by the idle-evictor sweep, which iterates
+// across configured projects and cannot rely on cwd.
+func CountUnreadInboxForProject(projectRoot, slug string) (int, string, error) {
+	dir, err := InboxDirForProject(projectRoot, slug)
 	if err != nil {
 		return 0, "", err
 	}
@@ -140,17 +167,41 @@ func CountUnreadInbox(slug string) (int, string, error) {
 	return n, dir, nil
 }
 
+// LastCommitTime returns the committer-date of the tip commit on
+// refs/heads/wt/<slug>. ok=false when the branch is missing or the
+// timestamp cannot be parsed; callers should treat ok=false as "no
+// commit on record" (the idle-evictor predicate counts a missing
+// branch as "no recent progress", since a worker that has never
+// committed has by definition not made progress).
+func LastCommitTime(projectRoot, slug string) (time.Time, bool) {
+	branch := "wt/" + slug
+	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() != nil {
+		return time.Time{}, false
+	}
+	out, err := gitCmd(projectRoot, "log", "-1", "--format=%ct", "refs/heads/"+branch).Output()
+	if err != nil {
+		return time.Time{}, false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, 0), true
+}
+
 // UnmergedCommits returns the count of commits reachable from
-// refs/heads/<branch> but not from the project's integration target
-// (see defaultBranch). Returns 0 when the branch does not exist
-// (already deleted by a prior merge).
+// refs/heads/<branch> but not from the integration base. Returns 0 when
+// the branch does not exist (already deleted by a prior merge) or when
+// no base ref resolves (so a repo with no local main never exits 128 on
+// a rev-list against a missing ref). The base comes from spore.toml's
+// `[fleet] base` key, defaulting to main.
 func UnmergedCommits(projectRoot, branch string) (int, error) {
 	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() != nil {
 		return 0, nil
 	}
-	baseRef, err := defaultBranch(projectRoot)
-	if err != nil {
-		return 0, err
+	baseRef, ok := resolveBaseRef(projectRoot, IntegrationBase(projectRoot))
+	if !ok {
+		return 0, nil
 	}
 	out, err := gitCmd(projectRoot, "rev-list", baseRef+".."+branch).Output()
 	if err != nil {
@@ -161,31 +212,6 @@ func UnmergedCommits(projectRoot, branch string) (int, error) {
 		return 0, nil
 	}
 	return strings.Count(s, "\n") + 1, nil
-}
-
-// defaultBranch resolves the local branch that the project treats as
-// its integration target. Order: local "main", local "master", then
-// origin/HEAD's symbolic ref (e.g. refs/remotes/origin/development
-// resolves to "development"). Returns an error if none resolve, so
-// callers fail loudly instead of running rev-list against a name that
-// does not exist (the previous fallthrough to a missing "master" was
-// the source of an exit-128 from rev-list).
-func defaultBranch(projectRoot string) (string, error) {
-	for _, name := range []string{"main", "master"} {
-		if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name).Run() == nil {
-			return name, nil
-		}
-	}
-	out, err := gitCmd(projectRoot, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Output()
-	if err == nil {
-		ref := strings.TrimSpace(string(out))
-		if name := strings.TrimPrefix(ref, "refs/remotes/origin/"); name != "" && name != ref {
-			if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name).Run() == nil {
-				return name, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no default branch: tried main, master, origin/HEAD")
 }
 
 // gitCmd returns `git -c safe.directory=<abs(projectRoot)> -C

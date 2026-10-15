@@ -19,12 +19,20 @@
 /coverage/
 /tasks/
 /.wt/
+/.worktrees/
 /bootstrap/flake/local.nix
 
 # spore-as-project (dogfood) harness artifacts
 /state.md
+/.claude/settings.local.json
 # Skills installed by `repo-mapped` from the spore binary's BundledSkills
 # embed. Source lives at bootstrap/skills/, so committing this snapshot
 # would create a drift target. Downstream consumers (no embed source
 # in-tree) commit their .claude/skills/; spore-as-project does not.
 /.claude/skills/
+
+# local secrets (never commit). Deploy credentials live on the host, not
+# the repo (see docs/deploy.md), so nothing secret-bearing is tracked.
+secrets.env
+*.local.nix
+*linear*key*

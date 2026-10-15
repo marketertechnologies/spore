@@ -1,18 +1,10 @@
 package main
 
 import (
-	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/versality/spore/internal/task"
-	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 const taskUsage = `spore task - manage tasks
@@ -26,17 +18,44 @@ Subcommands:
   edit <slug>                  Open task file in $EDITOR.
   pick                         Interactive rofi/fzf task picker.
   start <slug>                 Flip to active, spawn worktree + tmux session.
-  pause <slug>                 Flip active task to paused (no teardown).
-  block <slug>                 Flip active task to blocked (no teardown).
+  pause <slug>                 Retired; errors with redirect to block.
+  park <slug>                  Retired; errors with redirect to block.
+  block <slug> [--blocker R]   Flip active task to blocked. Refuses
+                               when called from a coordinator session
+                               (the coordinator surfaces attention via
+                               notification, never by parking work).
+  unblock <slug>               Flip blocked task back to active and
+                               clear the blocker reason. No
+                               coordinator gate.
   done <slug> [--force]         Flip to done, kill tmux + remove worktree.
   merge <slug> [--force-merge-red <reason>]
                                Merge wt/<slug> into main; push origin main:main only.
                                Refuses on red 'just check' (exit 2);
                                --force-merge-red bypasses with a logged reason.
+  ship <slug> [--strategy <s>] [--base <b>]
+                               Streamlined PR-flow ship: just check, push branch,
+                               gh pr create, wait for checks, gh pr merge (squash
+                               by default), ff local main, task.Done. One verb;
+                               idempotent per-step.
+  cutover --consumer <repo> --feature <name> [...]
+                               Mint a draft task brief in a consumer repo asking
+                               it to catch up to a spore lift. Flags:
+                               --source-repo, --source-slug, --source-pr,
+                               --claim, --reason. Idempotent on the derived slug.
   tell <slug> <message>        Append a message to the slug's inbox dir.
+  inbox-dispatch --token <regex> --handler <bin> [--inbox <dir>]
+                               Drain inbox envelopes whose body matches <regex>,
+                               exec <bin> with the envelope path as $1, and move
+                               handled envelopes to inbox/read/ on rc=0. Defaults
+                               to the coordinator inbox for the current project
+                               (override with --inbox or $SPORE_TASK_INBOX).
   verify <slug>                Print the evidence verdict for slug.
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
+  auto-commit --repo <path> [--lock <path>]
+                               Safety-wrapped drift commit for systemd
+                               path units. Holds an flock, refuses when
+                               non-tasks/ paths are staged, then runs drift.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
@@ -44,6 +63,7 @@ Flags for 'new':
   --body <text>                Inline body text (skips editor).
   --body-stdin                 Read body from stdin (skips editor).
   --needs <slug>               Add a dependency (repeatable).
+  --priority <v>               critical|high|medium|low (default: medium).
   --edit                       Force editor open.
   --no-edit                    Suppress editor.
 `
@@ -67,283 +87,37 @@ func runTask(args []string) error {
 		return runTaskEdit(rest)
 	case "pick":
 		return runTaskPick(rest)
+	case "ensure":
+		return runTaskEnsure(rest)
 	case "start":
 		return runTaskStart(rest)
-	case "pause":
-		return runTaskPause(rest)
 	case "block":
 		return runTaskBlock(rest)
+	case "unblock":
+		return runTaskUnblock(rest)
 	case "done":
 		return runTaskDone(rest)
 	case "merge":
 		return runTaskMerge(rest)
+	case "ship":
+		return runTaskShip(rest)
+	case "cutover":
+		return runTaskCutover(rest)
 	case "tell":
 		return runTaskTell(rest)
+	case "inbox-dispatch":
+		return runTaskInboxDispatch(rest)
 	case "verify":
 		return runTaskVerify(rest)
 	case "waybar":
 		return runTaskWaybar(rest)
 	case "drift":
 		return runTaskDrift(rest)
+	case "auto-commit":
+		return runTaskAutoCommit(rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", sub, taskUsage)
 	}
-}
-
-func runTaskEdit(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task edit <slug>")
-	}
-	return task.Edit("tasks", args[0])
-}
-
-func runTaskPick(_ []string) error {
-	slug, err := task.Pick("tasks")
-	if err != nil {
-		return err
-	}
-	fmt.Println(slug)
-	return nil
-}
-
-func runTaskMerge(args []string) error {
-	slug := ""
-	force := ""
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--force-merge-red":
-			if i+1 >= len(args) || args[i+1] == "" {
-				return fmt.Errorf("--force-merge-red requires a <reason> argument")
-			}
-			force = args[i+1]
-			i++
-		case strings.HasPrefix(a, "--force-merge-red="):
-			force = strings.TrimPrefix(a, "--force-merge-red=")
-			if force == "" {
-				return fmt.Errorf("--force-merge-red requires a <reason> argument")
-			}
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("spore task merge: unknown flag: %s", a)
-		default:
-			if slug != "" {
-				return fmt.Errorf("usage: spore task merge <slug> [--force-merge-red <reason>]")
-			}
-			slug = a
-		}
-	}
-	if slug == "" {
-		return fmt.Errorf("usage: spore task merge <slug> [--force-merge-red <reason>]")
-	}
-	err := task.MergeWithOptions("tasks", slug, task.MergeOptions{ForceMergeRed: force})
-	if err != nil {
-		var gateErr *task.MergeGateError
-		if errors.As(err, &gateErr) {
-			fmt.Fprintln(os.Stderr, "spore task merge:", err)
-			os.Exit(gateErr.ExitCode())
-		}
-		return err
-	}
-	return nil
-}
-
-func runTaskWaybar(_ []string) error {
-	out, err := task.Waybar(resolveTasksDir())
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(out)
-	return err
-}
-
-func runTaskDrift(_ []string) error {
-	return task.AutoCommitDrift("tasks")
-}
-
-func runTaskStart(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task start <slug>")
-	}
-	session, err := task.Start("tasks", args[0])
-	if err != nil {
-		return err
-	}
-	fmt.Println(session)
-	return nil
-}
-
-func runTaskPause(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task pause <slug>")
-	}
-	return task.Pause("tasks", args[0])
-}
-
-func runTaskBlock(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task block <slug>")
-	}
-	return task.Block("tasks", args[0])
-}
-
-func runTaskDone(args []string) error {
-	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: spore task done <slug> [--force]")
-	}
-	slug := args[0]
-	force := false
-	for _, a := range args[1:] {
-		if a == "--force" {
-			force = true
-		} else {
-			return fmt.Errorf("spore task done: unknown flag: %s", a)
-		}
-	}
-	return task.Done("tasks", slug, force)
-}
-
-func runTaskTell(args []string) error {
-	if len(args) != 2 {
-		return fmt.Errorf("usage: spore task tell <slug> <message>")
-	}
-	return task.Tell(args[0], args[1])
-}
-
-func runTaskVerify(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task verify <slug>")
-	}
-	verdict, diags, err := task.Verify("tasks", args[0])
-	if err != nil {
-		return err
-	}
-	fmt.Printf("%s: %s\n", args[0], verdict)
-	for _, d := range diags {
-		fmt.Printf("  %s\n", d)
-	}
-	return nil
-}
-
-// needsFlag is a repeatable string flag for --needs.
-type needsFlag []string
-
-func (n *needsFlag) String() string { return strings.Join(*n, ",") }
-func (n *needsFlag) Set(v string) error {
-	*n = append(*n, v)
-	return nil
-}
-
-func runTaskNew(args []string) error {
-	fs := flag.NewFlagSet("task new", flag.ContinueOnError)
-	bodyStdin := fs.Bool("body-stdin", false, "read body from stdin")
-	bodyText := fs.String("body", "", "inline body text")
-	startFlag := fs.Bool("start", false, "set status=active and launch agent")
-	_ = fs.Bool("draft", true, "set status=draft (default)")
-	editFlag := fs.Bool("edit", false, "force editor open")
-	noEdit := fs.Bool("no-edit", false, "suppress editor")
-	var needs needsFlag
-	fs.Var(&needs, "needs", "add dependency slug (repeatable)")
-	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("expected exactly one positional <title>, got %d", fs.NArg())
-	}
-	title := fs.Arg(0)
-	if strings.TrimSpace(title) == "" {
-		return fmt.Errorf("title must not be empty")
-	}
-
-	tasksDir := "tasks"
-	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
-		return err
-	}
-	base := task.Slugify(title)
-	if base == "" {
-		return fmt.Errorf("title %q yields empty slug", title)
-	}
-	slug, err := task.Allocate(tasksDir, base)
-	if err != nil {
-		return err
-	}
-
-	var body []byte
-	if *bodyStdin {
-		body, err = io.ReadAll(os.Stdin)
-		if err != nil {
-			return err
-		}
-	} else if *bodyText != "" {
-		body = []byte("\n" + *bodyText + "\n")
-	}
-
-	project, _ := task.ProjectName("")
-	m := frontmatter.Meta{
-		Status:  "draft",
-		Slug:    slug,
-		Title:   title,
-		Created: time.Now().UTC().Format(time.RFC3339),
-		Project: project,
-		Needs:   []string(needs),
-	}
-	out := frontmatter.Write(m, body)
-	path := filepath.Join(tasksDir, slug+".md")
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return err
-	}
-
-	wantEdit := *editFlag || (body == nil && !*noEdit && isTTY())
-	if wantEdit {
-		if editErr := task.Edit(tasksDir, slug); editErr != nil {
-			return editErr
-		}
-	}
-
-	fmt.Println(slug)
-
-	if *startFlag {
-		session, startErr := task.Start(tasksDir, slug)
-		if startErr != nil {
-			return startErr
-		}
-		fmt.Println(session)
-	}
-	return nil
-}
-
-func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
-}
-
-func runTaskLs(args []string) error {
-	fs := flag.NewFlagSet("task ls", flag.ContinueOnError)
-	all := fs.Bool("all", false, "include done tasks")
-	doneOnly := fs.Bool("done", false, "show only done tasks")
-	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional args: %v", fs.Args())
-	}
-	metas, err := task.List("tasks")
-	if err != nil {
-		return err
-	}
-	fmt.Println("SLUG\tSTATUS\tTITLE")
-	for _, m := range metas {
-		if *doneOnly && m.Status != "done" {
-			continue
-		}
-		if !*all && !*doneOnly && m.Status == "done" {
-			continue
-		}
-		fmt.Printf("%s\t%s\t%s\n", m.Slug, m.Status, m.Title)
-	}
-	return nil
 }
 
 // resolveTasksDir returns an absolute tasks/ path. Priority:
@@ -355,11 +129,7 @@ func resolveTasksDir() string {
 	if v := os.Getenv("SPORE_TASKS_DIR"); v != "" {
 		return v
 	}
-	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		root := strings.TrimSpace(string(out))
-		if i := strings.Index(root, "/.worktrees/"); i >= 0 {
-			root = root[:i]
-		}
+	if root, err := resolveMainRoot(); err == nil {
 		return filepath.Join(root, "tasks")
 	}
 	if home, err := os.UserHomeDir(); err == nil {

@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": { "gopls-lsp@claude-plugins-official": true },
+  "effortLevel": "xhigh",
+  "autoMemoryEnabled": false,
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
+  "statusLine": {
+    "type": "command",
+    "command": "spore token-status --statusline"
+  }
+}

@@ -25,6 +25,33 @@ if ($gcd ne '') {
 }
 
 my $path = "$root/state.md";
+
+# Mint a stub state.md on first coordinator boot so the agent always has
+# an anchor to read. Coordinator-only: workers run inside .worktrees/<slug>/
+# but resolve to the same $root via rev-parse, so this still creates the
+# canonical project-root state.md once, not one per worker.
+unless (-e $path) {
+    if (open my $w, '>:encoding(UTF-8)', $path) {
+        print $w <<"STUB";
+# coordinator state
+
+(stub auto-minted on first SessionStart; rewrite after your first
+meaningful turn. Re-read on every respawn; the transcript is not
+durable.)
+
+## Active tasks
+
+| slug | intent | blocker | last seen |
+|---|---|---|---|
+
+## Open operator questions
+
+## Recent events
+STUB
+        close $w;
+    }
+}
+
 open my $fh, '<:encoding(UTF-8)', $path or exit 0;
 my $body = do { local $/; <$fh> };
 close $fh;

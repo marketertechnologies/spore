@@ -5,3 +5,35 @@
 # consumers and must stay canonical. The dogfood file carries the
 # project-specific deltas for spore-as-a-project.
 brief = "bootstrap/coordinator/dogfood-role.md"
+# Run the driver inside an in-pane respawn loop so a token-cap wrap
+# (or any other clean driver exit) rotates the agent in place without
+# tearing down the tmux session. An operator attached to the
+# coordinator pane keeps their pane and full scrollback across the
+# rotation; without this, a flush kills the session and an SSH login
+# that landed via `spore-attach coord` drops with it. See
+# docs/coordinator-supervisor.md.
+supervise = true
+
+[fleet]
+# This repo integrates on a long-lived feature branch, not a local main
+# (there is no local main; only origin/main). Point the worker lifecycle
+# (ship/merge/done + the UnmergedCommits gate) at it so task completion
+# does not assume a local main. Per-invocation override stays available
+# via `spore task ship --base <b>`.
+base = "spore-upgrade-0.9.2"
+
+[matter.linear]
+# Dogfood: this fork serves its own ROC tickets (newbuilds workspace) as
+# the agent "rocky". ROC has no "Ready" state, so "Todo" is the pickup
+# state. delegate = true sets issueUpdate.delegateId to the authenticated
+# actor (rocky) on claim -- Linear's agent-ownership signal -- and never
+# sets assigneeId (assignment is for humans). The token comes from the
+# LINEAR_API_KEY env: ~/.config/spore/secrets.env locally, agenix on the
+# deployed host.
+enabled = true
+team = "ROC"
+ready_state = "Todo"
+in_progress_state = "In Progress"
+done_state = "Done"
+delegate = true
+api_key_env = "LINEAR_API_KEY"

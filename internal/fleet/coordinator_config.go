@@ -1,11 +1,12 @@
 package fleet
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/versality/spore/internal/sporetoml"
+	"github.com/versality/spore/internal/task"
 )
 
 // CoordinatorConfig captures the [coordinator] section from a project's
@@ -32,17 +33,26 @@ type CoordinatorConfig struct {
 	// session names. When set and a live session matches, EnsureCoordinator
 	// treats the coordinator role as externally provided and skips the
 	// kernel spawn. Use this when an operator-side process owns the
-	// coordinator under a non-spore session name (for example a helm-*
+	// coordinator under a non-spore session name (for example a pilot-*
 	// session running outside the kernel's spore/<project>/coordinator
 	// slot). Empty disables the check and the kernel spawns its own.
 	ExternalSessionPattern string
+
+	// Supervise runs the coordinator driver inside an in-pane respawn
+	// loop so a token-cap wrap rotates the driver without killing the
+	// tmux session (automatic coordinator rotation). Off by default;
+	// SPORE_COORDINATOR_SUPERVISE overrides per-spawn. The kernel
+	// default stays off because the spawn settle-check needs a single-
+	// exec lifecycle to detect a bad agent binary; supervise=true
+	// hides that error inside an infinite respawn loop.
+	Supervise bool
 }
 
 // LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml.
 // A missing file returns a zero CoordinatorConfig with no error so callers
 // can treat absent config as "use defaults".
 func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
+	tomlPath := filepath.Join(task.MainCheckoutRoot(projectRoot), "spore.toml")
 	b, err := os.ReadFile(tomlPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -64,26 +74,15 @@ func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
 // surfaces loudly.
 func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
 	var cfg CoordinatorConfig
-	inSection := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
-		if line == "" {
-			continue
+	err := sporetoml.ScanSections(content, func(l sporetoml.Line) error {
+		if l.Section != "coordinator" {
+			return nil
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inSection = strings.TrimSpace(line[1:len(line)-1]) == "coordinator"
-			continue
+		key, raw, ok := sporetoml.SplitKeyValue(l.Text)
+		if !ok {
+			return fmt.Errorf("line %d: malformed entry %q", l.LineNum, l.Text)
 		}
-		if !inSection {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return CoordinatorConfig{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := stripTOMLQuotes(strings.TrimSpace(line[eq+1:]))
+		val := sporetoml.StripQuotes(raw)
 		switch key {
 		case "driver":
 			cfg.Driver = val
@@ -93,40 +92,22 @@ func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
 			cfg.Brief = val
 		case "external_session_pattern":
 			cfg.ExternalSessionPattern = val
+		case "supervise":
+			switch val {
+			case "true":
+				cfg.Supervise = true
+			case "false":
+				cfg.Supervise = false
+			default:
+				return fmt.Errorf("line %d: supervise must be true or false, got %q", l.LineNum, val)
+			}
 		default:
-			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", lineNum, key)
+			return fmt.Errorf("line %d: unknown key %q in [coordinator]", l.LineNum, key)
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return CoordinatorConfig{}, err
 	}
 	return cfg, nil
-}
-
-func stripTOMLComment(line string) string {
-	inQuote := byte(0)
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		switch {
-		case inQuote != 0:
-			if ch == inQuote {
-				inQuote = 0
-			}
-		case ch == '"' || ch == '\'':
-			inQuote = ch
-		case ch == '#':
-			return line[:i]
-		}
-	}
-	return line
-}
-
-func stripTOMLQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
 }

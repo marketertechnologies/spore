@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/tmuxsess"
 )
 
 func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
@@ -13,7 +16,7 @@ func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	t.Cleanup(func() { killSporeSessions(dirs.project) })
 
@@ -24,7 +27,7 @@ func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile pass 1: %v", err)
 	}
-	if !hasSession(session) {
+	if !tmuxsess.Has(session) {
 		t.Fatalf("expected coordinator session %q after first reconcile", session)
 	}
 
@@ -40,7 +43,7 @@ func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile pass 2: %v", err)
 	}
-	if !hasSession(session) {
+	if !tmuxsess.Has(session) {
 		t.Fatalf("expected coordinator session %q after second reconcile", session)
 	}
 	ts2, err := sessionCreated(session)
@@ -52,13 +55,13 @@ func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
 	}
 }
 
-func TestReconcileReapsCoordinatorOnDisable(t *testing.T) {
+func TestReconcileKeepsCoordinatorOnDisable(t *testing.T) {
 	requireToolchain(t)
 
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	t.Cleanup(func() { killSporeSessions(dirs.project) })
 
@@ -69,7 +72,7 @@ func TestReconcileReapsCoordinatorOnDisable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile (enable): %v", err)
 	}
-	if !hasSession(session) {
+	if !tmuxsess.Has(session) {
 		t.Fatalf("expected coordinator session %q before disable", session)
 	}
 
@@ -86,8 +89,8 @@ func TestReconcileReapsCoordinatorOnDisable(t *testing.T) {
 	if !r.Disabled {
 		t.Errorf("expected Disabled=true after Disable(), got %+v", r)
 	}
-	if hasSession(session) {
-		t.Errorf("expected coordinator session %q reaped on flag-disable, still alive", session)
+	if !tmuxsess.Has(session) {
+		t.Errorf("expected coordinator session %q to survive flag-disable, was reaped", session)
 	}
 }
 
@@ -97,7 +100,7 @@ func TestReconcileCoordinatorDoesNotCountTowardCap(t *testing.T) {
 	dirs := newTestDirs(t)
 	gitInit(t, dirs.project)
 	mustEnable(t)
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	setTestAgentBinary(t)
 
 	for _, slug := range []string{"a", "b"} {
 		writeTask(t, dirs.tasks, slug, "active")
@@ -117,7 +120,7 @@ func TestReconcileCoordinatorDoesNotCountTowardCap(t *testing.T) {
 		t.Errorf("Skipped = %v, want []", r.Skipped)
 	}
 
-	if !hasSession(CoordinatorSessionName(dirs.project)) {
+	if !tmuxsess.Has(CoordinatorSessionName(dirs.project)) {
 		t.Errorf("expected coordinator session alive after reconcile")
 	}
 }
@@ -127,7 +130,7 @@ func TestCoordinatorSessionNameUsesMainRepoFromWorktree(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	parent := t.TempDir()
-	main := filepath.Join(parent, "marketercom")
+	main := filepath.Join(parent, "exampleproj")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,19 +145,26 @@ func TestCoordinatorSessionNameUsesMainRepoFromWorktree(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	worktree := filepath.Join(main, ".worktrees", "wt-rover-slug")
+	worktree := filepath.Join(main, ".worktrees", "wt-sandbox-slug")
 	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("git", "-C", main, "worktree", "add", "-q", worktree, "-b", "wt/rover").CombinedOutput()
+	out, err := exec.Command("git", "-C", main, "worktree", "add", "-q", worktree, "-b", "wt/sandbox").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
 
 	got := CoordinatorSessionName(worktree)
-	want := "spore/marketercom/coordinator"
+	want := "\U0001F419 exampleproj/coordinator"
 	if got != want {
 		t.Errorf("CoordinatorSessionName(worktree) = %q, want %q", got, want)
+	}
+}
+
+func TestCoordinatorSessionNameWtEmojiShape(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spore")
+	if got := CoordinatorSessionName(dir); got != "\U0001F41D spore/coordinator" {
+		t.Errorf("CoordinatorSessionName(spore) = %q, want bee spore/coordinator", got)
 	}
 }
 
@@ -192,12 +202,12 @@ func TestEnsureCoordinatorDefersToExternalSession(t *testing.T) {
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
-		[]byte("[coordinator]\nexternal_session_pattern = \"^helm-mcom( \\[.*\\])?$\"\n"),
+		[]byte("[coordinator]\nexternal_session_pattern = \"^external-coord( \\[.*\\])?$\"\n"),
 		0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	external := "helm-mcom [opus]"
+	external := "external-coord [opus]"
 	if err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", external, "sleep 86400").Run(); err != nil {
 		t.Fatalf("spawn external session: %v", err)
 	}
@@ -215,7 +225,7 @@ func TestEnsureCoordinatorDefersToExternalSession(t *testing.T) {
 	if got != external {
 		t.Errorf("EnsureCoordinator returned %q, want external %q", got, external)
 	}
-	if hasSession(CoordinatorSessionName(dir)) {
+	if tmuxsess.Has(CoordinatorSessionName(dir)) {
 		t.Errorf("kernel coordinator session %q was spawned despite external match", CoordinatorSessionName(dir))
 	}
 	if !CoordinatorAlive(dir) {
@@ -230,7 +240,7 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
-		[]byte("[coordinator]\nexternal_session_pattern = \"^helm-mcom\"\n"),
+		[]byte("[coordinator]\nexternal_session_pattern = \"^external-coord\"\n"),
 		0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -261,4 +271,63 @@ func sessionCreated(name string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+func TestEnsureCoordinatorRendersCodexHooks(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	dir := t.TempDir()
+	configsDir := filepath.Join(dir, "configs", "codex")
+	if err := os.MkdirAll(configsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `{"events":{"Stop":[{"command":"coord-only","kinds":["coordinator"]},{"command":"worker-only","kinds":["worker"]}]}}`
+	if err := os.WriteFile(filepath.Join(configsDir, "hooks-config.json"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 30")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", CoordinatorSessionName(dir)).Run()
+	})
+
+	if _, _, err := EnsureCoordinator(dir); err != nil {
+		t.Fatalf("EnsureCoordinator: %v", err)
+	}
+	out, err := os.ReadFile(filepath.Join(dir, ".codex/hooks.json"))
+	if err != nil {
+		t.Fatalf("coordinator spawn did not render .codex/hooks.json: %v", err)
+	}
+	body := string(out)
+	if !strings.Contains(body, "coord-only") {
+		t.Errorf("rendered .codex/hooks.json missing coord-only binding: %s", body)
+	}
+	if strings.Contains(body, "worker-only") {
+		t.Errorf("rendered .codex/hooks.json leaked worker-only into coordinator render: %s", body)
+	}
+}
+
+func TestEnsureCoordinatorSetsSessionKind(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+
+	dir := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 30")
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", CoordinatorSessionName(dir)).Run()
+	})
+
+	session, _, err := EnsureCoordinator(dir)
+	if err != nil {
+		t.Fatalf("EnsureCoordinator: %v", err)
+	}
+	out, err := exec.Command("tmux", "-L", testTmuxSocket, "show-environment", "-t", session, "WT_SESSION_KIND").Output()
+	if err != nil {
+		t.Fatalf("tmux show-environment: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "WT_SESSION_KIND=coordinator" {
+		t.Errorf("WT_SESSION_KIND env on coordinator session = %q, want %q", got, "WT_SESSION_KIND=coordinator")
+	}
 }

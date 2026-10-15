@@ -5,9 +5,13 @@
 package lints
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +19,10 @@ import (
 
 // Issue is one finding produced by a Lint. Path is repo-relative.
 // Line is 1-indexed; 0 means the issue is whole-file.
+//
+// The CLI emitter derives severity and a stable fingerprint from the
+// (lint, path, line, message) tuple at output time; lints only fill
+// these three fields.
 type Issue struct {
 	Path    string
 	Line    int
@@ -44,9 +52,55 @@ func Default() []Lint {
 		ClaudeDrift{ConsumersDir: "rules/consumers", RulesDir: "rules"},
 		ClaudeTotalSize{},
 		AgentMirror{},
+		TaskBrief{},
 		TaskEvidence{TasksDir: "tasks"},
+		TaskStatus{},
 		TmuxSocketTest{},
 	}
+}
+
+// Named returns every named lint spore knows about, including those
+// not in Default(). The map keys are stable Lint.Name() values; the
+// values are zero-valued structs that consumers configure via
+// spore.toml [lint.<name>] or by wiring their own struct in Go.
+//
+// Lints not in Default() are project-policy-shaped: they assume a
+// specific layout (docs/todo, harness/tech-debt-rulings.md, the
+// configs/claude/ hooks render pipeline, ...). Consumers invoke them
+// by name via `spore lint <name>` after their own opt-in.
+//
+// no-cross-repo-tasks in particular ships with empty maps; the
+// kernel does not carry consumer-specific paths or slug prefixes.
+// Configure via [lint.no-cross-repo-tasks] in spore.toml.
+func Named() map[string]Lint {
+	out := map[string]Lint{}
+	for _, l := range Default() {
+		out[l.Name()] = l
+	}
+	for _, l := range []Lint{
+		TodoPriority{},
+		NoCrossRepoTasks{},
+		Orphans{},
+		OverviewDrift{},
+		PlanFirstRequired{},
+		CodexEffortHighOnly{},
+		HooksDrift{},
+		TechDebtRulings{},
+		TaskDoneZeroCommits{},
+		UserSkillsParity{},
+		CaptureSignalCoverage{},
+		ClaudeSize{},
+		ClaudeSubdir{},
+		TaskPriority{},
+		FlakeInputShadow{},
+		Agenix{},
+		AgentKillSwitches{},
+		TaskSchedulerContext{},
+		TaskNeeds{},
+	} {
+		out[l.Name()] = l
+	}
+	return out
 }
 
 // listFiles runs `git ls-files` rooted at root. extOnly, when
@@ -144,6 +198,121 @@ func isGenerated(rel string) bool {
 	}
 	for _, dir := range generatedDirs {
 		if strings.HasPrefix(rel, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func extSet(exts []string, defaults map[string]bool) map[string]bool {
+	if len(exts) == 0 {
+		return defaults
+	}
+	out := map[string]bool{}
+	for _, ext := range exts {
+		ext = strings.TrimSpace(ext)
+		if ext == "" {
+			continue
+		}
+		if strings.Contains(ext, ".") && !strings.HasPrefix(ext, ".") {
+			out[filepath.ToSlash(ext)] = true
+			continue
+		}
+		out[ext] = true
+	}
+	return out
+}
+
+// ownSlug returns the worktree slug for root: the current branch with
+// the `wt/` prefix stripped, or "" when HEAD is not a wt/ branch (or
+// git fails). The git call passes `-c safe.directory=<abs root>` so a
+// repo imported via rsync (preserving a foreign uid) still resolves.
+func ownSlug(root string) string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	cmd := exec.Command("git", "-c", "safe.directory="+abs, "-C", root, "symbolic-ref", "--short", "HEAD")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(out.String())
+	if !strings.HasPrefix(branch, "wt/") {
+		return ""
+	}
+	return strings.TrimPrefix(branch, "wt/")
+}
+
+// newLineScanner returns a bufio.Scanner over r sized for the long
+// lines spore lints routinely meet (minified assets, generated code):
+// a 64 KiB initial buffer growing to 4 MiB.
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	return s
+}
+
+// countLines returns the number of newline-delimited lines in the file
+// at path, using the shared large-buffer scanner.
+func countLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	scanner := newLineScanner(f)
+	n := 0
+	for scanner.Scan() {
+		n++
+	}
+	return n, scanner.Err()
+}
+
+// scanDirsConfigured reports whether dirs names at least one concrete
+// directory to scan (anything other than empty or "."). When false the
+// caller scans the whole tree.
+func scanDirsConfigured(dirs []string) bool {
+	for _, d := range dirs {
+		if s := strings.TrimSpace(d); s != "" && s != "." {
+			return true
+		}
+	}
+	return false
+}
+
+// inScanDirs reports whether the repo-relative path rel falls under any
+// directory in dirs. An empty or "." entry matches everything.
+func inScanDirs(rel string, dirs []string) bool {
+	rel = filepath.ToSlash(rel)
+	for _, d := range dirs {
+		d = strings.TrimSpace(filepath.ToSlash(d))
+		if d == "" || d == "." {
+			return true
+		}
+		d = strings.TrimSuffix(d, "/")
+		if rel == d || strings.HasPrefix(rel, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func skipPath(rel string, skips []string) bool {
+	rel = filepath.ToSlash(rel)
+	for _, skip := range skips {
+		skip = filepath.ToSlash(strings.TrimSpace(skip))
+		if skip == "" {
+			continue
+		}
+		if strings.HasSuffix(skip, "/") && strings.HasPrefix(rel, skip) {
+			return true
+		}
+		if rel == skip {
+			return true
+		}
+		if ok, _ := path.Match(skip, rel); ok {
 			return true
 		}
 	}

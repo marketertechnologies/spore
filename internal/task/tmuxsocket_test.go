@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,18 @@ func TestMain(m *testing.M) {
 	// host's socket regardless of TMUX_TMPDIR).
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+	// Hermetic env: a coordinator/worker shell or the deployed host
+	// leaks WT_SESSION_KIND (flips block-authorization gates) and
+	// SPORE_MATTER_* (rewires the matter loader) into `go test`. Clear
+	// them so the suite passes regardless of where it runs.
+	_ = os.Unsetenv("WT_SESSION_KIND")
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "SPORE_MATTER_") {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				_ = os.Unsetenv(kv[:i])
+			}
+		}
+	}
 	// Keepalive session: tmux's default behavior is to exit the
 	// server when the last session ends. With a per-process server,
 	// each test's cleanup can drop the session count to zero,

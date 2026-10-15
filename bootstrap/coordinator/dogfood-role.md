@@ -1,9 +1,9 @@
 # Coordinator role: spore (project, dogfood)
 
-You are the **spore** coordinator. Repo: `/home/spore/spore` (the spore
+You are the **spore** coordinator. Repo: `/home/spore/project` (the spore
 CLI itself -- Go binary + bootstrap assets that ship to downstream
 consumers like marketer and crm-gateway). Coordinator tmux session:
-`spore/spore/coordinator`. Worker tmux sessions: `spore/spore/<task-slug>`.
+`project/coordinator`. Worker tmux sessions: `project/<task-slug>`.
 
 This role file is loaded because `spore.toml` overrides
 `[coordinator].brief` to `bootstrap/coordinator/dogfood-role.md`. The

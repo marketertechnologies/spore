@@ -45,6 +45,43 @@ go-build:
 nix-build:
     nix build .
 
+# deploy: rebuild the rocky host from this checkout. Run on the
+# rocky box as root. Picks up any committed (or dirty) changes to
+# flake.nix, nixosModules/, nix/hosts/rocky/, bootstrap/handover/,
+# etc., and atomically activates the new system. The spore binary
+# on the coordinator's PATH ends up matching the source tree.
+#
+# Pinned to /home/spore/project so `just deploy` works from any CWD
+# (root's home has no flake.nix; just changes dir to the justfile
+# location but we want the flake path baked in so a stray run from
+# /root behaves the same as one from /home/spore/project).
+deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=/home/spore/project
+    # Fail-closed guard: the operator + deploy SSH pubkeys live on the box
+    # at /etc/spore-ssh/<user>, never in the repo or the nix build. A switch
+    # never writes them, so it cannot wipe the keys - but only if they are
+    # already present. Refuse to switch when any are missing or empty, so a
+    # box can never be left unreachable. Seed them out-of-band first (see
+    # docs/deploy.md).
+    for u in root spore deploy; do
+      if [ ! -s "/etc/spore-ssh/$u" ]; then
+        echo "refusing to deploy: /etc/spore-ssh/$u missing or empty" >&2
+        echo "seed it out-of-band before switching (see docs/deploy.md)" >&2
+        exit 1
+      fi
+    done
+    # keys.local.nix holds operator pubkeys declaratively, but is gitignored
+    # and `nixos-rebuild switch --flake` only reads tracked/staged files.
+    # Force-stage it for the build (no commit), and unstage on exit so it is
+    # never accidentally committed or pushed.
+    if [ -f "$repo/nix/hosts/rocky/keys.local.nix" ]; then
+      git -C "$repo" add -f nix/hosts/rocky/keys.local.nix
+      trap 'git -C "$repo" restore --staged nix/hosts/rocky/keys.local.nix 2>/dev/null || true' EXIT
+    fi
+    nixos-rebuild switch --flake "$repo#rocky"
+
 # release X.Y.Z: bump VERSION, commit, and tag vX.Y.Z. Aborts on a
 # dirty tree, a failing `just check`, or an existing tag. Does NOT
 # push -- inspect the commit + tag, then `git push origin main vX.Y.Z`.

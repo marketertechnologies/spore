@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/testutil/golden"
 )
 
 func TestWriteGolden(t *testing.T) {
@@ -17,17 +19,7 @@ func TestWriteGolden(t *testing.T) {
 	}
 	body := []byte("\nbody line one\n")
 	got := Write(m, body)
-	want := "---\n" +
-		"status: draft\n" +
-		"slug: hello-world\n" +
-		"title: hello world\n" +
-		"created: 2026-04-28T10:00:00Z\n" +
-		"project: spore\n" +
-		"---\n" +
-		"\nbody line one\n"
-	if string(got) != want {
-		t.Fatalf("Write golden mismatch\nwant:\n%s\ngot:\n%s", want, got)
-	}
+	golden.Equal(t, "testdata/write-golden.md", got)
 }
 
 func TestRoundTrip(t *testing.T) {
@@ -136,6 +128,21 @@ func TestSessionFieldRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPriorityFieldRoundTrip(t *testing.T) {
+	in := []byte("---\nstatus: active\nslug: x\nagent: claude\npriority: high\n---\nbody\n")
+	m, body, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Priority != "high" {
+		t.Errorf("Priority = %q, want high", m.Priority)
+	}
+	out := Write(m, body)
+	if string(out) != string(in) {
+		t.Errorf("round-trip mismatch\nwant:\n%s\ngot:\n%s", in, out)
+	}
+}
+
 func TestParseUnknownFieldRoundTrip(t *testing.T) {
 	in := []byte("---\nstatus: draft\nslug: x\ncustom_key: hello\n---\nbody\n")
 	m, body, err := Parse(in)
@@ -149,6 +156,50 @@ func TestParseUnknownFieldRoundTrip(t *testing.T) {
 	want := "---\nstatus: draft\nslug: x\ncustom_key: hello\n---\nbody\n"
 	if string(out) != want {
 		t.Errorf("Write mismatch\nwant:\n%s\ngot:\n%s", want, out)
+	}
+}
+
+func TestGateFieldRoundTrip(t *testing.T) {
+	in := []byte("---\nstatus: backlog\nslug: x\ngate: waiting on operator\n---\nbody\n")
+	m, body, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Gate != "waiting on operator" {
+		t.Errorf("Gate = %q, want waiting on operator", m.Gate)
+	}
+	out := Write(m, body)
+	if string(out) != string(in) {
+		t.Errorf("round-trip mismatch\nwant:\n%s\ngot:\n%s", in, out)
+	}
+}
+
+func TestSchedulerFallbackPopulatesGateAndPreservesExtra(t *testing.T) {
+	in := []byte("---\nstatus: draft\nslug: x\nscheduler: after y\n---\nbody\n")
+	m, body, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Gate != "after y" {
+		t.Errorf("Gate = %q, want scheduler fallback", m.Gate)
+	}
+	if m.Extra["scheduler"] != "after y" {
+		t.Errorf("scheduler Extra = %q, want after y", m.Extra["scheduler"])
+	}
+	out := Write(m, body)
+	if string(out) != string(in) {
+		t.Errorf("scheduler-only round-trip should not add gate\nwant:\n%s\ngot:\n%s", in, out)
+	}
+}
+
+func TestGateBeatsSchedulerFallback(t *testing.T) {
+	in := []byte("---\nstatus: backlog\nslug: x\ngate: explicit\nscheduler: legacy\n---\n")
+	m, _, err := Parse(in)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Gate != "explicit" {
+		t.Errorf("Gate = %q, want explicit", m.Gate)
 	}
 }
 

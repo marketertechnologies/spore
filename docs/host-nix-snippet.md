@@ -28,10 +28,7 @@ Two paths, pick one:
   services.spore-fleet = {
     enable = true;
     user = "spore";
-    projects = {
-      crm-gateway.path = "/home/spore/crm-gateway";
-      # ... one entry per project under /home/spore/<name> ...
-    };
+    projectRoot = "/home/spore/project";
   };
 }
 ```

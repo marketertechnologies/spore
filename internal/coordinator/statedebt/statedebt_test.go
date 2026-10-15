@@ -8,11 +8,7 @@ import (
 	"time"
 )
 
-// fixedNow returns a clock pinned to 2026-05-10 so the sampleState dates
-// classify deterministically regardless of wall-clock drift.
-func fixedNow() time.Time {
-	return time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-}
+var fixedNow = time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
 
 const sampleState = `## Active tasks
 
@@ -24,7 +20,7 @@ harness: coordinator-verify-done
 
 The lesson body here.
 
-### SKYHELM SELF-LESSON: watch the reflog (2026-03-01)
+### COORDINATOR SELF-LESSON: watch the reflog (2026-03-01)
 
 Old lesson without harness pointer.
 
@@ -56,7 +52,7 @@ func TestScanClassifications(t *testing.T) {
 		class   Classification
 	}{
 		{"CRITICAL LESSON: always verify", Lifted},
-		{"SKYHELM SELF-LESSON: watch the reflog", StaleLiftCandidate},
+		{"COORDINATOR SELF-LESSON: watch the reflog", StaleLiftCandidate},
 		{"RULE: no force push", StaleLiftCandidate},
 		{"CRITICAL LESSON: fresh insight", Pending},
 	}

@@ -1,7 +1,6 @@
 package lints
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 // unboundedly once past a threshold; split into focused modules.
 type FileSize struct {
 	Limit int
+	Ext   []string
 }
 
 const defaultFileSizeLimit = 800
@@ -23,7 +23,7 @@ func (l FileSize) Run(root string) ([]Issue, error) {
 	if limit <= 0 {
 		limit = defaultFileSizeLimit
 	}
-	files, err := listFiles(root, sourceExts)
+	files, err := listFiles(root, extSet(l.Ext, sourceExts))
 	if err != nil {
 		return nil, err
 	}
@@ -48,19 +48,4 @@ func (l FileSize) Run(root string) ([]Issue, error) {
 		}
 	}
 	return issues, nil
-}
-
-func countLines(path string) (int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	n := 0
-	for scanner.Scan() {
-		n++
-	}
-	return n, scanner.Err()
 }

@@ -8,19 +8,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/versality/spore/internal/task"
 )
 
 func resolveRepoRoot() string {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		wd, _ := os.Getwd()
-		return wd
+	wd, _ := os.Getwd()
+	root := task.MainCheckoutRoot(wd)
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		return real
 	}
-	root := strings.TrimSpace(string(out))
-	if i := strings.Index(root, "/.worktrees/"); i >= 0 {
-		root = root[:i]
-	}
-	return root
+	return filepath.Clean(root)
 }
 
 func resolveMainBranch(root string) string {

@@ -29,8 +29,8 @@ func WatchInbox(slug string) error {
 // WatchInboxAt is the env-driven Stop-hook entry point. It targets
 // inboxDir directly instead of computing it from a slug, so callers
 // like `spore hooks watch-inbox` (no positional) can pass
-// $SPORE_TASK_INBOX, which the consumer harness sets per spawn (rower:
-// $WT_STATE/<slug>/inbox; coordinator: $SKYHELM_STATE_DIR/<project>/inbox).
+// $SPORE_TASK_INBOX, which the consumer harness sets per spawn (worker:
+// $WT_STATE/<slug>/inbox; coordinator: $SPORE_COORDINATOR_STATE_DIR/<project>/inbox).
 func WatchInboxAt(inboxDir string) error {
 	return watchInboxAt(inboxDir, os.Stdout, os.Stderr, defaultWatchOpts())
 }
@@ -38,14 +38,17 @@ func WatchInboxAt(inboxDir string) error {
 type watchOpts struct {
 	timeout     time.Duration
 	settle      time.Duration
+	poll        time.Duration
 	initWatcher func(dir string) (inboxWaiter, error)
 	sleep       func(time.Duration)
+	now         func() time.Time
 }
 
 // inboxWaiter abstracts inotify so tests can drive it without the
-// kernel. Wait returns true on event, false on timeout.
+// kernel. Wait blocks until an inbox event arrives or timeoutMs
+// elapses; it returns true on event, false on timeout.
 type inboxWaiter interface {
-	Wait() (woke bool, err error)
+	Wait(timeoutMs int) (woke bool, err error)
 	Close() error
 }
 
@@ -53,8 +56,10 @@ func defaultWatchOpts() watchOpts {
 	return watchOpts{
 		timeout:     envDurationSeconds("WATCH_TIMEOUT", 604800),
 		settle:      envDurationSeconds("WATCH_SETTLE", 1),
+		poll:        envDurationSeconds("WATCH_POLL", 30),
 		initWatcher: initPlatformWatcher,
 		sleep:       time.Sleep,
+		now:         time.Now,
 	}
 }
 
@@ -63,6 +68,9 @@ func watchInbox(slug string, stdout, stderr io.Writer, opts watchOpts) error {
 }
 
 func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) error {
+	if opts.now == nil {
+		opts.now = time.Now
+	}
 	if err := ensureInbox(inboxDir); err != nil {
 		return err
 	}
@@ -87,17 +95,53 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 	}
 	defer w.Close()
 
-	woke, _ := w.Wait()
-	if woke {
-		opts.sleep(opts.settle)
-	}
-
+	// A file may have landed between the first drain and inotify
+	// registration: that event predates the watch and is gone, and the
+	// pre-init drain already ran. Drain once more before blocking so a
+	// raced inbox event still wakes the agent on this Stop pass instead
+	// of waiting for the full WATCH_TIMEOUT.
 	if n, err := drainInbox(inboxDir, stdout); err != nil {
 		return err
 	} else if n > 0 {
 		return ErrWake
 	}
-	return nil
+
+	deadline := opts.now().Add(opts.timeout)
+	poll := opts.poll
+	if poll <= 0 || poll > opts.timeout {
+		poll = opts.timeout
+	}
+	for {
+		remaining := deadline.Sub(opts.now())
+		if remaining <= 0 {
+			return nil
+		}
+		step := poll
+		if step > remaining {
+			step = remaining
+		}
+		stepStart := opts.now()
+		woke, _ := w.Wait(int(step.Milliseconds()))
+		if woke {
+			opts.sleep(opts.settle)
+		}
+		if n, err := drainInbox(inboxDir, stdout); err != nil {
+			return err
+		} else if n > 0 {
+			return ErrWake
+		}
+		if !woke {
+			// The watcher returned without an event. Production
+			// inotify blocked for the full step; a test fake may
+			// return instantly. Either way, charge the step against
+			// the deadline so the loop terminates after opts.timeout
+			// of real or virtual time has elapsed.
+			elapsed := opts.now().Sub(stepStart)
+			if elapsed < step {
+				deadline = deadline.Add(-(step - elapsed))
+			}
+		}
+	}
 }
 
 // drainInbox lists *.json at the top level of inboxDir, atomically
@@ -171,17 +215,7 @@ func readTellFile(path string) (ts, source, body string) {
 }
 
 func workerInbox(slug string) string {
-	return filepath.Join(wtStateDir(), slug, "inbox")
-}
-
-func wtStateDir() string {
-	if v := os.Getenv("WT_STATE"); v != "" {
-		return v
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "state", "wt")
-	}
-	return ""
+	return filepath.Join(WtStateDir(), slug, "inbox")
 }
 
 func ensureInbox(inbox string) error {

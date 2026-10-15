@@ -6,21 +6,12 @@
 //     IDs are stable).
 //  2. List issues in ready_state for team. For each issue not yet
 //     present on disk (no tasks/<slug>.md carries `matter_id: <id>`),
-//     create a tasks/<slug>.md. Sync does NOT flip the issue
-//     ready->in-progress; that flip is bound to the rover-claim
-//     signal in OnSpawn, so the kanban only shows In Progress
-//     tickets that an actual worker session is owning.
+//     create a tasks/<slug>.md and push the issue ready->in-progress.
 //  3. Walk tasks/. For every status=done task that carries
 //     `matter_id: <id>` and is missing `linear_done: yes`, push the
 //     issue to done_state and stamp `linear_done: yes`. This is the
 //     safety-net path; the synchronous push happens via OnDone the
 //     moment the task flips to done.
-//
-// OnSpawn fires when the fleet reconciler (or an interactive
-// `spore task <slug>`) creates a worker session for a Linear-tagged
-// task. The adapter pushes the issue ready->in-progress at that
-// moment. A re-fired OnSpawn for an issue already in the in-progress
-// state is a no-op upstream (Linear's issueUpdate is idempotent).
 //
 // The adapter registers itself under the name "linear" via init(),
 // so importing this package is enough to make `[matter.linear]` (or
@@ -29,8 +20,7 @@
 // Frontmatter convention. Tasks created by this adapter carry the
 // generic matter keys (matter, matter_id, matter_url) plus the
 // adapter-private `linear_done` stamp once the upstream Done push
-// has succeeded. Reads also accept the legacy `linear:` /
-// `linear_url:` keys so tasks created before the rename keep working.
+// has succeeded.
 //
 // All HTTP traffic flows through a single endpoint and a single
 // Authorization header so a test can swap in an httptest server.
@@ -64,10 +54,13 @@ const (
 	linearDoneKey   = "linear_done"
 	linearDoneValue = "yes"
 
-	// legacy frontmatter keys, accepted on read for tasks that
-	// pre-date the matter/matter_id rename.
-	legacyIDKey  = "linear"
-	legacyURLKey = "linear_url"
+	// matterBlockerPrefix marks a blocker reason owned by the matter
+	// adapter: when a Linear ticket leaves Ready, future projection
+	// passes may stamp `blocker: matter:<state>` so the local task is
+	// no longer runnable. The same prefix is what lets a later pass
+	// edge-trigger a resume when the ticket returns to Ready. Blockers
+	// without this prefix are operator-set and stay sticky.
+	matterBlockerPrefix = "matter:"
 )
 
 func init() {
@@ -91,6 +84,19 @@ type Config struct {
 	APIKeyEnv       string
 	APIKeyFile      string
 	Endpoint        string
+	// ClaimLabel, when non-empty, restricts the Ready-state projection
+	// to issues bearing this Linear label. Lets multiple spore hosts
+	// share one upstream queue: each host filters on its own label,
+	// while a consumer-side process binds tickets to hosts by setting
+	// the label. Matter only reads the label; it never creates or
+	// modifies labels.
+	ClaimLabel string
+	// Delegate, when true, delegates each claimed issue to the
+	// authenticated actor (the agent the API token belongs to, resolved
+	// via viewer.id) by setting issueUpdate.delegateId on the
+	// ready->in_progress claim. This is Linear's agent-ownership signal;
+	// the adapter never sets assigneeId, which is reserved for humans.
+	Delegate bool
 }
 
 // Source is the Linear adapter. Construct via New (with a parsed
@@ -102,6 +108,9 @@ type Source struct {
 	// stateIDs caches workflow-state name -> id for the configured
 	// team, populated lazily on the first Sync.
 	stateIDs map[string]string
+	// actorID caches the authenticated user's id (viewer.id), resolved
+	// lazily on the first delegated claim.
+	actorID string
 }
 
 // Option tweaks Source construction in tests.
@@ -161,7 +170,8 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 	if !ok {
 		return 0, 0, fmt.Errorf("matter.linear: ready_state %q not found in team %s", s.cfg.ReadyState, s.cfg.Team)
 	}
-	if _, ok := s.stateIDs[s.cfg.InProgressState]; !ok {
+	inProgressID, ok := s.stateIDs[s.cfg.InProgressState]
+	if !ok {
 		return 0, 0, fmt.Errorf("matter.linear: in_progress_state %q not found in team %s", s.cfg.InProgressState, s.cfg.Team)
 	}
 	doneID, ok := s.stateIDs[s.cfg.DoneState]
@@ -174,21 +184,43 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		return 0, 0, err
 	}
 
+	// Delegate doubles as the pickup gate: when enabled, only adopt
+	// issues already delegated to this actor. Resolve actorID up front
+	// so the per-issue check below has it cached.
+	if s.cfg.Delegate {
+		if err := s.loadActorID(); err != nil {
+			return 0, 0, err
+		}
+	}
+
 	ready, err := s.listIssuesByState(readyID)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, issue := range ready {
-		if _, dup := known[issue.Identifier]; dup {
+		if s.cfg.Delegate && (issue.Delegate == nil || issue.Delegate.ID != s.actorID) {
+			continue
+		}
+		if slug, dup := known[issue.Identifier]; dup {
+			resumed, err := resumeIfMatterBlocked(tasksDir, slug)
+			if err != nil {
+				return created, updated, fmt.Errorf("matter.linear: resume %s: %w", issue.Identifier, err)
+			}
+			if resumed {
+				updated++
+			}
+			continue
+		}
+		if isBlockedByOpenUpstream(issue) {
 			continue
 		}
 		slug, err := s.adoptIssue(tasksDir, issue)
 		if err != nil {
 			return created, updated, fmt.Errorf("matter.linear: adopt %s: %w", issue.Identifier, err)
 		}
-		// Issue stays in Ready upstream until OnSpawn fires for
-		// the worker that picks it up. Operators dragging the kanban
-		// see "projected, not yet claimed" vs "claimed by rover".
+		if err := s.claimIssue(issue.ID, inProgressID); err != nil {
+			return created, updated, fmt.Errorf("matter.linear: transition %s -> in_progress: %w", issue.Identifier, err)
+		}
 		created++
 		known[issue.Identifier] = slug
 	}
@@ -206,38 +238,7 @@ func (s *Source) Sync(ctx context.Context, projectRoot string) (created, updated
 		}
 		updated++
 	}
-
-	if err := s.projectComments(projectRoot, tasksDir); err != nil {
-		return created, updated, fmt.Errorf("matter.linear: project comments: %w", err)
-	}
 	return created, updated, nil
-}
-
-// OnSpawn is the rover-claim push: the fleet reconciler (or
-// lifecycle.Start) just created a worker session for slug, so flip
-// the upstream issue ready->in-progress. The push is idempotent on
-// Linear's side, so a re-fire from a respawn after a crash is
-// harmless. No-op when the task carries no Linear matter id (the
-// task was created without a matter, or by a different adapter).
-//
-// Symmetric back-flips for paused/blocked land in a follow-up: the
-// adapter would need new pause_state / blocked_state config keys
-// and OnPause / OnBlock hooks on the matter.Matter interface.
-// Tracked separately to keep this PR focused on the
-// projection-vs-claim decoupling that mcom needs first.
-func (s *Source) OnSpawn(ctx context.Context, slug string, meta map[string]string) error {
-	id := issueIDFromMeta(meta)
-	if id == "" {
-		return nil
-	}
-	if err := s.loadStateIDs(); err != nil {
-		return err
-	}
-	inProgressID, ok := s.stateIDs[s.cfg.InProgressState]
-	if !ok {
-		return fmt.Errorf("matter.linear: in_progress_state %q not found in team %s", s.cfg.InProgressState, s.cfg.Team)
-	}
-	return s.transitionIssue(id, inProgressID)
 }
 
 // OnDone is the synchronous push for a task that just flipped to
@@ -246,7 +247,7 @@ func (s *Source) OnSpawn(ctx context.Context, slug string, meta map[string]strin
 // outside spore task done). The push is idempotent on Linear's side,
 // so the next Sync re-pushing as a no-op is harmless.
 func (s *Source) OnDone(ctx context.Context, slug string, meta map[string]string) error {
-	id := issueIDFromMeta(meta)
+	id := linearIDFromMeta(meta)
 	if id == "" {
 		return nil
 	}
@@ -265,6 +266,12 @@ func (s *Source) OnDone(ctx context.Context, slug string, meta map[string]string
 // matters.linear.credentialFiles.api_key option renders into via
 // SPORE_MATTER_LINEAR__CREDENTIAL_API_KEY=$CREDENTIALS_DIRECTORY/...,
 // so it counts as an api_key_file source.
+// optTrue reads a matter option as a boolean: "1" or "true" (any case)
+// are true, everything else false.
+func optTrue(v string) bool {
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 func parseConfig(c matter.Config) (Config, error) {
 	cfg := Config{
 		Team:            c.Option("team", ""),
@@ -274,6 +281,8 @@ func parseConfig(c matter.Config) (Config, error) {
 		APIKeyEnv:       c.Option("api_key_env", ""),
 		APIKeyFile:      c.Option("api_key_file", ""),
 		Endpoint:        c.Option("endpoint", "https://api.linear.app/graphql"),
+		ClaimLabel:      c.Option("claim_label", ""),
+		Delegate:        optTrue(c.Option("delegate", "")),
 	}
 	if cfg.APIKeyFile == "" {
 		cfg.APIKeyFile = c.Option("credential_api_key", "")
@@ -378,9 +387,7 @@ type linearTaskRow struct {
 
 // indexLinearTasks scans tasksDir and returns identifier -> slug for
 // every task that carries a Linear matter id. Used to skip
-// re-adopting issues already present on disk. Reads both the
-// generic matter_id key and the legacy linear: key so a kernel
-// upgrade does not orphan pre-rename tasks.
+// re-adopting issues already present on disk.
 func indexLinearTasks(tasksDir string) (map[string]string, error) {
 	out := map[string]string{}
 	entries, err := os.ReadDir(tasksDir)
@@ -450,6 +457,33 @@ func pendingDonePushes(tasksDir string) ([]linearTaskRow, error) {
 	return rows, nil
 }
 
+// resumeIfMatterBlocked flips slug back to active when the local task
+// is blocked with a matter-set blocker (one carrying matterBlockerPrefix).
+// Operator-set blockers (no prefix) are left untouched: matter must not
+// stomp a manual block reason. Edge-triggered: only fires when the local
+// task is in matter-owned blocked state, never resets an already-active
+// task. Returns true when a flip happened.
+func resumeIfMatterBlocked(tasksDir, slug string) (bool, error) {
+	path := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	m, body, err := frontmatter.Parse(raw)
+	if err != nil {
+		return false, err
+	}
+	if !task.IsBlocked(m.Status) {
+		return false, nil
+	}
+	if !strings.HasPrefix(m.Extra["blocker"], matterBlockerPrefix) {
+		return false, nil
+	}
+	m.Status = task.StatusActive
+	delete(m.Extra, "blocker")
+	return true, os.WriteFile(path, frontmatter.Write(m, body), 0o644)
+}
+
 // stampLinearDone re-writes tasks/<slug>.md with `linear_done: yes`
 // in the frontmatter so a future pass does not push the same issue
 // again. The body is preserved byte-for-byte.
@@ -471,9 +505,8 @@ func stampLinearDone(tasksDir, slug string) error {
 }
 
 // linearIDFromMeta returns the upstream issue identifier from the
-// task's frontmatter, preferring the generic matter_id slot but
-// falling back to the legacy `linear:` key. Returns "" when the task
-// has no Linear linkage or names a different matter.
+// task's frontmatter matter_id slot. Returns "" when the task has no
+// Linear linkage or names a different matter.
 func linearIDFromMeta(extra map[string]string) string {
 	if extra == nil {
 		return ""
@@ -481,18 +514,7 @@ func linearIDFromMeta(extra map[string]string) string {
 	if name := extra[matter.MatterKey]; name != "" && name != sourceName {
 		return ""
 	}
-	if id := extra[matter.MatterIDKey]; id != "" {
-		return id
-	}
-	return extra[legacyIDKey]
-}
-
-// issueIDFromMeta is the OnSpawn / OnDone counterpart of
-// linearIDFromMeta. It is identical today but kept separate so
-// future divergences (e.g. preferring matter_url over matter_id for
-// upstreams that key on URL) stay scoped to one call site.
-func issueIDFromMeta(extra map[string]string) string {
-	return linearIDFromMeta(extra)
+	return extra[matter.MatterIDKey]
 }
 
 // transitionIssue maps the issueUpdate mutation. Linear treats the
@@ -517,6 +539,63 @@ func (s *Source) transitionIssue(issueID, stateID string) error {
 	if !resp.Data.IssueUpdate.Success {
 		return fmt.Errorf("issueUpdate returned success=false for %s", issueID)
 	}
+	return nil
+}
+
+// claimIssue moves a ready issue into the in-progress state. When
+// Delegate is set it also delegates the issue to the authenticated
+// actor (delegateId = viewer.id) in the same mutation, so the ticket
+// reads as owned by the agent the token belongs to. It never sets
+// assigneeId. With Delegate off it is a plain state transition.
+func (s *Source) claimIssue(issueID, stateID string) error {
+	if !s.cfg.Delegate {
+		return s.transitionIssue(issueID, stateID)
+	}
+	if err := s.loadActorID(); err != nil {
+		return err
+	}
+	const mutation = `mutation IssueClaim($id: String!, $stateId: String!, $delegateId: String!) {
+  issueUpdate(id: $id, input: {stateId: $stateId, delegateId: $delegateId}) { success }
+}`
+	var resp struct {
+		Data struct {
+			IssueUpdate struct {
+				Success bool `json:"success"`
+			} `json:"issueUpdate"`
+		} `json:"data"`
+	}
+	vars := map[string]any{"id": issueID, "stateId": stateID, "delegateId": s.actorID}
+	if err := s.graphQL(mutation, vars, &resp); err != nil {
+		return err
+	}
+	if !resp.Data.IssueUpdate.Success {
+		return fmt.Errorf("issueUpdate(claim) returned success=false for %s", issueID)
+	}
+	return nil
+}
+
+// loadActorID resolves and caches the authenticated user's id via the
+// viewer query. With an actor/app OAuth token this is the agent's own
+// id, which is what delegated claims target.
+func (s *Source) loadActorID() error {
+	if s.actorID != "" {
+		return nil
+	}
+	const q = `query Viewer { viewer { id } }`
+	var resp struct {
+		Data struct {
+			Viewer struct {
+				ID string `json:"id"`
+			} `json:"viewer"`
+		} `json:"data"`
+	}
+	if err := s.graphQL(q, nil, &resp); err != nil {
+		return err
+	}
+	if resp.Data.Viewer.ID == "" {
+		return fmt.Errorf("matter.linear: delegate enabled but viewer.id is empty (token is not a user/actor token)")
+	}
+	s.actorID = resp.Data.Viewer.ID
 	return nil
 }
 
@@ -554,12 +633,59 @@ func (s *Source) loadStateIDs() error {
 }
 
 type linearIssue struct {
-	ID          string  `json:"id"`
-	Identifier  string  `json:"identifier"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	URL         string  `json:"url"`
-	SortOrder   float64 `json:"sortOrder"`
+	ID          string          `json:"id"`
+	Identifier  string          `json:"identifier"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	URL         string          `json:"url"`
+	SortOrder   float64         `json:"sortOrder"`
+	Relations   linearRelations `json:"relations"`
+	// Delegate is the issue's current agent delegate. Nil when no
+	// delegate is set. Populated by listIssuesByState; used by Sync
+	// to gate pickup when cfg.Delegate is true.
+	Delegate *linearActor `json:"delegate"`
+}
+
+type linearActor struct {
+	ID string `json:"id"`
+}
+
+type linearRelations struct {
+	Nodes []linearRelation `json:"nodes"`
+}
+
+type linearRelation struct {
+	Type         string             `json:"type"`
+	RelatedIssue linearRelatedIssue `json:"relatedIssue"`
+}
+
+type linearRelatedIssue struct {
+	ID    string                  `json:"id"`
+	State linearRelatedIssueState `json:"state"`
+}
+
+type linearRelatedIssueState struct {
+	Type string `json:"type"`
+}
+
+// isBlockedByOpenUpstream returns true when issue has at least one
+// blocked_by relation pointing to an upstream issue whose state.type
+// is not terminal. Linear's state.type enum tags terminal states
+// "completed" and "canceled"; the workflow-state name is
+// operator-customisable and not safe to key on.
+func isBlockedByOpenUpstream(issue linearIssue) bool {
+	for _, rel := range issue.Relations.Nodes {
+		if rel.Type != "blocked_by" {
+			continue
+		}
+		switch rel.RelatedIssue.State.Type {
+		case "completed", "canceled":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // listIssuesByState returns the issues in stateID ordered by Linear's
@@ -570,11 +696,38 @@ type linearIssue struct {
 // Ready, get it picked next"; relying on default ordering would honour
 // createdAt instead.
 func (s *Source) listIssuesByState(stateID string) ([]linearIssue, error) {
-	const q = `query StateIssues($stateId: ID!) {
+	q := `query StateIssues($stateId: ID!) {
   issues(filter: {state: {id: {eq: $stateId}}}) {
-    nodes { id identifier title description url sortOrder }
+    nodes {
+      id identifier title description url sortOrder
+      delegate { id }
+      relations {
+        nodes {
+          type
+          relatedIssue { id state { type } }
+        }
+      }
+    }
   }
 }`
+	vars := map[string]any{"stateId": stateID}
+	if s.cfg.ClaimLabel != "" {
+		q = `query StateIssues($stateId: ID!, $label: String!) {
+  issues(filter: {state: {id: {eq: $stateId}}, labels: {some: {name: {eq: $label}}}}) {
+    nodes {
+      id identifier title description url sortOrder
+      delegate { id }
+      relations {
+        nodes {
+          type
+          relatedIssue { id state { type } }
+        }
+      }
+    }
+  }
+}`
+		vars["label"] = s.cfg.ClaimLabel
+	}
 	var resp struct {
 		Data struct {
 			Issues struct {
@@ -582,7 +735,7 @@ func (s *Source) listIssuesByState(stateID string) ([]linearIssue, error) {
 			} `json:"issues"`
 		} `json:"data"`
 	}
-	if err := s.graphQL(q, map[string]any{"stateId": stateID}, &resp); err != nil {
+	if err := s.graphQL(q, vars, &resp); err != nil {
 		return nil, err
 	}
 	nodes := resp.Data.Issues.Nodes
