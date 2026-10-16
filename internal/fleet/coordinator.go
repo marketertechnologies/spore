@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -102,20 +103,45 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	}
 	agent := coordinatorAgent(tomlCfg)
 	rolePath := CoordinatorRolePath(projectRoot)
-	project, err := task.ProjectName(projectRoot)
+	args, err := coordinatorSessionArgs(projectRoot, session, rolePath, tomlCfg)
 	if err != nil {
 		return "", false, err
+	}
+	args = append(args, coordinatorShellCommand(agent, rolePath))
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// tmux registers the session before the inner shell execs the
+	// agent. Wait briefly, then confirm the session survived; an
+	// agent binary that fails to exec tears the session down within
+	// a few ms.
+	time.Sleep(coordinatorSpawnSettleDelay)
+	if !hasSession(session) {
+		return "", false, fmt.Errorf(
+			"coordinator session %s died on spawn (agent=%q): the inner exec failed before the session could settle. Check that the agent binary is on PATH",
+			session, agent,
+		)
+	}
+	return session, true, nil
+}
+
+// coordinatorSessionArgs builds the `tmux new-session` argv for the
+// coordinator, minus the trailing shell command.
+func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg CoordinatorConfig) ([]string, error) {
+	project, err := task.ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
 	}
 	inbox, err := task.CoordinatorInboxDirForProject(projectRoot)
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 	coordinatorState, err := task.CoordinatorStateDir()
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
-	cmd := coordinatorShellCommand(agent, rolePath)
 	args := []string{
 		"new-session", "-d",
 		"-s", session,
@@ -133,23 +159,10 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	if v := coordinatorModel(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
 	}
-	args = append(args, cmd)
-	out, err := exec.Command("tmux", args...).CombinedOutput()
-	if err != nil {
-		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
+	if v := coordinatorAutoConnectIDE(projectRoot); v != "" {
+		args = append(args, "-e", editor.AutoConnectIDEEnv+"="+v)
 	}
-	// tmux registers the session before the inner shell execs the
-	// agent. Wait briefly, then confirm the session survived; an
-	// agent binary that fails to exec tears the session down within
-	// a few ms.
-	time.Sleep(coordinatorSpawnSettleDelay)
-	if !hasSession(session) {
-		return "", false, fmt.Errorf(
-			"coordinator session %s died on spawn (agent=%q): the inner exec failed before the session could settle. Check that the agent binary is on PATH",
-			session, agent,
-		)
-	}
-	return session, true, nil
+	return args, nil
 }
 
 // coordinatorAgent picks the binary the coordinator session execs.
@@ -189,6 +202,26 @@ func coordinatorModel(cfg CoordinatorConfig) string {
 		return v
 	}
 	return cfg.Model
+}
+
+// coordinatorAutoConnectIDE returns the CLAUDE_CODE_AUTO_CONNECT_IDE
+// value for the coordinator session. Env wins over spore.toml
+// [editor].auto_connect_ide. Empty when neither is set. A malformed
+// [editor] section is reported to stderr and leaves the knob off so
+// the coordinator still spawns.
+func coordinatorAutoConnectIDE(projectRoot string) string {
+	if v := os.Getenv(editor.AutoConnectIDEEnv); v != "" {
+		return v
+	}
+	cfg, err := editor.LoadConfig(projectRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spore: %v\n", err)
+		return ""
+	}
+	if cfg.AutoConnectIDE {
+		return "1"
+	}
+	return ""
 }
 
 // driverToBinary maps a friendly driver name to the binary to exec.

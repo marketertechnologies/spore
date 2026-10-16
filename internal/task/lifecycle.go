@@ -549,17 +549,32 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	project, err := ProjectName(projectRoot)
+	args, err := workerSessionArgs(projectRoot, slug, session, worktree)
 	if err != nil {
 		return "", err
+	}
+	args = append(args, agent)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return session, nil
+}
+
+// workerSessionArgs builds the `tmux new-session` argv for a worker,
+// minus the trailing agent command.
+func workerSessionArgs(projectRoot, slug, session, worktree string) ([]string, error) {
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
 	}
 	inbox, err := InboxDirForProject(projectRoot, slug)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	coordinatorState, err := CoordinatorStateDir()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	args := []string{
 		"new-session", "-d",
@@ -574,12 +589,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if tier := LoadAccountTier(projectRoot); tier != "" {
 		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+tier)
 	}
-	args = append(args, agent)
-	out, err := exec.Command("tmux", args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return session, nil
+	return args, nil
 }
 
 func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -62,7 +63,7 @@ func parseWorkersTOML(content string) (WorkersConfig, error) {
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		line := strings.TrimSpace(sporetoml.StripComment(scanner.Text()))
 		if line == "" {
 			continue
 		}
@@ -77,7 +78,7 @@ func parseWorkersTOML(content string) (WorkersConfig, error) {
 				return WorkersConfig{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
 			}
 			key := strings.TrimSpace(line[:eq])
-			val := stripTOMLQuotes(strings.TrimSpace(line[eq+1:]))
+			val := sporetoml.StripQuotes(strings.TrimSpace(line[eq+1:]))
 			if key != "default" {
 				return WorkersConfig{}, fmt.Errorf("line %d: unknown key %q in [fleet.workers]", lineNum, key)
 			}
@@ -106,7 +107,7 @@ func parseWorkersTOML(content string) (WorkersConfig, error) {
 				return WorkersConfig{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
 			}
 			key := strings.TrimSpace(line[:eq])
-			val := stripTOMLQuotes(strings.TrimSpace(line[eq+1:]))
+			val := sporetoml.StripQuotes(strings.TrimSpace(line[eq+1:]))
 			if cfg.Rules == nil {
 				cfg.Rules = map[string]string{}
 			}
