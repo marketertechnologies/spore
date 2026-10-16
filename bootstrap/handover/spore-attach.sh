@@ -38,7 +38,18 @@
 # `bash -l` reading stdin. VS Code Remote-SSH (local-server mode) runs
 # `ssh -T <host>` and pipes its install script in this way. A no-command
 # login with a TTY keeps the coord landing.
+#
+# Leading bash login-shell flags (`-i`, `-l`, `--login`, combined like
+# `-il`) are dropped before either rule applies. VS Code Remote-SSH
+# resolves the user environment with `$SHELL -i -l -c "<cmd>"`.
 set -e
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --login|-[il]|-[il][il]) shift ;;
+        *) break ;;
+    esac
+done
 
 # sshd invokes the login shell as `<shell> -c "<command-string>"`,
 # both for forced commands and for client-supplied ones.

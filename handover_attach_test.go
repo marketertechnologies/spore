@@ -6,13 +6,14 @@ import (
 	"testing"
 )
 
-func runAttach(t *testing.T, cmd string) (string, string, int) {
+func runAttach(t *testing.T, cmd string, flags ...string) (string, string, int) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not available")
 	}
-	c := exec.Command(bash, "bootstrap/handover/spore-attach.sh", "-c", cmd)
+	args := append([]string{"bootstrap/handover/spore-attach.sh"}, flags...)
+	c := exec.Command(bash, append(args, "-c", cmd)...)
 	var stdout, stderr strings.Builder
 	c.Stdout, c.Stderr = &stdout, &stderr
 	err = c.Run()
@@ -49,6 +50,25 @@ func TestSporeAttachKeepsAttachModes(t *testing.T) {
 		if code != 2 || !strings.Contains(stderr, "unknown mode") {
 			t.Fatalf("%q: exit %d, stderr %q; want exit 2 and unknown mode", cmd, code, stderr)
 		}
+	}
+}
+
+func TestSporeAttachSkipsLoginShellFlags(t *testing.T) {
+	for _, flags := range [][]string{{"-i", "-l"}, {"-l"}, {"-il"}, {"--login"}} {
+		stdout, stderr, code := runAttach(t, `echo hi`, flags...)
+		if code != 0 || !strings.HasSuffix(stdout, "hi\n") {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q; want trailing hi", flags, code, stdout, stderr)
+		}
+	}
+
+	_, stderr, code := runAttach(t, "spore-attach bogus", "-i", "-l")
+	if code != 2 || !strings.Contains(stderr, "unknown mode: bogus") {
+		t.Fatalf("attach behind flags: exit %d, stderr %q; want exit 2 and unknown mode: bogus", code, stderr)
+	}
+
+	_, stderr, code = runAttach(t, "echo hi", "-x")
+	if code != 2 || !strings.Contains(stderr, "unknown mode: -x") {
+		t.Fatalf("unknown flag: exit %d, stderr %q; want exit 2", code, stderr)
 	}
 }
 

@@ -343,6 +343,9 @@
                   # Remote-SSH) falls through to bash reading stdin.
                   out = machine.succeed("echo 'echo ok' | /usr/local/bin/spore-attach")
                   assert out.strip().endswith("ok"), out
+                  # VS Code resolves the user env with `$SHELL -i -l -c`.
+                  out = machine.succeed("/usr/local/bin/spore-attach -i -l -c 'echo hi' </dev/null")
+                  assert out.strip().endswith("hi"), out
                   # tmux baseline: rendered ahead of host lines, and
                   # the host's own history-limit wins in a live server.
                   conf = machine.succeed("cat /etc/tmux.conf")
