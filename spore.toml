@@ -11,3 +11,6 @@ brief = "bootstrap/coordinator/dogfood-role.md"
 # caps (wrap 180k / force 195k) instead of the safer sub-max defaults.
 # Injected into worker sessions as SPORE_ACCOUNT_TIER at spawn.
 account_tier = "max"
+
+[align]
+flipped = true
