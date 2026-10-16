@@ -13,6 +13,7 @@ import (
 
 	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -297,6 +298,11 @@ func Done(tasksDir, slug string, force bool) error {
 			fmt.Fprintf(os.Stderr, "spore task done %s: git branch -D %s: %v: %s\n",
 				slug, branch, err, strings.TrimSpace(string(out)))
 		}
+	}
+	// Done does not run a reconcile pass (the fleet may be off), so
+	// drop the removed worktree from the editor workspace here.
+	if _, err := editor.RefreshWorkspace(projectRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done %s: code workspace refresh: %v\n", slug, err)
 	}
 	if dir, err := slugServicesDir(slug); err != nil {
 		fmt.Fprintf(os.Stderr, "spore task done %s: services dir resolve: %v\n", slug, err)

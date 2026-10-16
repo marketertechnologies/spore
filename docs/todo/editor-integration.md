@@ -1,4 +1,4 @@
-**Status**: phase 0 spike done 2026-10-16; phase 1 (`spore show`) landed 2026-10-16 (v0.12.0); phase 2 next; `/ide` deferred
+**Status**: phase 0 spike done 2026-10-16; phase 1 (`spore show`) landed 2026-10-16 (v0.12.0); phase 2 (`spore code workspace`) landed 2026-10-16 (v0.13.0); `/ide` deferred
 
 # Editor integration: see and navigate agent work in an IDE
 
@@ -127,13 +127,22 @@ it when tasks start or finish. The operator opens that file over
 Remote-SSH; the Source Control view then lists each worker's
 uncommitted changes live.
 
-Committed-but-unpushed work: each folder's branch compared with the
-base (`ovidiu-spore-deviation`). Built-in "compare with branch" or a
-GitLens-style extension; not settled in the spike, pick in phase 2.
+Committed-but-unpushed work: VS Code's built-in Source Control Graph
+(decided in phase 2, operator confirmed it works). No extension
+dependency and no extension recommendations in the workspace.
 
 The workspace also sets `files.watcherExclude` and `search.exclude`
-for `.worktrees/**` on the main checkout folder. Each worktree is
-added back as its own root instead. Spike measurement: marketer holds
+for `**/.worktrees/**`. Each worktree is added back as its own root
+instead. No `git.*` settings: every folder is its own repo root, and
+the main folder's default scan depth stops at `.worktrees/` itself.
+
+Phase 2 as built: folders use paths relative to the file (`..`,
+`../.worktrees/<slug>`), sorted by slug, and only dirs that
+`git worktree list` reports. The file is written atomically and only
+when its bytes change. Regeneration is opt-in by file existence: the
+fleet reconciler (every pass) and `spore task done` refresh it only if
+the operator created it once with `spore code workspace`. Errors go to
+stderr and never fail the pass. Spike measurement: marketer holds
 about 212k files, about 152k of them under 7 worktrees, and crawling
 them made the Explorer and the git view slow.
 

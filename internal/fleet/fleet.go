@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -253,6 +254,10 @@ func Reconcile(cfg Config) (Result, error) {
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
 		}
+	}
+
+	if _, err := editor.RefreshWorkspace(cfg.ProjectRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "code workspace refresh: %v\n", err)
 	}
 
 	sort.Strings(res.Spawned)
