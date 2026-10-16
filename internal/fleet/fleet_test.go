@@ -275,6 +275,43 @@ func TestReconcileRoleLoopOptIns(t *testing.T) {
 	}
 }
 
+// TestReconcileWarnsOnUnknownLoop pins that a typo'd `loop:` value
+// keeps the generic worker fallback but surfaces a warning naming the
+// slug and the bad value.
+func TestReconcileWarnsOnUnknownLoop(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+
+	m := frontmatter.Meta{Status: "active", Slug: "typo", Title: "typo", Loop: "roel"}
+	if err := os.WriteFile(filepath.Join(dirs.tasks, "typo.md"), frontmatter.Write(m, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTask(t, dirs.tasks, "plain", "active")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	r, err := Reconcile(Config{
+		TasksDir:    dirs.tasks,
+		ProjectRoot: dirs.project,
+		MaxWorkers:  3,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got, want := r.Spawned, []string{"plain", "typo"}; !equalSlices(got, want) {
+		t.Errorf("Spawned = %v, want %v", got, want)
+	}
+	if len(r.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", r.Warnings)
+	}
+	if w := r.Warnings[0]; !strings.Contains(w, "typo") || !strings.Contains(w, `"roel"`) {
+		t.Errorf("warning %q should name slug typo and value \"roel\"", w)
+	}
+}
+
 // shimClaudeOnPath prepends a fake `claude` binary (exec sleep 30) to
 // PATH. Role panes hardcode the claude binary (RoleSpawnSpec.Agent
 // defaults to it and SPORE_AGENT_BINARY does not reach them), so
