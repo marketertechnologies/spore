@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -63,6 +64,12 @@ func (v *VSCode) run(cli, sock string, loc Location) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cli, "--reuse-window", "--goto", loc.String())
 	cmd.Env = append(os.Environ(), "VSCODE_IPC_HOOK_CLI="+sock)
+	// The remote-cli `code` is a sh wrapper that runs node without
+	// exec. Killing only sh leaves node holding the output pipe, so
+	// kill the whole group and cap the pipe drain.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if msg := strings.TrimSpace(string(out)); msg != "" {
@@ -113,18 +120,20 @@ func LiveSockets(runtimeDir string) ([]string, error) {
 		mod  time.Time
 	}
 	var live []cand
+	stale := 0
 	for _, p := range paths {
 		fi, err := os.Stat(p)
 		if err != nil || fi.Mode()&os.ModeSocket == 0 {
 			continue
 		}
 		if !Alive(p) {
+			stale++
 			continue
 		}
 		live = append(live, cand{p, fi.ModTime()})
 	}
 	if len(live) == 0 {
-		return nil, fmt.Errorf("%w: no live VS Code IPC socket in %s (%d stale)", ErrNoEditor, runtimeDir, len(paths))
+		return nil, fmt.Errorf("%w: no live VS Code IPC socket in %s (%d stale)", ErrNoEditor, runtimeDir, stale)
 	}
 	sort.Slice(live, func(i, j int) bool { return live[i].mod.After(live[j].mod) })
 	out := make([]string, len(live))

@@ -190,3 +190,36 @@ func TestVSCodeOpenAllRefuse(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestVSCodeOpenTimeoutKillsWrappedChild(t *testing.T) {
+	home := t.TempDir()
+	rt := shortDir(t)
+	hung := filepath.Join(rt, "vscode-ipc-1.sock")
+	ok := filepath.Join(rt, "vscode-ipc-2.sock")
+	l1 := listen(t, hung)
+	defer l1.Close()
+	l2 := listen(t, ok)
+	defer l2.Close()
+	now := time.Now()
+	os.Chtimes(ok, now.Add(-time.Hour), now.Add(-time.Hour))
+	writeCLI(t, home, "h", "#!/bin/sh\n[ \"$VSCODE_IPC_HOOK_CLI\" = \""+hung+"\" ] && { sleep 30; true; }\nexit 0\n")
+
+	v := &VSCode{Home: home, RuntimeDir: rt, Timeout: 300 * time.Millisecond}
+	start := time.Now()
+	if err := v.Open(Location{Path: "/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("Open took %v; timeout did not bound the wrapped child", d)
+	}
+}
+
+func TestLiveSocketsStaleCountIgnoresPlainFiles(t *testing.T) {
+	d := shortDir(t)
+	staleSocket(t, filepath.Join(d, "vscode-ipc-a.sock"))
+	os.WriteFile(filepath.Join(d, "vscode-ipc-plain.sock"), nil, 0o600)
+	_, err := LiveSockets(d)
+	if err == nil || !strings.Contains(err.Error(), "(1 stale)") {
+		t.Fatalf("got %v", err)
+	}
+}
