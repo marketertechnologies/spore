@@ -376,3 +376,23 @@ func TestUnmergedCommitsResolvesAgainstOriginHead(t *testing.T) {
 		t.Errorf("UnmergedCommits = %d, want 2", n)
 	}
 }
+
+func TestProjectNameFromRelativeRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	main := filepath.Join(t.TempDir(), "marketercom")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitRepo(t, main)
+	t.Chdir(main)
+
+	got, err := ProjectName(".")
+	if err != nil {
+		t.Fatalf("ProjectName(.): %v", err)
+	}
+	if got != "marketercom" {
+		t.Errorf("ProjectName(.) = %q, want %q", got, "marketercom")
+	}
+}

@@ -117,6 +117,11 @@ func MainRepoRoot(start string) (string, error) {
 		}
 		start = wd
 	}
+	// A relative start like "." would come back as ".", and
+	// filepath.Base(".") is not a project name.
+	if abs, err := filepath.Abs(start); err == nil {
+		start = abs
+	}
 	if out, err := gitCmd(start, "rev-parse", "--git-common-dir").Output(); err == nil {
 		common := strings.TrimSpace(string(out))
 		if common != "" {
