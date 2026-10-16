@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -44,5 +45,19 @@ func TestRunTaskMergeMissingSlug(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "usage:") {
 		t.Errorf("error = %q should be a usage hint", err)
+	}
+}
+
+func TestRunTaskNewRoleRefusesStart(t *testing.T) {
+	t.Chdir(t.TempDir())
+	err := runTaskNew([]string{"--role", "--start", "--no-edit", "demo"})
+	if err == nil {
+		t.Fatal("expected error for --role with --start, got nil")
+	}
+	if !strings.Contains(err.Error(), "--role does not combine with --start") {
+		t.Errorf("error = %q should mention --role does not combine with --start", err)
+	}
+	if _, statErr := os.Stat("tasks"); !os.IsNotExist(statErr) {
+		t.Errorf("tasks dir created despite refusal: %v", statErr)
 	}
 }
