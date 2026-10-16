@@ -33,7 +33,26 @@
 # serves editor keys with no `command=` (VS Code Remote-SSH installs
 # and runs its server this way). Forced-command keys never reach the
 # fall-through: sshd always hands the forced string, not the client's.
+#
+# A login with no command and no TTY falls through too: it runs as
+# `bash -l` reading stdin. VS Code Remote-SSH (local-server mode) runs
+# `ssh -T <host>` and pipes its install script in this way. A no-command
+# login with a TTY keeps the coord landing, except in a VS Code
+# integrated terminal (`TERM_PROGRAM=vscode`): that one runs `bash -l`
+# on the TTY, so the terminal opens even when several coordinators make
+# the coord landing exit. `spore-attach coord` still attaches there.
+#
+# Leading bash login-shell flags (`-i`, `-l`, `--login`, combined like
+# `-il`) are dropped before either rule applies. VS Code Remote-SSH
+# resolves the user environment with `$SHELL -i -l -c "<cmd>"`.
 set -e
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --login|-[il]|-[il][il]) shift ;;
+        *) break ;;
+    esac
+done
 
 # sshd invokes the login shell as `<shell> -c "<command-string>"`,
 # both for forced commands and for client-supplied ones.
@@ -54,6 +73,8 @@ if [ "${1:-}" = "-c" ]; then
             exec "${BASH:-bash}" -lc "$cmd"
             ;;
     esac
+elif [ "$#" -eq 0 ] && { [ ! -t 0 ] || [ "${TERM_PROGRAM:-}" = vscode ]; }; then
+    exec "${BASH:-bash}" -l
 fi
 
 mode="${1:-coord}"
@@ -77,6 +98,7 @@ case "$mode" in
                 cat >&2 <<'EOF'
 spore-attach: no coordinator session running on this host.
 spore-attach: dropping into a default pilot session so you can recover.
+spore-attach: if Claude or Codex is not logged in yet, run its login command here first.
 spore-attach: to start the coordinator, from inside the pane run:
 spore-attach:   spore fleet enable && spore fleet reconcile
 EOF
