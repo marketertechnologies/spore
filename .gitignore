@@ -23,6 +23,9 @@
 
 # spore-as-project (dogfood) harness artifacts
 /state.md
+# Role-based-fleet runtime artifacts: spec cache, engineer responses,
+# reviewer verdicts. The tree is per-task local state, not source.
+/.spore/
 # Skills installed by `repo-mapped` from the spore binary's BundledSkills
 # embed. Source lives at bootstrap/skills/, so committing this snapshot
 # would create a drift target. Downstream consumers (no embed source

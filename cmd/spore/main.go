@@ -20,6 +20,7 @@ import (
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
 	"github.com/versality/spore/internal/infect"
+	"github.com/versality/spore/internal/lang"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -43,6 +44,8 @@ Commands:
   worker     Worker support hooks (token-monitor).
   migrate    Apply pending host-state migrations bundled with the CLI.
   recipes    Browse the embedded recipe library (ls / show <name>).
+  show       Open <path>[:<line>[:<col>]] in the connected editor.
+  code       Editor helpers (workspace: VS Code multi-root of all worktrees).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -162,6 +165,10 @@ func main() {
 		os.Exit(runMigrate(args))
 	case "recipes":
 		os.Exit(runRecipes(args))
+	case "show":
+		os.Exit(runShow(args))
+	case "code":
+		os.Exit(runCode(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)
@@ -188,7 +195,10 @@ func runCompose(args []string) error {
 	if err != nil {
 		return err
 	}
-	opts := composer.Options{Predicates: map[string]bool{"align": alignActive}}
+	opts := composer.Options{Predicates: map[string]bool{
+		"align": alignActive,
+		"rails": lang.IsRails(root),
+	}}
 	out, err := composer.Compose(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err

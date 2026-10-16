@@ -165,3 +165,75 @@ func TestResolvePicksGitToplevelBasename(t *testing.T) {
 		t.Fatalf("Project: %q; want %q", p.Project, filepath.Base(root))
 	}
 }
+
+func TestActiveOffWhenSporeTOMLFlipped(t *testing.T) {
+	root, _ := tempProject(t)
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"),
+		[]byte("[align]\nflipped = true\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	on, err := Active(root)
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	if on {
+		t.Fatal("Active with spore.toml flipped and no marker: true; want false")
+	}
+}
+
+func TestFlipWritesSporeTOML(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"missing file": {"", "[align]\nflipped = true\n"},
+		"no align section": {
+			"[fleet]\naccount_tier = \"max\"\n",
+			"[fleet]\naccount_tier = \"max\"\n\n[align]\nflipped = true\n",
+		},
+		"align section without key": {
+			"[align]\nrequired_notes = 5\n\n[fleet]\nx = 1\n",
+			"[align]\nflipped = true\nrequired_notes = 5\n\n[fleet]\nx = 1\n",
+		},
+		"existing false": {
+			"[align]\nflipped = false\nrequired_notes = 5\n",
+			"[align]\nflipped = true\nrequired_notes = 5\n",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root, p := tempProject(t)
+			if tc.in != "" {
+				if err := os.WriteFile(p.ConfigFile, []byte(tc.in), 0o644); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				if err := Flip(p); err != nil {
+					t.Fatalf("Flip #%d: %v", i+1, err)
+				}
+			}
+			b, err := os.ReadFile(filepath.Join(root, "spore.toml"))
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(b) != tc.want {
+				t.Fatalf("spore.toml:\n%q\nwant:\n%q", b, tc.want)
+			}
+			if err := os.Remove(p.FlippedFile); err != nil {
+				t.Fatalf("remove marker: %v", err)
+			}
+			if on, err := Active(root); err != nil || on {
+				t.Fatalf("Active from spore.toml alone = %v, %v; want false, nil", on, err)
+			}
+		})
+	}
+}
+
+func TestLoadCriteriaMalformedFlippedSurfaces(t *testing.T) {
+	root, _ := tempProject(t)
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"),
+		[]byte("[align]\nflipped = maybe\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadCriteria(root); err == nil {
+		t.Fatal("LoadCriteria: expected error on malformed flipped")
+	}
+}

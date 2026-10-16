@@ -7,55 +7,6 @@ let
   # Edit-in-place post-install to add more repos; one-line append plus
   # `sudo nixos-rebuild switch --flake /etc/nixos#spore-bootstrap`.
   sporeProjects = import ./spore-projects.nix;
-  sporeAttach = pkgs.writeShellScriptBin "spore-attach" ''
-    set -e
-
-    if [ "''${1:-}" = "-c" ]; then
-      set -- ''${2:-}
-      shift
-    fi
-
-    mode="''${1:-coord}"
-
-    attach_pilot() {
-      name="''${1:-default}"
-      exec ${pkgs.tmux}/bin/tmux new-session -A -s "spore/pilot/$name" ${pkgs.bashInteractive}/bin/bash -l
-    }
-
-    case "$mode" in
-      coord)
-        sessions="$(${pkgs.tmux}/bin/tmux ls -F '#{session_name}' 2>/dev/null | ${pkgs.gnugrep}/bin/grep '/coordinator$' || true)"
-        n="$(printf '%s' "$sessions" | ${pkgs.gnugrep}/bin/grep -c . || true)"
-        case "$n" in
-          1)
-            exec ${pkgs.tmux}/bin/tmux attach -t "$sessions"
-            ;;
-      0)
-        printf '%s\n' \
-          "spore-attach: no coordinator session running on this host." \
-          "spore-attach: dropping into a default pilot session so you can recover." \
-          "spore-attach: if Claude or Codex is not logged in yet, run its login command here first." \
-          "spore-attach: then run: spore fleet enable && spore fleet reconcile" >&2
-        attach_pilot default
-        ;;
-          *)
-            echo "spore-attach: multiple coordinator sessions present:" >&2
-            printf '  %s\n' $sessions >&2
-            echo "spore-attach: ssh in as root to reconcile." >&2
-            exit 1
-            ;;
-        esac
-        ;;
-      pilot)
-        attach_pilot "''${2:-default}"
-        ;;
-      *)
-        echo "spore-attach: unknown mode: $mode" >&2
-        echo "usage: spore-attach [coord | pilot [<name>]]" >&2
-        exit 2
-        ;;
-    esac
-  '';
 in
 {
   imports = [
@@ -92,12 +43,17 @@ in
   #   secondary pilots so they neither share a pane with the
   #   coordinator nor with each other.
   #
+  # The login shell is the shims package's spore-attach, the same
+  # script services.spore-fleet links into /usr/local/bin, so the
+  # bash fall-throughs (editor `-c` commands, piped no-TTY logins)
+  # apply here too.
+  #
   # Authorized keys come from local.nix. Root SSH stays open for
   # emergency reconcile.
   users.users.spore = {
     isNormalUser = true;
     home = "/home/spore";
-    shell = "${sporeAttach}/bin/spore-attach";
+    shell = "${sporePkgs.shims}/bin/spore-attach";
   };
 
   environment.systemPackages = [
@@ -175,6 +131,16 @@ in
       # Environment block so this wins over the curated default.
       PATH = "/run/wrappers/bin:/run/current-system/sw/bin:/home/spore/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin";
     };
+  };
+
+  # spore's tmux baseline (deep scrollback, wheel scroll, Claude Code
+  # TUI compat). Enabled explicitly so it renders even before the
+  # fleet itself is (no --repo at infect time). default-shell is
+  # pinned because spore-attach is the spore user's login shell and
+  # cannot run tmux's `-c CMD` for new panes.
+  services.spore-fleet.tmux = {
+    enable = true;
+    defaultShell = "${pkgs.bashInteractive}/bin/bash";
   };
 
   system.stateVersion = "24.05";

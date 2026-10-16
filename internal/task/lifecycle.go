@@ -13,6 +13,7 @@ import (
 
 	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -48,6 +49,15 @@ func Start(tasksDir, slug string) (string, error) {
 	m, body, err := frontmatter.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	// A role-looped task must never get the homogeneous worker session
+	// Start spawns: its panes are owned by DriveRoleLoop and share the
+	// same wt/<slug> branch.
+	if m.Loop == LoopRole {
+		return "", fmt.Errorf(
+			"task %s: has loop: role; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
+			slug, slug,
+		)
 	}
 	prev := m.Status
 	switch prev {
@@ -88,6 +98,39 @@ func Start(tasksDir, slug string) (string, error) {
 // flipping its status.
 func Ensure(tasksDir, slug string) (string, error) {
 	return ensureSession(tasksDir, slug)
+}
+
+// EnsureWorktree creates the wt/<slug> branch and worktree under
+// `<projectRoot>/.worktrees/<slug>/` when missing, without spawning the
+// homogeneous worker tmux session. Idempotent. Used by the role-loop
+// driver to own its worktree precondition instead of riding on
+// Ensure (which also spawns the worker session that the role-looped
+// task explicitly does not want).
+func EnsureWorktree(tasksDir, slug string) (string, error) {
+	projectRoot, err := projectRootFromTasksDir(tasksDir)
+	if err != nil {
+		return "", err
+	}
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	if _, err := os.Stat(worktree); err == nil {
+		return worktree, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	branch := "wt/" + slug
+	args := []string{"worktree", "add", worktree}
+	if branchExists(projectRoot, branch) {
+		args = append(args, branch)
+	} else {
+		args = append(args, "-b", branch)
+	}
+	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
+		return "", fmt.Errorf("copy brief: %w", err)
+	}
+	return worktree, nil
 }
 
 // Reap kills every tmux session matching slug for the project (the
@@ -256,6 +299,11 @@ func Done(tasksDir, slug string, force bool) error {
 				slug, branch, err, strings.TrimSpace(string(out)))
 		}
 	}
+	// Done does not run a reconcile pass (the fleet may be off), so
+	// drop the removed worktree from the editor workspace here.
+	if _, err := editor.RefreshWorkspace(projectRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done %s: code workspace refresh: %v\n", slug, err)
+	}
 	if dir, err := slugServicesDir(slug); err != nil {
 		fmt.Fprintf(os.Stderr, "spore task done %s: services dir resolve: %v\n", slug, err)
 	} else if _, statErr := os.Stat(dir); statErr == nil {
@@ -265,6 +313,10 @@ func Done(tasksDir, slug string, force bool) error {
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, path, err)
+	}
+	readyMarker := filepath.Join(RoleTaskDir(projectRoot, slug), "state", "ready")
+	if err := os.Remove(readyMarker); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "spore task done %s: rm %s: %v\n", slug, readyMarker, err)
 	}
 	return nil
 }
@@ -509,17 +561,21 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command(
-		"tmux", "new-session", "-d",
+	args := []string{
+		"new-session", "-d",
 		"-s", session,
 		"-c", worktree,
-		"-e", "SPORE_TASK_SLUG="+slug,
-		"-e", "SPORE_PROJECT_ROOT="+projectRoot,
-		"-e", "WT_PROJECT="+project,
-		"-e", "SPORE_TASK_INBOX="+inbox,
-		"-e", "SPORE_COORDINATOR_STATE_DIR="+coordinatorState,
-		agent,
-	).CombinedOutput()
+		"-e", "SPORE_TASK_SLUG=" + slug,
+		"-e", "SPORE_PROJECT_ROOT=" + projectRoot,
+		"-e", "WT_PROJECT=" + project,
+		"-e", "SPORE_TASK_INBOX=" + inbox,
+		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
+	}
+	if tier := LoadAccountTier(projectRoot); tier != "" {
+		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+tier)
+	}
+	args = append(args, agent)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}

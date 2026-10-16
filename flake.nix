@@ -19,13 +19,20 @@
       perSystem = flake-utils.lib.eachDefaultSystem (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          # go_1_26 in nixpkgs is 1.26.8, but the GO-2026-66xx
+          # advisories need the 1.26.9 security release, which nixpkgs
+          # has not packaged. go_1_27 (1.27.2) carries the same fixes.
+          # Drop back to pkgs.go / pkgs.buildGoModule once the default
+          # Go moves past these advisories.
+          go = pkgs.go_1_27;
+          buildGoModule = pkgs.buildGo127Module;
           version = pkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION);
           commit =
             if self ? rev then self.rev
             else if self ? dirtyRev then self.dirtyRev
             else "unknown";
 
-          spore = pkgs.buildGoModule {
+          spore = buildGoModule {
             pname = "spore";
             inherit version;
             src = ./.;
@@ -102,8 +109,7 @@
           };
 
           devShells.default = pkgs.mkShell {
-            packages = (with pkgs; [
-              go
+            packages = [ go ] ++ (with pkgs; [
               golangci-lint
               govulncheck
               gopls
@@ -121,7 +127,7 @@
           checks = {
             go-fmt = pkgs.runCommand "spore-go-fmt"
               {
-                nativeBuildInputs = [ pkgs.go ];
+                nativeBuildInputs = [ go ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -136,7 +142,7 @@
             '';
             go-vet = pkgs.runCommand "spore-go-vet"
               {
-                nativeBuildInputs = [ pkgs.go ];
+                nativeBuildInputs = [ go ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -150,7 +156,7 @@
             '';
             golangci-lint = pkgs.runCommand "spore-golangci-lint"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
+                nativeBuildInputs = [ go pkgs.golangci-lint ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -164,7 +170,7 @@
             '';
             go-test = pkgs.runCommand "spore-go-test"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.git pkgs.just ];
+                nativeBuildInputs = [ go pkgs.git pkgs.just ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -178,7 +184,7 @@
             '';
             spore-lint = pkgs.runCommand "spore-lint"
               {
-                nativeBuildInputs = [ pkgs.go pkgs.git ];
+                nativeBuildInputs = [ go pkgs.git ];
               } ''
               cp -r ${./.}/. ./src
               cd src
@@ -272,6 +278,7 @@
                   '';
                   claudeCodePackage = pkgs.writeShellScriptBin "claude" "exit 0";
                   gracefulDeploy.timeout = 5;
+                  tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
                     enable = true;
                     settings = {
@@ -281,6 +288,10 @@
                     credentialFiles.api_key = pkgs.writeText "fake-linear-key" "lin_api_test";
                   };
                 };
+
+                # A host's own tmux.conf lines render after spore's
+                # baseline, so this override must win at runtime.
+                environment.etc."tmux.conf".text = "set -g history-limit 4321\n";
 
                 systemd.tmpfiles.rules = [
                   "d /home/spore-test/project 0750 spore-test users -"
@@ -293,9 +304,24 @@
                 let
                   preScript = nodes.machine.services.spore-fleet.gracefulDeploy.preScript;
                   postScript = nodes.machine.services.spore-fleet.gracefulDeploy.postScript;
+                  tmuxShell = nodes.machine.services.spore-fleet.tmux.defaultShell;
+                  tmux = "${pkgs.tmux}/bin/tmux";
                 in
                 ''
+                  import datetime as dt
+
+                  # Upper bound for user-manager unit probes. Generous
+                  # against slow CI boots, but far below the driver's
+                  # 15 minute default so a real regression fails fast.
+                  USER_UNIT_TIMEOUT = dt.timedelta(seconds=120)
+
                   machine.wait_for_unit("multi-user.target")
+                  # home-manager installs and starts the user units from
+                  # this oneshot (RemainAfterExit) system service. The
+                  # lingered user manager can reach default.target before
+                  # it has run, so wait on it explicitly. systemd escapes
+                  # the hyphen in the username, hence the raw string.
+                  machine.wait_for_unit(r"home-manager-spore\x2dtest.service")
                   machine.wait_for_unit("default.target", user="spore-test")
 
                   # spore-shims activation: every host shim resolves
@@ -313,17 +339,40 @@
                       assert target.startswith("/nix/store/"), \
                           f"{shim} not a /nix/store symlink: {target!r}"
                       machine.succeed(f"test -x /usr/local/bin/{shim}")
+                  # A no-command login with piped stdin (VS Code
+                  # Remote-SSH) falls through to bash reading stdin.
+                  out = machine.succeed("echo 'echo ok' | /usr/local/bin/spore-attach")
+                  assert out.strip().endswith("ok"), out
+                  # VS Code resolves the user env with `$SHELL -i -l -c`.
+                  out = machine.succeed("/usr/local/bin/spore-attach -i -l -c 'echo hi' </dev/null")
+                  assert out.strip().endswith("hi"), out
+                  # tmux baseline: rendered ahead of host lines, and
+                  # the host's own history-limit wins in a live server.
+                  conf = machine.succeed("cat /etc/tmux.conf")
+                  assert "set -g history-limit 250000" in conf, conf
+                  assert "set -g default-shell ${tmuxShell}" in conf, conf
+                  assert conf.index("250000") < conf.index("4321"), conf
+                  machine.succeed("${tmux} -L t new-session -d")
+                  limit = machine.succeed("${tmux} -L t show-options -gv history-limit").strip()
+                  assert limit == "4321", limit
+                  machine.succeed("${tmux} -L t kill-server")
+
                   # Talk to the lingered user instance via systemctl
                   # --machine so the call uses the right XDG_RUNTIME_DIR
                   # without an interactive login.
                   def usercmd(cmd):
                       return f"systemctl --machine=spore-test@.host --user {cmd}"
+                  def user_wait(cmd):
+                      return machine.wait_until_succeeds(
+                          usercmd(cmd), timeout=USER_UNIT_TIMEOUT)
                   # Oneshot; trigger it and assert exit 0 plus that the
-                  # timer + path watchers are active.
-                  machine.succeed(usercmd("start spore-fleet-reconcile-project.service"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-project.timer"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-flag-project.path"))
-                  machine.succeed(usercmd("is-active spore-fleet-reconcile-tasks-project.path"))
+                  # timer + path watchers are active. Every probe is a
+                  # bounded retry: a one-shot is-active right after boot
+                  # raced user-session startup in CI (exit 3, inactive).
+                  user_wait("start spore-fleet-reconcile-project.service")
+                  user_wait("is-active spore-fleet-reconcile-project.timer")
+                  user_wait("is-active spore-fleet-reconcile-flag-project.path")
+                  user_wait("is-active spore-fleet-reconcile-tasks-project.path")
 
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect

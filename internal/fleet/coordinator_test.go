@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -251,14 +252,35 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 	}
 }
 
-// sessionCreated returns the tmux #{session_created} for name. Used by
-// the idempotency check to detect a respawn.
-func sessionCreated(name string) (string, error) {
-	out, err := exec.Command(
-		"tmux", "-L", testTmuxSocket, "display-message", "-p", "-t", name, "#{session_created}",
-	).Output()
-	if err != nil {
-		return "", err
+func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
+	got := coordinatorShellCommand("claude", "/tmp/role.md")
+	if !strings.Contains(got, "exec claude --dangerously-skip-permissions -- \"$(cat") {
+		t.Errorf("claude command missing flag injection: %s", got)
 	}
-	return string(out), nil
+	if !strings.Contains(got, "else exec claude --dangerously-skip-permissions;") {
+		t.Errorf("claude bare command missing skip-permissions: %s", got)
+	}
+}
+
+func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
+	got := coordinatorShellCommand("sleep 30", "/tmp/role.md")
+	if strings.Contains(got, "dangerously-skip-permissions") {
+		t.Errorf("sleep agent should not get claude flags: %s", got)
+	}
+}
+
+func TestIsClaudeAgent(t *testing.T) {
+	cases := map[string]bool{
+		"claude":                            true,
+		"claude-code":                       true,
+		"/run/current-system/sw/bin/claude": true,
+		"sleep 30":                          false,
+		"codex exec --model foo":            false,
+		"":                                  false,
+	}
+	for agent, want := range cases {
+		if got := isClaudeAgent(agent); got != want {
+			t.Errorf("isClaudeAgent(%q) = %v, want %v", agent, got, want)
+		}
+	}
 }
