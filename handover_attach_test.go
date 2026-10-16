@@ -1,7 +1,9 @@
 package spore
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -85,5 +87,51 @@ func TestSporeAttachPipedLoginRunsStdin(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(out), "ok\n") {
 		t.Fatalf("output = %q, want trailing %q", out, "ok\n")
+	}
+}
+
+// runAttachTTY runs spore-attach with no args on a pseudo-terminal (via
+// util-linux script, which runs $SHELL -c) so the `-t 0` check sees a TTY.
+// A fake tmux on PATH marks the coord landing without touching a real
+// server.
+func runAttachTTY(t *testing.T, env ...string) string {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	script, err := exec.LookPath("script")
+	if err != nil {
+		t.Skip("script (util-linux) not available")
+	}
+	dir := t.TempDir()
+	fake := "#!" + bash + "\necho FAKE-TMUX \"$*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	attach, err := filepath.Abs("bootstrap/handover/spore-attach.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command(script, "-qec", bash+" "+attach, "/dev/null")
+	c.Env = append([]string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + dir,
+		"SHELL=" + bash,
+	}, env...)
+	c.Stdin = strings.NewReader("echo BASH-$((40+2))\nexit\n")
+	out, _ := c.CombinedOutput()
+	return string(out)
+}
+
+func TestSporeAttachVSCodeTerminalRunsBash(t *testing.T) {
+	out := runAttachTTY(t, "TERM_PROGRAM=vscode")
+	if !strings.Contains(out, "BASH-42") || strings.Contains(out, "FAKE-TMUX") {
+		t.Fatalf("vscode tty: output %q; want bash ran BASH-42 and no tmux", out)
+	}
+
+	out = runAttachTTY(t)
+	if !strings.Contains(out, "FAKE-TMUX") || strings.Contains(out, "BASH-42") {
+		t.Fatalf("plain tty: output %q; want coord landing via tmux", out)
 	}
 }

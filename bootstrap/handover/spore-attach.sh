@@ -37,7 +37,10 @@
 # A login with no command and no TTY falls through too: it runs as
 # `bash -l` reading stdin. VS Code Remote-SSH (local-server mode) runs
 # `ssh -T <host>` and pipes its install script in this way. A no-command
-# login with a TTY keeps the coord landing.
+# login with a TTY keeps the coord landing, except in a VS Code
+# integrated terminal (`TERM_PROGRAM=vscode`): that one runs `bash -l`
+# on the TTY, so the terminal opens even when several coordinators make
+# the coord landing exit. `spore-attach coord` still attaches there.
 #
 # Leading bash login-shell flags (`-i`, `-l`, `--login`, combined like
 # `-il`) are dropped before either rule applies. VS Code Remote-SSH
@@ -70,7 +73,7 @@ if [ "${1:-}" = "-c" ]; then
             exec "${BASH:-bash}" -lc "$cmd"
             ;;
     esac
-elif [ "$#" -eq 0 ] && [ ! -t 0 ]; then
+elif [ "$#" -eq 0 ] && { [ ! -t 0 ] || [ "${TERM_PROGRAM:-}" = vscode ]; }; then
     exec "${BASH:-bash}" -l
 fi
 
