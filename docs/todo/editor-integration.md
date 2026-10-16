@@ -1,4 +1,4 @@
-**Status**: phase 0 spike done 2026-10-16; phase 1 (`spore show`) landed 2026-10-16 (v0.12.0); phase 2 (`spore code workspace`) landed 2026-10-16 (v0.13.0); `/ide` deferred
+**Status**: phase 0 spike done 2026-10-16; phase 1 (`spore show`) landed 2026-10-16 (v0.12.0); phase 2 (`spore code workspace`) landed 2026-10-16 (v0.13.0); phase 3 (coordinator `/ide` auto-connect) landed 2026-10-16 (v0.15.0)
 
 # Editor integration: see and navigate agent work in an IDE
 
@@ -181,22 +181,34 @@ operator's connected editor.
 - A missing target file also prints one line and exits 0, so a typo
   does not open an empty buffer.
 
-### 3. Connected navigation: `/ide` on the coordinator only (deferred)
+### 3. Connected navigation: `/ide` on the coordinator only
 
-Out of the MVP by operator decision (2026-10-16): goals 1 and 2 do not
-need the Claude Code extension, and `/ide` serves only goal 3
-(selection and diagnostics flowing to the coordinator). Kept as an
-optional later phase.
+Serves goal 3 (selection and diagnostics flowing to the coordinator).
+Goals 1 and 2 do not need the Claude Code extension.
 
+Phase 3 as built (operator decision 2026-10-16): opt-in per project,
+off by default.
 
-- Coordinator panes connect to the editor (`/ide`, or
-  `CLAUDE_CODE_AUTO_CONNECT_IDE=1` from the coordinator launch shim)
-  so the operator's selection flows to the coordinator and the
-  coordinator can read diagnostics.
-- Worker and role panes stay unconnected (`diffTool: terminal` /
-  no auto-connect) so N workers in bypass mode do not open diff tabs
-  in the operator's window. Revisit if the spike shows diffs are
-  suppressed in bypass mode anyway.
+```toml
+[editor]
+auto_connect_ide = true
+```
+
+- `EnsureCoordinator` adds `CLAUDE_CODE_AUTO_CONNECT_IDE=1` to the
+  coordinator session env, next to the provider/model injection. An
+  operator-set `CLAUDE_CODE_AUTO_CONNECT_IDE` wins, same precedence
+  as the sibling knobs. A malformed `[editor]` section prints one
+  line to stderr and leaves the knob off.
+- Not wired into the bash `spore-coordinator-launch.sh`.
+- Worker and role panes never get it (tests assert the spawn argv
+  lacks it even with the knob on and the var in the spawner's env):
+  one Claude Code instance holds a window at a time, and N
+  bypass-mode workers would fight over it and open diff tabs.
+- `[editor]` is read through `internal/sporetoml`, a shared section
+  scanner hoisted from the `[coordinator]` and `[fleet]` readers.
+- Spore's own `spore.toml` turns it on (dogfood).
+- Not checked: diff tabs for bypass-mode workers. Moot while workers
+  stay unconnected.
 
 ## Phase 0 findings (2026-10-16)
 
@@ -225,13 +237,22 @@ Operator connected VS Code over Remote-SSH to `/home/spore/marketer`.
   This also breaks VS Code's built-in terminal (no command but a TTY
   gets the coord landing). Not checked: terminal link clicks, diff
   tabs for bypass-mode workers (deferred with `/ide`).
+- Window choice for auto-connect (spike, phase 3, Claude Code
+  2.1.296): `CLAUDE_CODE_AUTO_CONNECT_IDE=1` connects only to a
+  window whose lock-file `workspaceFolders` contain the session cwd
+  (a folder itself or any path under it). From `~/marketer`, a
+  subdir, and a listed worktree it connected to the marketer window;
+  from `~/spore` it stayed unconnected and `/ide` reported "workspace
+  or project directories don't match the current directory". Without
+  the env var no session connected. Only one window was open, so the
+  two-window pick was inferred from this matching, not observed.
 - Not an editor issue but found on the way: a stuck `ugrep` searching
   from `/` (left by a dead marketer worker's Grep call) held about 7
   of 8 cores for 2 days 17 hours and made everything slow.
 
 1. `spore show` + `internal/editor` (VS Code backend) + rule fragment.
 2. `spore code workspace` + reconciler regeneration.
-3. Deferred: coordinator auto-connect in the launch shim; worker opt-out.
+3. Coordinator auto-connect via `[editor] auto_connect_ide`; workers never connect.
 4. Optional: Neovim backend; NixOS module knob to install a pinned
    VS Code server extension set.
 
