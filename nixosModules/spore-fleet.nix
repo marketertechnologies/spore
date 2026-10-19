@@ -42,6 +42,20 @@ let
     fi
   '';
 
+  # Activation runs with a PATH that carries neither bash nor the
+  # coreutils set, so spore-migrate pins its own. This list is the
+  # tool contract documented in docs/migrations.md; widen both together.
+  migratePath = lib.makeBinPath [
+    pkgs.bash
+    pkgs.coreutils
+    pkgs.findutils
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.gawk
+    pkgs.diffutils
+    cfg.package
+  ];
+
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
         ${asUserPreamble}
 
@@ -594,7 +608,9 @@ in
       #
       # spore-migrate runs `spore migrate --auto` as cfg.user on every
       # activation so pending host-state migrations under
-      # bootstrap/migrations/ converge on `nixos-rebuild switch`. The
+      # bootstrap/migrations/ converge on `nixos-rebuild switch`. It
+      # pins PATH to migratePath (activation PATH lacks bash) and
+      # orders after `users` so cfg.user and its home exist. The
       # engine is idempotent and ledger-gated; failures are suppressed
       # so a single broken migration cannot brick the rebuild path
       # (visible in `journalctl -u nixos-activation`). See
@@ -613,11 +629,15 @@ in
               fi
             done
           '';
-          spore-migrate = ''
-            ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
-              ${cfg.package}/bin/spore migrate --auto || \
-              echo "spore migrate: failed (see journal); continuing rebuild" >&2
-          '';
+          spore-migrate = {
+            deps = [ "users" ];
+            text = ''
+              ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
+                ${pkgs.coreutils}/bin/env PATH=${migratePath} \
+                ${cfg.package}/bin/spore migrate --auto || \
+                echo "spore migrate: failed (see journal); continuing rebuild" >&2
+            '';
+          };
         }
         (lib.mkIf cfg.gracefulDeploy.enable {
           spore-fleet-pre.text = ''
