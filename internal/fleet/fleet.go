@@ -59,6 +59,10 @@ type Result struct {
 	// reconciliation: the worker pass still runs against whatever
 	// tasks are on disk.
 	Matter []MatterResult
+
+	// Warnings are non-fatal oddities found in task frontmatter, also
+	// printed to stderr as they are found.
+	Warnings []string
 }
 
 // MatterResult records one matter's sync outcome for the pass.
@@ -200,8 +204,13 @@ func Reconcile(cfg Config) (Result, error) {
 	// stays as the legacy opt-in for tasks seeded by hand.
 	roleLoopKeyed := map[string]bool{}
 	for _, m := range metas {
-		if m.Loop == task.LoopRole {
+		switch {
+		case m.Loop == task.LoopRole:
 			roleLoopKeyed[m.Slug] = true
+		case m.Loop != "" && m.Status == "active":
+			w := fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole)
+			fmt.Fprintln(os.Stderr, w)
+			res.Warnings = append(res.Warnings, w)
 		}
 	}
 	isRoleLooped := func(slug string) bool {
