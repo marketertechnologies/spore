@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -149,4 +150,33 @@ func newGitRepoFor(t *testing.T, projectName string) string {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	return root
+}
+
+func TestRoleSpawnSpecOmitsAutoConnectIDE(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[editor]\nauto_connect_ide = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(editor.AutoConnectIDEEnv, "1")
+	for _, spec := range []RoleSpawnSpec{
+		EngineerSpec(root, "feature-x"),
+		ReviewerSpec(root, "feature-x", task.ReviewerA),
+	} {
+		args, err := spec.TmuxArgs()
+		if err != nil {
+			t.Fatalf("TmuxArgs %s: %v", spec.Role, err)
+		}
+		if hasEnvArg(args, editor.AutoConnectIDEEnv) {
+			t.Errorf("%s spawn carries %s: %v", spec.Role, editor.AutoConnectIDEEnv, args)
+		}
+	}
+}
+
+func hasEnvArg(argv []string, key string) bool {
+	for i := 0; i < len(argv)-1; i++ {
+		if argv[i] == "-e" && strings.HasPrefix(argv[i+1], key+"=") {
+			return true
+		}
+	}
+	return false
 }

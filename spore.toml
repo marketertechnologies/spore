@@ -14,3 +14,7 @@ account_tier = "max"
 
 [align]
 flipped = true
+
+[editor]
+# Coordinator connects to the operator's VS Code window (/ide).
+auto_connect_ide = true
