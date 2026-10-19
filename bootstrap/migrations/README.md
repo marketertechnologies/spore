@@ -1,7 +1,7 @@
 # spore host migrations
 
 Idempotent shell scripts that run on `nixos-rebuild switch` via the
-bundled flake's activation hook, or by hand via `spore migrate`.
+spore-fleet module's activation hook, or by hand via `spore migrate`.
 
 ## Authoring contract
 
@@ -11,6 +11,8 @@ bundled flake's activation hook, or by hand via `spore migrate`.
 - Exit 0 on success, non-zero on failure. Failures halt the run; the
   ledger is not updated for the failing migration.
 - Stdin is closed. Env is inherited. Working dir is `$HOME`.
+- Use only the tools listed under "Available tools" in
+  `docs/migrations.md`; the activation PATH carries nothing else.
 - Bash is invoked with `bash -eu` so unset vars and command failures
   abort.
 - Run as the spore user (via `runuser -u spore` in the activation

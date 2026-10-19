@@ -273,6 +273,11 @@
                       "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
+                      "migrate --auto")
+                        for t in bash find grep tail dirname mkdir cat; do
+                          command -v "$t" >> "''${HOME}/spore-migrate-path.log" || { echo "missing $t" >> "''${HOME}/spore-migrate-path.log"; exit 1; }
+                        done
+                        exit 0 ;;
                       *) echo "stub spore: unknown $*" >&2; exit 1 ;;
                     esac
                   '';
@@ -324,6 +329,13 @@
                   machine.wait_for_unit(r"home-manager-spore\x2dtest.service")
                   machine.wait_for_unit("default.target", user="spore-test")
 
+                  # spore-migrate activation: the hook ran at boot and
+                  # every tool in the migration contract resolved on
+                  # its PATH (the stub exits 1 on the first miss).
+                  mpath = machine.succeed("cat /home/spore-test/spore-migrate-path.log")
+                  assert "missing" not in mpath, mpath
+                  assert mpath.count("/nix/store/") == 7, mpath
+                  machine.succeed("grep -qx 'migrate --auto' /home/spore-test/spore-stub.log")
                   # spore-shims activation: every host shim resolves
                   # via /usr/local/bin/spore-* as a symlink into the
                   # shims derivation, and each is executable.

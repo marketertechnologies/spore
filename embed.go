@@ -61,7 +61,7 @@ var BundledHandover embed.FS
 var BundledCoordinatorRole []byte
 
 // BundledMigrations is the host-migration script tree consumed by
-// `spore migrate` and the bundled flake's activation hook. Each file
+// `spore migrate` and the spore-fleet module's activation hook. Each file
 // under bootstrap/migrations/ is a numbered, idempotent shell script.
 // See bootstrap/migrations/README.md for the authoring contract.
 //
