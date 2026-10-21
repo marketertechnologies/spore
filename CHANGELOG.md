@@ -14,9 +14,13 @@
   --codex [--pid N]` (long-running sidecar that claims inbox envelopes
   and delivers them with `codex queue --thread`; `SPORE_CODEX_BIN`
   overrides the binary). Consumer impact: the coordinator launch shim's
-  codex branch now passes `--dangerously-bypass-hook-trust`, runs
-  `codex app-server daemon start`, exports `SPORE_COORDINATOR_SESSION`
-  and runs the sidecar for the pane's lifetime (log:
+  codex branch now passes `--dangerously-bypass-hook-trust`, gives
+  each coordinator session its own `CODEX_HOME`
+  (`<coordinator state dir>/<project>/codex-home/<session>/`, with
+  `auth.json`, `config.toml`, `hooks.json`, `AGENTS.md` symlinked from
+  `~/.codex`), restarts that home's app-server daemon, exports
+  `SPORE_COORDINATOR_SESSION` and runs the sidecar for the pane's
+  lifetime (log:
   `<coordinator state dir>/<project>/codex-watch-inbox.log`). The
   claude branch is unchanged. Wiring the SessionStart hook into Codex
   config is unit 2; until then the sidecar idles.

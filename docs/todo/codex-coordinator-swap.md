@@ -59,8 +59,9 @@ Researched against codex-cli 0.162.1.
   `last_token_usage.total_tokens` of the latest
   `event_msg`/`token_count` record.
 - `codex queue` needs the TUI attached to the per-`CODEX_HOME`
-  daemon (`codex app-server daemon start`). With the daemon, the agent
-  loop and its env live in the daemon process.
+  daemon (`codex app-server daemon start`). Verified live: hooks run
+  as children of the TUI process with the TUI's env, also on turns
+  started by `codex queue`. The daemon's env does not reach hooks.
 
 ## Unit 1 as built
 
@@ -73,17 +74,26 @@ Researched against codex-cli 0.162.1.
   each envelope once. A failed `codex queue` renames the batch back.
   Batches split under the 128 KiB argv limit. Nothing is claimed until
   a thread is recorded.
+- Per-session `CODEX_HOME`: the shim sets
+  `CODEX_HOME=<coordinator state dir>/<project>/codex-home/<session>/`
+  (session `/` mapped to `_`), creates it, and symlinks `auth.json`,
+  `config.toml`, `hooks.json`, `AGENTS.md` from `~/.codex` (or the
+  inherited `CODEX_HOME`) when present and not already there. It then
+  stops and starts that home's daemon so the daemon runs with this
+  pane's env. Each session owns its daemon, rollouts, queue and thread
+  store; parallel coordinators need this. Codex writes `auth.json` in
+  place and resolves symlinks before writing `config.toml`, so logins
+  and config edits land in `~/.codex`. Without an inbox or session key
+  the shim falls back to the inherited home and never stops its daemon.
+- Unit 2 consequence: user-level Codex config (`config.toml`,
+  `hooks.json`, `AGENTS.md`) lives in `~/.codex` and reaches sessions
+  only through these links. A file unit 2 adds must join the shim's
+  link list. `codex resume` sees only the session's own home.
 - Unit 2 must register `spore hooks codex-session-start` as a Codex
   SessionStart hook; until then the sidecar idles.
 
 ## Open risks
 
-- UNVERIFIED: which env Codex hooks see when the TUI is attached to the
-  daemon (the daemon's or the TUI's). The session key comes from env;
-  if hooks see the daemon env, two coordinators sharing one
-  `CODEX_HOME` daemon would record under the first launcher's key.
-  Verify live in unit 2; parallel coordinators may need one
-  `CODEX_HOME` per session.
 - Upstream 8301262 (codex hooks config scoped per session kind) is a
   candidate crib for unit 2. d0564b8 and d9f2ab2 target packages this
   tree lacks (`internal/agentpane`, `internal/hooks/codex`).
