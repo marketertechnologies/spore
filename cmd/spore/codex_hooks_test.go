@@ -182,3 +182,35 @@ func TestHooksPreToolUseToleratesCodexPayload(t *testing.T) {
 		t.Errorf("stdout = %q, want a deny decision", stdout)
 	}
 }
+
+func TestHooksCodexSessionStartRecordsThread(t *testing.T) {
+	inbox := filepath.Join(t.TempDir(), "coordinator", "proj", "inbox")
+	t.Setenv("SPORE_TASK_INBOX", inbox)
+	t.Setenv("SPORE_COORDINATOR_SESSION", "spore/proj/coordinator")
+	payload := `{"session_id":"thread-9","transcript_path":null,"cwd":"/p","hook_event_name":"SessionStart","model":"gpt-5.5","permission_mode":"bypassPermissions","source":"startup"}`
+
+	code, stdout, stderr := captureHook(t, payload, runHooksCodexSessionStart)
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q, want silent 0", code, stdout, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(filepath.Dir(inbox), "codex-threads", "spore_proj_coordinator.json"))
+	if err != nil || !strings.Contains(string(got), `"thread_id":"thread-9"`) {
+		t.Fatalf("thread record = %q, %v", got, err)
+	}
+}
+
+func TestHooksCodexSessionStartNonSporeSessionNoOp(t *testing.T) {
+	t.Setenv("SPORE_TASK_INBOX", "")
+	code, stdout, stderr := captureHook(t, `{"session_id":"x"}`, runHooksCodexSessionStart)
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q, want silent 0", code, stdout, stderr)
+	}
+}
+
+func TestHooksWatchInboxCodexNeedsInbox(t *testing.T) {
+	t.Setenv("SPORE_TASK_INBOX", "")
+	code, _, stderr := captureHook(t, "", func() int { return runHooksWatchInbox([]string{"--codex"}) })
+	if code != 2 || !strings.Contains(stderr, "SPORE_TASK_INBOX") {
+		t.Fatalf("code=%d stderr=%q, want usage exit 2", code, stderr)
+	}
+}

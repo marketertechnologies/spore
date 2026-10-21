@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/versality/spore/internal/hooks"
 )
@@ -36,6 +40,8 @@ func runHooks(args []string) int {
 		return runHooksWatchInbox(rest)
 	case "notify-coordinator":
 		return runHooksNotifyCoordinator(rest)
+	case "codex-session-start":
+		return runHooksCodexSessionStart()
 	default:
 		fmt.Fprintf(os.Stderr, "spore hooks: unknown subcommand %q\n\n%s", sub, hooksUsage)
 		return 2
@@ -165,6 +171,9 @@ func runHooksSettings() int {
 }
 
 func runHooksWatchInbox(args []string) int {
+	if len(args) > 0 && args[0] == "--codex" {
+		return runHooksWatchInboxCodex(args[1:])
+	}
 	var err error
 	switch len(args) {
 	case 0:
@@ -189,6 +198,54 @@ func runHooksWatchInbox(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox:", err)
 		return 1
+	}
+	return 0
+}
+
+func runHooksWatchInboxCodex(args []string) int {
+	fs := flag.NewFlagSet("watch-inbox --codex", flag.ContinueOnError)
+	pid := fs.Int("pid", 0, "exit when this process is gone")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: spore hooks watch-inbox --codex [--pid N]")
+		return 2
+	}
+	inbox := os.Getenv("SPORE_TASK_INBOX")
+	key := hooks.CodexSessionKey()
+	if inbox == "" || key == "" {
+		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox --codex: needs $SPORE_TASK_INBOX and a session key ($SPORE_COORDINATOR_SESSION or tmux)")
+		return 2
+	}
+	var alive func() bool
+	if *pid > 0 {
+		alive = func() bool { return syscall.Kill(*pid, 0) == nil }
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := hooks.WatchInboxCodex(ctx, inbox, key, alive); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox --codex:", err)
+		return 1
+	}
+	return 0
+}
+
+// runHooksCodexSessionStart never blocks the session: a non-spore codex
+// session (no inbox, no key) or a bad payload is a silent no-op.
+func runHooksCodexSessionStart() int {
+	req, err := readHookRequest()
+	if err != nil {
+		return 0
+	}
+	inbox := os.Getenv("SPORE_TASK_INBOX")
+	if inbox == "" {
+		return 0
+	}
+	key := hooks.CodexSessionKey()
+	if key == "" {
+		return 0
+	}
+	if err := hooks.RecordCodexThread(inbox, key, req); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks codex-session-start:", err)
 	}
 	return 0
 }

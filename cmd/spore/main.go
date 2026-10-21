@@ -75,6 +75,13 @@ Subcommands:
                          deterministic settings.json to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
                               With no slug, reads $SPORE_TASK_INBOX.
+  watch-inbox --codex [--pid N]
+                              Long-running sidecar: deliver $SPORE_TASK_INBOX
+                              envelopes to this session's codex thread via
+                              ` + "`codex queue`" + ` ($SPORE_CODEX_BIN overrides the
+                              binary). Exits when pid N is gone.
+  codex-session-start         Codex SessionStart hook: record the payload
+                              session_id as this session's thread id.
   notify-coordinator [project]
                               Write a poke to the coordinator's project inbox.
                               With no project, reads $WT_PROJECT.
