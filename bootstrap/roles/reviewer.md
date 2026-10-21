@@ -32,7 +32,8 @@ responses to read.
   treat it as immutable for the run. If the spec is wrong or
   ambiguous, surface that in your verdict `summary` and (where
   relevant) per-comment notes; the operator decides.
-- The current task branch (`git diff` against the base).
+- The current task branch (`git diff <base>...HEAD`; see "The base"
+  below).
 - Instance A: `.spore/<task>/responses/engineer-round-N.json` for
   every N the engineer has written. The latest one is the
   engineer's reply to your last verdict; earlier ones are prior
@@ -54,12 +55,15 @@ responses to read.
 
   ```json
   {
+    "author": "A",
     "verdict": "approve" | "request_changes",
     "summary": "one-line overall take",
     "comments": ["...", "..."]
   }
   ```
 
+  - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`
+    (`A` or `B`); it must match the directory you write into.
   - `verdict`: `approve` clears the round; `request_changes` sends
     the branch back to the engineer.
   - `summary`: a single line. The operator and (for instance A) the
@@ -67,6 +71,42 @@ responses to read.
   - `comments`: freeform strings. One per concern. Line anchors and
     severity are out of scope for v1; write a comment per thing you
     want changed or called out.
+
+  No other keys. The coordinator validates the file on every tick;
+  an invalid file does not count, is moved to `<name>.invalid`, and
+  you are woken with the error to rewrite it.
+
+## Writing JSON files
+
+- Write verdict files with the Write tool (or `json.dump` from a
+  script). Never use a shell heredoc, `echo >`, or `cat >`: quoting
+  breaks the JSON, and a mistyped redirect can clobber an unrelated
+  file (a worktree's `.git` has been emptied this way).
+- Never run a bare `cat` with no file argument. It waits on stdin
+  and hangs the pane.
+- Write only your own verdict file. Never write another instance's
+  directory or the engineer's responses.
+
+## The base
+
+`<base>` is the PR's real parent: the stack parent branch when the
+spec or brief says this task stacks on another PR, else the
+project's base branch. Never measure against a sibling task branch.
+
+## PR size
+
+The size cap is project-specific: read it from the project's rules.
+If the project states no cap, do not raise a size blocker. Before
+raising one, print and quote in the comment:
+
+```
+base=<base branch>
+mb=$(git merge-base "$base" HEAD)
+echo "base=$base merge-base=$mb"
+git diff --shortstat "$mb" HEAD
+```
+
+Raise the blocker only if that total exceeds the project cap.
 
 ## The loop
 
@@ -96,7 +136,7 @@ operator. Do not soften a verdict to dodge escalation.
 
 The coordinator drops your pane inside the task worktree at
 `<projectRoot>/.worktrees/<slug>/`. Run `git diff <base>...HEAD` from
-this cwd to see the branch. `SPORE_TASK_DIR` in the environment
+this cwd to see the branch (`<base>` as defined above). `SPORE_TASK_DIR` in the environment
 points at the absolute `.spore/<slug>/` artifact tree; use it for
 the verdict file path so it lands in the canonical location
 regardless of cwd.

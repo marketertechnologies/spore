@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Role loop: strict validation of `responses/engineer-round-N.json`
+  and `reviews/<A|B>/round-N.json`. Unknown keys, trailing data, a
+  bad verdict, or a missing / mismatched `author` make a file
+  invalid. Invalid files no longer wedge `DeriveSnapshot` or skew
+  round math: they are skipped, the coordinator is told once, and the
+  authoring pane is woken with the error; after the wake lands the
+  file moves to `<name>.invalid`. New required `author` field
+  (`engineer`, `A`, or `B`) and optional engineer `followups`.
+  Consumer impact: projects that symlink `bootstrap/roles/*.md` pick
+  up the new prompts (Write tool for JSON, no heredoc / bare `cat`,
+  base-branch definition, PR-size blocker evidence, fix-round scope).
+  In-flight loops: files present at the first drive after upgrade
+  are grandfathered via `.spore/<slug>/state/legacy-files` (lenient
+  decode, no `author` needed); later files are strict, and panes
+  still on the old prompt are bounced once with the missing field
+  named.
 - `bootstrap/handover/spore-coordinator-launch.sh`: support a host-wide
   shared role file in addition to the per-project `$SPORE_COORDINATOR_ROLE`.
   The launcher now reads `$SPORE_COORDINATOR_ROLE_SHARED` (default

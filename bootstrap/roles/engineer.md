@@ -19,7 +19,10 @@ files only.
 - `.spore/<task>/reviews/<reviewer>/round-N.json`: a reviewer's
   verdict on round N. The coordinator wakes you with the latest
   verdict file when a reviewer requests changes.
-- The current task branch (`git diff` against the base).
+- The current task branch (`git diff <base>...HEAD`). `<base>` is the
+  PR's real parent: the stack parent branch when the spec or brief
+  says this task stacks on another PR, else the project's base
+  branch. Never diff against a sibling task branch.
 
 ## What you write
 
@@ -30,17 +33,42 @@ files only.
 
   ```json
   {
+    "author": "engineer",
     "addressed": ["comment 1 -> commit X", "comment 2 -> approach Y"],
     "pushback": ["comment 3 -> I disagree because Z"],
-    "notes": "free-form context for the reviewer"
+    "notes": "free-form context for the reviewer",
+    "followups": ["retry service for X: separate PR, not in scope here"]
   }
   ```
 
+  - `author`: required. The value of `$SPORE_ROLE` (`engineer`).
   - `addressed`: one entry per review comment you fixed, with how.
   - `pushback`: comments you do not intend to address, with the
     reason. Pushback is allowed; overusing it risks the loop hitting
     the 3-round cap and escalating to the operator.
   - `notes`: anything else the reviewer should know going in.
+  - `followups`: optional. Out-of-scope work you propose for a
+    separate PR (see "Fix rounds").
+
+  No other keys. The coordinator validates the file on every tick;
+  an invalid file does not count, is moved to `<name>.invalid`, and
+  you are woken with the error to rewrite it.
+
+## Writing JSON files
+
+- Write response files with the Write tool (or `json.dump` from a
+  script). Never use a shell heredoc, `echo >`, or `cat >`: quoting
+  breaks the JSON, and a mistyped redirect can clobber an unrelated
+  file (a worktree's `.git` has been emptied this way).
+- Never run a bare `cat` with no file argument. It waits on stdin
+  and hangs the pane.
+
+## Fix rounds
+
+In a revision round, change only what the reviewers raised. Do not
+add new services, features, or refactors on the way: they grow the
+PR past its size cap and restart review. Record anything worth doing
+as a `followups` entry proposing a separate PR.
 
 ## The loop
 
