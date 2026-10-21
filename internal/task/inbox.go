@@ -9,12 +9,13 @@ import (
 )
 
 // Tell appends a JSON message envelope to the per-slug inbox dir under
-// StateDir. Filename is "<unix-nanos>.json", with a numeric suffix on
+// StateDir, or to the coordinator inbox (CoordinatorInboxDirForProject)
+// for slug "coordinator", which is not a per-project task slug. Filename is "<unix-nanos>.json", with a numeric suffix on
 // collision; payload schema is {"slug","ts","msg"}. No agent wake
 // side effect: the Stop-hook drain that turns inbox writes into
 // resumed turns is downstream consumer territory.
 func Tell(slug, msg string) error {
-	dir, err := InboxDir(slug)
+	dir, err := tellInboxDir(slug)
 	if err != nil {
 		return err
 	}
@@ -32,6 +33,13 @@ func Tell(slug, msg string) error {
 		return err
 	}
 	return writeUniqueInboxFile(dir, now.UnixNano(), b)
+}
+
+func tellInboxDir(slug string) (string, error) {
+	if slug == "coordinator" {
+		return CoordinatorInboxDirForProject("")
+	}
+	return InboxDir(slug)
 }
 
 func writeUniqueInboxFile(dir string, stamp int64, body []byte) error {
