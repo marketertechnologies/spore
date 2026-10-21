@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"syscall"
 
@@ -220,9 +219,10 @@ func runHooksWatchInboxCodex(args []string) int {
 	if *pid > 0 {
 		alive = func() bool { return syscall.Kill(*pid, 0) == nil }
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := hooks.WatchInboxCodex(ctx, inbox, key, alive); err != nil {
+	// No signal trap: SIGTERM must end the sidecar at once, even while
+	// it is parked in the inotify wait. A claim is an atomic rename, so
+	// dying mid-loop leaves no partial state.
+	if err := hooks.WatchInboxCodex(context.Background(), inbox, key, alive); err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox --codex:", err)
 		return 1
 	}
