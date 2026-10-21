@@ -68,15 +68,50 @@ force-approve, kill the task, or hand it back for another loop.
 
 Per-phase side effects of a drive tick:
 
-- engineer phases: spawn the engineer pane if missing; on revise
-  phases, nudge it (tmux send-keys) with the latest verdict path
+- engineer phases: keep the engineer pane alive (see Pane liveness);
+  on revise phases, nudge it (tmux send-keys) with the latest verdict
+  path
 - `review-A`: keep engineer and reviewer A panes alive
-- `review-B`: reap reviewer A's pane, spawn reviewer B; the engineer
-  pane stays alive across the handover
+- `review-B`: reap reviewer A's pane, keep reviewer B alive; the
+  engineer pane stays alive across the handover
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
 - `escalated`: write the `escalated-*` marker, touch nothing else
 - every phase: bounce invalid role files (see below)
+- non-terminal phases: check the active role for a stall (see Pane
+  liveness)
+
+## Pane liveness
+
+Phase completion comes only from files; a pane exiting never advances
+or stalls the loop by itself. Each tick probes every pane the phase
+expects (tmux `pane_dead`, `pane_current_command`, `session_created`):
+
+- missing session: spawn it.
+- agent gone (pane dead, or a shell in the foreground once the
+  session is 30s old, e.g. a hand-started role whose agent exited):
+  kill the session and spawn a fresh one.
+
+Every spawn claims `state/spawn-<role>-r<round>-<n>`. Spawns past the
+first in a round are respawns: each one tells the coordinator
+(`<slug>: respawned <role> (<reason>; round R, respawn K/3)`), as does
+replacing a dead hand-started pane. After 3 respawns of one role in
+one round the driver stops, leaves the dead pane for inspection, and
+tells the coordinator once (`<slug>: escalated: <role> agent died N
+times ...`, marker `state/respawn-capped-<role>-r<round>`). The cap
+re-arms when the role's round advances; delete the role's
+`spawn-*-r<round>-*` markers to re-arm it by hand. A token-monitor
+wrap kills the pane on purpose and so counts as a respawn.
+
+Stall: the role that owns the next file write is stalled when its
+expected file is absent and neither the role files under
+`.spore/<slug>/` (outside `state/`) nor the pane transcript (the text
+above the input prompt; status line and input box excluded) changed
+for `[fleet] role_stall_minutes` (default 20, 0 disables). The
+coordinator is told once per quiet spell (`<slug>: stalled: ...`);
+any activity re-arms it. Stalls never kill the pane: the agent may be
+waiting on a dialog only the operator can answer. The activity clock
+lives in `state/activity-<role>-r<round>`.
 
 ## Roles
 
@@ -163,6 +198,9 @@ Markers under `.spore/<slug>/state/`:
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
+- `spawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
+  `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
+  liveness (see above).
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this
   invalid file; `bounced-<file>-<n>-<hash>-<stamp>` marks the
   delivered wake.

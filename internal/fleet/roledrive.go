@@ -20,9 +20,10 @@ import (
 //   - On first call, copies tasks/<slug>.md (frontmatter stripped) to
 //     .spore/<slug>/spec.md.
 //   - Reads the derived snapshot.
-//   - Spawns the role pane the snapshot says owns the next file write
-//     (engineer for initial / revise phases, reviewer A or B for
-//     review phases). Spawn calls are idempotent.
+//   - Keeps the role panes the phase expects alive (engineer always,
+//     plus reviewer A or B in review phases) via ensureRolePane: a
+//     missing session is spawned, a session whose agent died is
+//     killed and respawned, capped per role per round.
 //   - Reaps reviewer A when the loop transitions into B (A's pane is
 //     no longer needed once it has approved).
 //   - When the snapshot is engineer-revise-*, sends a tmux send-keys
@@ -40,6 +41,8 @@ import (
 //   - Bounces any role file that fails validation back to its author
 //     (see bounceInvalidRoleFiles). Runs after the spawn pass so the
 //     owning pane is up to receive the wake.
+//   - Tells the coordinator when the active role stalls (see
+//     checkRoleStall).
 //
 // Returns the snapshot observed after side effects.
 func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
@@ -63,38 +66,31 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 
 	switch snap.Phase {
 	case PhaseEngineerInitial, PhaseEngineerReviseA, PhaseEngineerReviseB:
-		if _, _, err := SpawnRole(EngineerSpec(projectRoot, slug)); err != nil {
-			return snap, fmt.Errorf("drive %s: spawn engineer: %w", slug, err)
+		if err := ensureRolePane(EngineerSpec(projectRoot, slug), snap.EngineerRound); err != nil {
+			return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
 		}
 		if snap.Phase != PhaseEngineerInitial {
 			if err := wakeEngineer(projectRoot, slug, snap); err != nil {
 				return snap, fmt.Errorf("drive %s: wake engineer: %w", slug, err)
 			}
 		}
-	case PhaseReviewA:
-		if _, _, err := SpawnRole(EngineerSpec(projectRoot, slug)); err != nil {
-			return snap, fmt.Errorf("drive %s: spawn engineer: %w", slug, err)
+	case PhaseReviewA, PhaseReviewB:
+		if snap.Phase == PhaseReviewB {
+			// A approved; tear down A's pane and bring B up. Engineer
+			// stays alive across the handover.
+			if _, err := ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerA)); err != nil {
+				return snap, fmt.Errorf("drive %s: reap reviewer A: %w", slug, err)
+			}
 		}
-		if _, _, err := SpawnRole(ReviewerSpec(projectRoot, slug, task.ReviewerA)); err != nil {
-			return snap, fmt.Errorf("drive %s: spawn reviewer A: %w", slug, err)
+		if err := ensureRolePane(EngineerSpec(projectRoot, slug), snap.EngineerRound); err != nil {
+			return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
 		}
-		if err := wakeReviewer(projectRoot, slug, snap); err != nil {
-			return snap, fmt.Errorf("drive %s: wake reviewer A: %w", slug, err)
-		}
-	case PhaseReviewB:
-		// A approved; tear down A's pane and bring B up. Engineer
-		// stays alive across the handover.
-		if _, err := ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerA)); err != nil {
-			return snap, fmt.Errorf("drive %s: reap reviewer A: %w", slug, err)
-		}
-		if _, _, err := SpawnRole(EngineerSpec(projectRoot, slug)); err != nil {
-			return snap, fmt.Errorf("drive %s: spawn engineer: %w", slug, err)
-		}
-		if _, _, err := SpawnRole(ReviewerSpec(projectRoot, slug, task.ReviewerB)); err != nil {
-			return snap, fmt.Errorf("drive %s: spawn reviewer B: %w", slug, err)
+		reviewer := ReviewerSpec(projectRoot, slug, snap.CurrentReviewer)
+		if err := ensureRolePane(reviewer, snap.ReviewerRound); err != nil {
+			return snap, fmt.Errorf("drive %s: ensure reviewer %s: %w", slug, snap.CurrentReviewer, err)
 		}
 		if err := wakeReviewer(projectRoot, slug, snap); err != nil {
-			return snap, fmt.Errorf("drive %s: wake reviewer B: %w", slug, err)
+			return snap, fmt.Errorf("drive %s: wake reviewer %s: %w", slug, snap.CurrentReviewer, err)
 		}
 	case PhaseDone:
 		if err := writeSummary(projectRoot, slug); err != nil {
@@ -131,7 +127,27 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := bounceInvalidRoleFiles(projectRoot, slug); err != nil {
 		return snap, fmt.Errorf("drive %s: bounce invalid files: %w", slug, err)
 	}
+	if spec, round, expected, ok := activeRole(projectRoot, slug, snap); ok {
+		if err := checkRoleStall(spec, round, expected, roleStallWindow(projectRoot)); err != nil {
+			return snap, fmt.Errorf("drive %s: stall check: %w", slug, err)
+		}
+	}
 	return snap, nil
+}
+
+// activeRole names the role that owns the next file write in snap,
+// its completed-round count, and the file it is expected to write.
+// ok is false in terminal phases.
+func activeRole(projectRoot, slug string, snap Snapshot) (RoleSpawnSpec, int, string, bool) {
+	switch snap.Phase {
+	case PhaseEngineerInitial, PhaseEngineerReviseA, PhaseEngineerReviseB:
+		return EngineerSpec(projectRoot, slug), snap.EngineerRound,
+			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1), true
+	case PhaseReviewA, PhaseReviewB:
+		return ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), snap.ReviewerRound,
+			task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound+1), true
+	}
+	return RoleSpawnSpec{}, 0, "", false
 }
 
 // wakeEngineer nudges the engineer pane with the path of the latest
