@@ -18,6 +18,7 @@
   decode, no `author` needed); later files are strict, and panes
   still on the old prompt are bounced once with the missing field
   named.
+- flake: bump nixpkgs to pick up go 1.27.3 (GO-2026-6809).
 - `bootstrap/handover/spore-coordinator-launch.sh`: support a host-wide
   shared role file in addition to the per-project `$SPORE_COORDINATOR_ROLE`.
   The launcher now reads `$SPORE_COORDINATOR_ROLE_SHARED` (default
