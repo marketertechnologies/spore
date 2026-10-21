@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Role loop: pane liveness. Each drive tick probes the panes the phase
+  expects: a missing session is spawned silently (phase transitions,
+  token-monitor wraps; never capped), and a session whose agent died
+  (pane dead, or a shell in the foreground) is killed and respawned.
+  Those respawns notify the coordinator; after 3 of them for one role
+  in one round the driver stops and escalates once instead. The
+  active role is also watched for stalls (no expected file, no role
+  file or pane transcript change for `[fleet] role_stall_minutes`,
+  default 20, 0 disables): the coordinator is told once per quiet
+  spell, nothing is killed. Consumer impact: projects running role
+  loops get new `role-loop` coordinator notices (`respawned`,
+  `escalated: ... died again`, `stalled`) and the new spore.toml
+  knob.
 - Role loop: strict validation of `responses/engineer-round-N.json`
   and `reviews/<A|B>/round-N.json`. Unknown keys, trailing data, a
   bad verdict, or a missing / mismatched `author` make a file
