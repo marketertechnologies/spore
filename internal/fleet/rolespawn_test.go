@@ -209,8 +209,9 @@ func TestRoleSpawnPreStartWrapsAgent(t *testing.T) {
 		}
 		got := args[len(args)-1]
 		lock := task.PreStartLockPath(root, "feature-x")
+		marker := task.PreStartMarkerPath(root, "feature-x", roleKey(spec))
 		for _, want := range []string{
-			"flock " + lock + " sh -c 'bin/with-services up'",
+			": > " + marker + " && flock " + lock + " timeout 900 sh -c 'bin/with-services up'",
 			"exec claude --dangerously-skip-permissions -- ",
 		} {
 			if !strings.Contains(got, want) {
@@ -242,7 +243,7 @@ func TestRoleShellCommandRuns(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			script := roleShellCommand(task.PreStartPrelude(root, "feat", c.cmd), "printf %s", rolePath)
+			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", rolePath)
 			out, err := exec.Command("sh", "-c", script).CombinedOutput()
 			if err != nil {
 				t.Fatalf("run: %v: %s", err, out)

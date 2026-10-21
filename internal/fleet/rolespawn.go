@@ -109,7 +109,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if s.Role == "reviewer" {
 		args = append(args, "-e", "SPORE_REVIEWER_INSTANCE="+string(s.ReviewerInstance))
 	}
-	prelude := task.PreStartPrelude(s.ProjectRoot, s.Slug, task.LoadPreStart(s.ProjectRoot))
+	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
 	args = append(args, roleShellCommand(prelude, agent, rolePath))
 	return args, nil
 }

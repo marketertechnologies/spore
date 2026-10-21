@@ -87,6 +87,18 @@ func agentGone(p paneProbe, now time.Time) string {
 	return ""
 }
 
+// preStartRunning reports whether spec's pane is still in its
+// pre-start hook (or queued on the slug lock). A marker older than the
+// session is a leftover from a pane killed mid-hook and does not
+// count; session_created has 1s resolution, hence the slack.
+func preStartRunning(spec RoleSpawnSpec, created time.Time) bool {
+	fi, err := os.Stat(task.PreStartMarkerPath(spec.ProjectRoot, spec.Slug, roleKey(spec)))
+	if err != nil {
+		return false
+	}
+	return !fi.ModTime().Before(created.Add(-time.Second))
+}
+
 func isShellCommand(cmd string) bool {
 	switch strings.TrimPrefix(filepath.Base(cmd), "-") {
 	case "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu":
@@ -128,7 +140,7 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		return err
 	}
 	reason := agentGone(p, nowFunc())
-	if reason == "" {
+	if reason == "" || (!p.Dead && preStartRunning(spec, p.Created)) {
 		return nil
 	}
 

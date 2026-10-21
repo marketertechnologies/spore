@@ -553,7 +553,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prelude := PreStartPrelude(projectRoot, slug, LoadPreStart(projectRoot))
+	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
 	args = append(args, workerShellCommand(prelude, agent))
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {

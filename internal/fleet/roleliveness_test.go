@@ -135,6 +135,50 @@ func TestEnsureRolePaneRespawnsDeadAgent(t *testing.T) {
 	}
 }
 
+// While the pre-start hook runs (or waits on the slug lock) the pane
+// shows the launch shell past spawnGrace; the marker keeps liveness
+// off it. A marker older than the session is a leftover and is ignored.
+func TestEnsureRolePaneSkipsWhilePreStartRuns(t *testing.T) {
+	root, _ := livenessFixture(t)
+	f := stubPanes(t)
+	spec := ReviewerSpec(root, "demo", task.ReviewerB)
+	session, _ := spec.SessionName()
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	created := f.panes[session].Created
+	marker := task.PreStartMarkerPath(root, "demo", "reviewer-B")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(marker, created, created); err != nil {
+		t.Fatal(err)
+	}
+
+	f.now = f.now.Add(5 * time.Minute)
+	f.panes[session].Command = "bash"
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.kills) != 0 {
+		t.Fatalf("killed a pane mid pre-start: %v", f.kills)
+	}
+
+	stale := created.Add(-time.Minute)
+	if err := os.Chtimes(marker, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.kills) != 1 {
+		t.Fatalf("stale marker kept a dead agent alive: kills=%v", f.kills)
+	}
+}
+
 // A hand-started pane has no spawn marker; its death must still reach
 // the coordinator.
 func TestEnsureRolePaneNotifiesHandStartedDeath(t *testing.T) {

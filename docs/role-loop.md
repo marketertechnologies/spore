@@ -145,9 +145,22 @@ The command runs in the session cwd (the worktree) with the session's
 The lock is per slug and shared by the worker, engineer, and both
 reviewers, so make the command idempotent: later sessions wait for
 the first, then should return quickly. The pane shell runs it, not
-the reconciler, so spawning never blocks on it.
+the reconciler, so spawning never blocks on it. The hook runs under
+`timeout`, default 900s, set by `[fleet] pre_start_timeout_seconds`
+(0 runs it unbounded), so a hung bring-up cannot hold the slug lock
+forever.
 
-A non-zero exit (including a missing `flock`) never stops the agent.
+While a session waits on the lock or runs the hook, the pane shows
+the launch shell, which liveness would otherwise read as a dead
+agent once spawnGrace passes. The prelude therefore holds
+`state/pre-start-<role>.running` (`engineer`, `reviewer-A`,
+`reviewer-B`, or `worker`) from just before the lock until just
+before exec. Liveness leaves a shell-showing pane alone while that
+marker exists and is no older than the session; a marker left by a
+pane killed mid-hook is older than the respawned session and is
+ignored.
+
+A non-zero exit (including a missing `flock`, or 124 on timeout) never stops the agent.
 The agent's first prompt gets one leading line: `spore: pre-start
 hook failed (exit N): <command>. Services may be down.` Role panes
 put it above the role body; a role pane with no role body, and a
