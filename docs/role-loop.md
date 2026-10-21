@@ -130,6 +130,31 @@ respawns the phase's pane on its next tick and it resumes from the
 branch plus artifacts. The soft warn fires once per session via a
 marker at `.spore/<slug>/state/token-monitor/<session_id>.soft`.
 
+### Pre-start hook
+
+`[fleet] pre_start = "<shell command>"` runs a project command inside
+each role pane and each worker session, before the agent starts (not
+the coordinator). Typical use is bringing services up and loading a
+test schema, e.g. marketer:
+
+    [fleet]
+    pre_start = "bin/with-services up && <schema load>"
+
+The command runs in the session cwd (the worktree) with the session's
+`SPORE_*` env, via `sh -c`, under `flock .spore/<slug>/state/pre-start.lock`.
+The lock is per slug and shared by the worker, engineer, and both
+reviewers, so make the command idempotent: later sessions wait for
+the first, then should return quickly. The pane shell runs it, not
+the reconciler, so spawning never blocks on it.
+
+A non-zero exit (including a missing `flock`) never stops the agent.
+The agent's first prompt gets one leading line: `spore: pre-start
+hook failed (exit N): <command>. Services may be down.` Role panes
+put it above the role body; a role pane with no role body, and a
+worker (which starts with no prompt), get that line alone as the
+prompt. Unset or empty leaves the spawn argv byte-identical to
+before.
+
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
 by writing `responses/engineer-round-N.json`:

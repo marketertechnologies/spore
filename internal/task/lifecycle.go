@@ -553,7 +553,8 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	args = append(args, agent)
+	prelude := PreStartPrelude(projectRoot, slug, LoadPreStart(projectRoot))
+	args = append(args, workerShellCommand(prelude, agent))
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))

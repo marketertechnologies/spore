@@ -109,8 +109,25 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if s.Role == "reviewer" {
 		args = append(args, "-e", "SPORE_REVIEWER_INSTANCE="+string(s.ReviewerInstance))
 	}
-	args = append(args, coordinatorShellCommand(agent, rolePath))
+	prelude := task.PreStartPrelude(s.ProjectRoot, s.Slug, task.LoadPreStart(s.ProjectRoot))
+	args = append(args, roleShellCommand(prelude, agent, rolePath))
 	return args, nil
+}
+
+// roleShellCommand is coordinatorShellCommand behind the pre-start
+// prelude. On hook failure the note heads the role body; with no
+// role body the note alone is the first prompt.
+func roleShellCommand(prelude, agent, rolePath string) string {
+	if prelude == "" {
+		return coordinatorShellCommand(agent, rolePath)
+	}
+	cmdWithBody, cmdBare := agentInvocations(agent)
+	return prelude + fmt.Sprintf(
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "${%[4]s:+$%[4]s
+
+}$(cat %[1]s)"; else exec %[3]s ${%[4]s:+"$%[4]s"}; fi`,
+		shellSingleQuote(rolePath), cmdWithBody, cmdBare, task.PreStartNoteVar,
+	)
 }
 
 // SpawnRole creates the tmux session for spec, idempotently. A live

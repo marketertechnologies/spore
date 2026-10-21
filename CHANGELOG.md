@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fleet: `[fleet] pre_start = "<shell command>"` runs a project hook
+  in worker sessions and role panes (not the coordinator) before the
+  agent starts, in the worktree with the session's `SPORE_*` env,
+  serialized per slug by `flock .spore/<slug>/state/pre-start.lock`.
+  A failing hook still starts the agent and prepends a one-line
+  failure note (exit code, command) to its first prompt. Consumer
+  impact: opt-in, no change unless set; marketer and crm-gateway can
+  adopt with `pre_start = "bin/with-services up && <schema load>"`.
 - Role loop: pane liveness. Each drive tick probes the panes the phase
   expects: a missing session is spawned silently (phase transitions,
   token-monitor wraps; never capped), and a session whose agent died

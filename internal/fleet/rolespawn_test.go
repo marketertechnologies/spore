@@ -180,3 +180,76 @@ func hasEnvArg(argv []string, key string) bool {
 	}
 	return false
 }
+
+func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	spec := EngineerSpec(root, "feature-x")
+	args, err := spec.TmuxArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := coordinatorShellCommand("claude", filepath.Join(root, "bootstrap", "roles", "engineer.md"))
+	if got := args[len(args)-1]; got != want {
+		t.Errorf("shell command = %q, want unchanged %q", got, want)
+	}
+}
+
+func TestRoleSpawnPreStartWrapsAgent(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\npre_start = \"bin/with-services up\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range []RoleSpawnSpec{
+		EngineerSpec(root, "feature-x"),
+		ReviewerSpec(root, "feature-x", task.ReviewerA),
+	} {
+		args, err := spec.TmuxArgs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := args[len(args)-1]
+		lock := task.PreStartLockPath(root, "feature-x")
+		for _, want := range []string{
+			"flock " + lock + " sh -c 'bin/with-services up'",
+			"exec claude --dangerously-skip-permissions -- ",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: missing %q in %s", spec.Role, want, got)
+			}
+		}
+	}
+}
+
+func TestRoleShellCommandRuns(t *testing.T) {
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock not on PATH")
+	}
+	failNote := "spore: pre-start hook failed (exit 2): exit 2. Services may be down."
+	cases := []struct {
+		name, cmd, body, want string
+	}{
+		{"ok with body", "true", "role body", "role body"},
+		{"fail with body", "exit 2", "role body", failNote + "\n\nrole body"},
+		{"ok bare", "true", "", ""},
+		{"fail bare", "exit 2", "", failNote},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			rolePath := filepath.Join(root, "it's role.md")
+			if c.body != "" {
+				if err := os.WriteFile(rolePath, []byte(c.body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := roleShellCommand(task.PreStartPrelude(root, "feat", c.cmd), "printf %s", rolePath)
+			out, err := exec.Command("sh", "-c", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("run: %v: %s", err, out)
+			}
+			if string(out) != c.want {
+				t.Errorf("agent got %q, want %q", out, c.want)
+			}
+		})
+	}
+}
