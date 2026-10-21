@@ -87,21 +87,22 @@ Phase completion comes only from files; a pane exiting never advances
 or stalls the loop by itself. Each tick probes every pane the phase
 expects (tmux `pane_dead`, `pane_current_command`, `session_created`):
 
-- missing session: spawn it.
+- missing session: spawn it, silently. This covers a pane missing
+  after a phase transition and a token-monitor wrap (which kills its
+  own session on purpose); neither counts toward the respawn cap.
 - agent gone (pane dead, or a shell in the foreground once the
   session is 30s old, e.g. a hand-started role whose agent exited):
   kill the session and spawn a fresh one.
 
-Every spawn claims `state/spawn-<role>-r<round>-<n>`. Spawns past the
-first in a round are respawns: each one tells the coordinator
-(`<slug>: respawned <role> (<reason>; round R, respawn K/3)`), as does
-replacing a dead hand-started pane. After 3 respawns of one role in
-one round the driver stops, leaves the dead pane for inspection, and
-tells the coordinator once (`<slug>: escalated: <role> agent died N
-times ...`, marker `state/respawn-capped-<role>-r<round>`). The cap
-re-arms when the role's round advances; delete the role's
-`spawn-*-r<round>-*` markers to re-arm it by hand. A token-monitor
-wrap kills the pane on purpose and so counts as a respawn.
+Each agent-gone respawn claims `state/respawn-<role>-r<round>-<n>`
+and tells the coordinator (`<slug>: respawned <role> (<reason>; round
+R, respawn K/3)`). When the agent dies again after 3 respawns of one
+role in one round, the driver stops, leaves the dead pane for
+inspection, and tells the coordinator once (`<slug>: escalated:
+<role> agent died again ...`, marker
+`state/respawn-capped-<role>-r<round>`). The cap re-arms when the
+role's round advances; delete the role's `respawn-<role>-r<round>-*`
+markers and the capped marker to re-arm it by hand.
 
 Stall: the role that owns the next file write is stalled when its
 expected file is absent and neither the role files under
@@ -198,7 +199,7 @@ Markers under `.spore/<slug>/state/`:
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
-- `spawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
+- `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this

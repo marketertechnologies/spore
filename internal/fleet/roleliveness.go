@@ -104,13 +104,14 @@ func roleKey(spec RoleSpawnSpec) string {
 }
 
 // ensureRolePane keeps the agent for spec running. A healthy pane is
-// left alone. A session whose agent is gone is killed and respawned;
-// a missing session is spawned. Every spawn claims a marker
-// `spawn-<key>-r<round>-<n>` under state/, so spawns past the first in
-// a round count as respawns: each one notifies the coordinator, and
-// past MaxRoleRespawns the pass stops and escalates once instead.
-// round is the role's completed-round count, so a new round re-arms
-// the cap.
+// left alone. A missing session is spawned silently and never counts
+// toward the cap: a token-monitor wrap kills its own session on
+// purpose and must always recover. A session whose agent is gone is
+// killed and respawned; each such respawn claims a marker
+// `respawn-<key>-r<round>-<n>` under state/ and notifies the
+// coordinator, and once MaxRoleRespawns are used the pass stops and
+// escalates once instead. round is the role's completed-round count,
+// so a new round re-arms the cap.
 func ensureRolePane(spec RoleSpawnSpec, round int) error {
 	session, err := spec.SessionName()
 	if err != nil {
@@ -122,11 +123,13 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		fmt.Fprintf(os.Stderr, "role-loop probe %s: %v\n", session, err)
 		return nil
 	}
-	reason := "session missing"
-	if p.Exists {
-		if reason = agentGone(p, nowFunc()); reason == "" {
-			return nil
-		}
+	if !p.Exists {
+		_, _, err := spawnRole(spec)
+		return err
+	}
+	reason := agentGone(p, nowFunc())
+	if reason == "" {
+		return nil
 	}
 
 	stateDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
@@ -134,37 +137,35 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		return err
 	}
 	key := roleKey(spec)
-	stem := fmt.Sprintf("spawn-%s-r%d-", key, round)
-	spawns, err := countMarkers(stateDir, stem)
+	stem := fmt.Sprintf("respawn-%s-r%d-", key, round)
+	respawns, err := countMarkers(stateDir, stem)
 	if err != nil {
 		return err
 	}
-	if spawns > MaxRoleRespawns {
+	if respawns >= MaxRoleRespawns {
 		created, err := createMarkerExcl(filepath.Join(stateDir, fmt.Sprintf("respawn-capped-%s-r%d", key, round)))
 		if err != nil {
 			return err
 		}
 		if created {
 			notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf(
-				"%s: escalated: %s agent died %d times in round %d (%s); respawn stopped, pane left for inspection",
-				spec.Slug, key, spawns, round+1, reason))
+				"%s: escalated: %s agent died again after %d respawns in round %d (%s); respawn stopped, pane left for inspection",
+				spec.Slug, key, respawns, round+1, reason))
 		}
 		return nil
 	}
-	if p.Exists {
-		killRoleSession(session)
-	}
+	killRoleSession(session)
 	if _, spawned, err := spawnRole(spec); err != nil || !spawned {
 		return err
 	}
-	n := spawns + 1
+	n := respawns + 1
 	created, err := createMarkerExcl(filepath.Join(stateDir, stem+strconv.Itoa(n)))
 	if err != nil {
 		return err
 	}
-	if created && (n > 1 || p.Exists) {
+	if created {
 		notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf("%s: respawned %s (%s; round %d, respawn %d/%d)",
-			spec.Slug, key, reason, round+1, n-1, MaxRoleRespawns))
+			spec.Slug, key, reason, round+1, n, MaxRoleRespawns))
 	}
 	return nil
 }

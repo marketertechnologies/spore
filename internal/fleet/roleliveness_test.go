@@ -147,7 +147,7 @@ func TestEnsureRolePaneNotifiesHandStartedDeath(t *testing.T) {
 		t.Fatal(err)
 	}
 	bodies := envBodies(t, inbox)
-	if len(bodies) != 1 || !strings.Contains(bodies[0], "respawned reviewer-B (pane dead; round 2") {
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "respawned reviewer-B (pane dead; round 2, respawn 1/3)") {
 		t.Errorf("notices = %q", bodies)
 	}
 }
@@ -158,7 +158,10 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 	spec := EngineerSpec(root, "demo")
 	session, _ := spec.SessionName()
 
-	die := func() { delete(f.panes, session) }
+	die := func() {
+		f.now = f.now.Add(time.Minute)
+		f.panes[session].Dead = true
+	}
 	if err := ensureRolePane(spec, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -168,19 +171,18 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(f.spawns) != 1+MaxRoleRespawns {
-		t.Fatalf("spawns = %d, want %d", len(f.spawns), 1+MaxRoleRespawns)
+	if len(f.spawns) != 1+MaxRoleRespawns || len(f.kills) != MaxRoleRespawns {
+		t.Fatalf("spawns=%d kills=%d, want %d and %d", len(f.spawns), len(f.kills), 1+MaxRoleRespawns, MaxRoleRespawns)
 	}
 
-	f.now = f.now.Add(time.Minute)
-	f.panes[session].Dead = true
+	die()
 	for range 2 {
 		if err := ensureRolePane(spec, 2); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(f.spawns) != 1+MaxRoleRespawns || len(f.kills) != 0 {
-		t.Errorf("past cap: spawns=%d kills=%v, want no further spawn or kill", len(f.spawns), f.kills)
+	if len(f.spawns) != 1+MaxRoleRespawns || len(f.kills) != MaxRoleRespawns {
+		t.Errorf("past cap: spawns=%d kills=%d, want no further spawn or kill", len(f.spawns), len(f.kills))
 	}
 	bodies := envBodies(t, inbox)
 	if len(bodies) != MaxRoleRespawns+1 {
@@ -188,7 +190,7 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 	}
 	var escalations int
 	for _, b := range bodies {
-		if strings.Contains(b, "escalated: engineer agent died 4 times in round 3") {
+		if strings.Contains(b, "escalated: engineer agent died again after 3 respawns in round 3") {
 			escalations++
 		}
 	}
@@ -200,8 +202,43 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 	if err := ensureRolePane(spec, 3); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.kills) != 1 || len(f.spawns) != 2+MaxRoleRespawns {
-		t.Errorf("next round: kills=%v spawns=%d, want dead pane replaced", f.kills, len(f.spawns))
+	if len(f.kills) != 1+MaxRoleRespawns || len(f.spawns) != 2+MaxRoleRespawns {
+		t.Errorf("next round: kills=%d spawns=%d, want dead pane replaced", len(f.kills), len(f.spawns))
+	}
+}
+
+// A token-monitor wrap kills its own session. Any number of those in
+// one round must respawn silently and leave the cap untouched.
+func TestEnsureRolePaneMissingSessionNeverCounts(t *testing.T) {
+	root, inbox := livenessFixture(t)
+	f := stubPanes(t)
+	spec := EngineerSpec(root, "demo")
+	session, _ := spec.SessionName()
+	for range 2 * MaxRoleRespawns {
+		if err := ensureRolePane(spec, 0); err != nil {
+			t.Fatal(err)
+		}
+		delete(f.panes, session)
+	}
+	if len(f.spawns) != 2*MaxRoleRespawns {
+		t.Fatalf("spawns = %d, want %d", len(f.spawns), 2*MaxRoleRespawns)
+	}
+	if bodies := envBodies(t, inbox); len(bodies) != 0 {
+		t.Errorf("missing-session respawns notified: %q", bodies)
+	}
+
+	// The cap is still whole for a real agent death.
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(time.Minute)
+	f.panes[session].Dead = true
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	bodies := envBodies(t, inbox)
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "respawn 1/3") {
+		t.Errorf("notices = %q, want one respawn 1/3", bodies)
 	}
 }
 
