@@ -1,4 +1,4 @@
-**Status**: unit 1 (hook parity) in progress
+**Status**: unit 1 (hook parity) landed on wt/codex-hook-parity; units 2-5 open
 
 # codex coordinator swap
 
@@ -61,3 +61,29 @@ Researched against codex-cli 0.162.1.
 - `codex queue` needs the TUI attached to the per-`CODEX_HOME`
   daemon (`codex app-server daemon start`). With the daemon, the agent
   loop and its env live in the daemon process.
+
+## Unit 1 as built
+
+- Thread record: `<dir of $SPORE_TASK_INBOX>/codex-threads/<key>.json`,
+  key = `$SPORE_COORDINATOR_SESSION` (the shim exports it, default the
+  tmux session name) with `/` mapped to `_`. Every SessionStart source
+  overwrites it, so `/clear` and fork are followed.
+- Sidecar: claims with the Claude drain's rename into `inbox/read/`,
+  so a Claude drain and any number of sidecars on one inbox deliver
+  each envelope once. A failed `codex queue` renames the batch back.
+  Batches split under the 128 KiB argv limit. Nothing is claimed until
+  a thread is recorded.
+- Unit 2 must register `spore hooks codex-session-start` as a Codex
+  SessionStart hook; until then the sidecar idles.
+
+## Open risks
+
+- UNVERIFIED: which env Codex hooks see when the TUI is attached to the
+  daemon (the daemon's or the TUI's). The session key comes from env;
+  if hooks see the daemon env, two coordinators sharing one
+  `CODEX_HOME` daemon would record under the first launcher's key.
+  Verify live in unit 2; parallel coordinators may need one
+  `CODEX_HOME` per session.
+- Upstream 8301262 (codex hooks config scoped per session kind) is a
+  candidate crib for unit 2. d0564b8 and d9f2ab2 target packages this
+  tree lacks (`internal/agentpane`, `internal/hooks/codex`).
