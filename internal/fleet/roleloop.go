@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/versality/spore/internal/task"
@@ -72,9 +73,11 @@ type Snapshot struct {
 // DeriveSnapshot reads `<projectRoot>/.spore/<slug>/` and returns the
 // implied state. A missing tree returns a PhaseEngineerInitial
 // snapshot (no error), so callers can drive the loop forward without
-// first preparing the tree.
+// first preparing the tree. Files that fail validation are not
+// counted: a bad file must neither wedge the loop nor skew the round
+// math. DriveRoleLoop bounces them back to their author.
 func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
-	engRounds, err := task.ListEngineerRounds(projectRoot, slug)
+	engRounds, err := validEngineerRounds(projectRoot, slug)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -108,10 +111,32 @@ func loadReviews(projectRoot, slug string, instance task.ReviewerInstance, round
 	out := make([]task.Review, 0, len(rounds))
 	for _, r := range rounds {
 		rev, err := task.ReadReview(projectRoot, slug, instance, r)
+		if errors.Is(err, task.ErrInvalidRoleFile) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read %s round %d: %w", instance, r, err)
 		}
 		out = append(out, rev)
+	}
+	return out, nil
+}
+
+func validEngineerRounds(projectRoot, slug string) ([]int, error) {
+	rounds, err := task.ListEngineerRounds(projectRoot, slug)
+	if err != nil {
+		return nil, err
+	}
+	out := rounds[:0]
+	for _, r := range rounds {
+		_, err := task.ReadEngineerResponse(projectRoot, slug, r)
+		if errors.Is(err, task.ErrInvalidRoleFile) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read engineer round %d: %w", r, err)
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }

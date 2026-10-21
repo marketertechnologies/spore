@@ -94,16 +94,23 @@ const (
 )
 
 // EngineerResponse is the engineer's structured handoff for one
-// round. Persisted as `responses/engineer-round-N.json`.
+// round. Persisted as `responses/engineer-round-N.json`. Author must
+// be EngineerAuthor; see ParseEngineerResponse for the full schema.
 type EngineerResponse struct {
+	Author    string   `json:"author"`
 	Addressed []string `json:"addressed"`
 	Pushback  []string `json:"pushback"`
 	Notes     string   `json:"notes,omitempty"`
+	// Followups proposes out-of-scope work (new services, extra
+	// features) for a separate PR instead of growing this one.
+	Followups []string `json:"followups,omitempty"`
 }
 
 // Review is a reviewer's verdict for one round. Persisted as
-// `reviews/<instance>/round-N.json`.
+// `reviews/<instance>/round-N.json`. Author must equal the instance
+// directory the file sits in; see ParseReview.
 type Review struct {
+	Author   string   `json:"author"`
 	Verdict  string   `json:"verdict"`
 	Summary  string   `json:"summary"`
 	Comments []string `json:"comments"`
@@ -204,27 +211,35 @@ func ReviewPath(projectRoot, slug string, instance ReviewerInstance, round int) 
 
 // WriteEngineerResponse persists r at round N. The parent dir is
 // created on first write so engineers do not need a separate setup
-// step.
+// step. An empty Author is filled with EngineerAuthor.
 func WriteEngineerResponse(projectRoot, slug string, round int, r EngineerResponse) error {
 	if round < 1 {
 		return fmt.Errorf("roletask: round must be >= 1, got %d", round)
+	}
+	if r.Author == "" {
+		r.Author = EngineerAuthor
+	}
+	if r.Author != EngineerAuthor {
+		return fmt.Errorf("roletask: engineer response author %q, want %q", r.Author, EngineerAuthor)
 	}
 	path := EngineerResponsePath(projectRoot, slug, round)
 	return writeJSON(path, r)
 }
 
-// ReadEngineerResponse loads round N. A missing file returns
-// fs.ErrNotExist (wrapped); callers check with errors.Is.
+// ReadEngineerResponse loads and validates round N. A missing file
+// returns fs.ErrNotExist (wrapped); a malformed one an error wrapping
+// ErrInvalidRoleFile.
 func ReadEngineerResponse(projectRoot, slug string, round int) (EngineerResponse, error) {
-	var r EngineerResponse
-	b, err := os.ReadFile(EngineerResponsePath(projectRoot, slug, round))
+	path := EngineerResponsePath(projectRoot, slug, round)
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return r, err
+		return EngineerResponse{}, err
 	}
-	if err := json.Unmarshal(b, &r); err != nil {
-		return r, fmt.Errorf("roletask: parse engineer round %d: %w", round, err)
+	legacy, err := isLegacyFile(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
+	if err != nil {
+		return EngineerResponse{}, err
 	}
-	return r, nil
+	return ParseEngineerResponse(path, b, legacy)
 }
 
 // ListEngineerRounds returns the sorted round numbers present under
@@ -233,8 +248,9 @@ func ListEngineerRounds(projectRoot, slug string) ([]int, error) {
 	return listRounds(filepath.Join(RoleTaskDir(projectRoot, slug), "responses"), "engineer-round-")
 }
 
-// WriteReview persists v at round N under the given instance. The
-// verdict is validated against the known set.
+// WriteReview persists v at round N under the given instance. An
+// empty Author is filled with the instance; the result must pass
+// ParseReview in strict mode.
 func WriteReview(projectRoot, slug string, instance ReviewerInstance, round int, v Review) error {
 	if round < 1 {
 		return fmt.Errorf("roletask: round must be >= 1, got %d", round)
@@ -242,27 +258,36 @@ func WriteReview(projectRoot, slug string, instance ReviewerInstance, round int,
 	if err := validateInstance(instance); err != nil {
 		return err
 	}
-	if v.Verdict != VerdictApprove && v.Verdict != VerdictRequestChanges {
-		return fmt.Errorf("roletask: verdict %q not one of %q, %q", v.Verdict, VerdictApprove, VerdictRequestChanges)
+	if v.Author == "" {
+		v.Author = string(instance)
 	}
 	path := ReviewPath(projectRoot, slug, instance, round)
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if _, err := ParseReview(path, b, instance, false); err != nil {
+		return fmt.Errorf("roletask: %w", err)
+	}
 	return writeJSON(path, v)
 }
 
-// ReadReview loads round N from the given reviewer.
+// ReadReview loads and validates round N from the given reviewer. A
+// malformed file returns an error wrapping ErrInvalidRoleFile.
 func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) (Review, error) {
-	var r Review
 	if err := validateInstance(instance); err != nil {
-		return r, err
+		return Review{}, err
 	}
-	b, err := os.ReadFile(ReviewPath(projectRoot, slug, instance, round))
+	path := ReviewPath(projectRoot, slug, instance, round)
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return r, err
+		return Review{}, err
 	}
-	if err := json.Unmarshal(b, &r); err != nil {
-		return r, fmt.Errorf("roletask: parse %s round %d: %w", instance, round, err)
+	legacy, err := isLegacyFile(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
+	if err != nil {
+		return Review{}, err
 	}
-	return r, nil
+	return ParseReview(path, b, instance, legacy)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

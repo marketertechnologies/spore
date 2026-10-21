@@ -144,6 +144,7 @@ func TestSpecRoundtrip(t *testing.T) {
 func TestEngineerResponseRoundtrip(t *testing.T) {
 	root := t.TempDir()
 	in := EngineerResponse{
+		Author:    EngineerAuthor,
 		Addressed: []string{"comment 1 -> commit abc", "comment 2 -> renamed Y"},
 		Pushback:  []string{"comment 3 -> disagree because Z"},
 		Notes:     "spec is ambiguous on naming convention",
@@ -169,6 +170,7 @@ func TestEngineerResponseRoundFloor(t *testing.T) {
 func TestReviewRoundtrip(t *testing.T) {
 	root := t.TempDir()
 	in := Review{
+		Author:   string(ReviewerA),
 		Verdict:  VerdictRequestChanges,
 		Summary:  "naming drift in state machine",
 		Comments: []string{"Phase enum should be string", "drop the helper struct"},
@@ -272,13 +274,13 @@ func TestListReviewRoundsEmpty(t *testing.T) {
 
 func TestListReviewRoundsMixed(t *testing.T) {
 	root := t.TempDir()
-	if err := WriteReview(root, "demo", ReviewerA, 1, Review{Verdict: VerdictRequestChanges}); err != nil {
+	if err := WriteReview(root, "demo", ReviewerA, 1, Review{Verdict: VerdictRequestChanges, Summary: "s"}); err != nil {
 		t.Fatalf("write A1: %v", err)
 	}
-	if err := WriteReview(root, "demo", ReviewerA, 2, Review{Verdict: VerdictApprove}); err != nil {
+	if err := WriteReview(root, "demo", ReviewerA, 2, Review{Verdict: VerdictApprove, Summary: "s"}); err != nil {
 		t.Fatalf("write A2: %v", err)
 	}
-	if err := WriteReview(root, "demo", ReviewerB, 1, Review{Verdict: VerdictApprove}); err != nil {
+	if err := WriteReview(root, "demo", ReviewerB, 1, Review{Verdict: VerdictApprove, Summary: "s"}); err != nil {
 		t.Fatalf("write B1: %v", err)
 	}
 	if got, _ := ListReviewRounds(root, "demo", ReviewerA); !reflect.DeepEqual(got, []int{1, 2}) {

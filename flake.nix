@@ -21,7 +21,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           # go_1_26 in nixpkgs is 1.26.8, but the GO-2026-66xx
           # advisories need the 1.26.9 security release, which nixpkgs
-          # has not packaged. go_1_27 (1.27.2) carries the same fixes.
+          # has not packaged. go_1_27 (1.27.3, also fixing GO-2026-6809) carries the same fixes.
           # Drop back to pkgs.go / pkgs.buildGoModule once the default
           # Go moves past these advisories.
           go = pkgs.go_1_27;
