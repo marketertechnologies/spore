@@ -37,11 +37,17 @@ import (
 //     .spore/<slug>/summary.md (idempotent: skip if file already
 //     exists).
 //   - When the snapshot is PhaseEscalated, leaves panes alive.
+//   - Bounces any role file that fails validation back to its author
+//     (see bounceInvalidRoleFiles). Runs after the spawn pass so the
+//     owning pane is up to receive the wake.
 //
 // Returns the snapshot observed after side effects.
 func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := task.CacheSpecFromTaskFile(projectRoot, tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: cache spec: %w", slug, err)
+	}
+	if err := task.EnsureLegacyMarker(projectRoot, slug); err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: legacy marker: %w", slug, err)
 	}
 	// Own the worktree precondition explicitly. The role panes cwd
 	// into <projectRoot>/.worktrees/<slug>/; without this call the
@@ -122,6 +128,9 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		}
 	}
 
+	if err := bounceInvalidRoleFiles(projectRoot, slug); err != nil {
+		return snap, fmt.Errorf("drive %s: bounce invalid files: %w", slug, err)
+	}
 	return snap, nil
 }
 
@@ -136,7 +145,8 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
 	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
 		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
-	return wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+	_, err := wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+	return err
 }
 
 // wakeReviewer nudges the persistent reviewer pane with the path of
@@ -152,7 +162,8 @@ func wakeReviewer(projectRoot, slug string, snap Snapshot) error {
 	respPath := task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound)
 	msg := fmt.Sprintf("Engineer responded to your round %d verdict. Read %s and review round %d.",
 		snap.ReviewerRound, respPath, snap.ReviewerRound+1)
-	return wakeSession(ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), reviewerWakeMarkerStem(snap), msg)
+	_, err := wakeSession(ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), reviewerWakeMarkerStem(snap), msg)
+	return err
 }
 
 // engineerWakeMarkerStem keys the engineer wake on which verdict is
@@ -174,43 +185,56 @@ func reviewerWakeMarkerStem(snap Snapshot) string {
 // tick) clears the gate and the new pane gets nudged in turn. The
 // marker is written only after sendWakeVerified confirms submission;
 // on failure the next drive tick retries the whole wake.
-func wakeSession(spec RoleSpawnSpec, markerStem, msg string) error {
+func wakeSession(spec RoleSpawnSpec, markerStem, msg string) (wakeOutcome, error) {
 	session, err := spec.SessionName()
 	if err != nil {
-		return err
+		return wakePending, err
 	}
 	if !hasSession(session) {
 		// Pane is not up; the spawn pass above will have failed if
 		// the agent crashed. Skip the wake and let the next tick try.
-		return nil
+		return wakeNoSession, nil
 	}
 	created, err := sessionCreated(session)
 	if err != nil {
 		// `display-message` failure means we cannot tell if this is a
 		// fresh pane or the one we already nudged. Skip rather than
 		// risk spamming send-keys; the next tick retries.
-		return nil
+		return wakePending, nil
 	}
 
 	markerDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return err
+		return wakePending, err
 	}
 	marker := filepath.Join(markerDir, markerStem+"-"+created)
 	if _, err := os.Stat(marker); err == nil {
-		return nil
+		return wakeDelivered, nil
 	}
 	delivered, err := sendWakeVerified(session, msg)
 	if err != nil {
-		return err
+		return wakePending, err
 	}
 	if !delivered {
 		// Pane is up but its input prompt is not (agent still booting
 		// after a respawn). Nothing was sent; the next tick retries.
-		return nil
+		return wakePending, nil
 	}
-	return os.WriteFile(marker, []byte(msg+"\n"), 0o644)
+	if err := os.WriteFile(marker, []byte(msg+"\n"), 0o644); err != nil {
+		return wakePending, err
+	}
+	return wakeDelivered, nil
 }
+
+// wakeOutcome is what wakeSession achieved. wakeDelivered covers a
+// wake confirmed on this call or an earlier one (marker present).
+type wakeOutcome int
+
+const (
+	wakePending wakeOutcome = iota
+	wakeDelivered
+	wakeNoSession
+)
 
 // wakePasteSettle is how long the agent TUI gets to settle the pasted
 // wake text before the Enter keypress. Sent in one send-keys call, the
@@ -548,6 +572,9 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 		}
 		for _, r := range rounds {
 			rev, err := task.ReadReview(projectRoot, slug, instance, r)
+			if errors.Is(err, task.ErrInvalidRoleFile) {
+				continue
+			}
 			if err != nil {
 				return "", err
 			}
@@ -572,6 +599,9 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 		b.WriteString("## engineer responses\n\n")
 		for _, r := range engRounds {
 			resp, err := task.ReadEngineerResponse(projectRoot, slug, r)
+			if errors.Is(err, task.ErrInvalidRoleFile) {
+				continue
+			}
 			if err != nil {
 				return "", err
 			}
@@ -592,6 +622,13 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 			}
 			if resp.Notes != "" {
 				fmt.Fprintf(&b, "Notes: %s\n\n", resp.Notes)
+			}
+			if len(resp.Followups) > 0 {
+				b.WriteString("Proposed follow-ups:\n")
+				for _, c := range resp.Followups {
+					fmt.Fprintf(&b, "- %s\n", c)
+				}
+				b.WriteString("\n")
 			}
 		}
 	}

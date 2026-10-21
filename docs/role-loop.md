@@ -76,6 +76,7 @@ Per-phase side effects of a drive tick:
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
 - `escalated`: write the `escalated-*` marker, touch nothing else
+- every phase: bounce invalid role files (see below)
 
 ## Roles
 
@@ -98,9 +99,11 @@ the latest verdict, commits on the task branch, and ends each round
 by writing `responses/engineer-round-N.json`:
 
     {
+      "author": "engineer",
       "addressed": ["comment 1 -> commit X"],
       "pushback": ["comment 3 -> disagree because Z"],
-      "notes": "free-form context for the reviewer"
+      "notes": "free-form context for the reviewer",
+      "followups": ["out-of-scope idea for a separate PR"]
     }
 
 Reviewer (`spore-role/<project>/<slug>/reviewer-<instance>`): one
@@ -112,10 +115,38 @@ B's own verdicts. Each round a reviewer writes
 `reviews/<instance>/round-N.json`:
 
     {
+      "author": "A",
       "verdict": "approve" | "request_changes",
       "summary": "one-line overall take",
       "comments": ["one string per concern"]
     }
+
+## File validation
+
+Every drive tick validates each role file before deriving the phase
+(`internal/task/rolefile.go`). A file is invalid when it is not one
+JSON object, carries a key outside its schema, lacks a required field
+(`author` everywhere; `verdict` and `summary` on reviews), has a
+verdict outside `approve` / `request_changes`, or has an `author`
+that does not match its location: `reviews/A/` needs `"A"`,
+`reviews/B/` needs `"B"`, `responses/` needs `"engineer"`. Panes fill
+it from `$SPORE_REVIEWER_INSTANCE` / `$SPORE_ROLE`.
+
+An invalid file never counts toward the phase, so it cannot wedge or
+skew the loop. The drive tells the coordinator once per bad file and
+wakes the authoring pane with the validation error. Once the wake is
+confirmed, the file moves to `<name>.invalid` (then `.invalid.2`, ...)
+for debugging and the pane rewrites it. If the authoring pane is not
+running, the file moves aside at once and the coordinator notice is
+the only signal.
+
+Upgrade path: the first drive by a validating binary writes
+`state/legacy-files`, listing the role files already on disk. Those
+are read leniently (unknown keys and a missing `author` pass; the
+verdict enum still applies), so an in-flight loop does not rewind.
+Files written after that point are strict. Panes spawned before the
+upgrade still run the old role body; their next file without
+`author` is bounced, and the wake message names the missing field.
 
 ## Observing a running loop
 
@@ -131,6 +162,10 @@ Markers under `.spore/<slug>/state/`:
   the loop later reaches done (operator force-approve).
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
+- `legacy-files`: role files grandfathered from before validation.
+- `invalid-<file>-<n>-<hash>`: the coordinator was told about this
+  invalid file; `bounced-<file>-<n>-<hash>-<stamp>` marks the
+  delivered wake.
 
 `spore task waybar` renders `d/a/p/b/e/r` counts (draft, active,
 paused, blocked, escalated, ready). Escalated and ready count marker
