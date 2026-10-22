@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Codex hook parity (unit 1 of `docs/todo/codex-coordinator-swap.md`).
+  Token monitors (coordinator and worker) read Codex rollouts: the
+  live context is `last_token_usage.total_tokens` of the latest
+  `token_count` event; `.jsonl.zst` rollouts are skipped. Hook entry
+  points accept the Codex payload fields. The transcript fallback and
+  `spore coordinator verify-done` resolve the project root from
+  `SPORE_PROJECT_ROOT`, then `CLAUDE_PROJECT_DIR`, then cwd. New
+  `spore hooks codex-session-start` (records the Codex thread id per
+  agent session next to the inbox) and `spore hooks watch-inbox
+  --codex [--pid N]` (long-running sidecar that claims inbox envelopes
+  and delivers them with `codex queue --thread`; `SPORE_CODEX_BIN`
+  overrides the binary). Consumer impact: the coordinator launch shim's
+  codex branch now passes `--dangerously-bypass-hook-trust`, gives
+  each coordinator session its own `CODEX_HOME`
+  (`<coordinator state dir>/<project>/codex-home/<session>/`, with
+  `auth.json`, `config.toml`, `hooks.json`, `AGENTS.md` symlinked from
+  `~/.codex`), restarts that home's app-server daemon, exports
+  `SPORE_COORDINATOR_SESSION` and runs the sidecar for the pane's
+  lifetime (log:
+  `<coordinator state dir>/<project>/codex-watch-inbox.log`). The
+  claude branch is unchanged. Wiring the SessionStart hook into Codex
+  config is unit 2; until then the sidecar idles.
+- Fix: `spore task tell coordinator` wrote
+  `<state>/spore/<project>/coordinator/inbox`, which nothing drains. It
+  now writes the coordinator inbox
+  `<state>/spore/coordinator/<project>/inbox`. Consumer impact: worker
+  `tell coordinator` messages now reach the coordinator.
 - Role loop: pane liveness. Each drive tick probes the panes the phase
   expects: a missing session is spawned silently (phase transitions,
   token-monitor wraps; never capped), and a session whose agent died

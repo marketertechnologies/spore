@@ -103,3 +103,14 @@ func TestStopWithBashRequest(t *testing.T) {
 		t.Error("Stop should return zero Response regardless of input")
 	}
 }
+
+func TestRequestDecodesCodexSessionStart(t *testing.T) {
+	body := `{"session_id":"01a15e73-0000-7000-8000-000000000001","transcript_path":null,"cwd":"/p","hook_event_name":"SessionStart","model":"gpt-5.5","permission_mode":"bypassPermissions","source":"resume","unknown_future_field":{"x":1}}`
+	var req Request
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal codex SessionStart: %v", err)
+	}
+	if req.SessionID != "01a15e73-0000-7000-8000-000000000001" || req.Source != "resume" || req.Model != "gpt-5.5" || req.TranscriptPath != "" {
+		t.Errorf("decoded = %+v", req)
+	}
+}

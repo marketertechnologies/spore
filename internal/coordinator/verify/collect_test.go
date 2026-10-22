@@ -177,3 +177,15 @@ func writeTaskFileV(t *testing.T, root, slug, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestResolveRepoRootEnvOrder(t *testing.T) {
+	t.Setenv("SPORE_PROJECT_ROOT", "/srv/proj/.worktrees/task-a")
+	t.Setenv("CLAUDE_PROJECT_DIR", "/elsewhere")
+	if got := resolveRepoRoot(); got != "/srv/proj" {
+		t.Errorf("resolveRepoRoot = %q, want SPORE_PROJECT_ROOT main checkout /srv/proj", got)
+	}
+	t.Setenv("SPORE_PROJECT_ROOT", "")
+	if got := resolveRepoRoot(); got != "/elsewhere" {
+		t.Errorf("resolveRepoRoot = %q, want CLAUDE_PROJECT_DIR", got)
+	}
+}

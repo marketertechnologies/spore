@@ -100,16 +100,29 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 	return nil
 }
 
-// drainInbox lists *.json at the top level of inboxDir, atomically
-// moves each to inboxDir/read/, and prints "[ts] source: body" for
-// every file this caller claimed. Returns the claim count.
+// drainInbox claims every pending envelope in inboxDir and prints
+// "[ts] source: body" for each one this caller claimed. Returns the
+// claim count.
 func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
+	claimed, err := claimInbox(inboxDir)
+	if err != nil || len(claimed) == 0 {
+		return 0, err
+	}
+	io.WriteString(stdout, renderClaimed(claimed))
+	return len(claimed), nil
+}
+
+// claimInbox lists *.json at the top level of inboxDir and atomically
+// moves each to inboxDir/read/. The rename is the claim: concurrent
+// drains on one inbox never both get a file. Returns the claimed paths
+// under read/, in name order.
+func claimInbox(inboxDir string) ([]string, error) {
 	entries, err := os.ReadDir(inboxDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil
+			return nil, nil
 		}
-		return 0, err
+		return nil, err
 	}
 	var names []string
 	for _, e := range entries {
@@ -123,7 +136,7 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 		names = append(names, e.Name())
 	}
 	if len(names) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	sort.Strings(names)
 
@@ -136,14 +149,16 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 			claimed = append(claimed, dst)
 		}
 	}
-	if len(claimed) == 0 {
-		return 0, nil
-	}
+	return claimed, nil
+}
+
+func renderClaimed(claimed []string) string {
+	var b strings.Builder
 	for _, f := range claimed {
 		ts, source, body := readTellFile(f)
-		fmt.Fprintf(stdout, "[%s] %s: %s\n", ts, source, body)
+		fmt.Fprintf(&b, "[%s] %s: %s\n", ts, source, body)
 	}
-	return len(claimed), nil
+	return b.String()
 }
 
 func readTellFile(path string) (ts, source, body string) {
