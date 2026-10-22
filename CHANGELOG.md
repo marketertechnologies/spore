@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Fleet: `[fleet] pre_start = "<shell command>"` runs a project hook
+  in worker sessions and role panes (not the coordinator) before the
+  agent starts, in the worktree with the session's `SPORE_*` env,
+  serialized per slug by `flock .spore/<slug>/state/pre-start.lock`.
+  The hook is bounded by `timeout` (default 900s,
+  `[fleet] pre_start_timeout_seconds`, 0 unbounded). A failing or
+  timed-out hook still starts the agent and prepends a one-line
+  failure note (exit code, command) to its first prompt. Role
+  liveness skips a pane while its `state/pre-start-<role>.running`
+  marker is fresh, so a slow bring-up or lock wait is not respawned
+  as a dead agent. Consumer
+  impact: opt-in, no change unless set; marketer and crm-gateway can
+  adopt with `pre_start = "bin/with-services up && <schema load>"`.
 - Codex hook parity (unit 1 of `docs/todo/codex-coordinator-swap.md`).
   Token monitors (coordinator and worker) read Codex rollouts: the
   live context is `last_token_usage.total_tokens` of the latest

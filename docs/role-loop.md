@@ -130,6 +130,44 @@ respawns the phase's pane on its next tick and it resumes from the
 branch plus artifacts. The soft warn fires once per session via a
 marker at `.spore/<slug>/state/token-monitor/<session_id>.soft`.
 
+### Pre-start hook
+
+`[fleet] pre_start = "<shell command>"` runs a project command inside
+each role pane and each worker session, before the agent starts (not
+the coordinator). Typical use is bringing services up and loading a
+test schema, e.g. marketer:
+
+    [fleet]
+    pre_start = "bin/with-services up && <schema load>"
+
+The command runs in the session cwd (the worktree) with the session's
+`SPORE_*` env, via `sh -c`, under `flock .spore/<slug>/state/pre-start.lock`.
+The lock is per slug and shared by the worker, engineer, and both
+reviewers, so make the command idempotent: later sessions wait for
+the first, then should return quickly. The pane shell runs it, not
+the reconciler, so spawning never blocks on it. The hook runs under
+`timeout`, default 900s, set by `[fleet] pre_start_timeout_seconds`
+(0 runs it unbounded), so a hung bring-up cannot hold the slug lock
+forever.
+
+While a session waits on the lock or runs the hook, the pane shows
+the launch shell, which liveness would otherwise read as a dead
+agent once spawnGrace passes. The prelude therefore holds
+`state/pre-start-<role>.running` (`engineer`, `reviewer-A`,
+`reviewer-B`, or `worker`) from just before the lock until just
+before exec. Liveness leaves a shell-showing pane alone while that
+marker exists and is no older than the session; a marker left by a
+pane killed mid-hook is older than the respawned session and is
+ignored.
+
+A non-zero exit (including a missing `flock`, or 124 on timeout) never stops the agent.
+The agent's first prompt gets one leading line: `spore: pre-start
+hook failed (exit N): <command>. Services may be down.` Role panes
+put it above the role body; a role pane with no role body, and a
+worker (which starts with no prompt), get that line alone as the
+prompt. Unset or empty leaves the spawn argv byte-identical to
+before.
+
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
 by writing `responses/engineer-round-N.json`:

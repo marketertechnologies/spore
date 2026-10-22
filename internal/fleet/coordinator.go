@@ -252,17 +252,20 @@ func driverToBinary(driver string) string {
 // only for claude-shaped agents so a sleep-based test agent still
 // boots clean.
 func coordinatorShellCommand(agent, rolePath string) string {
-	q := shellSingleQuote(rolePath)
-	cmdWithBody := agent
-	cmdBare := agent
-	if isClaudeAgent(agent) {
-		cmdWithBody = agent + " --dangerously-skip-permissions --"
-		cmdBare = agent + " --dangerously-skip-permissions"
-	}
+	cmdWithBody, cmdBare := agentInvocations(agent)
 	return fmt.Sprintf(
 		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[3]s; fi`,
-		q, cmdWithBody, cmdBare,
+		shellSingleQuote(rolePath), cmdWithBody, cmdBare,
 	)
+}
+
+// agentInvocations returns the agent command for a run with a prompt
+// body and for a bare run.
+func agentInvocations(agent string) (withBody, bare string) {
+	if isClaudeAgent(agent) {
+		return agent + " --dangerously-skip-permissions --", agent + " --dangerously-skip-permissions"
+	}
+	return agent, agent
 }
 
 // isClaudeAgent reports whether the agent string resolves to the
