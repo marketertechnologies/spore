@@ -331,8 +331,9 @@ Main extension points:
 - [internal/matter/](internal/matter/) is the plugin layer for
   external work sources (e.g. [linear](internal/matter/linear/)).
 - [internal/hooks/](internal/hooks/) emits and runs Claude Code and
-  Codex hook bindings; both agents share the same JSON shape, wired
-  through `.claude/settings.json` and `.codex/hooks.json`.
+  Codex hook bindings; both agents share the same payload shape, wired
+  through `.claude/settings.json` and the user-level
+  `~/.codex/hooks.json` (`spore hooks codex-config`).
 - [internal/lints/](internal/lints/) holds portable repo lints.
 - [internal/composer/](internal/composer/) renders instruction files
   from rule fragments in [rules/](rules/).

@@ -1,4 +1,4 @@
-**Status**: unit 1 (hook parity) landed on wt/codex-hook-parity; units 2-5 open
+**Status**: unit 1 (hook parity) merged (PR #81); unit 2 (config render) landed on wt/codex-render-config; units 3-5 open
 
 # codex coordinator swap
 
@@ -92,8 +92,55 @@ Researched against codex-cli 0.162.1.
 - Unit 2 must register `spore hooks codex-session-start` as a Codex
   SessionStart hook; until then the sidecar idles.
 
+## Unit 2 as built
+
+Hook facts below read from the codex-rs 0.163.0 source (the nixpkgs
+pin); not yet verified against a live session.
+
+- `$CODEX_HOME/hooks.json` is the user layer; a trusted project's
+  `.codex/hooks.json` is a further layer. Layers append, and duplicate
+  handlers all run (no dedupe). Hooks are on by default (`hooks`
+  feature, stable). The top level is `deny_unknown_fields`
+  (`hooks`, `description`); handler keys are not, so a Claude
+  `asyncRewake` is silently dropped and the hook runs synchronously.
+  `async` is honored except on SessionEnd. Timeout defaults to 600s.
+- Source of truth: `hooks.CodexUserEvents` in
+  `internal/hooks/codexconfig.go`, rendered by `hooks.CodexHooks`
+  (rejects `AsyncRewake`) and printed by
+  `spore hooks codex-config [--spore PATH]`. Bindings: SessionStart
+  `codex-session-start`; Stop `coordinator token-monitor`,
+  `worker token-monitor`, `fleet replenish-hook`. No watch-inbox
+  (the sidecar replaces it), no Notification (Codex has no such
+  event), no Claude-tool PreToolUse perl hooks. `load-state-md` is
+  unit 3.
+- Who renders: the NixOS module, under
+  `services.spore-fleet.codex.enable` (default off). It runs the
+  package's own `spore hooks codex-config` at build time, with hook
+  commands pinned to `cfg.package`, into home-manager
+  `home.file.".codex/hooks.json"`; it also adds `codex.package`
+  (default `pkgs.codex`) to systemPackages and the reconciler PATH.
+  One opt-in knob: the coordinator driver lives in runtime config
+  (`spore.toml`, `/etc/spore/coordinator.env`) that Nix cannot read
+  at eval time, and Claude-only hosts skip the codex closure. The
+  infect host flake sets it. Non-Nix hosts run
+  `spore hooks codex-config > ~/.codex/hooks.json`.
+- `config.toml`, `auth.json`, `AGENTS.md` stay unmanaged: Codex
+  writes the first two in place, and a store symlink would break
+  that. The shim's link list already carries `hooks.json`; no shim
+  change.
+- Removed the tracked repo `.codex/hooks.json`: with the user layer
+  in place it double-fired Stop hooks in a trusted checkout and ran
+  `watch-inbox` as a blocking Stop hook.
+- Workers with `agent: codex` also get the user hooks. Their
+  SessionStart writes a thread record next to the worker inbox;
+  nothing reads it.
+
 ## Open risks
 
-- Upstream 8301262 (codex hooks config scoped per session kind) is a
-  candidate crib for unit 2. d0564b8 and d9f2ab2 target packages this
-  tree lacks (`internal/agentpane`, `internal/hooks/codex`).
+- Upstream 8301262 scopes Codex hooks per session kind via a
+  spawn-rendered project `.codex/hooks.json`. Unit 2 took only its
+  renderer shape; kind scoping is unneeded while every bound command
+  self-gates on env. d0564b8 and d9f2ab2 target packages this tree
+  lacks (`internal/agentpane`, `internal/hooks/codex`).
+- Hook firing under Codex is unverified live until a host with
+  `codex.enable` is rebuilt (operator-bound).
