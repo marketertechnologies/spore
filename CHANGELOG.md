@@ -13,10 +13,16 @@
   `codex.package` (default `pkgs.codex`): installs codex system-wide
   and on the reconciler PATH, and renders `~/.codex/hooks.json` for
   the fleet user through home-manager. The `spore infect` host flake
-  sets it. Consumer impact: hosts running Codex coordinators set
-  `codex.enable = true`; home-manager refuses to clobber a hand-written
-  `~/.codex/hooks.json`, so move one aside first. `config.toml` and
-  `auth.json` stay unmanaged. The launch shim is unchanged (`hooks.json`
+  sets it. Consumer impact: Codex coordinators require
+  `codex.enable = true`; on a host without it a Codex session gets no
+  Stop hooks at all (no token monitor, no replenish) and nothing
+  warns. A pre-existing `~/.codex/hooks.json` fails the whole
+  home-manager activation for the fleet user (no
+  `home-manager.backupFileExtension` set): the fleet reconcile units
+  stop deploying and `nixos-rebuild switch` exits non-zero. Move the
+  file aside first, or set `home-manager.backupFileExtension` so
+  home-manager renames it. `config.toml` and `auth.json` stay
+  unmanaged. The launch shim is unchanged (`hooks.json`
   is already in its link list). The tracked repo-level
   `.codex/hooks.json` is removed: Codex loads project and user hooks
   without dedupe, so it double-fired the Stop hooks in trusted
