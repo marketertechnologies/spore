@@ -35,6 +35,8 @@ func runHooks(args []string) int {
 		return runHooksStop()
 	case "settings":
 		return runHooksSettings()
+	case "codex-config":
+		return runHooksCodexConfig(rest)
 	case "watch-inbox":
 		return runHooksWatchInbox(rest)
 	case "notify-coordinator":
@@ -163,6 +165,23 @@ func runHooksSettings() int {
 	out, err := hooks.Settings(events)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+		return 1
+	}
+	os.Stdout.Write(out)
+	return 0
+}
+
+func runHooksCodexConfig(args []string) int {
+	fs := flag.NewFlagSet("codex-config", flag.ContinueOnError)
+	spore := fs.String("spore", "spore", "spore command the hooks invoke")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: spore hooks codex-config [--spore PATH]")
+		return 2
+	}
+	out, err := hooks.CodexHooks(hooks.CodexUserEvents(*spore))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks codex-config:", err)
 		return 1
 	}
 	os.Stdout.Write(out)

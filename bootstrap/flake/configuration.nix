@@ -119,6 +119,9 @@ in
     user = "spore";
     package = sporePkgs.spore;
     claudeCodePackage = pkgs.claude-code;
+    # `spore infect --coordinator-agent codex` needs codex on PATH and
+    # the user-level ~/.codex/hooks.json the module renders.
+    codex.enable = true;
     hostId = config.networking.hostName;
     projects = sporeProjects;
     extraEnv = {

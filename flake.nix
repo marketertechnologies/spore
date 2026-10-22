@@ -273,6 +273,7 @@
                       "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
+                      "hooks codex-config") printf '{"hooks":{"stub":"%s"}}\n' "$4" ; exit 0 ;;
                       "migrate --auto")
                         for t in bash find grep tail dirname mkdir cat; do
                           command -v "$t" >> "''${HOME}/spore-migrate-path.log" || { echo "missing $t" >> "''${HOME}/spore-migrate-path.log"; exit 1; }
@@ -282,6 +283,10 @@
                     esac
                   '';
                   claudeCodePackage = pkgs.writeShellScriptBin "claude" "exit 0";
+                  codex = {
+                    enable = true;
+                    package = pkgs.writeShellScriptBin "codex" "exit 0";
+                  };
                   gracefulDeploy.timeout = 5;
                   tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
@@ -408,6 +413,14 @@
                   unit = machine.succeed(
                       "cat /home/spore-test/.config/systemd/user/spore-fleet-reconcile-project.service")
                   assert "LoadCredential=matter-linear-api_key:" in unit, unit
+
+                  # codex.enable: codex on the system and reconciler
+                  # PATH, ~/.codex/hooks.json rendered by the package's
+                  # own `hooks codex-config` with hooks pinned to it.
+                  machine.succeed("test -x /run/current-system/sw/bin/codex")
+                  assert "-codex/bin" in env, env
+                  hooks = machine.succeed("cat /home/spore-test/.codex/hooks.json")
+                  assert '"stub":"/nix/store/' in hooks and hooks.strip().endswith('/bin/spore"}}'), hooks
 
                   # Graceful-deploy: pre-script disables the kill-switch
                   # and tells every active worker to wrap up; post-script

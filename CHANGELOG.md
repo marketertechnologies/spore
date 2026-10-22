@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Codex config render (unit 2 of `docs/todo/codex-coordinator-swap.md`).
+  New `spore hooks codex-config [--spore PATH]` prints the user-level
+  Codex `hooks.json`: SessionStart `spore hooks codex-session-start`
+  (the thread record the unit-1 inbox sidecar waits on) and the Stop
+  token monitors plus `fleet replenish-hook`. The Claude
+  `watch-inbox` asyncRewake hook is left out (Codex would run it
+  synchronously; the sidecar replaces it). New NixOS option
+  `services.spore-fleet.codex.enable` (default off) with
+  `codex.package` (default `pkgs.codex`): installs codex system-wide
+  and on the reconciler PATH, and renders `~/.codex/hooks.json` for
+  the fleet user through home-manager. The `spore infect` host flake
+  sets it. Consumer impact: Codex coordinators require
+  `codex.enable = true`; on a host without it a Codex session gets no
+  Stop hooks at all (no token monitor, no replenish) and nothing
+  warns. A pre-existing `~/.codex/hooks.json` fails the whole
+  home-manager activation for the fleet user (no
+  `home-manager.backupFileExtension` set): the fleet reconcile units
+  stop deploying and `nixos-rebuild switch` exits non-zero. Move the
+  file aside first, or set `home-manager.backupFileExtension` so
+  home-manager renames it. `config.toml` and `auth.json` stay
+  unmanaged. The launch shim is unchanged (`hooks.json`
+  is already in its link list). The tracked repo-level
+  `.codex/hooks.json` is removed: Codex loads project and user hooks
+  without dedupe, so it double-fired the Stop hooks in trusted
+  checkouts and ran `watch-inbox` as a blocking Stop hook. Consumers
+  carrying a copy should drop it for the same reason.
+
 - Fleet: `[fleet] pre_start = "<shell command>"` runs a project hook
   in worker sessions and role panes (not the coordinator) before the
   agent starts, in the worktree with the session's `SPORE_*` env,

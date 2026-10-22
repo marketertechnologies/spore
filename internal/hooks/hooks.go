@@ -8,8 +8,8 @@
 // The kernel ships JSON-protocol types, a PreToolUse decider that
 // blocks forbidden bash patterns, and a no-op Stop. Wiring them as
 // actual hooks is up to the consumer (`.claude/settings.json` for
-// Claude Code, `.codex/hooks.json` for Codex); the kernel just
-// provides the implementations.
+// Claude Code); the user-level Codex hooks.json comes from
+// CodexUserEvents via `spore hooks codex-config`.
 package hooks
 
 import "encoding/json"

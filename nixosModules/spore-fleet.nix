@@ -130,6 +130,12 @@ let
         (lib.stringToCharacters upper)
     );
 
+  # Rendered by the spore CLI itself so the binding set has one source
+  # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
+  codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
+    ${cfg.package}/bin/spore hooks codex-config --spore ${cfg.package}/bin/spore > $out
+  '';
+
   enabledMatters = lib.filterAttrs (_: m: m.enable) cfg.matters;
 
   # matterEnv flattens enabled matters into
@@ -472,6 +478,25 @@ in
       '';
     };
 
+    codex = {
+      enable = lib.mkEnableOption ''
+        Codex coordinators and workers. Installs `codex.package`
+        system-wide and on the reconciler PATH, and renders
+        `~/.codex/hooks.json` for `user` from `spore hooks
+        codex-config` (token monitors, replenish, and the
+        SessionStart thread record the Codex inbox sidecar needs).
+        The launch shim links that file into each coordinator
+        session's `CODEX_HOME`. `config.toml` and `auth.json` stay
+        unmanaged: Codex writes to both'';
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.codex;
+        defaultText = lib.literalExpression "pkgs.codex";
+        description = "Codex CLI installed when `codex.enable` is set.";
+      };
+    };
+
     tmux = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -675,14 +700,14 @@ in
                   # spore-worker-brief) can resolve `#!/usr/bin/env bash`
                   # and call `cat`/`mkdir`/`tee`/`date` without an
                   # in-shim PATH-augment workaround.
-                  PATH = lib.makeBinPath [
+                  PATH = lib.makeBinPath ([
                     cfg.package
                     cfg.claudeCodePackage
                     pkgs.bashInteractive
                     pkgs.coreutils
                     pkgs.git
                     pkgs.tmux
-                  ];
+                  ] ++ lib.optional cfg.codex.enable cfg.codex.package);
                 } // matterEnv // cfg.extraEnv
               );
               NoNewPrivileges = true;
@@ -732,6 +757,11 @@ in
           { }
           effectiveProjects;
       };
+    })
+
+    (lib.mkIf (cfg.enable && cfg.codex.enable) {
+      environment.systemPackages = [ cfg.codex.package ];
+      home-manager.users.${cfg.user}.home.file.".codex/hooks.json".source = codexHooks;
     })
   ];
 }

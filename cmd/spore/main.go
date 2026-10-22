@@ -73,6 +73,9 @@ Subcommands:
                          write the (currently no-op) response JSON.
   settings               Read a hook binding JSON from stdin, emit a
                          deterministic settings.json to stdout.
+  codex-config [--spore PATH]
+                         Emit the user-level Codex hooks.json
+                         ($CODEX_HOME/hooks.json) to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
                               With no slug, reads $SPORE_TASK_INBOX.
   watch-inbox --codex [--pid N]
