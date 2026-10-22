@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Codex: `spore fleet replenish-hook` prints its status line to stderr
+  instead of stdout. Codex parses Stop-hook stdout as JSON, so every
+  Codex coordinator turn ended with "hook returned invalid stop hook
+  JSON output". Claude Code behavior is unchanged.
+
 - Codex config render (unit 2 of `docs/todo/codex-coordinator-swap.md`).
   New `spore hooks codex-config [--spore PATH]` prints the user-level
   Codex `hooks.json`: SessionStart `spore hooks codex-session-start`

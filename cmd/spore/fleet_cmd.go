@@ -104,7 +104,7 @@ func runFleetReconcile(args []string) error {
 		return err
 	}
 
-	res, err := fleet.Reconcile(fleet.Config{
+	res, err := replenishReconcile(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
@@ -216,6 +216,9 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 	return fleet.LoadMaxWorkers(projectRoot)
 }
 
+// replenishReconcile is a test seam: the real Reconcile drives tmux.
+var replenishReconcile = fleet.Reconcile
+
 // runFleetReplenishHook is the Stop-hook entry point for `spore fleet
 // replenish-hook`. It reads context entirely from the environment so a
 // settings.json hook entry can be a static string (no slug
@@ -228,6 +231,8 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 //   - skip the spawn pass when budget advice is "tighten" / "ration"
 //   - never exit non-zero: a failing reconcile must not block the Stop
 //     hook
+//   - keep stdout empty and report on stderr: Codex parses Stop-hook
+//     stdout as JSON
 //
 // $WT_PROJECT and $WT_FLEET_FLOOR are read by the helpers above
 // (resolveMaxWorkers honours $WT_FLEET_FLOOR; project root is the
@@ -258,7 +263,7 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	res, err := fleet.Reconcile(fleet.Config{
+	res, err := replenishReconcile(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
@@ -270,7 +275,7 @@ func runFleetReplenishHook(args []string) error {
 	if res.Disabled {
 		return nil
 	}
-	fmt.Printf("replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
+	fmt.Fprintf(os.Stderr, "replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
 		len(res.Active), len(res.Spawned), len(res.Kept), len(res.Reaped), len(res.Skipped))
 	return nil
 }

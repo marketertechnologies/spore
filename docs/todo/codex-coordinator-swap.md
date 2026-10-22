@@ -134,6 +134,13 @@ pin); not yet verified against a live session.
 - Workers with `agent: codex` also get the user hooks. Their
   SessionStart writes a thread record next to the worker inbox;
   nothing reads it.
+- Codex parses Stop-hook stdout as JSON: on exit 0 it must be empty
+  or valid hook JSON, else every turn ends with "hook returned invalid
+  stop hook JSON output". Status lines go to stderr
+  (`fleet replenish-hook` printed one to stdout until 0.20.1).
+  Live-verified units 1+2 on 2026-10-22 (codex-cli 0.162.1): thread
+  record, sidecar wake via `codex queue`, token-monitor ledger from
+  the rollout.
 
 ## Open risks
 
@@ -142,5 +149,6 @@ pin); not yet verified against a live session.
   renderer shape; kind scoping is unneeded while every bound command
   self-gates on env. d0564b8 and d9f2ab2 target packages this tree
   lacks (`internal/agentpane`, `internal/hooks/codex`).
-- Hook firing under Codex is unverified live until a host with
-  `codex.enable` is rebuilt (operator-bound).
+- Cap firing (token monitor exit 2 blocking the Stop) is unverified
+  live under Codex; the exit-0 hook paths were live-verified
+  2026-10-22.
