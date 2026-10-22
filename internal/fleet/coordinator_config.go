@@ -78,26 +78,50 @@ func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error
 	return cfg, nil
 }
 
-// SetCoordinatorDriver writes driver and model into [coordinator] of
-// <projectRoot>/spore.toml, keeping comments and other keys. An empty
-// model deletes the key. Returns the config as re-read from disk.
-func SetCoordinatorDriver(projectRoot, driver, model string) (CoordinatorConfig, error) {
-	path := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: read %s: %w", path, err)
+// driverPlan is a pending [coordinator] driver/model rewrite of
+// spore.toml, holding the old bytes so a failed swap can undo it.
+type driverPlan struct {
+	root, path   string
+	old, content string
+	existed      bool
+	cfg          CoordinatorConfig
+}
+
+// planCoordinatorDriver computes the spore.toml with driver and model
+// set in [coordinator], keeping comments and other keys. An empty
+// model deletes the key. Nothing is written.
+func planCoordinatorDriver(projectRoot, driver, model string) (driverPlan, error) {
+	p := driverPlan{root: projectRoot, path: filepath.Join(projectRoot, "spore.toml")}
+	b, err := os.ReadFile(p.path)
+	switch {
+	case err == nil:
+		p.existed = true
+	case !os.IsNotExist(err):
+		return p, fmt.Errorf("coordinator: read %s: %w", p.path, err)
 	}
-	content := sporetoml.SetKey(string(b), "coordinator", "driver", driver)
+	p.old = string(b)
+	p.content = sporetoml.SetKey(p.old, "coordinator", "driver", driver)
 	if model == "" {
-		content = sporetoml.DeleteKey(content, "coordinator", "model")
+		p.content = sporetoml.DeleteKey(p.content, "coordinator", "model")
 	} else {
-		content = sporetoml.SetKey(content, "coordinator", "model", model)
+		p.content = sporetoml.SetKey(p.content, "coordinator", "model", model)
 	}
-	if _, err := parseCoordinatorTOML(content); err != nil {
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: %s: %w", path, err)
+	if p.cfg, err = parseCoordinatorTOML(p.content); err != nil {
+		return p, fmt.Errorf("coordinator: %s: %w", p.path, err)
 	}
-	if err := sporetoml.WriteFile(projectRoot, content); err != nil {
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: write %s: %w", path, err)
+	return p, nil
+}
+
+func (p driverPlan) write() error {
+	if err := sporetoml.WriteFile(p.root, p.content); err != nil {
+		return fmt.Errorf("coordinator: write %s: %w", p.path, err)
 	}
-	return LoadCoordinatorConfig(projectRoot)
+	return nil
+}
+
+func (p driverPlan) rollback() error {
+	if !p.existed {
+		return os.Remove(p.path)
+	}
+	return sporetoml.WriteFile(p.root, p.old)
 }

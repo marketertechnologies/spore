@@ -1,9 +1,9 @@
 package sporetoml
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -14,7 +14,7 @@ import (
 func SetKey(content, section, key, value string) string {
 	lines, trailingNL := splitLines(content)
 	idx, last, header := locate(lines, section, key)
-	entry := key + " = " + strconv.Quote(value)
+	entry := key + " = " + Quote(value)
 	switch {
 	case idx >= 0:
 		lines[idx] = rewriteEntry(lines[idx], entry)
@@ -70,6 +70,41 @@ func WriteFile(projectRoot, content string) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// Quote renders v as a TOML basic string. strconv.Quote is not one:
+// its \x and \a escapes are invalid TOML. Non-ASCII passes through
+// (TOML files are UTF-8); control bytes get TOML's short or \uXXXX
+// escapes.
+func Quote(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range v {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // locate returns the index of key's line in [section], the section's

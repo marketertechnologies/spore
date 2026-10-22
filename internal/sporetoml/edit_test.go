@@ -87,3 +87,18 @@ func TestWriteFileKeepsMode(t *testing.T) {
 		t.Errorf("content = %q", b)
 	}
 }
+
+func TestQuoteIsTOML(t *testing.T) {
+	cases := map[string]string{
+		"gpt-5.5":     `"gpt-5.5"`,
+		`a"b\c`:       `"a\"b\\c"`,
+		"tab\there\n": `"tab\there\n"`,
+		"bell\a\x7f":  `"bell\u0007\u007F"`,
+		"caf\u00e9":   "\"caf\u00e9\"",
+	}
+	for in, want := range cases {
+		if got := Quote(in); got != want {
+			t.Errorf("Quote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

@@ -106,11 +106,11 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 	if spec.To != "claude" && spec.To != "codex" {
 		return SwapResult{}, fmt.Errorf("coordinator swap: --to must be claude or codex, got %q", spec.To)
 	}
-	env, err := sessionEnv(spec.Session)
+	env, err := readTmuxEnv("-t", exactSession(spec.Session))
 	if err != nil {
 		return SwapResult{}, fmt.Errorf("coordinator swap: session %s: %w", spec.Session, err)
 	}
-	root := env["SPORE_PROJECT_ROOT"]
+	root := env.vals["SPORE_PROJECT_ROOT"]
 	if root == "" {
 		return SwapResult{}, fmt.Errorf("coordinator swap: session %s has no SPORE_PROJECT_ROOT in its env", spec.Session)
 	}
@@ -124,7 +124,7 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 		if insideSession(spec.Session) {
 			return res, fmt.Errorf("coordinator swap: running inside %s, which cannot answer its own wrap request; flush state.md, then rerun with --no-wrap", spec.Session)
 		}
-		inbox := env["SPORE_TASK_INBOX"]
+		inbox := env.vals["SPORE_TASK_INBOX"]
 		if inbox == "" {
 			if inbox, err = task.CoordinatorInboxDirForProject(root); err != nil {
 				return res, err
@@ -146,50 +146,127 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 		}
 	}
 
-	model := SwapModel(runningConfig(root, env), spec.To, spec.Model, spec.ModelSet)
-	cfg, err := SetCoordinatorDriver(root, spec.To, model)
+	model := SwapModel(runningConfig(root, env.vals), spec.To, spec.Model, spec.ModelSet)
+	plan, err := planCoordinatorDriver(root, spec.To, model)
 	if err != nil {
 		return res, err
 	}
-	res.Config = cfg
-	logf("coordinator swap: %s driver=%s model=%s", filepath.Join(root, "spore.toml"), cfg.Driver, displayModel(cfg.Model))
-
-	rolePath := env["SPORE_COORDINATOR_ROLE"]
+	res.Config = plan.cfg
+	global, err := readTmuxEnv("-g")
+	if err != nil {
+		return res, fmt.Errorf("coordinator swap: global env: %w", err)
+	}
+	agent, err := swapAgent(env.vals, global.vals, spec.To)
+	if err != nil {
+		return res, err
+	}
+	rolePath := env.vals["SPORE_COORDINATOR_ROLE"]
 	if rolePath == "" {
 		rolePath = CoordinatorRolePath(root)
 	}
-	logf("coordinator swap: respawning %s (%s)", spec.Session, pane)
-	for _, args := range swapCommands(spec.Session, pane, root, cfg, coordinatorAgent(cfg), rolePath) {
+
+	// Mutations run cheapest-to-undo first: session env, then
+	// spore.toml, then the respawn. A failure undoes the earlier steps
+	// so the operator is not left with a flipped spore.toml and the old
+	// agent still running.
+	target := exactSession(spec.Session)
+	for _, args := range swapEnvCommands(target, plan.cfg) {
 		if _, err := swapTmux(args...); err != nil {
-			return res, fmt.Errorf("coordinator swap: %w", err)
+			return res, fmt.Errorf("coordinator swap: %w; %s", err, restoreSwapEnv(target, env, "spore.toml and the pane untouched"))
 		}
+	}
+	if err := plan.write(); err != nil {
+		return res, fmt.Errorf("%w; %s", err, restoreSwapEnv(target, env, "spore.toml and the pane untouched"))
+	}
+	logf("coordinator swap: %s driver=%s model=%s", plan.path, plan.cfg.Driver, displayModel(plan.cfg.Model))
+	logf("coordinator swap: respawning %s (%s) with %s", spec.Session, pane, agent)
+	if _, err := swapTmux(respawnCommand(pane, root, agent, rolePath)...); err != nil {
+		left := "spore.toml restored"
+		if rerr := plan.rollback(); rerr != nil {
+			left = fmt.Sprintf("spore.toml NOT restored (%v), still says driver=%s", rerr, plan.cfg.Driver)
+		}
+		return res, fmt.Errorf("coordinator swap: %w; %s", err, restoreSwapEnv(target, env, left+", pane untouched"))
 	}
 	return res, nil
 }
 
-// swapCommands is the tmux sequence that turns the pane over. The
-// session env is authoritative: respawn-pane builds the new process
-// env from the global env plus the session env, so provider and model
-// go there, and a cleared model is marked -r so a value inherited by
-// the tmux server (e.g. from /etc/spore/coordinator.env) cannot leak
-// back in.
-func swapCommands(session, pane, root string, cfg CoordinatorConfig, agent, rolePath string) [][]string {
-	model := []string{"set-environment", "-t", session, "-r", "SPORE_COORDINATOR_MODEL"}
+// swapAgent picks the binary the respawned pane execs. The caller's
+// env is not consulted: an operator shell lacks the reconciler's
+// SPORE_COORDINATOR_AGENT, and SPORE_AGENT_BINARY is the worker
+// launcher. The session env carries the agent EnsureCoordinator was
+// given; the global env holds what the tmux server inherited (usually
+// the reconciler's unit env). Without either the driver names the
+// binary. A bare claude or codex that contradicts the target driver is
+// an error, not a silent wrong-agent respawn.
+func swapAgent(session, global map[string]string, to string) (string, error) {
+	agent := session[CoordinatorAgentEnv]
+	if agent == "" {
+		agent = global[CoordinatorAgentEnv]
+	}
+	if agent == "" {
+		return driverToBinary(to), nil
+	}
+	fields := strings.Fields(agent)
+	switch base := filepath.Base(fields[0]); {
+	case (base == "claude" || base == "claude-code") && to != "claude",
+		base == "codex" && to != "codex":
+		return "", fmt.Errorf("coordinator swap: %s=%q runs %s, not %s; point it at a launcher that reads SPORE_COORDINATOR_PROVIDER (spore-coordinator-launch)", CoordinatorAgentEnv, agent, base, to)
+	}
+	return agent, nil
+}
+
+// exactSession turns a session name into a target that matches only
+// that name: a bare name falls back to prefix and fnmatch lookup, which
+// could hit spore/<p>/coordinator2.
+func exactSession(session string) string {
+	return "=" + session
+}
+
+// swapEnvCommands sets provider and model in the session env, which
+// respawn-pane layers over the global env. A cleared model is marked -r
+// so a value inherited by the tmux server (e.g. from
+// /etc/spore/coordinator.env) cannot leak back in.
+func swapEnvCommands(target string, cfg CoordinatorConfig) [][]string {
+	model := []string{"set-environment", "-t", target, "-r", "SPORE_COORDINATOR_MODEL"}
 	if cfg.Model != "" {
-		model = []string{"set-environment", "-t", session, "SPORE_COORDINATOR_MODEL", cfg.Model}
+		model = []string{"set-environment", "-t", target, "SPORE_COORDINATOR_MODEL", cfg.Model}
 	}
 	return [][]string{
-		{"set-environment", "-t", session, "SPORE_COORDINATOR_PROVIDER", cfg.Driver},
+		{"set-environment", "-t", target, "SPORE_COORDINATOR_PROVIDER", cfg.Driver},
 		model,
-		{"respawn-pane", "-k", "-t", pane, "-c", root, coordinatorShellCommand(agent, rolePath)},
 	}
+}
+
+func respawnCommand(pane, root, agent, rolePath string) []string {
+	return []string{"respawn-pane", "-k", "-t", pane, "-c", root, coordinatorShellCommand(agent, rolePath)}
+}
+
+// restoreSwapEnv puts provider and model back as they were and returns
+// a description of the state left behind, for the error message.
+func restoreSwapEnv(target string, prev tmuxEnv, left string) string {
+	var failed []string
+	for _, k := range []string{"SPORE_COORDINATOR_PROVIDER", "SPORE_COORDINATOR_MODEL"} {
+		args := []string{"set-environment", "-t", target, "-u", k}
+		if v, ok := prev.vals[k]; ok {
+			args = []string{"set-environment", "-t", target, k, v}
+		} else if prev.removed[k] {
+			args = []string{"set-environment", "-t", target, "-r", k}
+		}
+		if _, err := swapTmux(args...); err != nil {
+			failed = append(failed, k)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Sprintf("%s; session env NOT restored for %s, fix with tmux set-environment before the next respawn", left, strings.Join(failed, ", "))
+	}
+	return left + ", session env restored"
 }
 
 // requestWrap drops a wrap-up envelope into the coordinator inbox and
 // waits for stateFile's mtime to advance and then settle. A Claude
 // coordinator picks it up through its inbox hook, a Codex one through
-// the watch-inbox sidecar. Returns false when state.md never advanced
-// before the deadline; a write that is still settling counts.
+// the watch-inbox sidecar. Returns false when state.md has not
+// advanced and settled by the deadline.
 func requestWrap(inbox, stateFile string, spec SwapSpec) (bool, error) {
 	before := fileMtime(stateFile)
 	msg := fmt.Sprintf("spore coordinator swap: this pane is about to be respawned as a %s coordinator. "+
@@ -217,7 +294,7 @@ func requestWrap(inbox, stateFile string, spec SwapSpec) (bool, error) {
 			}
 		}
 		if !swapNow().Before(deadline) {
-			return !seen.IsZero(), nil
+			return false, nil
 		}
 		swapSleep(poll)
 	}
@@ -231,17 +308,26 @@ func fileMtime(path string) time.Time {
 	return st.ModTime()
 }
 
-// sessionEnv reads the session's own environment table. Removed
-// entries ("-VAR") are skipped.
-func sessionEnv(session string) (map[string]string, error) {
-	out, err := swapTmux("show-environment", "-t", session)
+// tmuxEnv is a tmux environment table. removed holds "-VAR" entries:
+// variables tmux strips from processes it starts.
+type tmuxEnv struct {
+	vals    map[string]string
+	removed map[string]bool
+}
+
+// readTmuxEnv runs show-environment with scope args (-t <session> or
+// -g).
+func readTmuxEnv(scope ...string) (tmuxEnv, error) {
+	out, err := swapTmux(append([]string{"show-environment"}, scope...)...)
 	if err != nil {
-		return nil, err
+		return tmuxEnv{}, err
 	}
-	env := map[string]string{}
+	env := tmuxEnv{vals: map[string]string{}, removed: map[string]bool{}}
 	for _, line := range strings.Split(string(out), "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(k, "-") {
-			env[k] = v
+		if k, ok := strings.CutPrefix(line, "-"); ok {
+			env.removed[k] = true
+		} else if k, v, ok := strings.Cut(line, "="); ok {
+			env.vals[k] = v
 		}
 	}
 	return env, nil
@@ -251,7 +337,7 @@ func sessionEnv(session string) (map[string]string, error) {
 // new-session started the agent in. Ids survive window renumbering and
 // base-index settings that a "<session>:0" target would not.
 func coordinatorPane(session string) (string, error) {
-	out, err := swapTmux("list-panes", "-s", "-t", session, "-F", "#{pane_id}")
+	out, err := swapTmux("list-panes", "-s", "-t", exactSession(session), "-F", "#{pane_id}")
 	if err != nil {
 		return "", fmt.Errorf("coordinator swap: %w", err)
 	}

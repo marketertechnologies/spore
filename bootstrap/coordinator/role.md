@@ -53,6 +53,11 @@ You do not just observe. You drive the queue.
 - Edit `tasks/<slug>.md` directly for coordinator-side progress
   notes. Do not rewrite a worker's brief mid-flight.
 - Edit `state.md`. It is your own memory; nobody else writes to it.
+- `spore coordinator swap --to claude|codex [--model m]` respawns
+  this pane under another driver. From inside the pane, flush
+  `state.md` first, then pass `--no-wrap`; the command dies with
+  the pane. A swap request arriving in your inbox means: flush
+  `state.md` now and end the turn.
 
 ## Operating principles
 

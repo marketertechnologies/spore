@@ -233,3 +233,26 @@ func TestCoordinatorSessionArgsAutoConnectIDE(t *testing.T) {
 		})
 	}
 }
+
+func TestCoordinatorSessionArgsRecordsExplicitAgent(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	root := newGitRepoFor(t, "demo-project")
+
+	t.Setenv(CoordinatorAgentEnv, "")
+	args, err := coordinatorSessionArgs(root, "s", "/role.md", CoordinatorConfig{Driver: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnvArg(args, CoordinatorAgentEnv) {
+		t.Errorf("driver-derived agent recorded as an override: %v", args)
+	}
+
+	t.Setenv(CoordinatorAgentEnv, "/usr/local/bin/spore-coordinator-launch")
+	args, err = coordinatorSessionArgs(root, "s", "/role.md", CoordinatorConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValue(args, CoordinatorAgentEnv); got != "/usr/local/bin/spore-coordinator-launch" {
+		t.Errorf("%s = %q", CoordinatorAgentEnv, got)
+	}
+}

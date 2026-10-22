@@ -19,14 +19,19 @@ Usage:
                          [--wrap-timeout D]
 
 Steps: ask the live coordinator (through its inbox) to flush state.md
-and wait for the write; set [coordinator] driver/model in spore.toml;
-set SPORE_COORDINATOR_PROVIDER/MODEL in the tmux session env; respawn
-the session's first pane with the coordinator agent.
+and wait for the write; set SPORE_COORDINATOR_PROVIDER/MODEL in the
+tmux session env; set [coordinator] driver/model in spore.toml;
+respawn the session's first pane. A failed step undoes the earlier
+ones. The agent is SPORE_COORDINATOR_AGENT from the session env, then
+the tmux global env, then the driver's own binary; the caller's env
+is ignored.
 
 Without --model, a driver change clears the model and a same-driver
 swap keeps it.
 
 From an operator shell: run in the project tree, or pass --project.
+A coordinator found through [coordinator] external_session_pattern
+runs under a non-kernel session name: pass it with --session.
 From inside the coordinator pane: flush state.md yourself, then run
 with --no-wrap; the pane (and this command) is replaced.
 

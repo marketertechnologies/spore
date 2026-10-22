@@ -11,14 +11,22 @@ import (
 )
 
 type fakeSwapTmux struct {
-	env   string
-	calls [][]string
+	env, global string
+	calls       [][]string
+	// fail, when set, fails any call it returns true for.
+	fail func(args []string) bool
 }
 
 func (f *fakeSwapTmux) run(args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
+	if f.fail != nil && f.fail(args) {
+		return nil, errors.New("injected tmux failure")
+	}
 	switch args[0] {
 	case "show-environment":
+		if args[1] == "-g" {
+			return []byte(f.global), nil
+		}
 		return []byte(f.env), nil
 	case "list-panes":
 		return []byte("%7\n%9\n"), nil
@@ -63,9 +71,13 @@ func newSwapFixture(t *testing.T, toml, sessionEnvExtra string) *swapFixture {
 	f.tmux = &fakeSwapTmux{env: "SPORE_PROJECT_ROOT=" + f.root + "\n" +
 		"SPORE_TASK_INBOX=" + f.inbox + "\n" +
 		"SPORE_COORDINATOR_ROLE=/r/role.md\n" +
-		"-SOMETHING_REMOVED\n" + sessionEnvExtra}
+		"-SOMETHING_REMOVED\n" + sessionEnvExtra,
+		global: "SPORE_COORDINATOR_AGENT=/usr/local/bin/spore-coordinator-launch\nHOME=/home/x\n"}
 	t.Setenv("TMUX", "")
-	t.Setenv(CoordinatorAgentEnv, "/usr/local/bin/spore-coordinator-launch")
+	// The caller's env must not pick the agent: an operator shell
+	// has neither of these, a worker shell has the worker launcher.
+	t.Setenv(CoordinatorAgentEnv, "/caller/agent")
+	t.Setenv("SPORE_AGENT_BINARY", "/caller/spore-worker-brief")
 	prevTmux, prevSleep, prevNow := swapTmux, swapSleep, swapNow
 	swapTmux = f.tmux.run
 	swapNow = func() time.Time { return f.now }
@@ -104,16 +116,17 @@ func TestSwapCoordinatorToCodexClearsModel(t *testing.T) {
 	if res.Config.Driver != "codex" || res.Config.Model != "" || res.Pane != "%7" {
 		t.Errorf("result = %+v", res)
 	}
+	exact := "=" + f.session
 	want := [][]string{
-		{"set-environment", "-t", f.session, "SPORE_COORDINATOR_PROVIDER", "codex"},
-		{"set-environment", "-t", f.session, "-r", "SPORE_COORDINATOR_MODEL"},
+		{"set-environment", "-t", exact, "SPORE_COORDINATOR_PROVIDER", "codex"},
+		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_MODEL"},
 		{"respawn-pane", "-k", "-t", "%7", "-c", f.root,
 			coordinatorShellCommand("/usr/local/bin/spore-coordinator-launch", "/r/role.md")},
 	}
 	if got := f.tmux.mutations(); !reflect.DeepEqual(got, want) {
 		t.Errorf("tmux sequence:\n%q\nwant:\n%q", got, want)
 	}
-	if f.tmux.calls[0][0] != "show-environment" || f.tmux.calls[0][2] != f.session {
+	if f.tmux.calls[0][0] != "show-environment" || f.tmux.calls[0][2] != exact {
 		t.Errorf("first call should read the target session env: %q", f.tmux.calls[0])
 	}
 }
@@ -140,9 +153,9 @@ func TestSwapCoordinatorModelRules(t *testing.T) {
 				t.Errorf("model = %q, want %q", res.Config.Model, c.wantModel)
 			}
 			muts := f.tmux.mutations()
-			wantEnv := []string{"set-environment", "-t", f.session, "SPORE_COORDINATOR_MODEL", c.wantModel}
+			wantEnv := []string{"set-environment", "-t", "=" + f.session, "SPORE_COORDINATOR_MODEL", c.wantModel}
 			if c.wantModel == "" {
-				wantEnv = []string{"set-environment", "-t", f.session, "-r", "SPORE_COORDINATOR_MODEL"}
+				wantEnv = []string{"set-environment", "-t", "=" + f.session, "-r", "SPORE_COORDINATOR_MODEL"}
 			}
 			if !reflect.DeepEqual(muts[1], wantEnv) {
 				t.Errorf("model env = %q, want %q", muts[1], wantEnv)
@@ -253,5 +266,117 @@ func TestSwapCoordinatorInsidePaneNeedsNoWrap(t *testing.T) {
 	}
 	if _, err := SwapCoordinator(SwapSpec{Session: f.session, To: "codex"}); err != nil {
 		t.Fatalf("--no-wrap from inside the pane: %v", err)
+	}
+}
+
+func TestSwapCoordinatorWrapUnsettledAtDeadlineTimesOut(t *testing.T) {
+	f := newSwapFixture(t, "[coordinator]\ndriver = \"claude\"\n", "")
+	state := filepath.Join(f.root, "state.md")
+	sleeps := 0
+	f.onSleep = func() {
+		sleeps++
+		// First write lands 4s before a 30s deadline; the 10s settle
+		// cannot finish in time.
+		if sleeps == 13 {
+			if err := os.WriteFile(state, []byte("half"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.Chtimes(state, f.now, f.now)
+		}
+	}
+	_, err := SwapCoordinator(SwapSpec{Session: f.session, To: "codex", Wrap: true,
+		WrapTimeout: 30 * time.Second, WrapSettle: 10 * time.Second, Poll: 2 * time.Second})
+	if !errors.Is(err, ErrWrapTimeout) {
+		t.Fatalf("err = %v, want ErrWrapTimeout", err)
+	}
+	if len(f.tmux.mutations()) != 0 {
+		t.Errorf("tmux mutated: %q", f.tmux.mutations())
+	}
+}
+
+func TestSwapAgentPrecedence(t *testing.T) {
+	const launch = "/usr/local/bin/spore-coordinator-launch"
+	cases := []struct {
+		name, sessionEnv, global, to, want string
+		wantErr                            bool
+	}{
+		{"session env wins", "SPORE_COORDINATOR_AGENT=/opt/session-launch\n", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", "/opt/session-launch", false},
+		{"global env next", "", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", launch, false},
+		{"driver binary last", "", "", "codex", "codex", false},
+		{"driver binary claude", "", "", "claude", "claude", false},
+		{"bare claude agent cannot run codex", "SPORE_COORDINATOR_AGENT=claude\n", "", "codex", "", true},
+		{"bare codex agent cannot run claude", "", "SPORE_COORDINATOR_AGENT=/run/current-system/sw/bin/codex -m x\n", "claude", "", true},
+		{"matching bare agent is fine", "SPORE_COORDINATOR_AGENT=claude\n", "", "claude", "claude", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSwapFixture(t, "", c.sessionEnv)
+			f.tmux.global = c.global
+			_, err := SwapCoordinator(SwapSpec{Session: f.session, To: c.to})
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("want an agent/driver mismatch error")
+				}
+				if len(f.tmux.mutations()) != 0 {
+					t.Errorf("tmux mutated: %q", f.tmux.mutations())
+				}
+				if _, err := os.Stat(filepath.Join(f.root, "spore.toml")); !os.IsNotExist(err) {
+					t.Error("spore.toml written despite the error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			muts := f.tmux.mutations()
+			if got := muts[len(muts)-1][len(muts[len(muts)-1])-1]; got != coordinatorShellCommand(c.want, "/r/role.md") {
+				t.Errorf("respawn command = %q, want agent %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
+	const toml = "[coordinator]\ndriver = \"claude\" # keep\nmodel = \"opus\"\n"
+	exact := "=spore/proj/coordinator"
+	restore := [][]string{
+		{"set-environment", "-t", exact, "SPORE_COORDINATOR_PROVIDER", "claude"},
+		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_MODEL"},
+	}
+	cases := []struct {
+		name      string
+		failOn    string
+		wantInErr string
+		wantMuts  int
+	}{
+		{"respawn fails", "respawn-pane", "spore.toml restored, pane untouched, session env restored", 5},
+		{"set-environment fails", "set-environment", "spore.toml and the pane untouched", 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSwapFixture(t, toml, "SPORE_COORDINATOR_PROVIDER=claude\n-SPORE_COORDINATOR_MODEL\n")
+			first := true
+			f.tmux.fail = func(args []string) bool {
+				if args[0] != c.failOn || !first {
+					return false
+				}
+				first = false
+				return true
+			}
+			_, err := SwapCoordinator(SwapSpec{Session: f.session, To: "codex", Model: "gpt-5.5", ModelSet: true})
+			if err == nil || !strings.Contains(err.Error(), c.wantInErr) {
+				t.Fatalf("err = %v, want it to say %q", err, c.wantInErr)
+			}
+			if got := f.readTOML(t); got != toml {
+				t.Errorf("spore.toml not restored: %q", got)
+			}
+			muts := f.tmux.mutations()
+			if len(muts) != c.wantMuts {
+				t.Fatalf("mutations = %q", muts)
+			}
+			if !reflect.DeepEqual(muts[len(muts)-2:], restore) {
+				t.Errorf("restore commands = %q, want %q", muts[len(muts)-2:], restore)
+			}
+		})
 	}
 }

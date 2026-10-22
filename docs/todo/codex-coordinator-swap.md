@@ -213,8 +213,8 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
 - Wrap: a `{"slug","ts","msg"}` envelope (`task.TellDir`) into the
   session's inbox; the Claude inbox hook or the Codex sidecar delivers
   it. Then poll `<root>/state.md` mtime until it advances and stays
-  unchanged for 10s. A write still settling at the deadline counts.
-  No write by `--wrap-timeout` (default 5m) aborts with `spore.toml`
+  unchanged for 10s. A write still settling at the deadline is a
+  timeout. No settled write by `--wrap-timeout` (default 5m) aborts with `spore.toml`
   and the pane untouched, unless `--force`.
 - Inside the coordinator pane (`$TMUX_PANE`'s session is the target)
   the wrap is refused: the agent is blocked on the command and cannot
@@ -226,16 +226,33 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   Model: `--model` wins; omitted on a driver change deletes the key;
   omitted on the same driver keeps the running one. "Running" is the
   session env provider/model, then `spore.toml`, then `claude`.
-- tmux sequence: `set-environment -t S SPORE_COORDINATOR_PROVIDER d`;
-  `set-environment -t S SPORE_COORDINATOR_MODEL m`, or `-r` when
+- Order: every read and check first (session env, global env, agent,
+  the new `spore.toml` text), then the mutations cheapest-to-undo
+  first: `set-environment -t =S SPORE_COORDINATOR_PROVIDER d`;
+  `set-environment -t =S SPORE_COORDINATOR_MODEL m`, or `-r` when
   cleared (`-u` would let a value the tmux server inherited, e.g. from
   `/etc/spore/coordinator.env`, back in; verified on a private
-  socket); `respawn-pane -k -t <first pane id> -c <root>
-  <coordinatorShellCommand(coordinatorAgent, role)>`. The pane id
-  comes from `list-panes -s`, not `S:0`, so `base-index` does not
-  matter. The agent is `coordinatorAgent`, so `SPORE_COORDINATOR_AGENT`
-  must be in the caller's env (hosts set it globally); with a bare
-  `claude`/`codex` agent the binary follows the driver.
+  socket); write `spore.toml`; `respawn-pane -k -t <first pane id>
+  -c <root> <coordinatorShellCommand(agent, role)>`. A failure
+  restores `spore.toml` and the session env, and the error names what
+  was left. Session targets carry `=` so tmux's prefix and fnmatch
+  fallback cannot pick `spore/<p>/coordinator2`. The pane id comes
+  from `list-panes -s`, not `S:0`, so `base-index` does not matter.
+- Agent: `SPORE_COORDINATOR_AGENT` from the session env, then the tmux
+  global env, then `driverToBinary(--to)`. The caller's env is never
+  read: on hosts the var lives in the reconciler unit's `Environment=`,
+  not in an ssh operator shell, and `SPORE_AGENT_BINARY` is the worker
+  launcher. `EnsureCoordinator` now records an explicit
+  `SPORE_COORDINATOR_AGENT` in the session env; sessions spawned
+  before 0.22.0 rely on the global env (set when the reconciler
+  started the tmux server). A resolved bare `claude`/`codex` that
+  contradicts `--to` is an error.
+- Reconciler precedence: `EnsureCoordinator` still lets a process-env
+  `SPORE_COORDINATOR_PROVIDER` / `_MODEL` beat `spore.toml`. On hosts
+  whose `/etc/spore/coordinator.env` sets them, a swapped coordinator
+  that dies and is respawned by the reconciler comes back on the env
+  driver, not the swapped one. Clear those two lines (or set them to
+  match) after a swap until the precedence is revisited.
 - Not handled: a codex -> claude swap leaves that session's
   `codex app-server daemon` running (harmless; the next codex launch
   restarts it). Live swap against a real codex login is the
