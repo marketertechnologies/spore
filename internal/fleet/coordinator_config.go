@@ -2,6 +2,8 @@ package fleet
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/versality/spore/internal/sporetoml"
 )
@@ -74,4 +76,28 @@ func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error
 		}
 	}
 	return cfg, nil
+}
+
+// SetCoordinatorDriver writes driver and model into [coordinator] of
+// <projectRoot>/spore.toml, keeping comments and other keys. An empty
+// model deletes the key. Returns the config as re-read from disk.
+func SetCoordinatorDriver(projectRoot, driver, model string) (CoordinatorConfig, error) {
+	path := filepath.Join(projectRoot, "spore.toml")
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return CoordinatorConfig{}, fmt.Errorf("coordinator: read %s: %w", path, err)
+	}
+	content := sporetoml.SetKey(string(b), "coordinator", "driver", driver)
+	if model == "" {
+		content = sporetoml.DeleteKey(content, "coordinator", "model")
+	} else {
+		content = sporetoml.SetKey(content, "coordinator", "model", model)
+	}
+	if _, err := parseCoordinatorTOML(content); err != nil {
+		return CoordinatorConfig{}, fmt.Errorf("coordinator: %s: %w", path, err)
+	}
+	if err := sporetoml.WriteFile(projectRoot, content); err != nil {
+		return CoordinatorConfig{}, fmt.Errorf("coordinator: write %s: %w", path, err)
+	}
+	return LoadCoordinatorConfig(projectRoot)
 }

@@ -38,6 +38,7 @@ Subcommands:
   stop            Kill the coordinator tmux session.
   restart         Stop then start.
   status          Print whether the coordinator session is alive.
+  swap            Respawn the coordinator under another driver (claude|codex).
   role-brief      Render the coordinator role brief to stdout.
   state-debt      Scan state.md for prose lessons that should be lifted.
   verify-done     Run the verify-done verdict for a slug.
@@ -64,6 +65,8 @@ func runCoordinator(args []string) int {
 		return runCoordinatorRestart(rest)
 	case "status":
 		return runCoordinatorStatus(rest)
+	case "swap":
+		return runCoordinatorSwap(rest)
 	case "role-brief":
 		return runCoordinatorRoleBrief(rest)
 	case "state-debt":

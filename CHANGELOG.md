@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `spore coordinator swap --to claude|codex [--model M] [--project N]`
+  (unit 4 of `docs/todo/codex-coordinator-swap.md`). Asks the live
+  coordinator through its inbox to flush `state.md` and waits for the
+  write (`--no-wrap` skips, `--force` swaps after `--wrap-timeout`),
+  sets `[coordinator]` `driver` / `model` in `spore.toml` keeping
+  comments and other keys, sets `SPORE_COORDINATOR_PROVIDER` /
+  `SPORE_COORDINATOR_MODEL` in the tmux session env, and respawns the
+  session's first pane with the coordinator agent. A driver change
+  without `--model` clears the model. From inside the coordinator
+  pane, flush `state.md` yourself and pass `--no-wrap`. Consumer
+  impact: none until invoked; the command rewrites `spore.toml`, so
+  commit the flip if the project tracks that file.
+
 - Codex context bridge (unit 3 of `docs/todo/codex-coordinator-swap.md`).
   `spore hooks codex-session-start` now also prints SessionStart JSON
   (`hookSpecificOutput.additionalContext`) carrying the main repo's
