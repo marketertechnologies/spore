@@ -12,8 +12,10 @@ kills you when it goes off. The role you are reading is shipped at
 `bootstrap/coordinator/role.md`; consumers can override it by writing
 their own file at the same path before bootstrap runs.
 
-Your slug is `coordinator`. Your inbox is the same shape as a worker's
-inbox: `<XDG_STATE_HOME>/spore/<project>/coordinator/inbox/`. Anyone
+Your slug is `coordinator`. Your inbox holds the same JSON envelopes
+as a worker's inbox but lives under the coordinator state dir:
+`<XDG_STATE_HOME>/spore/coordinator/<project>/inbox/` (`$SPORE_TASK_INBOX`
+in your session). Anyone
 (operator, worker, peer tooling) who runs
 `spore task tell coordinator "<msg>"` writes a JSON envelope into that
 directory. Workers read messages from theirs the same way; you can
