@@ -1,4 +1,4 @@
-**Status**: unit 1 (hook parity) merged (PR #81); unit 2 (config render) landed on wt/codex-render-config; units 3-5 open
+**Status**: units 1-2 merged (PRs #81, #83); unit 3 (context bridge) landed on wt/codex-context-bridge; units 4-5 open
 
 # codex coordinator swap
 
@@ -112,7 +112,7 @@ pin); not yet verified against a live session.
   `worker token-monitor`, `fleet replenish-hook`. No watch-inbox
   (the sidecar replaces it), no Notification (Codex has no such
   event), no Claude-tool PreToolUse perl hooks. `load-state-md` is
-  unit 3.
+  ported in unit 3.
 - Who renders: the NixOS module, under
   `services.spore-fleet.codex.enable` (default off). It runs the
   package's own `spore hooks codex-config` at build time, with hook
@@ -141,6 +141,62 @@ pin); not yet verified against a live session.
   Live-verified units 1+2 on 2026-10-22 (codex-cli 0.162.1): thread
   record, sidecar wake via `codex queue`, token-monitor ledger from
   the rollout.
+
+## Unit 3 as built
+
+Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
+
+- Output contract (`hooks/src/events/session_start.rs`,
+  `engine/output_parser.rs`): exit 0 with empty stdout is no output;
+  stdout that parses as `SessionStartCommandOutputWire`
+  (`deny_unknown_fields`) contributes `hookSpecificOutput.additionalContext`;
+  JSON-looking stdout that fails to parse fails the hook; other text
+  is taken as plain context. The context reaches the model as a
+  developer message.
+- Size: each handler's context spills past `additionalContextLimit`
+  approx tokens (default 2,500, i.e. ~10KB at 4 bytes/token) to
+  `$TMPDIR/hook_outputs/<thread>/<uuid>.txt`, leaving a truncated
+  preview plus the path. `0` disables spilling. `CodexUserEvents`
+  sets `0` on `codex-session-start` (`HookBin.ContextLimit`), so
+  `state.md` reaches the model whole and no stderr warning is needed.
+- `spore hooks codex-session-start` prints the context first, then
+  writes the thread record as before. `hooks.CodexStartContext`:
+  root = `transcript.ProjectDir()` (`SPORE_PROJECT_ROOT`,
+  `CLAUDE_PROJECT_DIR`, cwd) hopped to the main checkout via
+  `--git-common-dir`. `state.md` loads only for an unset or
+  `coordinator` slug. `MEMORY.md` loads for every slug: claude-code
+  keys the memory dir by the main repo root, so Claude workers in
+  worktrees see the same index. One line names the dir so the agent
+  can open linked files.
+- Memory dir key: `transcript.ClaudeProjectKey` maps every
+  non-alphanumeric byte to `-`. On this host `_nb` projects live
+  under `-nb` keys and worktrees under `--worktrees-`, so `/` and
+  `.` alone are not enough. `CLAUDE_CONFIG_DIR` replaces `~/.claude`.
+- Skills (`ext/skills/src/host_roots.rs`): Codex scans
+  `.agents/skills` in every dir from the project root (marker
+  `.git`) down to cwd, trusted-project `.codex/skills`,
+  `$CODEX_HOME/skills` (deprecated), `~/.agents/skills`,
+  `/etc/codex/skills`, plus its `.system` cache. Directory symlinks
+  are followed for repo and user roots. `install.SkillDirs` writes a
+  copy into `.agents/skills` next to `.claude/skills`: project-scoped,
+  so per-session `CODEX_HOME`s need no shim change, and a copy
+  survives tools that drop symlinks. Workers see it only where the
+  consumer commits it, same as `.claude/skills`.
+- Live run: scratch project via `spore-coordinator-launch`
+  (`SPORE_COORDINATOR_PROVIDER=codex`, scratch `SPORE_PROJECT_ROOT`,
+  state dir, inbox, `CLAUDE_CONFIG_DIR`), scratch user `CODEX_HOME`
+  whose `hooks.json` pointed at a `go build` binary. The host login
+  returned 401 (`workspace routing discovery unauthorized`) for
+  plain `codex exec` too, so the scratch `config.toml` pointed at a
+  local fake Responses endpoint that recorded request bodies. The
+  first request carried one 16.6KB developer item with the 16KB
+  `state.md` head and tail markers, the memory line and dir, and no
+  spill footer; the skill catalog listed `diagram` and
+  `spore-bootstrap` from root `<proj>/.agents/skills`; the thread
+  record was written. A worker slug got the memory index and no
+  `state.md`. Not covered: a real model quoting it back (login is
+  operator-bound). The run also showed `hook returned invalid stop
+  hook JSON output` from the Stop hooks: the installed 0.20.0 replenish hook, fixed by PR #84 (merged).
 
 ## Open risks
 

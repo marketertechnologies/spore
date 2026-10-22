@@ -46,15 +46,18 @@ type codexTop struct {
 }
 
 // CodexUserEvents is the user-level ($CODEX_HOME/hooks.json) binding
-// set: the Claude host Stop hooks plus the SessionStart thread record
-// the inbox sidecar needs. The Claude watch-inbox asyncRewake hook is
+// set: the Claude host Stop hooks plus the SessionStart hook that
+// records the thread for the inbox sidecar and injects state.md and the
+// memory index. That handler disables Codex's 2,500-token context
+// spill: state.md runs past 10KB and must reach the model whole. The Claude watch-inbox asyncRewake hook is
 // absent on purpose; the launch shim's sidecar replaces it. Every
 // command self-gates on its env, so the file is safe in sessions spore
 // did not spawn.
 func CodexUserEvents(spore string) map[string][]HookBin {
+	noSpill := 0
 	return map[string][]HookBin{
 		"SessionStart": {
-			{Name: "codex-session-start", BinPath: spore + " hooks codex-session-start", Timeout: 10},
+			{Name: "codex-session-start", BinPath: spore + " hooks codex-session-start", Timeout: 10, ContextLimit: &noSpill},
 		},
 		"Stop": {
 			{Name: "coordinator-token-monitor", BinPath: spore + " coordinator token-monitor", Timeout: 10},

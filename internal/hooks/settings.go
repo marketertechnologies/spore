@@ -18,6 +18,10 @@ type HookBin struct {
 	Timeout     int  // seconds; 0 omits the field (claude-code default)
 	Async       bool // run without blocking the agent
 	AsyncRewake bool // long-running hook that wakes the agent on exit 2
+	// ContextLimit sets Codex's additionalContextLimit (approx tokens
+	// before the context spills to a temp file; 0 disables spilling).
+	// Nil omits the key. Claude ignores it.
+	ContextLimit *int
 }
 
 // deniedTools lists claude-code native tools blocked in every
@@ -89,11 +93,12 @@ type hookGroup struct {
 
 // hookEntry field order is alphabetical for deterministic JSON output.
 type hookEntry struct {
-	Async       bool   `json:"async,omitempty"`
-	AsyncRewake bool   `json:"asyncRewake,omitempty"`
-	Command     string `json:"command"`
-	Timeout     int    `json:"timeout,omitempty"`
-	Type        string `json:"type"`
+	ContextLimit *int   `json:"additionalContextLimit,omitempty"`
+	Async        bool   `json:"async,omitempty"`
+	AsyncRewake  bool   `json:"asyncRewake,omitempty"`
+	Command      string `json:"command"`
+	Timeout      int    `json:"timeout,omitempty"`
+	Type         string `json:"type"`
 }
 
 // consolidate merges HookBins with the same Matcher into a single
@@ -115,11 +120,12 @@ func consolidate(bins []HookBin) ([]hookGroup, error) {
 			return nil, fmt.Errorf("hook %q: empty BinPath", b.Name)
 		}
 		entry := hookEntry{
-			Async:       b.Async,
-			AsyncRewake: b.AsyncRewake,
-			Command:     b.BinPath,
-			Timeout:     b.Timeout,
-			Type:        "command",
+			ContextLimit: b.ContextLimit,
+			Async:        b.Async,
+			AsyncRewake:  b.AsyncRewake,
+			Command:      b.BinPath,
+			Timeout:      b.Timeout,
+			Type:         "command",
 		}
 		idx, ok := seen[b.Matcher]
 		if !ok {

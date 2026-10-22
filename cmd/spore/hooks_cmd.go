@@ -249,8 +249,11 @@ func runHooksWatchInboxCodex(args []string) int {
 }
 
 // runHooksCodexSessionStart never blocks the session: a non-spore codex
-// session (no inbox, no key) or a bad payload is a silent no-op.
+// session (no inbox, no key) or a bad payload is a silent no-op. Stdout
+// carries only the context JSON; Codex fails the hook on any other
+// JSON-looking output.
 func runHooksCodexSessionStart() int {
+	os.Stdout.Write(hooks.CodexStartOutput(hooks.CodexStartContext()))
 	req, err := readHookRequest()
 	if err != nil {
 		return 0

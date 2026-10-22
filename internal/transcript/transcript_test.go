@@ -195,3 +195,17 @@ func TestFindFallbackTranscriptPrefersSporeProjectRoot(t *testing.T) {
 		t.Errorf("FindFallbackTranscript = %q, want %q", got, want)
 	}
 }
+
+// Shapes seen under ~/.claude/projects on a live host: "/" and "." and
+// "_" all become "-", so a worktree gains a double dash.
+func TestClaudeProjectKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home/u/spore":                 "-home-u-spore",
+		"/home/u/eslint-config_nb":      "-home-u-eslint-config-nb",
+		"/home/u/app/.worktrees/hk-617": "-home-u-app--worktrees-hk-617",
+	} {
+		if got := ClaudeProjectKey(in); got != want {
+			t.Errorf("ClaudeProjectKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
