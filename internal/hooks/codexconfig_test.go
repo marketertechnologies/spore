@@ -31,6 +31,7 @@ type codexHooksFile struct {
 			Command string `json:"command"`
 			Timeout int    `json:"timeout"`
 			Async   bool   `json:"async"`
+			Limit   *int   `json:"additionalContextLimit"`
 		} `json:"hooks"`
 	} `json:"hooks"`
 }
@@ -66,6 +67,9 @@ func TestCodexHooks_UserShape(t *testing.T) {
 			}
 		}
 		return out
+	}
+	if l := f.Hooks["SessionStart"][0].Hooks[0].Limit; l == nil || *l != 0 {
+		t.Errorf("SessionStart additionalContextLimit = %v, want 0 so state.md is not spilled", l)
 	}
 	if got := commands("SessionStart"); len(got) != 1 || got[0] != "spore hooks codex-session-start" {
 		t.Errorf("SessionStart = %q, want the codex-session-start thread record", got)

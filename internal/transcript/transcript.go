@@ -162,14 +162,21 @@ func ProjectDir() string {
 	return cwd
 }
 
+var claudeKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// ClaudeProjectKey is the directory name claude-code gives a project
+// under ~/.claude/projects/: every non-alphanumeric byte becomes "-"
+// (so "/home/x/a_b/.worktrees/c" is "-home-x-a-b--worktrees-c").
+func ClaudeProjectKey(path string) string {
+	return claudeKeyUnsafe.ReplaceAllString(path, "-")
+}
+
 // FindFallbackTranscript locates the newest *.jsonl under
 // ~/.claude/projects/<encoded ProjectDir>/ when the hook payload omits
 // transcript_path. Returns "" when nothing is found.
 func FindFallbackTranscript() string {
-	cwd := ProjectDir()
-	encoded := strings.ReplaceAll(cwd, "/", "-")
 	home, _ := os.UserHomeDir()
-	projDir := filepath.Join(home, ".claude", "projects", encoded)
+	projDir := filepath.Join(home, ".claude", "projects", ClaudeProjectKey(ProjectDir()))
 
 	entries, err := os.ReadDir(projDir)
 	if err != nil {

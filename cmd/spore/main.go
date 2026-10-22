@@ -35,7 +35,7 @@ Commands:
   fleet      Run the worker fleet against the task queue (up/down/status).
   align      Track and exit the pilot-agent alignment period.
   bootstrap  Walk a fresh project through the stage gates.
-  install    Drop the spore skills into a project's .claude/skills/.
+  install    Drop the spore skills into .claude/skills/ and .agents/skills/.
   infect     Bootstrap a fresh server with NixOS via nixos-anywhere.
   lint       Run portable lints over the working tree.
   hooks      Install or run claude-code / git hooks.

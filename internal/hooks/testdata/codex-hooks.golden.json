@@ -4,6 +4,7 @@
       {
         "hooks": [
           {
+            "additionalContextLimit": 0,
             "command": "/run/current-system/sw/bin/spore hooks codex-session-start",
             "timeout": 10,
             "type": "command"

@@ -183,7 +183,20 @@ func TestHooksPreToolUseToleratesCodexPayload(t *testing.T) {
 	}
 }
 
+// noCodexContext points the SessionStart context lookup at empty dirs
+// so the host's real state.md and Claude memory stay out of stdout.
+func noCodexContext(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("SPORE_PROJECT_ROOT", root)
+	t.Setenv("SPORE_TASK_SLUG", "")
+	return root
+}
+
 func TestHooksCodexSessionStartRecordsThread(t *testing.T) {
+	noCodexContext(t)
 	inbox := filepath.Join(t.TempDir(), "coordinator", "proj", "inbox")
 	t.Setenv("SPORE_TASK_INBOX", inbox)
 	t.Setenv("SPORE_COORDINATOR_SESSION", "spore/proj/coordinator")
@@ -200,10 +213,41 @@ func TestHooksCodexSessionStartRecordsThread(t *testing.T) {
 }
 
 func TestHooksCodexSessionStartNonSporeSessionNoOp(t *testing.T) {
+	noCodexContext(t)
 	t.Setenv("SPORE_TASK_INBOX", "")
 	code, stdout, stderr := captureHook(t, `{"session_id":"x"}`, runHooksCodexSessionStart)
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q, want silent 0", code, stdout, stderr)
+	}
+}
+
+func TestHooksCodexSessionStartInjectsStateAndRecordsThread(t *testing.T) {
+	root := noCodexContext(t)
+	if err := os.WriteFile(filepath.Join(root, "state.md"), []byte("STATE-BODY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inbox := filepath.Join(t.TempDir(), "coordinator", "proj", "inbox")
+	t.Setenv("SPORE_TASK_INBOX", inbox)
+	t.Setenv("SPORE_COORDINATOR_SESSION", "spore/proj/coordinator")
+	t.Setenv("SPORE_TASK_SLUG", "coordinator")
+	code, stdout, stderr := captureHook(t, `{"session_id":"thread-7","hook_event_name":"SessionStart","source":"startup"}`, runHooksCodexSessionStart)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	var out struct {
+		HookSpecificOutput struct {
+			HookEventName     string `json:"hookEventName"`
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if out.HookSpecificOutput.HookEventName != "SessionStart" || !strings.Contains(out.HookSpecificOutput.AdditionalContext, "STATE-BODY") {
+		t.Errorf("stdout = %s, want SessionStart context carrying state.md", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(inbox), "codex-threads", "spore_proj_coordinator.json")); err != nil {
+		t.Errorf("thread record not written: %v", err)
 	}
 }
 

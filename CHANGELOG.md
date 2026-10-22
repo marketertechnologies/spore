@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Codex context bridge (unit 3 of `docs/todo/codex-coordinator-swap.md`).
+  `spore hooks codex-session-start` now also prints SessionStart JSON
+  (`hookSpecificOutput.additionalContext`) carrying the main repo's
+  `state.md` (only when `SPORE_TASK_SLUG` is unset or `coordinator`,
+  as the Claude `load-state-md.pl` hook) and the Claude memory index
+  `~/.claude/projects/<key>/memory/MEMORY.md` (every session, as
+  claude-code does). The rendered Codex `hooks.json` sets
+  `additionalContextLimit: 0` on that handler so Codex does not spill
+  context past ~2,500 tokens to a temp file. `spore install` (and the
+  `repo-mapped` bootstrap stage) now also copies the skills into
+  `.agents/skills/`, the project skill root Codex scans. Consumer
+  impact: a Codex session in any repo with a `state.md` or a Claude
+  memory dir now gets that text injected at startup, resume, clear
+  and compact; commit `.agents/skills/` next to `.claude/skills/`
+  (or gitignore it, as spore does), and regenerate `~/.codex/hooks.json`
+  (NixOS: rebuild; otherwise `spore hooks codex-config`) or the
+  2,500-token spill applies. Memory dir keys now replace every
+  non-alphanumeric byte with `-` (claude-code's rule), which also
+  fixes the transcript fallback for paths with `.` or `_`.
+
 - Codex: `spore fleet replenish-hook` prints its status line to stderr
   instead of stdout. Codex parses Stop-hook stdout as JSON, so every
   Codex coordinator turn ended with "hook returned invalid stop hook
