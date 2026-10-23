@@ -117,7 +117,7 @@ func TestInstallFillsCodexSkillDir(t *testing.T) {
 	if _, err := install.Install(root, spore.BundledSkills, "bootstrap/skills"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	for _, name := range []string{"spore-bootstrap", "diagram"} {
+	for _, name := range []string{"spore-bootstrap", "diagram", "select-agent"} {
 		claude, err := os.ReadFile(filepath.Join(root, ".claude", "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatal(err)

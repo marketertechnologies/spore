@@ -41,8 +41,9 @@ func BuildVersion() string {
 var BundledFlake embed.FS
 
 // BundledSkills is the skill tree `spore install` drops into a target
-// project's .claude/skills/ and .agents/skills/ so the agent can discover the
-// spore-bootstrap and diagram skills without a source-tree checkout.
+// project's .claude/skills/ and .agents/skills/ so the agent can discover
+// the spore-bootstrap, diagram, and select-agent skills without a
+// source-tree checkout.
 //
 //go:embed all:bootstrap/skills
 var BundledSkills embed.FS

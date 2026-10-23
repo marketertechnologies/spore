@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `select-agent` skill: swap the coordinator agent from inside the
+  coordinator session. `/select-agent` (Claude Code) or the skill
+  mention (Codex) prompts with the available agents, or takes
+  `<agent> [model]` as an argument; on a pick it refuses unless
+  `SPORE_TASK_SLUG=coordinator`, flushes `state.md` (noting the swap
+  for the incoming agent), and runs `spore coordinator swap --to
+  <agent> [--model m] --no-wrap`. New `spore coordinator agents`
+  prints each swap driver as `current`, `available` (binary on PATH),
+  or `missing`. Consumer impact: the skill lands in every consumer's
+  `.claude/skills/` and `.agents/skills/` on the next `spore install`;
+  nothing runs until invoked.
+
 - tmux baseline sets `detach-on-destroy off`. With `spore-attach` as
   the login shell the tmux client is sshd's direct child, so a
   `kill-session` on the session the operator was viewing (task done,

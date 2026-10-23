@@ -58,6 +58,10 @@ You do not just observe. You drive the queue.
   `state.md` first, then pass `--no-wrap`; the command dies with
   the pane. A swap request arriving in your inbox means: flush
   `state.md` now and end the turn.
+  The bundled `select-agent` skill (`/select-agent [agent [model]]`)
+  wraps this: it prompts for the agent, flushes `state.md`, and runs
+  the swap with `--no-wrap`. `spore coordinator agents` lists the
+  drivers and which one is current.
 
 ## Operating principles
 
