@@ -71,11 +71,16 @@ swap line you wrote: step 4 reverts it if the swap fails.
 Run, with `--model` only when the operator gave one. Single-quote
 the model (`opus[1m]` is a shell glob). `--session` names this pane's
 own tmux session; without it swap derives the session from the cwd,
-which misses once you have cd'd into a worktree:
+which misses once you have cd'd into a worktree. The leading guard
+aborts when `TMUX_PANE` is unset: `tmux display-message` would
+otherwise fall back to the most recently active session, possibly
+another project's coordinator. Keep the guard outside the `$(...)`;
+a failure inside it still runs swap with an empty `--session`.
 
 ```
-spore coordinator swap --to <agent> [--model '<model>'] --no-wrap \
-  --session "$(tmux display-message -p -t "$TMUX_PANE" '#S')"
+: "${TMUX_PANE:?not in a tmux pane}" &&
+  spore coordinator swap --to <agent> [--model '<model>'] --no-wrap \
+    --session "$(tmux display-message -p -t "$TMUX_PANE" '#S')"
 ```
 
 On success the pane is respawned and this session ends mid-command;
