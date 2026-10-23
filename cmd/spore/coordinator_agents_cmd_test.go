@@ -19,7 +19,7 @@ func TestWriteCoordinatorAgents(t *testing.T) {
 		look                 func(string) (string, error)
 		want                 string
 	}{
-		{"default claude, codex missing", "", "", onlyClaude, "claude\tcurrent\ncodex\tmissing\n"},
+		{"claude current, codex missing", "claude", "", onlyClaude, "claude\tcurrent\ncodex\tmissing\n"},
 		{"codex current with model", "codex", "gpt-5", onlyClaude, "claude\tavailable\ncodex\tcurrent\tgpt-5\n"},
 		{"claude current, codex available", "claude", "", both, "claude\tcurrent\ncodex\tavailable\n"},
 	}
@@ -31,5 +31,21 @@ func TestWriteCoordinatorAgents(t *testing.T) {
 				t.Fatalf("got %q, want %q", b.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestCurrentCoordinatorDriver(t *testing.T) {
+	cases := []struct{ provider, agent, want string }{
+		{"", "", "claude"},
+		{"codex", "claude", "codex"},
+		{"/usr/bin/codex", "", "codex"},
+		{"", "/nix/store/x/bin/codex", "codex"},
+		{"", "codex", "codex"},
+		{"", "/usr/local/bin/spore-coordinator-launch", "claude"},
+	}
+	for _, tc := range cases {
+		if got := currentCoordinatorDriver(tc.provider, tc.agent); got != tc.want {
+			t.Errorf("currentCoordinatorDriver(%q, %q) = %q, want %q", tc.provider, tc.agent, got, tc.want)
+		}
 	}
 }

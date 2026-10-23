@@ -43,9 +43,10 @@ PATH), or `missing`. Never offer a `missing` agent.
     optionally followed by a model", and end the turn. Resume on the
     reply.
 
-Picking the current agent with no model is a no-op: say so and stop.
-The current agent with a different model is a real swap (same
-driver, new model).
+Picking the current agent is a no-op when no model is given or the
+model equals the current one (the third column of the `current`
+line): say so and stop. The current agent with a different model is
+a real swap (same driver, new model).
 
 ## 3. Flush state.md
 
@@ -62,18 +63,28 @@ do not append a transcript):
   this turn. Name in-flight work, pending decisions, and next steps
   explicitly; the incoming agent has no transcript.
 
-Re-read the file once to confirm the write landed.
+Re-read the file once to confirm the write landed. Remember the
+swap line you wrote: step 4 reverts it if the swap fails.
 
 ## 4. Swap
 
-Run, with `--model` only when the operator gave one:
+Run, with `--model` only when the operator gave one. Single-quote
+the model (`opus[1m]` is a shell glob). `--session` names this pane's
+own tmux session; without it swap derives the session from the cwd,
+which misses once you have cd'd into a worktree:
 
 ```
-spore coordinator swap --to <agent> [--model <model>] --no-wrap
+spore coordinator swap --to <agent> [--model '<model>'] --no-wrap \
+  --session "$(tmux display-message -p -t "$TMUX_PANE" '#S')"
 ```
 
 On success the pane is respawned and this session ends mid-command;
 nothing after it runs, so say what you are about to do before running
-it. If the command returns, it failed: relay its stderr to the
-operator verbatim (the error names what was rolled back) and stop.
-Do not retry with `--force`.
+it. If the command returns, it failed:
+
+1. Revert the swap note in `state.md`: remove the `Swapped from ...`
+   line so the file no longer claims a swap happened. Leave the rest
+   of the flush in place.
+2. Relay the command's stderr to the operator verbatim (the error
+   names what was rolled back).
+3. Stop. Do not retry with `--force`.

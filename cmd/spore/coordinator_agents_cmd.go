@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 )
 
 const coordinatorAgentsUsage = `spore coordinator agents - list the drivers coordinator swap accepts
@@ -12,10 +14,12 @@ const coordinatorAgentsUsage = `spore coordinator agents - list the drivers coor
 Usage:
   spore coordinator agents
 
-Prints one line per driver: name, then "current" (the running driver,
-from $SPORE_COORDINATOR_PROVIDER, default claude), "available" (its
-binary resolves on PATH), or "missing". The current line also carries
-$SPORE_COORDINATOR_MODEL when set. Read by the select-agent skill.
+Prints one line per driver: name, then "current" (the running driver),
+"available" (its binary resolves on PATH), or "missing". The current
+driver is the basename of $SPORE_COORDINATOR_PROVIDER, else of
+$SPORE_COORDINATOR_AGENT when that names a driver binary, else claude.
+The current line also carries $SPORE_COORDINATOR_MODEL when set. Read
+by the select-agent skill.
 `
 
 var swapDrivers = []string{"claude", "codex"}
@@ -29,14 +33,25 @@ func runCoordinatorAgents(args []string) int {
 		fmt.Fprint(os.Stderr, coordinatorAgentsUsage)
 		return 2
 	}
-	writeCoordinatorAgents(os.Stdout, os.Getenv("SPORE_COORDINATOR_PROVIDER"), os.Getenv("SPORE_COORDINATOR_MODEL"), exec.LookPath)
+	current := currentCoordinatorDriver(os.Getenv("SPORE_COORDINATOR_PROVIDER"), os.Getenv("SPORE_COORDINATOR_AGENT"))
+	writeCoordinatorAgents(os.Stdout, current, os.Getenv("SPORE_COORDINATOR_MODEL"), exec.LookPath)
 	return 0
 }
 
-func writeCoordinatorAgents(w io.Writer, current, model string, lookPath func(string) (string, error)) {
-	if current == "" {
-		current = "claude"
+// currentCoordinatorDriver takes basenames because hosts may set the
+// provider or agent to a binary path. An agent that is a launcher
+// script (spore-coordinator-launch) names no driver and is skipped.
+func currentCoordinatorDriver(provider, agent string) string {
+	if provider != "" {
+		return filepath.Base(provider)
 	}
+	if a := filepath.Base(agent); slices.Contains(swapDrivers, a) {
+		return a
+	}
+	return "claude"
+}
+
+func writeCoordinatorAgents(w io.Writer, current, model string, lookPath func(string) (string, error)) {
 	for _, d := range swapDrivers {
 		switch {
 		case d == current && model != "":

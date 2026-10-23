@@ -18,8 +18,9 @@ Usage:
 
 Copies the bundled skill bodies (spore-bootstrap, diagram,
 select-agent) into <root>/.claude/skills/ and <root>/.agents/skills/
-so claude-code and Codex in that project can discover and run them. Idempotent: re-runs
-only rewrite files whose contents drifted from the embedded copy.
+so claude-code and Codex in that project can discover and run them.
+Idempotent: re-runs only rewrite files whose contents drifted from
+the embedded copy.
 
 Flags:
   --root   Project root to install into. Defaults to the current
