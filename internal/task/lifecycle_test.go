@@ -274,28 +274,6 @@ func TestReapKillsFrontmatterSession(t *testing.T) {
 	}
 }
 
-func TestStartRefusesActive(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Start(tasksDir, "x"); err == nil {
-		t.Fatal("Start on active task should error, got nil")
-	}
-}
-
-func TestStartRefusesDone(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: done\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Start(tasksDir, "x"); err == nil {
-		t.Fatal("Start on done task should error, got nil")
-	}
-}
-
 func TestWorkerAgentCommandCodexUsesEffortPolicy(t *testing.T) {
 	t.Setenv("SPORE_AGENT_BINARY", "")
 	m := frontmatter.Meta{

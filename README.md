@@ -230,6 +230,26 @@ the same answer the launcher used. Coordinator agent selection lives
 under the separate `[coordinator]` section and is never subject to
 the worker ratio.
 
+## Editor
+
+The coordinator can connect to the operator's VS Code window (Claude
+Code's `/ide`) so the editor selection and diagnostics reach it. Off
+by default; opt in per project:
+
+```toml
+# spore.toml
+[editor]
+auto_connect_ide = true
+```
+
+When on, the kernel spawns the coordinator session with
+`CLAUDE_CODE_AUTO_CONNECT_IDE=1`. Claude Code then connects to the
+window whose workspace folders contain the project root; with no such
+window it stays unconnected. An operator-set
+`CLAUDE_CODE_AUTO_CONNECT_IDE` wins over the knob. Workers and role
+panes never get it: one Claude Code instance holds a window at a time.
+See [docs/todo/editor-integration.md](docs/todo/editor-integration.md).
+
 ## Graceful Deployment
 
 When the NixOS module is enabled with `gracefulDeploy.enable =
@@ -311,8 +331,9 @@ Main extension points:
 - [internal/matter/](internal/matter/) is the plugin layer for
   external work sources (e.g. [linear](internal/matter/linear/)).
 - [internal/hooks/](internal/hooks/) emits and runs Claude Code and
-  Codex hook bindings; both agents share the same JSON shape, wired
-  through `.claude/settings.json` and `.codex/hooks.json`.
+  Codex hook bindings; both agents share the same payload shape, wired
+  through `.claude/settings.json` and the user-level
+  `~/.codex/hooks.json` (`spore hooks codex-config`).
 - [internal/lints/](internal/lints/) holds portable repo lints.
 - [internal/composer/](internal/composer/) renders instruction files
   from rule fragments in [rules/](rules/).

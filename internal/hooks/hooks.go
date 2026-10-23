@@ -8,16 +8,18 @@
 // The kernel ships JSON-protocol types, a PreToolUse decider that
 // blocks forbidden bash patterns, and a no-op Stop. Wiring them as
 // actual hooks is up to the consumer (`.claude/settings.json` for
-// Claude Code, `.codex/hooks.json` for Codex); the kernel just
-// provides the implementations.
+// Claude Code); the user-level Codex hooks.json comes from
+// CodexUserEvents via `spore hooks codex-config`.
 package hooks
 
 import "encoding/json"
 
-// Request is the JSON envelope claude-code sends on every hook
+// Request is the JSON envelope claude-code and Codex send on every hook
 // invocation. ToolInput's shape depends on ToolName (for Bash it has
 // `command` and `description`); the kernel keeps it as raw JSON and
-// lets each hook unmarshal what it needs.
+// lets each hook unmarshal what it needs. The trailing fields are
+// Codex-only; for Codex, SessionID is the thread id `codex queue`
+// targets and TranscriptPath is the rollout file.
 type Request struct {
 	HookEventName  string          `json:"hook_event_name"`
 	SessionID      string          `json:"session_id,omitempty"`
@@ -25,6 +27,13 @@ type Request struct {
 	CWD            string          `json:"cwd,omitempty"`
 	ToolName       string          `json:"tool_name,omitempty"`
 	ToolInput      json.RawMessage `json:"tool_input,omitempty"`
+
+	Model                string `json:"model,omitempty"`
+	PermissionMode       string `json:"permission_mode,omitempty"`
+	TurnID               string `json:"turn_id,omitempty"`
+	StopHookActive       bool   `json:"stop_hook_active,omitempty"`
+	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
+	Source               string `json:"source,omitempty"`
 }
 
 // Response is the JSON document claude-code reads from the hook's

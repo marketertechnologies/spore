@@ -165,6 +165,44 @@ func TestProjectNameResolvesMainRepoFromWorktree(t *testing.T) {
 	}
 }
 
+func TestMainRepoRootFromWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	parent := t.TempDir()
+	main := filepath.Join(parent, "marketercom")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitRepo(t, main)
+	worktree := filepath.Join(main, ".worktrees", "wt-slug-xyz")
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, main, "worktree", "add", "-q", worktree, "-b", "wt/slug")
+
+	resolveMain, err := filepath.EvalSymlinks(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := MainRepoRoot(worktree)
+	if err != nil {
+		t.Fatalf("MainRepoRoot(worktree): %v", err)
+	}
+	if got != resolveMain {
+		t.Errorf("MainRepoRoot(worktree) = %q, want %q", got, resolveMain)
+	}
+
+	gotMain, err := MainRepoRoot(main)
+	if err != nil {
+		t.Fatalf("MainRepoRoot(main): %v", err)
+	}
+	if gotMain != resolveMain {
+		t.Errorf("MainRepoRoot(main) = %q, want %q", gotMain, resolveMain)
+	}
+}
+
 func TestStateDirForProjectFromWorktree(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -336,5 +374,25 @@ func TestUnmergedCommitsResolvesAgainstOriginHead(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("UnmergedCommits = %d, want 2", n)
+	}
+}
+
+func TestProjectNameFromRelativeRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	main := filepath.Join(t.TempDir(), "marketercom")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitRepo(t, main)
+	t.Chdir(main)
+
+	got, err := ProjectName(".")
+	if err != nil {
+		t.Fatalf("ProjectName(.): %v", err)
+	}
+	if got != "marketercom" {
+		t.Errorf("ProjectName(.) = %q, want %q", got, "marketercom")
 	}
 }

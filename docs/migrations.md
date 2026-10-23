@@ -17,6 +17,14 @@ The `spore-fleet` NixOS module
 (`bootstrap/migrations/`), runs anything missing from the ledger, and
 appends to the ledger on success.
 
+NixOS activation runs with a minimal PATH that does not carry bash
+or coreutils, so the hook pins its own PATH (`migratePath` in
+`nixosModules/spore-fleet.nix`) and orders after the `users`
+activation script so the user and its home exist. The engine
+resolves `bash` from that PATH and fails with
+`interpreter bash not found on PATH=...` when it is missing; it never
+falls back to a hardcoded location.
+
 This means: ship a migration in the spore repo, the next
 `nix flake update spore && nixos-rebuild switch` on a downstream host
 runs it, no operator action required.
@@ -41,6 +49,24 @@ the module. After that, future migrations land automatically.
    spore migrate              # second run: no-op
    ```
 4. Commit alongside the change that requires it.
+
+## Available tools
+
+A migration may rely only on what the activation PATH provides:
+
+- `bash` (the interpreter, plus its builtins such as `printf`, `read`)
+- coreutils (`cat`, `mkdir`, `install`, `dirname`, `tail`, `cut`, ...)
+- findutils (`find`, `xargs`)
+- gnugrep (`grep`)
+- gnused (`sed`)
+- gawk (`awk`)
+- diffutils (`diff`, `cmp`)
+- `spore` itself (the same package the module runs)
+
+Anything else (`git`, `jq`, `curl`, host shims under
+`/usr/local/bin`) is not on PATH at activation. Reference it by
+absolute store path, or add its package to `migratePath` in the same
+commit as the migration that needs it, and update this list.
 
 ## Idempotency patterns
 
@@ -72,7 +98,7 @@ install -d -m 0700 "$HOME/.config/spore/eslint-config_nb"
 
 ```bash
 target="$HOME/.claude/hooks/load-state-md.pl"
-desired="$(spore-with-secrets cat /run/current-system/sw/share/spore/load-state-md.pl)"
+desired="$(cat /run/current-system/sw/share/spore/load-state-md.pl)"
 current="$(cat "$target" 2>/dev/null || true)"
 [ "$current" = "$desired" ] && exit 0
 install -D -m 0755 /dev/stdin "$target" <<<"$desired"

@@ -2,6 +2,169 @@
 
 ## Unreleased
 
+- `select-agent` skill: swap the coordinator agent from inside the
+  coordinator session. `/select-agent` (Claude Code) or the skill
+  mention (Codex) prompts with the available agents, or takes
+  `<agent> [model]` as an argument; on a pick it refuses unless
+  `SPORE_TASK_SLUG=coordinator`, flushes `state.md` (noting the swap
+  for the incoming agent), and runs `spore coordinator swap --to
+  <agent> [--model m] --no-wrap`. New `spore coordinator agents`
+  prints each swap driver as `current`, `available` (binary on PATH),
+  or `missing`. Consumer impact: the skill lands in every consumer's
+  `.claude/skills/` and `.agents/skills/` on the next `spore install`;
+  nothing runs until invoked.
+
+- tmux baseline sets `detach-on-destroy off`. With `spore-attach` as
+  the login shell the tmux client is sshd's direct child, so a
+  `kill-session` on the session the operator was viewing (task done,
+  merge, reap) closed the SSH connection. Clients now switch to
+  another session. Consumer impact: hosts pick it up on the next
+  `nixos-rebuild`; live servers need `tmux set -g detach-on-destroy
+  off` or a server restart.
+
+- `spore coordinator swap --to claude|codex [--model M] [--project N]`
+  (unit 4 of `docs/todo/codex-coordinator-swap.md`). Asks the live
+  coordinator through its inbox to flush `state.md` and waits for the
+  write (`--no-wrap` skips, `--force` swaps after `--wrap-timeout`),
+  sets `[coordinator]` `driver` / `model` in `spore.toml` keeping
+  comments and other keys, sets `SPORE_COORDINATOR_PROVIDER` /
+  `SPORE_COORDINATOR_MODEL` in the tmux session env, and respawns the
+  session's first pane with the coordinator agent. A driver change
+  without `--model` clears the model. From inside the coordinator
+  pane, flush `state.md` yourself and pass `--no-wrap`. The respawned
+  agent comes from `SPORE_COORDINATOR_AGENT` in the tmux session env,
+  then the tmux global env, then `/usr/local/bin/spore-coordinator-launch`
+  when installed (never the caller's env); new coordinator
+  sessions record it in their session env. Consumer impact: none
+  until invoked; the command rewrites `spore.toml`, so commit the
+  flip if the project tracks that file. Hosts whose
+  `/etc/spore/coordinator.env` sets `SPORE_COORDINATOR_PROVIDER` /
+  `SPORE_COORDINATOR_MODEL`: the reconciler env still beats
+  `spore.toml`, so a reconciler respawn reverts a swap until those
+  lines are cleared or updated.
+
+- Codex context bridge (unit 3 of `docs/todo/codex-coordinator-swap.md`).
+  `spore hooks codex-session-start` now also prints SessionStart JSON
+  (`hookSpecificOutput.additionalContext`) carrying the main repo's
+  `state.md` (only when `SPORE_TASK_SLUG` is unset or `coordinator`,
+  as the Claude `load-state-md.pl` hook) and the Claude memory index
+  `~/.claude/projects/<key>/memory/MEMORY.md` (every session, as
+  claude-code does). The rendered Codex `hooks.json` sets
+  `additionalContextLimit: 0` on that handler so Codex does not spill
+  context past ~2,500 tokens to a temp file. `spore install` (and the
+  `repo-mapped` bootstrap stage) now also copies the skills into
+  `.agents/skills/`, the project skill root Codex scans. Consumer
+  impact: a Codex session in any repo with a `state.md` or a Claude
+  memory dir now gets that text injected at startup, resume, clear
+  and compact; commit `.agents/skills/` next to `.claude/skills/`
+  (or gitignore it, as spore does), and regenerate `~/.codex/hooks.json`
+  (NixOS: rebuild; otherwise `spore hooks codex-config`) or the
+  2,500-token spill applies. Memory dir keys now replace every
+  non-alphanumeric byte with `-` (claude-code's rule), which also
+  fixes the transcript fallback for paths with `.` or `_`.
+
+- Codex: `spore fleet replenish-hook` prints its status line to stderr
+  instead of stdout. Codex parses Stop-hook stdout as JSON, so every
+  Codex coordinator turn ended with "hook returned invalid stop hook
+  JSON output". Claude Code behavior is unchanged.
+
+- Codex config render (unit 2 of `docs/todo/codex-coordinator-swap.md`).
+  New `spore hooks codex-config [--spore PATH]` prints the user-level
+  Codex `hooks.json`: SessionStart `spore hooks codex-session-start`
+  (the thread record the unit-1 inbox sidecar waits on) and the Stop
+  token monitors plus `fleet replenish-hook`. The Claude
+  `watch-inbox` asyncRewake hook is left out (Codex would run it
+  synchronously; the sidecar replaces it). New NixOS option
+  `services.spore-fleet.codex.enable` (default off) with
+  `codex.package` (default `pkgs.codex`): installs codex system-wide
+  and on the reconciler PATH, and renders `~/.codex/hooks.json` for
+  the fleet user through home-manager. The `spore infect` host flake
+  sets it. Consumer impact: Codex coordinators require
+  `codex.enable = true`; on a host without it a Codex session gets no
+  Stop hooks at all (no token monitor, no replenish) and nothing
+  warns. A pre-existing `~/.codex/hooks.json` fails the whole
+  home-manager activation for the fleet user (no
+  `home-manager.backupFileExtension` set): the fleet reconcile units
+  stop deploying and `nixos-rebuild switch` exits non-zero. Move the
+  file aside first, or set `home-manager.backupFileExtension` so
+  home-manager renames it. `config.toml` and `auth.json` stay
+  unmanaged. The launch shim is unchanged (`hooks.json`
+  is already in its link list). The tracked repo-level
+  `.codex/hooks.json` is removed: Codex loads project and user hooks
+  without dedupe, so it double-fired the Stop hooks in trusted
+  checkouts and ran `watch-inbox` as a blocking Stop hook. Consumers
+  carrying a copy should drop it for the same reason.
+
+- Fleet: `[fleet] pre_start = "<shell command>"` runs a project hook
+  in worker sessions and role panes (not the coordinator) before the
+  agent starts, in the worktree with the session's `SPORE_*` env,
+  serialized per slug by `flock .spore/<slug>/state/pre-start.lock`.
+  The hook is bounded by `timeout` (default 900s,
+  `[fleet] pre_start_timeout_seconds`, 0 unbounded). A failing or
+  timed-out hook still starts the agent and prepends a one-line
+  failure note (exit code, command) to its first prompt. Role
+  liveness skips a pane while its `state/pre-start-<role>.running`
+  marker is fresh, so a slow bring-up or lock wait is not respawned
+  as a dead agent. Consumer
+  impact: opt-in, no change unless set; marketer and crm-gateway can
+  adopt with `pre_start = "bin/with-services up && <schema load>"`.
+- Codex hook parity (unit 1 of `docs/todo/codex-coordinator-swap.md`).
+  Token monitors (coordinator and worker) read Codex rollouts: the
+  live context is `last_token_usage.total_tokens` of the latest
+  `token_count` event; `.jsonl.zst` rollouts are skipped. Hook entry
+  points accept the Codex payload fields. The transcript fallback and
+  `spore coordinator verify-done` resolve the project root from
+  `SPORE_PROJECT_ROOT`, then `CLAUDE_PROJECT_DIR`, then cwd. New
+  `spore hooks codex-session-start` (records the Codex thread id per
+  agent session next to the inbox) and `spore hooks watch-inbox
+  --codex [--pid N]` (long-running sidecar that claims inbox envelopes
+  and delivers them with `codex queue --thread`; `SPORE_CODEX_BIN`
+  overrides the binary). Consumer impact: the coordinator launch shim's
+  codex branch now passes `--dangerously-bypass-hook-trust`, gives
+  each coordinator session its own `CODEX_HOME`
+  (`<coordinator state dir>/<project>/codex-home/<session>/`, with
+  `auth.json`, `config.toml`, `hooks.json`, `AGENTS.md` symlinked from
+  `~/.codex`), restarts that home's app-server daemon, exports
+  `SPORE_COORDINATOR_SESSION` and runs the sidecar for the pane's
+  lifetime (log:
+  `<coordinator state dir>/<project>/codex-watch-inbox.log`). The
+  claude branch is unchanged. Wiring the SessionStart hook into Codex
+  config is unit 2; until then the sidecar idles.
+- Fix: `spore task tell coordinator` wrote
+  `<state>/spore/<project>/coordinator/inbox`, which nothing drains. It
+  now writes the coordinator inbox
+  `<state>/spore/coordinator/<project>/inbox`. Consumer impact: worker
+  `tell coordinator` messages now reach the coordinator.
+- Role loop: pane liveness. Each drive tick probes the panes the phase
+  expects: a missing session is spawned silently (phase transitions,
+  token-monitor wraps; never capped), and a session whose agent died
+  (pane dead, or a shell in the foreground) is killed and respawned.
+  Those respawns notify the coordinator; after 3 of them for one role
+  in one round the driver stops and escalates once instead. The
+  active role is also watched for stalls (no expected file, no role
+  file or pane transcript change for `[fleet] role_stall_minutes`,
+  default 20, 0 disables): the coordinator is told once per quiet
+  spell, nothing is killed. Consumer impact: projects running role
+  loops get new `role-loop` coordinator notices (`respawned`,
+  `escalated: ... died again`, `stalled`) and the new spore.toml
+  knob.
+- Role loop: strict validation of `responses/engineer-round-N.json`
+  and `reviews/<A|B>/round-N.json`. Unknown keys, trailing data, a
+  bad verdict, or a missing / mismatched `author` make a file
+  invalid. Invalid files no longer wedge `DeriveSnapshot` or skew
+  round math: they are skipped, the coordinator is told once, and the
+  authoring pane is woken with the error; after the wake lands the
+  file moves to `<name>.invalid`. New required `author` field
+  (`engineer`, `A`, or `B`) and optional engineer `followups`.
+  Consumer impact: projects that symlink `bootstrap/roles/*.md` pick
+  up the new prompts (Write tool for JSON, no heredoc / bare `cat`,
+  base-branch definition, PR-size blocker evidence, fix-round scope).
+  In-flight loops: files present at the first drive after upgrade
+  are grandfathered via `.spore/<slug>/state/legacy-files` (lenient
+  decode, no `author` needed); later files are strict, and panes
+  still on the old prompt are bounced once with the missing field
+  named.
+- flake: bump nixpkgs to pick up go 1.27.3 (GO-2026-6809).
 - `bootstrap/handover/spore-coordinator-launch.sh`: support a host-wide
   shared role file in addition to the per-project `$SPORE_COORDINATOR_ROLE`.
   The launcher now reads `$SPORE_COORDINATOR_ROLE_SHARED` (default

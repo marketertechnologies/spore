@@ -16,10 +16,11 @@ const installUsage = `spore install - drop spore skills into a target project
 Usage:
   spore install [--root <path>]
 
-Copies the bundled skill bodies (spore-bootstrap, diagram) into
-<root>/.claude/skills/ so claude-code in that project can discover and
-run them. Idempotent: re-runs only rewrite files whose contents drifted
-from the embedded copy.
+Copies the bundled skill bodies (spore-bootstrap, diagram,
+select-agent) into <root>/.claude/skills/ and <root>/.agents/skills/
+so claude-code and Codex in that project can discover and run them.
+Idempotent: re-runs only rewrite files whose contents drifted from
+the embedded copy.
 
 Flags:
   --root   Project root to install into. Defaults to the current
@@ -68,7 +69,7 @@ func runInstall(args []string) int {
 	if len(res.Written) == 0 {
 		fmt.Println("install: already up to date")
 	} else {
-		fmt.Printf("installed %d file(s) under %s/.claude/skills/\n", len(res.Written), dest)
+		fmt.Printf("installed %d file(s) under %s/{.claude,.agents}/skills/\n", len(res.Written), dest)
 	}
 	return 0
 }

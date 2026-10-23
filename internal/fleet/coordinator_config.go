@@ -1,11 +1,11 @@
 package fleet
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/versality/spore/internal/sporetoml"
 )
 
 // CoordinatorConfig captures the [coordinator] section from a project's
@@ -42,91 +42,86 @@ type CoordinatorConfig struct {
 // A missing file returns a zero CoordinatorConfig with no error so callers
 // can treat absent config as "use defaults".
 func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(tomlPath)
+	entries, err := sporetoml.ReadSection(projectRoot, "coordinator")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return CoordinatorConfig{}, nil
-		}
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: read %s: %w", tomlPath, err)
+		return CoordinatorConfig{}, fmt.Errorf("coordinator: %w", err)
 	}
-	cfg, err := parseCoordinatorTOML(string(b))
-	if err != nil {
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: parse %s: %w", tomlPath, err)
-	}
-	return cfg, nil
+	return coordinatorFromEntries(entries)
 }
 
-// parseCoordinatorTOML reads only the [coordinator] section of a tiny
-// TOML subset: bare or quoted scalar values, `# comment` lines, and
-// blank lines. Anything outside [coordinator] is ignored. Malformed
-// entries inside the section are an error so misconfigured spore.toml
-// surfaces loudly.
+// parseCoordinatorTOML reads only the [coordinator] section. Unknown
+// keys are an error so misconfigured spore.toml surfaces loudly.
 func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
-	var cfg CoordinatorConfig
-	inSection := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inSection = strings.TrimSpace(line[1:len(line)-1]) == "coordinator"
-			continue
-		}
-		if !inSection {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return CoordinatorConfig{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := stripTOMLQuotes(strings.TrimSpace(line[eq+1:]))
-		switch key {
-		case "driver":
-			cfg.Driver = val
-		case "model":
-			cfg.Model = val
-		case "brief":
-			cfg.Brief = val
-		case "external_session_pattern":
-			cfg.ExternalSessionPattern = val
-		default:
-			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", lineNum, key)
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	entries, err := sporetoml.ParseSection(content, "coordinator")
+	if err != nil {
 		return CoordinatorConfig{}, err
 	}
+	return coordinatorFromEntries(entries)
+}
+
+func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error) {
+	var cfg CoordinatorConfig
+	for _, e := range entries {
+		switch e.Key {
+		case "driver":
+			cfg.Driver = e.Value
+		case "model":
+			cfg.Model = e.Value
+		case "brief":
+			cfg.Brief = e.Value
+		case "external_session_pattern":
+			cfg.ExternalSessionPattern = e.Value
+		default:
+			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key)
+		}
+	}
 	return cfg, nil
 }
 
-func stripTOMLComment(line string) string {
-	inQuote := byte(0)
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		switch {
-		case inQuote != 0:
-			if ch == inQuote {
-				inQuote = 0
-			}
-		case ch == '"' || ch == '\'':
-			inQuote = ch
-		case ch == '#':
-			return line[:i]
-		}
-	}
-	return line
+// driverPlan is a pending [coordinator] driver/model rewrite of
+// spore.toml, holding the old bytes so a failed swap can undo it.
+type driverPlan struct {
+	root, path   string
+	old, content string
+	existed      bool
+	cfg          CoordinatorConfig
 }
 
-func stripTOMLQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
+// planCoordinatorDriver computes the spore.toml with driver and model
+// set in [coordinator], keeping comments and other keys. An empty
+// model deletes the key. Nothing is written.
+func planCoordinatorDriver(projectRoot, driver, model string) (driverPlan, error) {
+	p := driverPlan{root: projectRoot, path: filepath.Join(projectRoot, "spore.toml")}
+	b, err := os.ReadFile(p.path)
+	switch {
+	case err == nil:
+		p.existed = true
+	case !os.IsNotExist(err):
+		return p, fmt.Errorf("coordinator: read %s: %w", p.path, err)
 	}
-	return v
+	p.old = string(b)
+	p.content = sporetoml.SetKey(p.old, "coordinator", "driver", driver)
+	if model == "" {
+		p.content = sporetoml.DeleteKey(p.content, "coordinator", "model")
+	} else {
+		p.content = sporetoml.SetKey(p.content, "coordinator", "model", model)
+	}
+	if p.cfg, err = parseCoordinatorTOML(p.content); err != nil {
+		return p, fmt.Errorf("coordinator: %s: %w", p.path, err)
+	}
+	return p, nil
+}
+
+func (p driverPlan) write() error {
+	if err := sporetoml.WriteFile(p.root, p.content); err != nil {
+		return fmt.Errorf("coordinator: write %s: %w", p.path, err)
+	}
+	return nil
+}
+
+func (p driverPlan) rollback() error {
+	if !p.existed {
+		return os.Remove(p.path)
+	}
+	return sporetoml.WriteFile(p.root, p.old)
 }

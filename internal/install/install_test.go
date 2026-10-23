@@ -111,3 +111,27 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func TestInstallFillsCodexSkillDir(t *testing.T) {
+	root := t.TempDir()
+	if _, err := install.Install(root, spore.BundledSkills, "bootstrap/skills"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, name := range []string{"spore-bootstrap", "diagram", "select-agent"} {
+		claude, err := os.ReadFile(filepath.Join(root, ".claude", "skills", name, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		codex, err := os.ReadFile(filepath.Join(root, ".agents", "skills", name, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("codex skill %s missing: %v", name, err)
+		}
+		if !bytes.Equal(claude, codex) {
+			t.Errorf("%s: .agents copy differs from .claude copy", name)
+		}
+	}
+	info, err := os.Stat(filepath.Join(root, ".agents", "skills", "diagram", "diagram"))
+	if err != nil || info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("codex diagram script not executable: %v %v", info, err)
+	}
+}

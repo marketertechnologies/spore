@@ -79,6 +79,34 @@ as MCP server keys or git-push tokens. It wires them through systemd
 `LoadCredential=` so values never enter Nix evaluation or the
 `/nix/store`.
 
+## tmux baseline
+
+`services.spore-fleet.tmux` prepends a block to `/etc/tmux.conf`:
+
+- `history-limit` from `tmux.historyLimit` (default 250000; tmux's
+  own 2000 loses long agent output);
+- `mouse` from `tmux.mouse` (default on: wheel enters copy-mode);
+- `allow-passthrough`, `extended-keys`, and the `xterm*:extkeys`
+  terminal feature, for the Claude Code TUI;
+- `detach-on-destroy off`: a killed session moves its clients to
+  another session instead of detaching them. `spore-attach` execs
+  the tmux client straight under sshd, so a detach closes the SSH
+  connection;
+- `S-PageUp` enters copy-mode a page up without the prefix, and the
+  wheel scrolls a half-page in copy-mode;
+- `default-shell` when `tmux.defaultShell` is set (needed when the
+  operator user's login shell is `spore-attach`);
+- `tmux.extraConfig`, verbatim.
+
+`tmux.enable` defaults to `services.spore-fleet.enable`. Set it
+explicitly to get the baseline on a host that does not run the fleet
+yet; `bootstrap/flake/` does this for `spore infect` targets.
+
+The block is merged with `lib.mkBefore`, so a host's own
+`environment.etc."tmux.conf".text` lines render after it and win.
+`programs.tmux.historyLimit` is seeded at `mkDefault` so enabling the
+stock NixOS tmux module does not reset scrollback to 2000.
+
 The full option reference lives in `nixosModules/spore-fleet.nix`.
 
 ## Horizontal Scale

@@ -12,8 +12,10 @@ kills you when it goes off. The role you are reading is shipped at
 `bootstrap/coordinator/role.md`; consumers can override it by writing
 their own file at the same path before bootstrap runs.
 
-Your slug is `coordinator`. Your inbox is the same shape as a worker's
-inbox: `<XDG_STATE_HOME>/spore/<project>/coordinator/inbox/`. Anyone
+Your slug is `coordinator`. Your inbox holds the same JSON envelopes
+as a worker's inbox but lives under the coordinator state dir:
+`<XDG_STATE_HOME>/spore/coordinator/<project>/inbox/` (`$SPORE_TASK_INBOX`
+in your session). Anyone
 (operator, worker, peer tooling) who runs
 `spore task tell coordinator "<msg>"` writes a JSON envelope into that
 directory. Workers read messages from theirs the same way; you can
@@ -51,6 +53,15 @@ You do not just observe. You drive the queue.
 - Edit `tasks/<slug>.md` directly for coordinator-side progress
   notes. Do not rewrite a worker's brief mid-flight.
 - Edit `state.md`. It is your own memory; nobody else writes to it.
+- `spore coordinator swap --to claude|codex [--model m]` respawns
+  this pane under another driver. From inside the pane, flush
+  `state.md` first, then pass `--no-wrap`; the command dies with
+  the pane. A swap request arriving in your inbox means: flush
+  `state.md` now and end the turn.
+  The bundled `select-agent` skill (`/select-agent [agent [model]]`)
+  wraps this: it prompts for the agent, flushes `state.md`, and runs
+  the swap with `--no-wrap`. `spore coordinator agents` lists the
+  drivers and which one is current.
 
 ## Operating principles
 
