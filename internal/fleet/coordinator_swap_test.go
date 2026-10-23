@@ -78,7 +78,8 @@ func newSwapFixture(t *testing.T, toml, sessionEnvExtra string) *swapFixture {
 	// has neither of these, a worker shell has the worker launcher.
 	t.Setenv(CoordinatorAgentEnv, "/caller/agent")
 	t.Setenv("SPORE_AGENT_BINARY", "/caller/spore-worker-brief")
-	prevTmux, prevSleep, prevNow := swapTmux, swapSleep, swapNow
+	prevTmux, prevSleep, prevNow, prevLauncher := swapTmux, swapSleep, swapNow, swapHostLauncher
+	swapHostLauncher = filepath.Join(t.TempDir(), "absent-launcher")
 	swapTmux = f.tmux.run
 	swapNow = func() time.Time { return f.now }
 	swapSleep = func(d time.Duration) {
@@ -87,7 +88,9 @@ func newSwapFixture(t *testing.T, toml, sessionEnvExtra string) *swapFixture {
 			f.onSleep()
 		}
 	}
-	t.Cleanup(func() { swapTmux, swapSleep, swapNow = prevTmux, prevSleep, prevNow })
+	t.Cleanup(func() {
+		swapTmux, swapSleep, swapNow, swapHostLauncher = prevTmux, prevSleep, prevNow, prevLauncher
+	})
 	return f
 }
 
@@ -298,20 +301,31 @@ func TestSwapAgentPrecedence(t *testing.T) {
 	const launch = "/usr/local/bin/spore-coordinator-launch"
 	cases := []struct {
 		name, sessionEnv, global, to, want string
-		wantErr                            bool
+		wantErr, hostLauncher              bool
 	}{
-		{"session env wins", "SPORE_COORDINATOR_AGENT=/opt/session-launch\n", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", "/opt/session-launch", false},
-		{"global env next", "", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", launch, false},
-		{"driver binary last", "", "", "codex", "codex", false},
-		{"driver binary claude", "", "", "claude", "claude", false},
-		{"bare claude agent cannot run codex", "SPORE_COORDINATOR_AGENT=claude\n", "", "codex", "", true},
-		{"bare codex agent cannot run claude", "", "SPORE_COORDINATOR_AGENT=/run/current-system/sw/bin/codex -m x\n", "claude", "", true},
-		{"matching bare agent is fine", "SPORE_COORDINATOR_AGENT=claude\n", "", "claude", "claude", false},
+		{"host launcher before driver binary", "", "", "codex", "", false, true},
+		{"global env beats host launcher", "", "SPORE_COORDINATOR_AGENT=/opt/global-launch\n", "codex", "/opt/global-launch", false, true},
+		{"session env wins", "SPORE_COORDINATOR_AGENT=/opt/session-launch\n", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", "/opt/session-launch", false, false},
+		{"global env next", "", "SPORE_COORDINATOR_AGENT=" + launch + "\n", "codex", launch, false, false},
+		{"driver binary last", "", "", "codex", "codex", false, false},
+		{"driver binary claude", "", "", "claude", "claude", false, false},
+		{"bare claude agent cannot run codex", "SPORE_COORDINATOR_AGENT=claude\n", "", "codex", "", true, false},
+		{"bare codex agent cannot run claude", "", "SPORE_COORDINATOR_AGENT=/run/current-system/sw/bin/codex -m x\n", "claude", "", true, false},
+		{"matching bare agent is fine", "SPORE_COORDINATOR_AGENT=claude\n", "", "claude", "claude", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSwapFixture(t, "", c.sessionEnv)
 			f.tmux.global = c.global
+			if c.hostLauncher {
+				swapHostLauncher = filepath.Join(t.TempDir(), "spore-coordinator-launch")
+				if err := os.WriteFile(swapHostLauncher, []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if c.want == "" {
+					c.want = swapHostLauncher
+				}
+			}
 			_, err := SwapCoordinator(SwapSpec{Session: f.session, To: c.to})
 			if c.wantErr {
 				if err == nil {

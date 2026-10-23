@@ -24,6 +24,9 @@ var (
 	}
 	swapSleep = time.Sleep
 	swapNow   = time.Now
+	// swapHostLauncher is the host coordinator launcher the NixOS module
+	// installs; the reconciler units point SPORE_COORDINATOR_AGENT at it.
+	swapHostLauncher = "/usr/local/bin/spore-coordinator-launch"
 )
 
 // ErrWrapTimeout is returned when state.md did not advance before the
@@ -195,8 +198,11 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 // SPORE_COORDINATOR_AGENT, and SPORE_AGENT_BINARY is the worker
 // launcher. The session env carries the agent EnsureCoordinator was
 // given; the global env holds what the tmux server inherited (usually
-// the reconciler's unit env). Without either the driver names the
-// binary. A bare claude or codex that contradicts the target driver is
+// the reconciler's unit env). Sessions spawned before 0.22.0 lack the
+// former, and a tmux server started from an ssh login lacks the latter,
+// so the host launcher comes next when installed: a bare codex skips
+// its inbox sidecar and never hears the coordinator inbox. Without any
+// of these the driver names the binary. A bare claude or codex that contradicts the target driver is
 // an error, not a silent wrong-agent respawn.
 func swapAgent(session, global map[string]string, to string) (string, error) {
 	agent := session[CoordinatorAgentEnv]
@@ -204,6 +210,9 @@ func swapAgent(session, global map[string]string, to string) (string, error) {
 		agent = global[CoordinatorAgentEnv]
 	}
 	if agent == "" {
+		if fi, err := os.Stat(swapHostLauncher); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+			return swapHostLauncher, nil
+		}
 		return driverToBinary(to), nil
 	}
 	fields := strings.Fields(agent)

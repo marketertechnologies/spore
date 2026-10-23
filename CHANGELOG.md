@@ -21,7 +21,8 @@
   without `--model` clears the model. From inside the coordinator
   pane, flush `state.md` yourself and pass `--no-wrap`. The respawned
   agent comes from `SPORE_COORDINATOR_AGENT` in the tmux session env,
-  then the tmux global env (never the caller's env); new coordinator
+  then the tmux global env, then `/usr/local/bin/spore-coordinator-launch`
+  when installed (never the caller's env); new coordinator
   sessions record it in their session env. Consumer impact: none
   until invoked; the command rewrites `spore.toml`, so commit the
   flip if the project tracks that file. Hosts whose

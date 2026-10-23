@@ -239,7 +239,12 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   fallback cannot pick `spore/<p>/coordinator2`. The pane id comes
   from `list-panes -s`, not `S:0`, so `base-index` does not matter.
 - Agent: `SPORE_COORDINATOR_AGENT` from the session env, then the tmux
-  global env, then `driverToBinary(--to)`. The caller's env is never
+  global env, then `/usr/local/bin/spore-coordinator-launch` when it
+  is an executable file, then `driverToBinary(--to)`. The launcher
+  step covers the common host case: pre-0.22.0 sessions lack the
+  session var, and a tmux server first started by an ssh login
+  (`spore-attach`) lacks the global one; a bare `codex` would skip
+  the inbox sidecar. The caller's env is never
   read: on hosts the var lives in the reconciler unit's `Environment=`,
   not in an ssh operator shell, and `SPORE_AGENT_BINARY` is the worker
   launcher. `EnsureCoordinator` now records an explicit
