@@ -153,6 +153,11 @@ func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg Coord
 		"-e", "SPORE_TASK_INBOX=" + inbox,
 		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
 	}
+	// Recorded so `spore coordinator swap` respawns through the same
+	// launcher from a shell that lacks the reconciler's env.
+	if v := os.Getenv(CoordinatorAgentEnv); v != "" {
+		args = append(args, "-e", CoordinatorAgentEnv+"="+v)
+	}
 	if v := coordinatorProvider(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_PROVIDER="+v)
 	}

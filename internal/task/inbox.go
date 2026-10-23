@@ -19,6 +19,12 @@ func Tell(slug, msg string) error {
 	if err != nil {
 		return err
 	}
+	return TellDir(dir, slug, msg)
+}
+
+// TellDir is Tell against an explicit inbox dir, for callers that
+// read the inbox from a session env rather than the cwd project.
+func TellDir(dir, slug, msg string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

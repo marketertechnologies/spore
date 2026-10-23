@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- tmux baseline sets `detach-on-destroy off`. With `spore-attach` as
+  the login shell the tmux client is sshd's direct child, so a
+  `kill-session` on the session the operator was viewing (task done,
+  merge, reap) closed the SSH connection. Clients now switch to
+  another session. Consumer impact: hosts pick it up on the next
+  `nixos-rebuild`; live servers need `tmux set -g detach-on-destroy
+  off` or a server restart.
+
+- `spore coordinator swap --to claude|codex [--model M] [--project N]`
+  (unit 4 of `docs/todo/codex-coordinator-swap.md`). Asks the live
+  coordinator through its inbox to flush `state.md` and waits for the
+  write (`--no-wrap` skips, `--force` swaps after `--wrap-timeout`),
+  sets `[coordinator]` `driver` / `model` in `spore.toml` keeping
+  comments and other keys, sets `SPORE_COORDINATOR_PROVIDER` /
+  `SPORE_COORDINATOR_MODEL` in the tmux session env, and respawns the
+  session's first pane with the coordinator agent. A driver change
+  without `--model` clears the model. From inside the coordinator
+  pane, flush `state.md` yourself and pass `--no-wrap`. The respawned
+  agent comes from `SPORE_COORDINATOR_AGENT` in the tmux session env,
+  then the tmux global env, then `/usr/local/bin/spore-coordinator-launch`
+  when installed (never the caller's env); new coordinator
+  sessions record it in their session env. Consumer impact: none
+  until invoked; the command rewrites `spore.toml`, so commit the
+  flip if the project tracks that file. Hosts whose
+  `/etc/spore/coordinator.env` sets `SPORE_COORDINATOR_PROVIDER` /
+  `SPORE_COORDINATOR_MODEL`: the reconciler env still beats
+  `spore.toml`, so a reconciler respawn reverts a swap until those
+  lines are cleared or updated.
+
 - Codex context bridge (unit 3 of `docs/todo/codex-coordinator-swap.md`).
   `spore hooks codex-session-start` now also prints SessionStart JSON
   (`hookSpecificOutput.additionalContext`) carrying the main repo's
