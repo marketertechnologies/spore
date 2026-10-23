@@ -88,6 +88,10 @@ as MCP server keys or git-push tokens. It wires them through systemd
 - `mouse` from `tmux.mouse` (default on: wheel enters copy-mode);
 - `allow-passthrough`, `extended-keys`, and the `xterm*:extkeys`
   terminal feature, for the Claude Code TUI;
+- `detach-on-destroy off`: a killed session moves its clients to
+  another session instead of detaching them. `spore-attach` execs
+  the tmux client straight under sshd, so a detach closes the SSH
+  connection;
 - `S-PageUp` enters copy-mode a page up without the prefix, and the
   wheel scrolls a half-page in copy-mode;
 - `default-shell` when `tmux.defaultShell` is set (needed when the

@@ -563,6 +563,7 @@ in
           set -g history-limit ${toString cfg.tmux.historyLimit}
           set -g mouse ${if cfg.tmux.mouse then "on" else "off"}
           set -g allow-passthrough on
+          set -g detach-on-destroy off
           set -s extended-keys on
           set -as terminal-features 'xterm*:extkeys'
           bind -n S-PageUp copy-mode -eu

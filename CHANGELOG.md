@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- tmux baseline sets `detach-on-destroy off`. With `spore-attach` as
+  the login shell the tmux client is sshd's direct child, so a
+  `kill-session` on the session the operator was viewing (task done,
+  merge, reap) closed the SSH connection. Clients now switch to
+  another session. Consumer impact: hosts pick it up on the next
+  `nixos-rebuild`; live servers need `tmux set -g detach-on-destroy
+  off` or a server restart.
+
 - `spore coordinator swap --to claude|codex [--model M] [--project N]`
   (unit 4 of `docs/todo/codex-coordinator-swap.md`). Asks the live
   coordinator through its inbox to flush `state.md` and waits for the

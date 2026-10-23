@@ -372,6 +372,8 @@
                   machine.succeed("${tmux} -L t new-session -d")
                   limit = machine.succeed("${tmux} -L t show-options -gv history-limit").strip()
                   assert limit == "4321", limit
+                  dod = machine.succeed("${tmux} -L t show-options -gv detach-on-destroy").strip()
+                  assert dod == "off", dod
                   machine.succeed("${tmux} -L t kill-server")
 
                   # Talk to the lingered user instance via systemctl
