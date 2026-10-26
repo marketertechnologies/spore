@@ -273,6 +273,7 @@
                       "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
+                      "install --dest") cp -r ${./bootstrap/skills}/. "$3" ; exit 0 ;;
                       "hooks codex-config") printf '{"hooks":{"stub":"%s"}}\n' "$4" ; exit 0 ;;
                       "migrate --auto")
                         for t in bash find grep tail dirname mkdir cat; do
@@ -423,6 +424,15 @@
                   assert "-codex/bin" in env, env
                   hooks = machine.succeed("cat /home/spore-test/.codex/hooks.json")
                   assert '"stub":"/nix/store/' in hooks and hooks.strip().endswith('/bin/spore"}}'), hooks
+
+                  # Host-wide skills: one directory link per skill under
+                  # Claude Code's and Codex's user scopes, so the scope
+                  # dirs stay real and unmanaged siblings survive.
+                  for root in ["/home/spore-test/.claude/skills", "/home/spore-test/.agents/skills"]:
+                      machine.succeed(f"test -d {root} && test ! -L {root}")
+                      for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                          machine.succeed(f"test -L {root}/{skill} && test -f {root}/{skill}/SKILL.md")
+                  machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
 
                   # Graceful-deploy: pre-script disables the kill-switch
                   # and tells every active worker to wrap up; post-script

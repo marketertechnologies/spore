@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/install"
 )
 
 func TestDetectRepoMapped(t *testing.T) {
@@ -92,6 +95,7 @@ func TestDetectRepoMappedDropsStarterInstructions(t *testing.T) {
 }
 
 func TestDetectRepoMappedInstallsSkills(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
 	notes, err := detectRepoMapped(root)
@@ -107,7 +111,52 @@ func TestDetectRepoMappedInstallsSkills(t *testing.T) {
 	}
 }
 
+func TestDetectRepoMappedSkipsInstallWhenHostProvidesSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, dir := range install.HostScopeDirs {
+		if _, err := install.InstallDir(filepath.Join(home, dir), spore.BundledSkills, "bootstrap/skills"); err != nil {
+			t.Fatalf("seed host scope %s: %v", dir, err)
+		}
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
+	notes, err := detectRepoMapped(root)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !strings.Contains(notes, "skills provided host-wide") {
+		t.Errorf("notes=%q; want host-wide skip note", notes)
+	}
+	for _, dir := range install.SkillDirs {
+		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
+			t.Errorf("%s created in project despite host skills (err=%v)", dir, err)
+		}
+	}
+}
+
+func TestDetectRepoMappedInstallsWhenHostSkillsPartial(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := install.InstallDir(filepath.Join(home, ".claude", "skills"), spore.BundledSkills, "bootstrap/skills"); err != nil {
+		t.Fatalf("seed claude scope: %v", err)
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
+	notes, err := detectRepoMapped(root)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !strings.Contains(notes, "installed") {
+		t.Errorf("notes=%q; want project install when only one host scope is filled", notes)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents", "skills", "select-agent", "SKILL.md")); err != nil {
+		t.Fatalf("project select-agent missing: %v", err)
+	}
+}
+
 func TestDetectRepoMappedSkillInstallIsIdempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
 	if _, err := detectRepoMapped(root); err != nil {

@@ -41,11 +41,63 @@ var SkillDirs = []string{".claude/skills", ".agents/skills"}
 // no-op. If a destination file exists with different content, Install
 // overwrites it.
 func Install(root string, src embed.FS, prefix string) (Result, error) {
-	var res Result
 	if root == "" {
-		return res, errors.New("install: root is empty")
+		return Result{}, errors.New("install: root is empty")
 	}
+	dests := make([]string, len(SkillDirs))
+	for i, dir := range SkillDirs {
+		dests[i] = filepath.Join(root, dir)
+	}
+	return installInto(dests, src, prefix)
+}
 
+// InstallDir copies every embedded skill under <prefix>/<name>/ into
+// <dest>/<name>/, with the same mode and idempotency rules as Install.
+// The spore-fleet NixOS module renders the host-wide skill tree with
+// it at build time.
+func InstallDir(dest string, src embed.FS, prefix string) (Result, error) {
+	if dest == "" {
+		return Result{}, errors.New("install: dest is empty")
+	}
+	return installInto([]string{dest}, src, prefix)
+}
+
+// HostScopeDirs are the home-relative user skill scopes the spore-fleet
+// NixOS module fills: Claude Code's personal scope and Codex's user
+// scope (read from $HOME, not CODEX_HOME).
+var HostScopeDirs = []string{".claude/skills", ".agents/skills"}
+
+// HostProvides reports whether every embedded skill under <prefix>/
+// already has a SKILL.md in each of HostScopeDirs under home. A
+// project copy alongside them is redundant for Claude Code (personal
+// beats project) and harmful for Codex (it keeps both and a plain
+// $name mention then selects neither). A partial host set reports
+// false so the caller falls back to a project install.
+func HostProvides(home string, src embed.FS, prefix string) bool {
+	if home == "" {
+		return false
+	}
+	entries, err := fs.ReadDir(src, prefix)
+	if err != nil {
+		return false
+	}
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		for _, dir := range HostScopeDirs {
+			if _, err := os.Stat(filepath.Join(home, dir, e.Name(), "SKILL.md")); err != nil {
+				return false
+			}
+		}
+		found = true
+	}
+	return found
+}
+
+func installInto(dests []string, src embed.FS, prefix string) (Result, error) {
+	var res Result
 	err := fs.WalkDir(src, prefix, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -68,8 +120,8 @@ func Install(root string, src embed.FS, prefix string) (Result, error) {
 		if bytes.HasPrefix(body, []byte("#!")) {
 			mode = 0o755
 		}
-		for _, dir := range SkillDirs {
-			if err := writeSkillFile(&res, filepath.Join(root, dir, rel), body, mode); err != nil {
+		for _, dest := range dests {
+			if err := writeSkillFile(&res, filepath.Join(dest, rel), body, mode); err != nil {
 				return err
 			}
 		}

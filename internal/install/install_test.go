@@ -135,3 +135,25 @@ func TestInstallFillsCodexSkillDir(t *testing.T) {
 		t.Errorf("codex diagram script not executable: %v %v", info, err)
 	}
 }
+
+func TestInstallDirWritesFlatTree(t *testing.T) {
+	dest := t.TempDir()
+	if _, err := install.InstallDir(dest, spore.BundledSkills, "bootstrap/skills"); err != nil {
+		t.Fatalf("InstallDir: %v", err)
+	}
+	for _, name := range []string{"diagram", "select-agent", "spore-bootstrap"} {
+		if _, err := os.Stat(filepath.Join(dest, name, "SKILL.md")); err != nil {
+			t.Errorf("missing %s/SKILL.md: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".claude")); !os.IsNotExist(err) {
+		t.Errorf("InstallDir created .claude under dest; want flat tree (err=%v)", err)
+	}
+	info, err := os.Stat(filepath.Join(dest, "diagram", "diagram"))
+	if err != nil {
+		t.Fatalf("stat diagram script: %v", err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("diagram script not executable: mode=%v", info.Mode().Perm())
+	}
+}
