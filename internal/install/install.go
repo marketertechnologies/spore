@@ -41,11 +41,29 @@ var SkillDirs = []string{".claude/skills", ".agents/skills"}
 // no-op. If a destination file exists with different content, Install
 // overwrites it.
 func Install(root string, src embed.FS, prefix string) (Result, error) {
-	var res Result
 	if root == "" {
-		return res, errors.New("install: root is empty")
+		return Result{}, errors.New("install: root is empty")
 	}
+	dests := make([]string, len(SkillDirs))
+	for i, dir := range SkillDirs {
+		dests[i] = filepath.Join(root, dir)
+	}
+	return installInto(dests, src, prefix)
+}
 
+// InstallDir copies every embedded skill under <prefix>/<name>/ into
+// <dest>/<name>/, with the same mode and idempotency rules as Install.
+// The spore-fleet NixOS module renders the host-wide skill tree with
+// it at build time.
+func InstallDir(dest string, src embed.FS, prefix string) (Result, error) {
+	if dest == "" {
+		return Result{}, errors.New("install: dest is empty")
+	}
+	return installInto([]string{dest}, src, prefix)
+}
+
+func installInto(dests []string, src embed.FS, prefix string) (Result, error) {
+	var res Result
 	err := fs.WalkDir(src, prefix, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -68,8 +86,8 @@ func Install(root string, src embed.FS, prefix string) (Result, error) {
 		if bytes.HasPrefix(body, []byte("#!")) {
 			mode = 0o755
 		}
-		for _, dir := range SkillDirs {
-			if err := writeSkillFile(&res, filepath.Join(root, dir, rel), body, mode); err != nil {
+		for _, dest := range dests {
+			if err := writeSkillFile(&res, filepath.Join(dest, rel), body, mode); err != nil {
 				return err
 			}
 		}

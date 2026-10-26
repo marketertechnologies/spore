@@ -1,4 +1,4 @@
-**Status**: units 1-3 merged (PRs #81, #83, #85; v0.19.0 .. v0.21.0); unit 4 (swap command) on wt/codex-coordinator-swap-cmd, live run pending; unit 5 open
+**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5 (marketer adoption) open
 
 # codex coordinator swap
 
@@ -30,7 +30,9 @@ One task and one PR each.
    Codex SessionStart; skills mirrored into `.agents/skills`.
 4. `spore coordinator swap --to codex|claude [--model m]`: forced
    wrap, flip `[coordinator]` driver/model, respawn-pane.
-5. Marketer adoption.
+5. Marketer adoption. 5a: spore skills reach every coordinator
+   host-wide via home-manager (operator decision 2026-10-26: no writes
+   into consumer repos). See docs/fleet-module.md "Skills".
 
 ## Decisions (do not re-litigate)
 
