@@ -98,6 +98,13 @@ per-name links leave unmanaged siblings (`~/.claude/skills/synced`,
 `~/.codex/skills/.system`) alone. Nothing is written into project
 checkouts.
 
+`spore bootstrap` (repo-mapped stage) skips its per-project skill
+install when the host already provides every embedded skill: each
+name has a `SKILL.md` under both `~/.claude/skills/` and
+`~/.agents/skills/` (`install.HostProvides`). A partial host set, or
+a host without the module, keeps the project install into
+`.claude/skills` and `.agents/skills`.
+
 When a project also ships a skill of the same name:
 
 - Claude Code runs the personal copy: personal beats project
@@ -110,7 +117,8 @@ When a project also ships a skill of the same name:
   Codex 0.162.1 keeps both; it dedupes by path only
   (`ext/skills/src/loader/host_merge.rs`). The catalog lists the repo
   copy first, and a plain `$name` mention is ambiguous, so it selects
-  neither (`skills/src/selection.rs`).
+  neither (`skills/src/selection.rs`). The bootstrap skip above keeps
+  new consumers out of that state.
 
 ## tmux baseline
 
