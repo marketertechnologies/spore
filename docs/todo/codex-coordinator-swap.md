@@ -131,7 +131,8 @@ pin); not yet verified against a live session.
   `home.file.".codex/hooks.json"`; it also adds `codex.package`
   (default `pkgs.codex`) to systemPackages and the reconciler PATH.
   One opt-in knob: the coordinator driver lives in runtime config
-  (`spore.toml`, `/etc/spore/coordinator.env`) that Nix cannot read
+  (`spore.toml`, the host-side swap override,
+  `/etc/spore/coordinator.env`) that Nix cannot read
   at eval time, and Claude-only hosts skip the codex closure. The
   infect host flake sets it. Non-Nix hosts run
   `spore hooks codex-config > ~/.codex/hooks.json`.
@@ -225,27 +226,33 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   session's inbox; the Claude inbox hook or the Codex sidecar delivers
   it. Then poll `<root>/state.md` mtime until it advances and stays
   unchanged for 10s. A write still settling at the deadline is a
-  timeout. No settled write by `--wrap-timeout` (default 5m) aborts with `spore.toml`
-  and the pane untouched, unless `--force`.
+  timeout. No settled write by `--wrap-timeout` (default 5m) aborts
+  with the driver override and the pane untouched, unless `--force`.
 - Inside the coordinator pane (`$TMUX_PANE`'s session is the target)
   the wrap is refused: the agent is blocked on the command and cannot
   answer its own inbox. Flush `state.md`, then `--no-wrap`; the
   respawn kills the command with the pane.
-- `spore.toml`: `sporetoml.SetKey` / `DeleteKey` edit lines in place
-  (indent and trailing comment kept, missing key after the section's
-  last entry, missing section appended); written via temp + rename.
-  Model: `--model` wins; omitted on a driver change deletes the key;
-  omitted on the same driver keeps the running one. "Running" is the
-  session env provider/model, then `spore.toml`, then `claude`.
+- Persistence: the swap never writes the project tree (a consumer
+  without `spore.toml` would get an untracked one). It writes
+  `<task.StateDirForProject>/coordinator/driver.toml`, a
+  `[coordinator]` section with `driver` and optional `model` only,
+  edited with `sporetoml.SetKey` / `DeleteKey` and written via temp +
+  rename (0600, dir 0700). `LoadCoordinatorConfig` layers it over
+  `spore.toml`: an override driver replaces driver and model together,
+  so a driver with no model means the agent default. Any other key is
+  an error. Model: `--model` wins; omitted on a driver change deletes
+  the key; omitted on the same driver keeps the running one.
+  "Running" is the session env provider/model, then the override over
+  `spore.toml`, then `claude`.
 - Order: every read and check first (session env, global env, agent,
-  the new `spore.toml` text), then the mutations cheapest-to-undo
+  the new override text), then the mutations cheapest-to-undo
   first: `set-environment -t =S SPORE_COORDINATOR_PROVIDER d`;
   `set-environment -t =S SPORE_COORDINATOR_MODEL m`, or `-r` when
   cleared (`-u` would let a value the tmux server inherited, e.g. from
   `/etc/spore/coordinator.env`, back in; verified on a private
-  socket); write `spore.toml`; `respawn-pane -k -t <first pane id>
+  socket); write the override; `respawn-pane -k -t <first pane id>
   -c <root> <coordinatorShellCommand(agent, role)>`. A failure
-  restores `spore.toml` and the session env, and the error names what
+  restores the override (old bytes, or removes it) and the session env, and the error names what
   was left. Session targets carry `=` so tmux's prefix and fnmatch
   fallback cannot pick `spore/<p>/coordinator2`. The pane id comes
   from `list-panes -s`, not `S:0`, so `base-index` does not matter.
@@ -264,7 +271,10 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   started the tmux server). A resolved bare `claude`/`codex` that
   contradicts `--to` is an error.
 - Reconciler precedence: `EnsureCoordinator` still lets a process-env
-  `SPORE_COORDINATOR_PROVIDER` / `_MODEL` beat `spore.toml`. On hosts
+  `SPORE_COORDINATOR_PROVIDER` / `_MODEL` beat the override and
+  `spore.toml`. Without them, a reconciler respawn after kill-session
+  (session env gone) reads the override and stays on the swapped
+  driver. On hosts
   whose `/etc/spore/coordinator.env` sets them, a swapped coordinator
   that dies and is respawned by the reconciler comes back on the env
   driver, not the swapped one. Clear those two lines (or set them to

@@ -174,8 +174,8 @@ func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg Coord
 // coordinatorAgent picks the binary the coordinator session execs.
 // Precedence: SPORE_COORDINATOR_AGENT (lets operators run a different
 // agent for the singleton coordinator) > SPORE_AGENT_BINARY (the same
-// var workers honour) > spore.toml [coordinator].driver mapped to a
-// known binary > "claude" (the kernel default).
+// var workers honour) > [coordinator].driver (host override, then
+// spore.toml) mapped to a known binary > "claude" (the kernel default).
 func coordinatorAgent(cfg CoordinatorConfig) string {
 	if a := os.Getenv(CoordinatorAgentEnv); a != "" {
 		return a
@@ -191,7 +191,7 @@ func coordinatorAgent(cfg CoordinatorConfig) string {
 
 // coordinatorProvider returns the provider name for launcher scripts
 // that dispatch on $SPORE_COORDINATOR_PROVIDER (e.g. the bundled
-// spore-coordinator-launch.sh). Env wins over the spore.toml driver.
+// spore-coordinator-launch.sh). Env wins over the configured driver.
 // Empty when nothing is configured: the session env stays clean.
 func coordinatorProvider(cfg CoordinatorConfig) string {
 	if v := os.Getenv("SPORE_COORDINATOR_PROVIDER"); v != "" {
@@ -201,7 +201,7 @@ func coordinatorProvider(cfg CoordinatorConfig) string {
 }
 
 // coordinatorModel returns the model identifier injected into the
-// session env. Env wins over the spore.toml model. Empty when neither
+// session env. Env wins over the configured model. Empty when neither
 // source set it.
 func coordinatorModel(cfg CoordinatorConfig) string {
 	if v := os.Getenv("SPORE_COORDINATOR_MODEL"); v != "" {

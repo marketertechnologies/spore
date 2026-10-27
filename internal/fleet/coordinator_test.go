@@ -309,3 +309,42 @@ func TestIsClaudeAgent(t *testing.T) {
 		}
 	}
 }
+
+// A reconciler respawn after kill-session has no session env left, so
+// the swapped driver must come back from the host-side override.
+func TestEnsureCoordinatorUsesDriverOverride(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 30")
+	t.Setenv("SPORE_COORDINATOR_PROVIDER", "")
+	t.Setenv("SPORE_COORDINATOR_MODEL", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
+		[]byte("[coordinator]\ndriver = \"claude\"\nmodel = \"opus\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := DriverOverridePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateFile(p, "[coordinator]\ndriver = \"codex\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	session := CoordinatorSessionName(dir)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+	if _, spawned, err := EnsureCoordinator(dir); err != nil || !spawned {
+		t.Fatalf("EnsureCoordinator: spawned %v, err %v", spawned, err)
+	}
+	out, err := exec.Command("tmux", "-L", testTmuxSocket, "show-environment", "-t", "="+session).CombinedOutput()
+	if err != nil {
+		t.Fatalf("show-environment: %v: %s", err, out)
+	}
+	env := string(out)
+	if !strings.Contains(env, "SPORE_COORDINATOR_PROVIDER=codex\n") || strings.Contains(env, "SPORE_COORDINATOR_MODEL=") {
+		t.Errorf("session env = %s; want provider codex and no model", env)
+	}
+}
