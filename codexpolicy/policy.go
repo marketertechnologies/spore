@@ -55,6 +55,7 @@ func InteractiveArgs(model, effort string) []string {
 	args := []string{
 		"codex",
 		"--dangerously-bypass-approvals-and-sandbox",
+		"--dangerously-bypass-hook-trust",
 		"--no-alt-screen",
 		"--disable", "apps",
 	}

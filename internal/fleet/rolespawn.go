@@ -2,11 +2,13 @@ package fleet
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/versality/spore/internal/task"
+	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 // RoleSpawnSpec describes a single role pane the coordinator wants
@@ -32,7 +34,11 @@ type RoleSpawnSpec struct {
 	// `git diff` the branch from there. A consumer with a non-
 	// standard worktree layout must set Cwd explicitly.
 	Cwd string
-	// Agent is the binary the pane execs. Defaults to "claude".
+	// TasksDir holds <Slug>.md, read for the `agent:` frontmatter.
+	// Defaults to <ProjectRoot>/tasks.
+	TasksDir string
+	// Agent is the command the pane execs. Empty resolves through
+	// roleAgent.
 	Agent string
 }
 
@@ -82,9 +88,9 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if cwd == "" {
 		cwd = filepath.Join(s.ProjectRoot, ".worktrees", s.Slug)
 	}
-	agent := s.Agent
-	if agent == "" {
-		agent = "claude"
+	withBody, bare, err := s.invocations()
+	if err != nil {
+		return nil, err
 	}
 
 	taskDir := task.RoleTaskDir(s.ProjectRoot, s.Slug)
@@ -110,18 +116,84 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 		args = append(args, "-e", "SPORE_REVIEWER_INSTANCE="+string(s.ReviewerInstance))
 	}
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
-	args = append(args, roleShellCommand(prelude, agent, rolePath))
+	args = append(args, roleShellCommand(prelude, withBody, bare, rolePath))
 	return args, nil
+}
+
+// invocations returns the pane's agent command with and without a
+// role body (see agentInvocations).
+func (s RoleSpawnSpec) invocations() (withBody, bare string, err error) {
+	if s.Agent != "" {
+		withBody, bare = agentInvocations(s.Agent)
+		return withBody, bare, nil
+	}
+	tasksDir := s.TasksDir
+	if tasksDir == "" {
+		tasksDir = filepath.Join(s.ProjectRoot, "tasks")
+	}
+	meta, err := readRoleTaskMeta(tasksDir, s.Slug)
+	if err != nil {
+		return "", "", err
+	}
+	agent, err := roleAgent(s.ProjectRoot, meta)
+	if err != nil {
+		return "", "", err
+	}
+	if agent != "codex" {
+		withBody, bare = agentInvocations(agent)
+		return withBody, bare, nil
+	}
+	cmd, err := task.CodexAgentCommand(meta)
+	if err != nil {
+		return "", "", err
+	}
+	return cmd + " --", cmd, nil
+}
+
+// roleAgent picks the agent for a task's role panes: the task's
+// `agent:`, else the effective [fleet.workers] default (host overlay,
+// then spore.toml), else claude. Ratio and rules are skipped on
+// purpose: they depend on the running mix, and the engineer and
+// reviewers of one task must not flip agents between ticks.
+func roleAgent(projectRoot string, meta frontmatter.Meta) (string, error) {
+	agent := meta.Agent
+	if agent == "" {
+		cfg, err := LoadWorkersConfig(projectRoot)
+		if err != nil {
+			return "", err
+		}
+		agent = cfg.Default
+	}
+	switch agent {
+	case "", "claude-code":
+		return "claude", nil
+	}
+	return agent, nil
+}
+
+func readRoleTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
+	path := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return frontmatter.Meta{}, nil
+	}
+	if err != nil {
+		return frontmatter.Meta{}, err
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return m, nil
 }
 
 // roleShellCommand is coordinatorShellCommand behind the pre-start
 // prelude. On hook failure the note heads the role body; with no
 // role body the note alone is the first prompt.
-func roleShellCommand(prelude, agent, rolePath string) string {
+func roleShellCommand(prelude, cmdWithBody, cmdBare, rolePath string) string {
 	if prelude == "" {
-		return coordinatorShellCommand(agent, rolePath)
+		return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
 	}
-	cmdWithBody, cmdBare := agentInvocations(agent)
 	return prelude + fmt.Sprintf(
 		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "${%[4]s:+$%[4]s
 

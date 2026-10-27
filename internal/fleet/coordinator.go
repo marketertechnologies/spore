@@ -259,6 +259,10 @@ func driverToBinary(driver string) string {
 // boots clean.
 func coordinatorShellCommand(agent, rolePath string) string {
 	cmdWithBody, cmdBare := agentInvocations(agent)
+	return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+}
+
+func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
 	return fmt.Sprintf(
 		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[3]s; fi`,
 		shellSingleQuote(rolePath), cmdWithBody, cmdBare,
@@ -266,14 +270,15 @@ func coordinatorShellCommand(agent, rolePath string) string {
 }
 
 // agentInvocations returns the agent command for a run with a prompt
-// body and for a bare run.
+// body and for a bare run. Role bodies open with `---` frontmatter, so
+// the body run ends in `--` for both claude and codex.
 func agentInvocations(agent string) (withBody, bare string) {
 	if isClaudeAgent(agent) {
 		return agent + " --dangerously-skip-permissions --", agent + " --dangerously-skip-permissions"
 	}
 	if isCodexAgent(agent) {
 		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig)
-		return codex, codex
+		return codex + " --", codex
 	}
 	return agent, agent
 }

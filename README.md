@@ -230,6 +230,24 @@ the same answer the launcher used. Coordinator agent selection lives
 under the separate `[coordinator]` section and is never subject to
 the worker ratio.
 
+A project without `spore.toml` (or an operator who must not edit it)
+sets the worker default host-side instead:
+
+```
+spore fleet worker-agent            # print the effective default and its source
+spore fleet worker-agent codex      # write it to <state dir>/workers.toml
+spore fleet worker-agent --clear    # drop the host-side key
+```
+
+`<state dir>` is `$XDG_STATE_HOME/spore/<project>`. The file takes the
+same `[fleet.workers]` tables; a key or table set there wins over
+`spore.toml` (a ratio or rules table replaces the whole map). Role-loop
+panes (`loop: role`) take the task's `agent:`, else this effective
+`default`, else `claude`; they never use ratio or rules, so one task's
+engineer and reviewers stay on one agent. `SPORE_AGENT_BINARY` is the
+claude worker launcher and is ignored for `agent: codex`, which starts
+codex on the brief directly.
+
 ## Editor
 
 The coordinator can connect to the operator's VS Code window (Claude

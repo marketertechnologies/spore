@@ -16,6 +16,10 @@ Run `printenv SPORE_TASK_SLUG`. Unless it prints exactly
 `coordinator`, stop and tell the operator: only the coordinator
 swaps; workers do not. Do nothing else.
 
+This skill never changes the agent new workers run. When the operator
+asks for that, run `spore fleet worker-agent <claude|codex>` instead
+(host-side, never written into the project).
+
 ## 2. Pick the agent
 
 Run `spore coordinator agents`. Each line is tab-separated:

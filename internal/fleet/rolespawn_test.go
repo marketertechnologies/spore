@@ -243,7 +243,7 @@ func TestRoleShellCommandRuns(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", rolePath)
+			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", "printf %s", rolePath)
 			out, err := exec.Command("sh", "-c", script).CombinedOutput()
 			if err != nil {
 				t.Fatalf("run: %v: %s", err, out)
@@ -252,5 +252,70 @@ func TestRoleShellCommandRuns(t *testing.T) {
 				t.Errorf("agent got %q, want %q", out, c.want)
 			}
 		})
+	}
+}
+
+func TestRoleSpawnAgentResolution(t *testing.T) {
+	cases := []struct {
+		name     string
+		agent    string
+		overlay  string
+		wantBody string
+	}{
+		{name: "kernel default", wantBody: "exec claude --dangerously-skip-permissions -- "},
+		{name: "overlay default", overlay: "codex", wantBody: "exec codex --dangerously-bypass-approvals-and-sandbox "},
+		{name: "frontmatter beats overlay", agent: "claude", overlay: "codex", wantBody: "exec claude --dangerously-skip-permissions -- "},
+		{name: "frontmatter codex", agent: "codex", wantBody: "exec codex --dangerously-bypass-approvals-and-sandbox "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			t.Setenv(task.CodexBinEnv, "")
+			t.Setenv(task.CodexModelEnv, "")
+			root := newGitRepoFor(t, "demo-project")
+			if err := os.MkdirAll(filepath.Join(root, "tasks"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			fm := "---\nstatus: active\nslug: feature-x\n"
+			if c.agent != "" {
+				fm += "agent: " + c.agent + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, "tasks", "feature-x.md"), []byte(fm+"---\nbody\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if c.overlay != "" {
+				if _, err := SetWorkerDefault(root, c.overlay); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, spec := range []RoleSpawnSpec{EngineerSpec(root, "feature-x"), ReviewerSpec(root, "feature-x", task.ReviewerA)} {
+				args, err := spec.TmuxArgs()
+				if err != nil {
+					t.Fatalf("%s TmuxArgs: %v", spec.Role, err)
+				}
+				cmd := args[len(args)-1]
+				if !strings.Contains(cmd, c.wantBody) {
+					t.Errorf("%s command = %q, want %q", spec.Role, cmd, c.wantBody)
+				}
+				if strings.Contains(c.wantBody, "codex") && !strings.Contains(cmd, `-- "$(cat `) {
+					t.Errorf("%s codex command lacks -- before the role body: %q", spec.Role, cmd)
+				}
+			}
+		})
+	}
+}
+
+func TestRoleSpawnIgnoresWorkerRatio(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := newGitRepoFor(t, "demo-project")
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet.workers.ratio]\ncodex = 100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args, err := EngineerSpec(root, "feature-x").TmuxArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd := args[len(args)-1]; !strings.Contains(cmd, "exec claude ") {
+		t.Errorf("command = %q, want claude (ratio must not drive role panes)", cmd)
 	}
 }

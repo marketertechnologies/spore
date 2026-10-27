@@ -25,7 +25,9 @@ import (
 const EvidenceWarnOnlyEnv = "SPORE_EVIDENCE_WARN_ONLY"
 
 // AgentBinaryEnv is the env var used to override the binary spawned in
-// the per-task tmux session. Defaults to defaultAgentBinary when unset.
+// the per-task tmux session for claude workers (on hosts it names the
+// spore-worker-brief launcher, which always runs claude). Defaults to
+// defaultAgentBinary when unset. Codex workers never use it.
 const AgentBinaryEnv = "SPORE_AGENT_BINARY"
 
 const defaultAgentBinary = "claude-code"
@@ -33,6 +35,10 @@ const defaultAgentBinary = "claude-code"
 // CodexModelEnv optionally pins the model for `agent: codex` task
 // launches. Empty lets the codex CLI use its own default.
 const CodexModelEnv = "SPORE_CODEX_MODEL"
+
+// CodexBinEnv replaces the codex executable in worker and role-pane
+// launches (and the inbox sidecar, see hooks.CodexBin).
+const CodexBinEnv = "SPORE_CODEX_BIN"
 
 // Start flips status to active and (when starting from draft) creates
 // the worktree and wt/<slug> branch under <projectRoot>/.worktrees/.
@@ -554,7 +560,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 		return "", err
 	}
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
-	args = append(args, workerShellCommand(prelude, agent))
+	if meta.Agent == "codex" {
+		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
+	} else {
+		args = append(args, workerShellCommand(prelude, agent))
+	}
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
@@ -609,18 +619,27 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 	return m, nil
 }
 
+// workerAgentCommand returns the agent command for a worker. The
+// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
+// it is a claude launcher, so honouring it for codex would run claude.
 func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	if override := os.Getenv(AgentBinaryEnv); override != "" {
-		return override, nil
-	}
-	agent := m.Agent
-	if agent == "" || agent == "claude" || agent == "claude-code" {
+	switch m.Agent {
+	case "", "claude", "claude-code":
+		if override := os.Getenv(AgentBinaryEnv); override != "" {
+			return override, nil
+		}
 		return defaultAgentBinary, nil
+	case "codex":
+		return CodexAgentCommand(m)
+	default:
+		return m.Agent, nil
 	}
-	if agent != "codex" {
-		return agent, nil
-	}
+}
 
+// CodexAgentCommand returns the interactive codex command line for a
+// task, without a prompt: effort and model from the frontmatter, the
+// model falling back to SPORE_CODEX_MODEL. Role panes share it.
+func CodexAgentCommand(m frontmatter.Meta) (string, error) {
 	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
 	if err != nil {
 		return "", err
@@ -629,7 +648,30 @@ func workerAgentCommand(m frontmatter.Meta) (string, error) {
 	if model == "" {
 		model = os.Getenv(CodexModelEnv)
 	}
-	return shellJoin(codexpolicy.InteractiveArgs(model, effort)), nil
+	args := codexpolicy.InteractiveArgs(model, effort)
+	if bin := os.Getenv(CodexBinEnv); bin != "" {
+		args[0] = bin
+	}
+	return shellJoin(args), nil
+}
+
+// briefRelPath is the brief's path relative to the worktree, where
+// copyBriefToWorktree puts it.
+func briefRelPath(tasksDir, slug string) string {
+	return filepath.Join(filepath.Base(filepath.Clean(tasksDir)), slug+".md")
+}
+
+// codexWorkerShellCommand starts codex on the brief, the job
+// spore-worker-brief does for claude. A pre-start failure note heads
+// the brief. `--` keeps the brief's leading `---` out of flag parsing.
+// No readable brief: codex starts with the note alone, or no prompt.
+func codexWorkerShellCommand(prelude, agent, brief string) string {
+	return prelude + fmt.Sprintf(
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s -- "${%[3]s:+$%[3]s
+
+}$(cat %[1]s)"; else exec %[2]s ${%[3]s:+"$%[3]s"}; fi`,
+		shellQuote(brief), agent, PreStartNoteVar,
+	)
 }
 
 func shellJoin(args []string) string {

@@ -274,7 +274,7 @@ func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
 func TestCoordinatorShellCommandCodexReadsClaudeMD(t *testing.T) {
 	got := coordinatorShellCommand("/run/current-system/sw/bin/codex", "/tmp/role.md")
 	flag := `-c 'project_doc_fallback_filenames=["CLAUDE.md"]'`
-	if !strings.Contains(got, "exec /run/current-system/sw/bin/codex "+flag+` "$(cat`) {
+	if !strings.Contains(got, "exec /run/current-system/sw/bin/codex "+flag+` -- "$(cat`) {
 		t.Errorf("codex command missing CLAUDE.md fallback: %s", got)
 	}
 	if !strings.Contains(got, "else exec /run/current-system/sw/bin/codex "+flag+";") {

@@ -64,9 +64,11 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("drive %s: snapshot: %w", slug, err)
 	}
 
+	engineer := EngineerSpec(projectRoot, slug)
+	engineer.TasksDir = tasksDir
 	switch snap.Phase {
 	case PhaseEngineerInitial, PhaseEngineerReviseA, PhaseEngineerReviseB:
-		if err := ensureRolePane(EngineerSpec(projectRoot, slug), snap.EngineerRound); err != nil {
+		if err := ensureRolePane(engineer, snap.EngineerRound); err != nil {
 			return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
 		}
 		if snap.Phase != PhaseEngineerInitial {
@@ -82,10 +84,11 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 				return snap, fmt.Errorf("drive %s: reap reviewer A: %w", slug, err)
 			}
 		}
-		if err := ensureRolePane(EngineerSpec(projectRoot, slug), snap.EngineerRound); err != nil {
+		if err := ensureRolePane(engineer, snap.EngineerRound); err != nil {
 			return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
 		}
 		reviewer := ReviewerSpec(projectRoot, slug, snap.CurrentReviewer)
+		reviewer.TasksDir = tasksDir
 		if err := ensureRolePane(reviewer, snap.ReviewerRound); err != nil {
 			return snap, fmt.Errorf("drive %s: ensure reviewer %s: %w", slug, snap.CurrentReviewer, err)
 		}

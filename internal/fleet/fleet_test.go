@@ -379,6 +379,11 @@ func TestReconcileAssignsAgentFromMix(t *testing.T) {
 	gitInit(t, dirs.project)
 	mustEnable(t)
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	fakeCodex := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(task.CodexBinEnv, fakeCodex)
 
 	if err := os.WriteFile(filepath.Join(dirs.project, "spore.toml"), []byte(`
 [fleet.workers]
