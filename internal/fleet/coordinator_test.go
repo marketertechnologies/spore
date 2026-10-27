@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/versality/spore/codexpolicy"
 )
 
 func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
@@ -266,6 +268,29 @@ func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
 	got := coordinatorShellCommand("sleep 30", "/tmp/role.md")
 	if strings.Contains(got, "dangerously-skip-permissions") {
 		t.Errorf("sleep agent should not get claude flags: %s", got)
+	}
+}
+
+func TestCoordinatorShellCommandCodexReadsClaudeMD(t *testing.T) {
+	got := coordinatorShellCommand("/run/current-system/sw/bin/codex", "/tmp/role.md")
+	flag := `-c 'project_doc_fallback_filenames=["CLAUDE.md"]'`
+	if !strings.Contains(got, "exec /run/current-system/sw/bin/codex "+flag+` "$(cat`) {
+		t.Errorf("codex command missing CLAUDE.md fallback: %s", got)
+	}
+	if !strings.Contains(got, "else exec /run/current-system/sw/bin/codex "+flag+";") {
+		t.Errorf("codex bare command missing CLAUDE.md fallback: %s", got)
+	}
+}
+
+// The coordinator launch shim is bash and cannot import codexpolicy, so
+// pin its codex argv to the same fallback config here.
+func TestCoordinatorLaunchShimCodexReadsClaudeMD(t *testing.T) {
+	raw, err := os.ReadFile("../../bootstrap/handover/spore-coordinator-launch.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "-c '" + codexpolicy.ProjectDocFallbackConfig + "'"; !strings.Contains(string(raw), want) {
+		t.Errorf("spore-coordinator-launch.sh codex args missing %s", want)
 	}
 }
 

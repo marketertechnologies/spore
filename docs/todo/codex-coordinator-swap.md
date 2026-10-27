@@ -1,4 +1,4 @@
-**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5b (migration 003-codex-consumer-prep) on wt/migration-codex-consumer-prep; unit 5 (marketer adoption) open
+**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5b (migration 003-codex-consumer-prep) merged (PR #90, v0.25.0), narrowed to host-side only plus the CLAUDE.md fallback flag on wt/codex-claude-md-fallback (v0.25.1); unit 5 (marketer adoption) open
 
 # codex coordinator swap
 
@@ -33,10 +33,15 @@ One task and one PR each.
 5. Marketer adoption. 5a: spore skills reach every coordinator
    host-wide via home-manager (operator decision 2026-10-26: no writes
    into consumer repos). See docs/fleet-module.md "Skills".
-   5b: host migration `003-codex-consumer-prep.sh` (operator decision
-   2026-10-27: generic, every fleet consumer): AGENTS.md mirrors for
-   tracked subdir CLAUDE.md, drop the stale token-monitor bullet from
-   consumer coordinator roles, Codex notes in the shared role.
+   5b: host migration `003-codex-consumer-prep.sh`: Codex notes in
+   the shared role only. v0.25.0 also wrote AGENTS.md mirrors and
+   edited consumer role.md; v0.25.1 drops both (operator rule: spore
+   never writes into consumer repos). Codex instead reads CLAUDE.md
+   through `project_doc_fallback_filenames=["CLAUDE.md"]`, passed with
+   `-c` on every spore-driven launch: `spore-coordinator-launch`,
+   `codexpolicy.InteractiveArgs` (workers), and a bare `codex`
+   coordinator agent. Verified live on codex 0.162.1 in a repo and a
+   worktree: subdir CLAUDE.md is read with the flag, not without.
 
 ## Decisions (do not re-litigate)
 

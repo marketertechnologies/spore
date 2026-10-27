@@ -65,7 +65,9 @@ case "$provider" in
     claude "${args[@]}" "${prompt[@]}" || exec /usr/local/bin/spore-greet-coordinator
     ;;
   codex)
-    args=(--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen --disable apps)
+    # Keep the fallback flag in sync with codexpolicy.ProjectDocFallbackConfig.
+    args=(--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen --disable apps
+      -c 'project_doc_fallback_filenames=["CLAUDE.md"]')
     if [[ -n "$model" ]]; then
       args+=(-m "$model")
     fi

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
@@ -270,6 +271,10 @@ func agentInvocations(agent string) (withBody, bare string) {
 	if isClaudeAgent(agent) {
 		return agent + " --dangerously-skip-permissions --", agent + " --dangerously-skip-permissions"
 	}
+	if isCodexAgent(agent) {
+		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig)
+		return codex, codex
+	}
 	return agent, agent
 }
 
@@ -284,6 +289,11 @@ func isClaudeAgent(agent string) bool {
 	}
 	base := filepath.Base(fields[0])
 	return base == "claude" || base == "claude-code"
+}
+
+func isCodexAgent(agent string) bool {
+	fields := strings.Fields(agent)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "codex"
 }
 
 // shellSingleQuote returns s wrapped in single quotes, with embedded
