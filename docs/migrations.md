@@ -61,9 +61,10 @@ A migration may rely only on what the activation PATH provides:
 - gnused (`sed`)
 - gawk (`awk`)
 - diffutils (`diff`, `cmp`)
+- `git` (call it as `git -c safe.directory=<root> -C <root> ...`)
 - `spore` itself (the same package the module runs)
 
-Anything else (`git`, `jq`, `curl`, host shims under
+Anything else (`jq`, `curl`, host shims under
 `/usr/local/bin`) is not on PATH at activation. Reference it by
 absolute store path, or add its package to `migratePath` in the same
 commit as the migration that needs it, and update this list.

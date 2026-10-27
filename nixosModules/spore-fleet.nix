@@ -53,6 +53,7 @@ let
     pkgs.gnused
     pkgs.gawk
     pkgs.diffutils
+    pkgs.git
     cfg.package
   ];
 

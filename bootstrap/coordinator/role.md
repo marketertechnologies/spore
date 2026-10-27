@@ -151,3 +151,13 @@ Check the list before composing a new external-API call from
 scratch. Recipes encode the operator's preferred auth path, the
 gotchas, and the working URL pattern; using them keeps coordinators
 across hosts in sync.
+
+## Codex coordinator
+
+- `/select-agent` (or `spore coordinator swap --to codex|claude`)
+  swaps the driver on this pane. Flush `state.md` first.
+- Codex shares the Claude memory dir and gets `state.md` injected on
+  SessionStart. Skills live in `~/.agents/skills`.
+- Codex reads `AGENTS.md`, not `CLAUDE.md`. Keep every AGENTS.md an
+  exact copy of its sibling CLAUDE.md (the `agents-mirror` lint).
+- Known gap: claude.ai MCP connectors are absent under Codex.
