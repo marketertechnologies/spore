@@ -158,6 +158,7 @@ across hosts in sync.
   swaps the driver on this pane. Flush `state.md` first.
 - Codex shares the Claude memory dir and gets `state.md` injected on
   SessionStart. Skills live in `~/.agents/skills`.
-- Codex reads `AGENTS.md`, not `CLAUDE.md`. Keep every AGENTS.md an
-  exact copy of its sibling CLAUDE.md (the `agents-mirror` lint).
+- Spore launches Codex with `project_doc_fallback_filenames` set to
+  `CLAUDE.md`, so Codex reads CLAUDE.md wherever no AGENTS.md exists.
+  Consumer repos need no AGENTS.md mirrors.
 - Known gap: claude.ai MCP connectors are absent under Codex.
