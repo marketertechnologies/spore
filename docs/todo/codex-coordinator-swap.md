@@ -302,6 +302,11 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   pre-start failure note ahead of it. `--` is required: the brief
   opens with `---`, which clap rejects as an unknown flag (verified on
   0.162.1). `SPORE_CODEX_BIN` replaces argv0 (tests use a fake).
+- Per task: `spore task new --agent <claude|codex>` (also with
+  `--role`) and `spore task start <slug> --agent <...>` write `agent:`
+  into the frontmatter (start: before the status flip and spawn,
+  replacing any existing value), so either coordinator can start
+  either worker.
 - Role panes: task `agent:`, else the effective `default`, else claude.
   Codex panes run the same `InteractiveArgs` (effort and model from
   the task) with `-- "$(cat <role>.md)"`. `agentInvocations` now ends

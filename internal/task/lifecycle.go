@@ -40,63 +40,6 @@ const CodexModelEnv = "SPORE_CODEX_MODEL"
 // launches (and the inbox sidecar, see hooks.CodexBin).
 const CodexBinEnv = "SPORE_CODEX_BIN"
 
-// Start flips status to active and (when starting from draft) creates
-// the worktree and wt/<slug> branch under <projectRoot>/.worktrees/.
-// In every case it spawns a detached tmux session named
-// "spore/<project>/<slug>" running ${SPORE_AGENT_BINARY:-claude-code}
-// in the worktree, with SPORE_TASK_SLUG=<slug> in the session env.
-// Returns the tmux session name on success.
-func Start(tasksDir, slug string) (string, error) {
-	path := filepath.Join(tasksDir, slug+".md")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	m, body, err := frontmatter.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	// A role-looped task must never get the homogeneous worker session
-	// Start spawns: its panes are owned by DriveRoleLoop and share the
-	// same wt/<slug> branch.
-	if m.Loop == LoopRole {
-		return "", fmt.Errorf(
-			"task %s: has loop: role; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
-			slug, slug,
-		)
-	}
-	prev := m.Status
-	switch prev {
-	case "draft", "paused", "blocked":
-	case "active":
-		return "", fmt.Errorf("task %s: already active", slug)
-	case "done":
-		return "", fmt.Errorf("task %s: already done", slug)
-	default:
-		return "", fmt.Errorf("task %s: unexpected status %q", slug, prev)
-	}
-	m.Status = "active"
-	if err := os.WriteFile(path, frontmatter.Write(m, body), 0o644); err != nil {
-		return "", err
-	}
-
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
-	if err != nil {
-		return "", err
-	}
-	session := taskTmuxSession(tasksDir, projectRoot, slug)
-	// Pause leaves the session alive for the operator; Start
-	// replaces it so a resume gets a fresh agent and new-session
-	// does not collide on the name.
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
-	out, err := ensureSession(tasksDir, slug)
-	if err != nil {
-		return "", err
-	}
-	notifyMatterSpawn(projectRoot, slug, m, os.Stderr)
-	return out, nil
-}
-
 // Ensure makes sure the wt/<slug> branch, worktree, and tmux session
 // for slug exist. Idempotent: missing pieces get created, present
 // ones are left alone. Status is not touched. Used by the fleet
