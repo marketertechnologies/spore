@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `spore coordinator swap` (and `/select-agent`) no longer writes the
+  project tree. The swapped `driver` / `model` go to a host-side
+  override, `$XDG_STATE_HOME/spore/<project>/coordinator/driver.toml`
+  (0600), which `LoadCoordinatorConfig` layers over `spore.toml`
+  `[coordinator]`: an override driver replaces driver and model
+  together; only those two keys are allowed. Precedence: session env,
+  then the override, then `spore.toml`, then defaults; a reconciler
+  respawn picks the override up. Consumer impact: none in the repo; a
+  consumer without `spore.toml` no longer gets an untracked one. A
+  `spore.toml` driver flipped by an earlier swap stays as written.
+
 - `select-agent` skill: swap the coordinator agent from inside the
   coordinator session. `/select-agent` (Claude Code) or the skill
   mention (Codex) prompts with the available agents, or takes

@@ -80,8 +80,8 @@ func SwapModel(cur CoordinatorConfig, to, model string, modelSet bool) string {
 }
 
 // runningConfig is the driver and model the pane was launched with:
-// the session env first (it beats spore.toml at spawn), then spore.toml,
-// then the kernel default driver.
+// the session env first (it beats file config at spawn), then the host
+// driver override over spore.toml, then the kernel default driver.
 func runningConfig(root string, env map[string]string) CoordinatorConfig {
 	cfg, _ := LoadCoordinatorConfig(root)
 	if v := env["SPORE_COORDINATOR_PROVIDER"]; v != "" {
@@ -96,7 +96,8 @@ func runningConfig(root string, env map[string]string) CoordinatorConfig {
 	return cfg
 }
 
-// SwapCoordinator flushes, flips spore.toml and respawns the
+// SwapCoordinator flushes, writes the host-side driver override
+// (DriverOverridePath; spore.toml is never touched) and respawns the
 // coordinator pane of spec.Session under the new driver. Called from
 // inside that pane it does not return on success: respawn-pane kills
 // the caller with the pane.
@@ -168,25 +169,25 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 		rolePath = CoordinatorRolePath(root)
 	}
 
-	// Mutations run cheapest-to-undo first: session env, then
-	// spore.toml, then the respawn. A failure undoes the earlier steps
-	// so the operator is not left with a flipped spore.toml and the old
-	// agent still running.
+	// Mutations run cheapest-to-undo first: session env, then the
+	// driver override, then the respawn. A failure undoes the earlier
+	// steps so the operator is not left with a flipped override and the
+	// old agent still running.
 	target := exactSession(spec.Session)
 	for _, args := range swapEnvCommands(target, plan.cfg) {
 		if _, err := swapTmux(args...); err != nil {
-			return res, fmt.Errorf("coordinator swap: %w; %s", err, restoreSwapEnv(target, env, "spore.toml and the pane untouched"))
+			return res, fmt.Errorf("coordinator swap: %w; %s", err, restoreSwapEnv(target, env, "driver override and the pane untouched"))
 		}
 	}
 	if err := plan.write(); err != nil {
-		return res, fmt.Errorf("%w; %s", err, restoreSwapEnv(target, env, "spore.toml and the pane untouched"))
+		return res, fmt.Errorf("%w; %s", err, restoreSwapEnv(target, env, "driver override and the pane untouched"))
 	}
 	logf("coordinator swap: %s driver=%s model=%s", plan.path, plan.cfg.Driver, displayModel(plan.cfg.Model))
 	logf("coordinator swap: respawning %s (%s) with %s", spec.Session, pane, agent)
 	if _, err := swapTmux(respawnCommand(pane, root, agent, rolePath)...); err != nil {
-		left := "spore.toml restored"
+		left := "driver override restored"
 		if rerr := plan.rollback(); rerr != nil {
-			left = fmt.Sprintf("spore.toml NOT restored (%v), still says driver=%s", rerr, plan.cfg.Driver)
+			left = fmt.Sprintf("driver override %s NOT restored (%v), still says driver=%s", plan.path, rerr, plan.cfg.Driver)
 		}
 		return res, fmt.Errorf("coordinator swap: %w; %s", err, restoreSwapEnv(target, env, left+", pane untouched"))
 	}

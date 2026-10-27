@@ -57,6 +57,7 @@ type swapFixture struct {
 
 func newSwapFixture(t *testing.T, toml, sessionEnvExtra string) *swapFixture {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	f := &swapFixture{
 		root:    t.TempDir(),
 		inbox:   filepath.Join(t.TempDir(), "inbox"),
@@ -103,20 +104,57 @@ func (f *swapFixture) readTOML(t *testing.T) string {
 	return string(b)
 }
 
+func (f *swapFixture) overridePath(t *testing.T) string {
+	t.Helper()
+	p, err := DriverOverridePath(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func (f *swapFixture) readOverride(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(f.overridePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (f *swapFixture) noOverride(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(f.overridePath(t)); !os.IsNotExist(err) {
+		t.Errorf("driver override exists: %v", err)
+	}
+}
+
 func TestSwapCoordinatorToCodexClearsModel(t *testing.T) {
-	f := newSwapFixture(t,
-		"# project config\n[coordinator]\ndriver = \"claude\" # pilot\nmodel = \"opus\"\nbrief = \"role.md\"\n\n[fleet]\nmax_workers = 2\n",
-		"SPORE_COORDINATOR_PROVIDER=claude\nSPORE_COORDINATOR_MODEL=opus\n")
+	const toml = "# project config\n[coordinator]\ndriver = \"claude\" # pilot\nmodel = \"opus\"\nbrief = \"role.md\"\n\n[fleet]\nmax_workers = 2\n"
+	f := newSwapFixture(t, toml, "SPORE_COORDINATOR_PROVIDER=claude\nSPORE_COORDINATOR_MODEL=opus\n")
 
 	res, err := SwapCoordinator(SwapSpec{Session: f.session, To: "codex"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantTOML := "# project config\n[coordinator]\ndriver = \"codex\" # pilot\nbrief = \"role.md\"\n\n[fleet]\nmax_workers = 2\n"
-	if got := f.readTOML(t); got != wantTOML {
-		t.Errorf("spore.toml:\n%q\nwant:\n%q", got, wantTOML)
+	if got := f.readTOML(t); got != toml {
+		t.Errorf("spore.toml changed:\n%q", got)
 	}
-	if res.Config.Driver != "codex" || res.Config.Model != "" || res.Pane != "%7" {
+	if got, want := f.readOverride(t), "[coordinator]\ndriver = \"codex\"\n"; got != want {
+		t.Errorf("driver override:\n%q\nwant:\n%q", got, want)
+	}
+	st, err := os.Stat(f.overridePath(t))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("override mode = %v, err %v", st, err)
+	}
+	if st, err := os.Stat(filepath.Dir(f.overridePath(t))); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("override dir mode = %v, err %v", st, err)
+	}
+	cfg, err := LoadCoordinatorConfig(f.root)
+	if err != nil || cfg != (CoordinatorConfig{Driver: "codex", Brief: "role.md"}) {
+		t.Errorf("reloaded config = %+v, err %v", cfg, err)
+	}
+	if res.Config.Driver != "codex" || res.Config.Model != "" || res.Config.Brief != "role.md" || res.Pane != "%7" {
 		t.Errorf("result = %+v", res)
 	}
 	exact := "=" + f.session
@@ -228,6 +266,7 @@ func TestSwapCoordinatorWrapTimeout(t *testing.T) {
 	if got := f.readTOML(t); got != toml {
 		t.Errorf("spore.toml changed on abort: %q", got)
 	}
+	f.noOverride(t)
 	if m := f.tmux.mutations(); len(m) != 0 {
 		t.Errorf("tmux mutated on abort: %q", m)
 	}
@@ -334,9 +373,7 @@ func TestSwapAgentPrecedence(t *testing.T) {
 				if len(f.tmux.mutations()) != 0 {
 					t.Errorf("tmux mutated: %q", f.tmux.mutations())
 				}
-				if _, err := os.Stat(filepath.Join(f.root, "spore.toml")); !os.IsNotExist(err) {
-					t.Error("spore.toml written despite the error")
-				}
+				f.noOverride(t)
 				return
 			}
 			if err != nil {
@@ -357,18 +394,26 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 		{"set-environment", "-t", exact, "SPORE_COORDINATOR_PROVIDER", "claude"},
 		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_MODEL"},
 	}
+	const prior = "# swapped earlier\n[coordinator]\ndriver = \"claude\"\n"
 	cases := []struct {
 		name      string
 		failOn    string
+		prior     string
 		wantInErr string
 		wantMuts  int
 	}{
-		{"respawn fails", "respawn-pane", "spore.toml restored, pane untouched, session env restored", 5},
-		{"set-environment fails", "set-environment", "spore.toml and the pane untouched", 3},
+		{"respawn fails", "respawn-pane", "", "driver override restored, pane untouched, session env restored", 5},
+		{"respawn fails over a prior override", "respawn-pane", prior, "driver override restored, pane untouched, session env restored", 5},
+		{"set-environment fails", "set-environment", "", "driver override and the pane untouched", 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSwapFixture(t, toml, "SPORE_COORDINATOR_PROVIDER=claude\n-SPORE_COORDINATOR_MODEL\n")
+			if c.prior != "" {
+				if err := writePrivateFile(f.overridePath(t), c.prior); err != nil {
+					t.Fatal(err)
+				}
+			}
 			first := true
 			f.tmux.fail = func(args []string) bool {
 				if args[0] != c.failOn || !first {
@@ -382,7 +427,12 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 				t.Fatalf("err = %v, want it to say %q", err, c.wantInErr)
 			}
 			if got := f.readTOML(t); got != toml {
-				t.Errorf("spore.toml not restored: %q", got)
+				t.Errorf("spore.toml changed: %q", got)
+			}
+			if c.prior == "" {
+				f.noOverride(t)
+			} else if got := f.readOverride(t); got != c.prior {
+				t.Errorf("driver override not restored: %q", got)
 			}
 			muts := f.tmux.mutations()
 			if len(muts) != c.wantMuts {
@@ -392,5 +442,19 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 				t.Errorf("restore commands = %q, want %q", muts[len(muts)-2:], restore)
 			}
 		})
+	}
+}
+
+func TestSwapCoordinatorLeavesProjectTreeAlone(t *testing.T) {
+	f := newSwapFixture(t, "", "")
+	if _, err := SwapCoordinator(SwapSpec{Session: f.session, To: "codex", Model: "gpt-5.5", ModelSet: true}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(f.root)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("project root entries = %v, err %v; want none", entries, err)
+	}
+	if got, want := f.readOverride(t), "[coordinator]\ndriver = \"codex\"\nmodel = \"gpt-5.5\"\n"; got != want {
+		t.Errorf("driver override = %q, want %q", got, want)
 	}
 }

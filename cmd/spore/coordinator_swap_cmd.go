@@ -20,8 +20,9 @@ Usage:
 
 Steps: ask the live coordinator (through its inbox) to flush state.md
 and wait for the write; set SPORE_COORDINATOR_PROVIDER/MODEL in the
-tmux session env; set [coordinator] driver/model in spore.toml;
-respawn the session's first pane. A failed step undoes the earlier
+tmux session env; set [coordinator] driver/model in the host-side
+override (<state dir>/coordinator/driver.toml, which beats spore.toml;
+the project tree is never written); respawn the session's first pane. A failed step undoes the earlier
 ones. The agent is SPORE_COORDINATOR_AGENT from the session env, then
 the tmux global env, then the driver's own binary; the caller's env
 is ignored.
@@ -104,7 +105,7 @@ func runCoordinatorSwap(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore coordinator swap:", err)
 		if errors.Is(err, fleet.ErrWrapTimeout) {
-			fmt.Fprintln(os.Stderr, "  spore.toml and the pane are untouched; rerun with --force or --no-wrap")
+			fmt.Fprintln(os.Stderr, "  the driver override and the pane are untouched; rerun with --force or --no-wrap")
 		}
 		return 1
 	}
