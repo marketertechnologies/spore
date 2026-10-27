@@ -1,4 +1,4 @@
-**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5 (marketer adoption) open
+**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5b (migration 003-codex-consumer-prep) on wt/migration-codex-consumer-prep; unit 5 (marketer adoption) open
 
 # codex coordinator swap
 
@@ -33,6 +33,10 @@ One task and one PR each.
 5. Marketer adoption. 5a: spore skills reach every coordinator
    host-wide via home-manager (operator decision 2026-10-26: no writes
    into consumer repos). See docs/fleet-module.md "Skills".
+   5b: host migration `003-codex-consumer-prep.sh` (operator decision
+   2026-10-27: generic, every fleet consumer): AGENTS.md mirrors for
+   tracked subdir CLAUDE.md, drop the stale token-monitor bullet from
+   consumer coordinator roles, Codex notes in the shared role.
 
 ## Decisions (do not re-litigate)
 
