@@ -20,6 +20,7 @@ import (
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
 	"github.com/versality/spore/internal/infect"
+	"github.com/versality/spore/internal/lang"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -34,7 +35,7 @@ Commands:
   fleet      Run the worker fleet against the task queue (up/down/status).
   align      Track and exit the pilot-agent alignment period.
   bootstrap  Walk a fresh project through the stage gates.
-  install    Drop the spore skills into a project's .claude/skills/.
+  install    Drop the spore skills into .claude/skills/ and .agents/skills/.
   infect     Bootstrap a fresh server with NixOS via nixos-anywhere.
   lint       Run portable lints over the working tree.
   hooks      Install or run claude-code / git hooks.
@@ -43,6 +44,8 @@ Commands:
   worker     Worker support hooks (token-monitor).
   migrate    Apply pending host-state migrations bundled with the CLI.
   recipes    Browse the embedded recipe library (ls / show <name>).
+  show       Open <path>[:<line>[:<col>]] in the connected editor.
+  code       Editor helpers (workspace: VS Code multi-root of all worktrees).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -70,8 +73,18 @@ Subcommands:
                          write the (currently no-op) response JSON.
   settings               Read a hook binding JSON from stdin, emit a
                          deterministic settings.json to stdout.
+  codex-config [--spore PATH]
+                         Emit the user-level Codex hooks.json
+                         ($CODEX_HOME/hooks.json) to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
                               With no slug, reads $SPORE_TASK_INBOX.
+  watch-inbox --codex [--pid N]
+                              Long-running sidecar: deliver $SPORE_TASK_INBOX
+                              envelopes to this session's codex thread via
+                              ` + "`codex queue`" + ` ($SPORE_CODEX_BIN overrides the
+                              binary). Exits when pid N is gone.
+  codex-session-start         Codex SessionStart hook: record the payload
+                              session_id as this session's thread id.
   notify-coordinator [project]
                               Write a poke to the coordinator's project inbox.
                               With no project, reads $WT_PROJECT.
@@ -162,6 +175,10 @@ func main() {
 		os.Exit(runMigrate(args))
 	case "recipes":
 		os.Exit(runRecipes(args))
+	case "show":
+		os.Exit(runShow(args))
+	case "code":
+		os.Exit(runCode(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)
@@ -188,7 +205,10 @@ func runCompose(args []string) error {
 	if err != nil {
 		return err
 	}
-	opts := composer.Options{Predicates: map[string]bool{"align": alignActive}}
+	opts := composer.Options{Predicates: map[string]bool{
+		"align": alignActive,
+		"rails": lang.IsRails(root),
+	}}
 	out, err := composer.Compose(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err

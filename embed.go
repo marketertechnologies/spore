@@ -41,8 +41,9 @@ func BuildVersion() string {
 var BundledFlake embed.FS
 
 // BundledSkills is the skill tree `spore install` drops into a target
-// project's .claude/skills/ directory so the agent can discover the
-// spore-bootstrap and diagram skills without a source-tree checkout.
+// project's .claude/skills/ and .agents/skills/ so the agent can discover
+// the spore-bootstrap, diagram, and select-agent skills without a
+// source-tree checkout.
 //
 //go:embed all:bootstrap/skills
 var BundledSkills embed.FS
@@ -61,7 +62,7 @@ var BundledHandover embed.FS
 var BundledCoordinatorRole []byte
 
 // BundledMigrations is the host-migration script tree consumed by
-// `spore migrate` and the bundled flake's activation hook. Each file
+// `spore migrate` and the spore-fleet module's activation hook. Each file
 // under bootstrap/migrations/ is a numbered, idempotent shell script.
 // See bootstrap/migrations/README.md for the authoring contract.
 //

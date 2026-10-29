@@ -1,15 +1,17 @@
 package fleet
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/versality/spore/internal/sporetoml"
+	"github.com/versality/spore/internal/task"
 )
 
 // CoordinatorConfig captures the [coordinator] section from a project's
-// spore.toml. Empty fields fall through to env-var overrides and the
+// spore.toml, with driver and model possibly replaced by the host-side
+// override a swap writes. Empty fields fall through to env-var overrides and the
 // kernel defaults; nothing in this struct overrides an explicit env.
 type CoordinatorConfig struct {
 	// Driver is the agent provider ("claude", "codex", or a binary
@@ -38,95 +40,193 @@ type CoordinatorConfig struct {
 	ExternalSessionPattern string
 }
 
-// LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml.
-// A missing file returns a zero CoordinatorConfig with no error so callers
-// can treat absent config as "use defaults".
+// LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml,
+// then layers the host-side driver override (see DriverOverridePath) on
+// top. A missing file returns a zero CoordinatorConfig with no error so
+// callers can treat absent config as "use defaults". On an override
+// error the spore.toml config is still returned alongside it.
 func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(tomlPath)
+	entries, err := sporetoml.ReadSection(projectRoot, "coordinator")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return CoordinatorConfig{}, nil
-		}
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: read %s: %w", tomlPath, err)
+		return CoordinatorConfig{}, fmt.Errorf("coordinator: %w", err)
 	}
-	cfg, err := parseCoordinatorTOML(string(b))
+	cfg, err := coordinatorFromEntries(entries)
 	if err != nil {
-		return CoordinatorConfig{}, fmt.Errorf("coordinator: parse %s: %w", tomlPath, err)
-	}
-	return cfg, nil
-}
-
-// parseCoordinatorTOML reads only the [coordinator] section of a tiny
-// TOML subset: bare or quoted scalar values, `# comment` lines, and
-// blank lines. Anything outside [coordinator] is ignored. Malformed
-// entries inside the section are an error so misconfigured spore.toml
-// surfaces loudly.
-func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
-	var cfg CoordinatorConfig
-	inSection := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inSection = strings.TrimSpace(line[1:len(line)-1]) == "coordinator"
-			continue
-		}
-		if !inSection {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return CoordinatorConfig{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := stripTOMLQuotes(strings.TrimSpace(line[eq+1:]))
-		switch key {
-		case "driver":
-			cfg.Driver = val
-		case "model":
-			cfg.Model = val
-		case "brief":
-			cfg.Brief = val
-		case "external_session_pattern":
-			cfg.ExternalSessionPattern = val
-		default:
-			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", lineNum, key)
-		}
-	}
-	if err := scanner.Err(); err != nil {
 		return CoordinatorConfig{}, err
 	}
+	path, err := DriverOverridePath(projectRoot)
+	if err != nil {
+		return cfg, nil
+	}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return cfg, nil
+	}
+	if err != nil {
+		return cfg, fmt.Errorf("coordinator: read %s: %w", path, err)
+	}
+	ov, err := parseDriverOverride(string(b))
+	if err != nil {
+		return cfg, fmt.Errorf("coordinator: %s: %w", path, err)
+	}
+	return applyDriverOverride(cfg, ov), nil
+}
+
+// DriverOverridePath is the host-side file `spore coordinator swap`
+// writes: <StateDirForProject>/coordinator/driver.toml. It lives outside
+// the project tree so a swap never touches a consumer repo.
+func DriverOverridePath(projectRoot string) (string, error) {
+	dir, err := task.StateDirForProject(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, CoordinatorSlug, "driver.toml"), nil
+}
+
+// parseDriverOverride reads [coordinator] from the override file. Only
+// driver and model are allowed: brief and the session pattern stay
+// project config.
+func parseDriverOverride(content string) (CoordinatorConfig, error) {
+	entries, err := sporetoml.ParseSection(content, "coordinator")
+	if err != nil {
+		return CoordinatorConfig{}, err
+	}
+	var ov CoordinatorConfig
+	for _, e := range entries {
+		switch e.Key {
+		case "driver":
+			ov.Driver = e.Value
+		case "model":
+			ov.Model = e.Value
+		default:
+			return CoordinatorConfig{}, fmt.Errorf("line %d: key %q not allowed in the driver override, only driver and model", e.Line, e.Key)
+		}
+	}
+	return ov, nil
+}
+
+// applyDriverOverride replaces driver and model together: an override
+// driver without a model means the agent's default, as after a swap,
+// so a spore.toml model for the other provider must not leak through.
+func applyDriverOverride(cfg, ov CoordinatorConfig) CoordinatorConfig {
+	if ov.Driver != "" {
+		cfg.Driver, cfg.Model = ov.Driver, ov.Model
+	}
+	return cfg
+}
+
+// parseCoordinatorTOML reads only the [coordinator] section. Unknown
+// keys are an error so misconfigured spore.toml surfaces loudly.
+func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
+	entries, err := sporetoml.ParseSection(content, "coordinator")
+	if err != nil {
+		return CoordinatorConfig{}, err
+	}
+	return coordinatorFromEntries(entries)
+}
+
+func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error) {
+	var cfg CoordinatorConfig
+	for _, e := range entries {
+		switch e.Key {
+		case "driver":
+			cfg.Driver = e.Value
+		case "model":
+			cfg.Model = e.Value
+		case "brief":
+			cfg.Brief = e.Value
+		case "external_session_pattern":
+			cfg.ExternalSessionPattern = e.Value
+		default:
+			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key)
+		}
+	}
 	return cfg, nil
 }
 
-func stripTOMLComment(line string) string {
-	inQuote := byte(0)
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		switch {
-		case inQuote != 0:
-			if ch == inQuote {
-				inQuote = 0
-			}
-		case ch == '"' || ch == '\'':
-			inQuote = ch
-		case ch == '#':
-			return line[:i]
-		}
-	}
-	return line
+// driverPlan is a pending rewrite of the host-side driver override,
+// holding the old bytes so a failed swap can undo it. cfg is the
+// effective config once the override lands.
+type driverPlan struct {
+	path         string
+	old, content string
+	existed      bool
+	cfg          CoordinatorConfig
 }
 
-func stripTOMLQuotes(v string) string {
-	if len(v) >= 2 {
-		first, last := v[0], v[len(v)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return v[1 : len(v)-1]
-		}
+// planCoordinatorDriver computes the driver override with driver and
+// model set in [coordinator]. An empty model deletes the key. spore.toml
+// is read for the effective config but never written; nothing is.
+func planCoordinatorDriver(projectRoot, driver, model string) (driverPlan, error) {
+	var p driverPlan
+	entries, err := sporetoml.ReadSection(projectRoot, "coordinator")
+	if err != nil {
+		return p, fmt.Errorf("coordinator: %w", err)
 	}
-	return v
+	base, err := coordinatorFromEntries(entries)
+	if err != nil {
+		return p, fmt.Errorf("coordinator: spore.toml: %w", err)
+	}
+	if p.path, err = DriverOverridePath(projectRoot); err != nil {
+		return p, fmt.Errorf("coordinator: %w", err)
+	}
+	b, err := os.ReadFile(p.path)
+	switch {
+	case err == nil:
+		p.existed = true
+	case !os.IsNotExist(err):
+		return p, fmt.Errorf("coordinator: read %s: %w", p.path, err)
+	}
+	p.old = string(b)
+	p.content = sporetoml.SetKey(p.old, "coordinator", "driver", driver)
+	if model == "" {
+		p.content = sporetoml.DeleteKey(p.content, "coordinator", "model")
+	} else {
+		p.content = sporetoml.SetKey(p.content, "coordinator", "model", model)
+	}
+	ov, err := parseDriverOverride(p.content)
+	if err != nil {
+		return p, fmt.Errorf("coordinator: %s: %w", p.path, err)
+	}
+	p.cfg = applyDriverOverride(base, ov)
+	return p, nil
+}
+
+func (p driverPlan) write() error {
+	if err := writePrivateFile(p.path, p.content); err != nil {
+		return fmt.Errorf("coordinator: write %s: %w", p.path, err)
+	}
+	return nil
+}
+
+func (p driverPlan) rollback() error {
+	if !p.existed {
+		return os.Remove(p.path)
+	}
+	return writePrivateFile(p.path, p.old)
+}
+
+// writePrivateFile replaces path via a temp file and rename, mode 0600
+// in a 0700 directory.
+func writePrivateFile(path, content string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

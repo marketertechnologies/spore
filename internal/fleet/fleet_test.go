@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -209,6 +211,135 @@ func TestReconcileSortsStampedBeforeUnstamped(t *testing.T) {
 	}
 }
 
+// TestReconcileRoleLoopOptIns covers the role-loop opt-in matrix in a
+// single pass:
+//
+//   - "keyed": `loop: role` in frontmatter, no `.spore/<slug>/` dir.
+//     This is the race window observed on the token-monitor-finish-unit
+//     run: the watcher-triggered pass reacts to the status flip before
+//     any dir is seeded. The key alone must keep the homogeneous spawn
+//     away, and the drive pass must create the dir itself.
+//   - "legacy": no key, dir seeded upfront. The pre-key opt-in.
+//   - "plain": neither signal. Generic worker path unchanged.
+func TestReconcileRoleLoopOptIns(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	shimClaudeOnPath(t)
+
+	writeRoleLoopTask(t, dirs.tasks, "keyed", "active")
+	writeTask(t, dirs.tasks, "legacy", "active")
+	if _, err := task.EnsureRoleTaskDir(dirs.project, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	writeTask(t, dirs.tasks, "plain", "active")
+
+	t.Cleanup(func() {
+		killSporeSessions(dirs.project)
+		killRoleSessions(dirs.project)
+	})
+
+	r, err := Reconcile(Config{
+		TasksDir:    dirs.tasks,
+		ProjectRoot: dirs.project,
+		MaxWorkers:  3,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got, want := r.Spawned, []string{"plain"}; !equalSlices(got, want) {
+		t.Errorf("Spawned = %v, want %v", got, want)
+	}
+	if len(r.Skipped) != 0 {
+		t.Errorf("Skipped = %v, want []", r.Skipped)
+	}
+
+	project, err := task.ProjectName(dirs.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"keyed", "legacy"} {
+		if hasSession(fmt.Sprintf("spore/%s/%s", project, slug)) {
+			t.Errorf("%s: generic worker session spawned for a role-looped task", slug)
+		}
+		if !hasSession(fmt.Sprintf("spore-role/%s/%s/engineer", project, slug)) {
+			t.Errorf("%s: engineer pane missing; drive pass did not proceed", slug)
+		}
+		spec := filepath.Join(task.RoleTaskDir(dirs.project, slug), "spec.md")
+		if _, err := os.Stat(spec); err != nil {
+			t.Errorf("%s: spec cache missing at %s: %v", slug, spec, err)
+		}
+	}
+}
+
+// TestReconcileWarnsOnUnknownLoop pins that a typo'd `loop:` value
+// keeps the generic worker fallback but surfaces a warning naming the
+// slug and the bad value.
+func TestReconcileWarnsOnUnknownLoop(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+
+	m := frontmatter.Meta{Status: "active", Slug: "typo", Title: "typo", Loop: "roel"}
+	if err := os.WriteFile(filepath.Join(dirs.tasks, "typo.md"), frontmatter.Write(m, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTask(t, dirs.tasks, "plain", "active")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	r, err := Reconcile(Config{
+		TasksDir:    dirs.tasks,
+		ProjectRoot: dirs.project,
+		MaxWorkers:  3,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got, want := r.Spawned, []string{"plain", "typo"}; !equalSlices(got, want) {
+		t.Errorf("Spawned = %v, want %v", got, want)
+	}
+	if len(r.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", r.Warnings)
+	}
+	if w := r.Warnings[0]; !strings.Contains(w, "typo") || !strings.Contains(w, `"roel"`) {
+		t.Errorf("warning %q should name slug typo and value \"roel\"", w)
+	}
+}
+
+// shimClaudeOnPath prepends a fake `claude` binary (exec sleep 30) to
+// PATH. Role panes hardcode the claude binary (RoleSpawnSpec.Agent
+// defaults to it and SPORE_AGENT_BINARY does not reach them), so
+// without the shim a drive-spawned engineer pane would exec the real
+// claude CLI on a dev host.
+func shimClaudeOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "claude")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func killRoleSessions(projectRoot string) {
+	out, err := exec.Command("tmux", "-L", testTmuxSocket, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return
+	}
+	prefix := "spore-role/" + filepath.Base(projectRoot) + "/"
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", line).Run()
+		}
+	}
+}
+
 func TestEnableDisableFlag(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	on, err := Enabled()
@@ -248,6 +379,11 @@ func TestReconcileAssignsAgentFromMix(t *testing.T) {
 	gitInit(t, dirs.project)
 	mustEnable(t)
 	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	fakeCodex := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(task.CodexBinEnv, fakeCodex)
 
 	if err := os.WriteFile(filepath.Join(dirs.project, "spore.toml"), []byte(`
 [fleet.workers]
@@ -342,6 +478,20 @@ func TestLoadMaxWorkersTOML(t *testing.T) {
 	if got != 7 {
 		t.Errorf("max_workers = %d, want 7", got)
 	}
+
+	// String knobs share the [fleet] section; max_workers must still
+	// parse alongside account_tier.
+	mixed := "[fleet]\naccount_tier = \"max\"\nmax_workers = 5\n"
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LoadMaxWorkers(root)
+	if err != nil {
+		t.Fatalf("LoadMaxWorkers with account_tier: %v", err)
+	}
+	if got != 5 {
+		t.Errorf("max_workers = %d, want 5", got)
+	}
 }
 
 type testDirs struct {
@@ -390,6 +540,14 @@ func mustEnable(t *testing.T) {
 func writeTask(t *testing.T, tasksDir, slug, status string) {
 	t.Helper()
 	m := frontmatter.Meta{Status: status, Slug: slug, Title: slug}
+	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), frontmatter.Write(m, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRoleLoopTask(t *testing.T, tasksDir, slug, status string) {
+	t.Helper()
+	m := frontmatter.Meta{Status: status, Slug: slug, Title: slug, Loop: task.LoopRole}
 	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), frontmatter.Write(m, nil), 0o644); err != nil {
 		t.Fatal(err)
 	}

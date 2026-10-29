@@ -79,9 +79,25 @@ The operator is here for product-level decisions (which approach, which tradeoff
 
 Don't summarize the question back. Don't enumerate when one sentence works. Don't preface ("Sure, I can help with..."). The bar: same content, single sentence plus a follow-up offer.
 
+# Diagnosis before proposal
+
+**When reporting a problem, explain it fully and stop.** Cover what is wrong, where it lives, why it happens, and the evidence (command output, log lines, the failing test). Let the operator digest it before you propose anything.
+
+- Do not tack "options" or "next steps" onto a diagnosis. Propose implementation or scope only after the operator reacts.
+- If you already know the fix, say so in one line ("one-line fix in X, say the word") and wait.
+- The diagnosis is the deliverable. Do not apply a fix the operator has not asked for.
+
 # Commits
 
 Commit your own work when a unit lands. Don't ask. Overrides the default harness rule.
+
+# Version bump by change size
+
+**Every landed unit carries a VERSION bump on its branch, sized to the change.** Fixes get a patch bump; real features or upgrades get a bigger one. Pick the number before the branch is handed off, not after.
+
+- Fixes (bug fixes, test fixes, small rule or doc tweaks): patch bump (0.4.5 -> 0.4.6).
+- Real features or upgrades (new commands, toolchain or nixpkgs upgrades, behavior changes consumers notice): minor or larger bump.
+- Before picking a bump, check existing tags (`git tag -l`). Never reuse a version already tagged on another branch's line. If the natural bump would collide, ask the operator which number to use.
 
 # Search
 
@@ -108,6 +124,13 @@ Stating intent ("I'm minting a runner to do X") is fine; stating outcome ("X is 
 Spore self-validates with the same lint set it ships: drift,
 agent mirrors, file-size, comment-noise, em-dash. Run `spore lint` plus
 `go test ./...` before push; both must be green.
+
+# Fix vulns at the root
+
+**When a vuln gate (govulncheck or similar) is red and a real fix exists upstream, fix at the root.** Bump the toolchain, nixpkgs, or the dependency. Do not skip, allowlist, or suppress the gate to get green.
+
+- Fix released upstream but not yet packaged (a Go stdlib advisory whose fix is not in nixpkgs-unstable yet): merging red is allowed. Record the advisory IDs in the PR, then land the bump in a follow-up as soon as it is packaged. Precedent: PRs #34-#38, #65.
+- No real fix upstream: report the advisory IDs and let the operator decide. Do not quietly mute the gate.
 
 # Code comments
 
@@ -142,48 +165,3 @@ tmux capture-pane -t <name> -p   # read recent output
 - Opensource-bound. Mind the leak surface: no internal hostnames, no
   operator-machine paths, no personal email beyond what
   `git config user.email` resolves to.
-
-## Alignment mode
-
-Alignment mode is on. You and the pilot are still learning to work
-together. Keep things small and slow on purpose until you flip out.
-
-- Use plain words. Short sentences. No jargon. If a word might be
-  unknown to a pilot new to this project, use a simpler one or
-  explain it in one line.
-- Ask one question at a time. Do not bundle. If you have three
-  questions, ask the first, wait, then the next.
-- When you ask, reach for the `AskUserQuestion` tool by default.
-  Most pilots are devs but they still pick faster from a short
-  list of pre-thought options than from a wall of prose. Use a
-  free-form prompt only when the question is open and choices do
-  not fit (clarifying intent, naming, scope).
-- Take the heavy lifting. Do not hand the pilot a blank prompt.
-  Surface 2 to 4 options you already thought through. Pick a
-  recommendation and say why. Let the pilot redirect.
-- Say what you are about to do before you do it, when the action
-  is not trivial. One line: "I am about to do X because Y. OK?"
-  Trivial reads do not need this.
-- Watch for pilot preferences. When you notice one ("I prefer
-  small commits", "do not touch generated files", "ask before
-  installing deps"), log it. Append one short bullet to
-  `~/.local/state/spore/<project>/alignment.md`. Use
-  `spore align note "<line>"`.
-- When a preference comes up more than once, suggest promoting
-  it to a rule-pool entry: "I noticed you prefer X twice now.
-  Should we make this a rule?" If the pilot agrees and a rule is
-  added, mark the note `[promoted]` (run `spore align note
-  "[promoted] <text>"`).
-- Each turn, glance at `spore align status` and surface progress
-  in one short line: "alignment: 4 of 10 notes, 1 of 3 promoted,
-  flip pending".
-
-You exit alignment mode when all three are true:
-
-1. There are at least 10 notes in `alignment.md`.
-2. At least 3 of them are marked `[promoted]`.
-3. The pilot runs `spore align flip`.
-
-Defaults are configurable per project via `spore.toml`
-(`[align]` section). Once you flip out, the next composer render
-drops this block from the instruction files.

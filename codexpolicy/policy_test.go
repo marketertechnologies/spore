@@ -67,10 +67,12 @@ func TestInteractiveArgs(t *testing.T) {
 	want := []string{
 		"codex",
 		"--dangerously-bypass-approvals-and-sandbox",
+		"--dangerously-bypass-hook-trust",
 		"--no-alt-screen",
 		"--disable", "apps",
 		"-m", "gpt-5.5",
 		"-c", `model_reasoning_effort="high"`,
+		"-c", `project_doc_fallback_filenames=["CLAUDE.md"]`,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args = %#v want %#v", got, want)

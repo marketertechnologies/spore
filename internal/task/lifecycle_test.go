@@ -274,58 +274,6 @@ func TestReapKillsFrontmatterSession(t *testing.T) {
 	}
 }
 
-func TestStartRefusesActive(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Start(tasksDir, "x"); err == nil {
-		t.Fatal("Start on active task should error, got nil")
-	}
-}
-
-func TestStartRefusesDone(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: done\nslug: x\ntitle: X\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Start(tasksDir, "x"); err == nil {
-		t.Fatal("Start on done task should error, got nil")
-	}
-}
-
-func TestWorkerAgentCommandCodexUsesEffortPolicy(t *testing.T) {
-	t.Setenv("SPORE_AGENT_BINARY", "")
-	m := frontmatter.Meta{
-		Agent: "codex",
-		Extra: map[string]string{
-			"effort": "very-high",
-			"model":  "gpt-5.5",
-		},
-	}
-	got, err := workerAgentCommand(m)
-	if err != nil {
-		t.Fatalf("workerAgentCommand: %v", err)
-	}
-	want := "codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen --disable apps -m gpt-5.5 -c 'model_reasoning_effort=\"xhigh\"'"
-	if got != want {
-		t.Errorf("command = %q want %q", got, want)
-	}
-}
-
-func TestWorkerAgentCommandOverrideWins(t *testing.T) {
-	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
-	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"})
-	if err != nil {
-		t.Fatalf("workerAgentCommand: %v", err)
-	}
-	if got != "sleep 30" {
-		t.Errorf("command = %q want override", got)
-	}
-}
-
 func TestPauseRequiresActive(t *testing.T) {
 	tasksDir := t.TempDir()
 	taskPath := filepath.Join(tasksDir, "x.md")

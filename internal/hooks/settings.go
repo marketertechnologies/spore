@@ -18,7 +18,21 @@ type HookBin struct {
 	Timeout     int  // seconds; 0 omits the field (claude-code default)
 	Async       bool // run without blocking the agent
 	AsyncRewake bool // long-running hook that wakes the agent on exit 2
+	// ContextLimit sets Codex's additionalContextLimit (approx tokens
+	// before the context spills to a temp file; 0 disables spilling).
+	// Nil omits the key. Claude ignores it.
+	ContextLimit *int
 }
+
+// deniedTools lists claude-code native tools blocked in every
+// spore-spawned session. SendMessage is denied so inter-pane
+// messaging flows only through the file-inbox convention
+// (notify-coordinator + watch-inbox), never through claude-code's
+// own agent-to-agent channel. The deny ships as permissions.deny,
+// not the top-level disallowedTools key: on claude-code 2.1.299 the
+// latter is inert (the tool stays loadable), while permissions.deny
+// removes the tool even under --dangerously-skip-permissions.
+var deniedTools = []string{"SendMessage"}
 
 // Settings emits a complete, deterministic settings.json blob for
 // claude-code. The events map keys are hook event names (Stop,
@@ -46,7 +60,8 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	}
 
 	top := settingsTop{
-		Schema: "https://json.schemastore.org/claude-code-settings.json",
+		Schema:      "https://json.schemastore.org/claude-code-settings.json",
+		Permissions: &settingsPermissions{Deny: deniedTools},
 	}
 	if len(hooksMap) > 0 {
 		top.Hooks = hooksMap
@@ -59,9 +74,16 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 	return b, nil
 }
 
+// settingsTop field order is alphabetical by JSON key for
+// deterministic output.
 type settingsTop struct {
-	Schema string                 `json:"$schema"`
-	Hooks  map[string][]hookGroup `json:"hooks,omitempty"`
+	Schema      string                 `json:"$schema"`
+	Hooks       map[string][]hookGroup `json:"hooks,omitempty"`
+	Permissions *settingsPermissions   `json:"permissions,omitempty"`
+}
+
+type settingsPermissions struct {
+	Deny []string `json:"deny"`
 }
 
 type hookGroup struct {
@@ -71,11 +93,12 @@ type hookGroup struct {
 
 // hookEntry field order is alphabetical for deterministic JSON output.
 type hookEntry struct {
-	Async       bool   `json:"async,omitempty"`
-	AsyncRewake bool   `json:"asyncRewake,omitempty"`
-	Command     string `json:"command"`
-	Timeout     int    `json:"timeout,omitempty"`
-	Type        string `json:"type"`
+	ContextLimit *int   `json:"additionalContextLimit,omitempty"`
+	Async        bool   `json:"async,omitempty"`
+	AsyncRewake  bool   `json:"asyncRewake,omitempty"`
+	Command      string `json:"command"`
+	Timeout      int    `json:"timeout,omitempty"`
+	Type         string `json:"type"`
 }
 
 // consolidate merges HookBins with the same Matcher into a single
@@ -97,11 +120,12 @@ func consolidate(bins []HookBin) ([]hookGroup, error) {
 			return nil, fmt.Errorf("hook %q: empty BinPath", b.Name)
 		}
 		entry := hookEntry{
-			Async:       b.Async,
-			AsyncRewake: b.AsyncRewake,
-			Command:     b.BinPath,
-			Timeout:     b.Timeout,
-			Type:        "command",
+			ContextLimit: b.ContextLimit,
+			Async:        b.Async,
+			AsyncRewake:  b.AsyncRewake,
+			Command:      b.BinPath,
+			Timeout:      b.Timeout,
+			Type:         "command",
 		}
 		idx, ok := seen[b.Matcher]
 		if !ok {

@@ -2,6 +2,16 @@
 
 # retire the per-project bash token-monitor in favor of the kernel hook
 
+> Update 2026-07-28: the kernel monitors now run three bands. The old
+> hard/wrap cap means "finish the in-flight unit, start nothing new";
+> a higher force cap (coordinator 200k; worker 195k max / 140k sub)
+> demands an immediate wrap; workers also get a one-time soft warning
+> 30k under the wrap cap. Workers resolve their tier from the
+> `[fleet] account_tier` spore.toml knob, injected at spawn as
+> SPORE_ACCOUNT_TIER (unset = sub-max caps). Projects still on the
+> bash shim (marketer, crm-gateway) are unaffected until they swap;
+> when they do, set the knob to match the host's account tier.
+
 ## Problem
 
 Two of three projects on this host still ship a 224-line bash

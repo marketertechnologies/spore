@@ -10,13 +10,21 @@ import (
 	"strings"
 )
 
+// resolveRepoRoot prefers the agent-neutral SPORE_PROJECT_ROOT, then
+// CLAUDE_PROJECT_DIR, then the git toplevel of cwd, then cwd. Any of
+// them may name a task worktree; the main checkout is returned.
 func resolveRepoRoot() string {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		wd, _ := os.Getwd()
-		return wd
+	root := os.Getenv("SPORE_PROJECT_ROOT")
+	if root == "" {
+		root = os.Getenv("CLAUDE_PROJECT_DIR")
 	}
-	root := strings.TrimSpace(string(out))
+	if root == "" {
+		if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+			root = strings.TrimSpace(string(out))
+		} else {
+			root, _ = os.Getwd()
+		}
+	}
 	if i := strings.Index(root, "/.worktrees/"); i >= 0 {
 		root = root[:i]
 	}
