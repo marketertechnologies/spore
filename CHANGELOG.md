@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Fleet workers and role-loop panes can run codex without touching the
+  consumer repo. New host-side overlay
+  `$XDG_STATE_HOME/spore/<project>/workers.toml` (0600) with the
+  `spore.toml` `[fleet.workers]` keys, layered over `spore.toml` (a key
+  or table set there wins); `spore fleet worker-agent [claude|codex |
+  --clear]` prints or sets its `default`, never writing `spore.toml`.
+  `SPORE_AGENT_BINARY` (the claude `spore-worker-brief` launcher on
+  hosts) now applies to claude workers only: `agent: codex` workers run
+  codex and start on the brief (`codex ... -- "$(cat tasks/<slug>.md)"`).
+  Role panes take the task's `agent:`, else the effective worker
+  `default`, else claude (never ratio or rules). Codex launches now
+  pass `--dangerously-bypass-hook-trust` so the user hooks run, and
+  role-body launches end in `--` so a `---` body is not parsed as a
+  flag. `SPORE_CODEX_BIN` replaces the codex executable for workers and
+  role panes too. Consumer impact: `internal/fleet`, `internal/task`,
+  `codexpolicy` only; no consumer repo change. Workers already pinned
+  to `agent: codex` on hosts with `SPORE_AGENT_BINARY` set switch from
+  claude to codex on their next spawn.
+
 - `spore coordinator swap` (and `/select-agent`) no longer writes the
   project tree. The swapped `driver` / `model` go to a host-side
   override, `$XDG_STATE_HOME/spore/<project>/coordinator/driver.toml`

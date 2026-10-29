@@ -1,4 +1,4 @@
-**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5b (migration 003-codex-consumer-prep) merged (PR #90, v0.25.0), narrowed to host-side only plus the CLAUDE.md fallback flag on wt/codex-claude-md-fallback (v0.25.1); unit 5 (marketer adoption) open
+**Status**: units 1-4 merged (PRs #81, #83, #85, #86; v0.19.0 .. v0.22.0); select-agent skill merged (PR #87, v0.23.0); unit 5a (host-wide skills via home-manager) on wt/skills-via-home-manager; unit 5b (migration 003-codex-consumer-prep) merged (PR #90, v0.25.0), narrowed to host-side only plus the CLAUDE.md fallback flag on wt/codex-claude-md-fallback (v0.25.1); unit 5 (marketer adoption) open; codex workers host-side on wt/worker-agent-host-side (v0.27.0)
 
 # codex coordinator swap
 
@@ -283,6 +283,44 @@ Read from the codex-rs 0.162.1 source, verified live 2026-10-22.
   `codex app-server daemon` running (harmless; the next codex launch
   restarts it). Live swap against a real codex login is the
   coordinator's job after merge.
+
+## Workers on codex (wt/worker-agent-host-side, v0.27.0)
+
+- Host-side worker default: `<task.StateDirForProject>/workers.toml`,
+  a `[fleet.workers]` overlay (same keys as `spore.toml`), written
+  0600 in a 0700 dir by `spore fleet worker-agent <claude|codex>`;
+  `--clear` drops `default` and removes the file once empty; no
+  argument prints the effective default and its source.
+  `LoadWorkersConfig` layers it over `spore.toml`: `default` replaces,
+  a ratio or rules table present in the overlay replaces that map.
+  Project: `$SPORE_PROJECT_ROOT`, else cwd, hopped to the main repo.
+- `SPORE_AGENT_BINARY` applies to claude workers only. On hosts it is
+  `spore-worker-brief`, which always execs claude, so a task with
+  `agent: codex` used to run claude. Codex workers now run
+  `codexpolicy.InteractiveArgs` and get the brief the way the launcher
+  gives it to claude: `codex ... -- "$(cat tasks/<slug>.md)"`, a
+  pre-start failure note ahead of it. `--` is required: the brief
+  opens with `---`, which clap rejects as an unknown flag (verified on
+  0.162.1). `SPORE_CODEX_BIN` replaces argv0 (tests use a fake).
+- Per task: `spore task new --agent <claude|codex>` (also with
+  `--role`) and `spore task start <slug> --agent <...>` write `agent:`
+  into the frontmatter (start: before the status flip and spawn,
+  replacing any existing value), so either coordinator can start
+  either worker.
+- Role panes: task `agent:`, else the effective `default`, else claude.
+  Codex panes run the same `InteractiveArgs` (effort and model from
+  the task) with `-- "$(cat <role>.md)"`. `agentInvocations` now ends
+  the codex body run in `--` too, for the same `---` reason.
+- Hooks: worker and role panes use the default `CODEX_HOME`, so they
+  get `~/.codex/hooks.json` (token monitors, replenish, SessionStart).
+  `InteractiveArgs` now passes `--dangerously-bypass-hook-trust`, as
+  the coordinator shim does; without it hooks wait on persisted trust.
+  No per-session `CODEX_HOME`, daemon or inbox sidecar for workers:
+  their inbox messages are not delivered while idle (same as before
+  for `agent: codex`). Role panes are woken by tmux send-keys, which
+  is agent-agnostic. The coordinator shim still passes its payload
+  without `--`; a shared or project role starting with `---` would
+  break the codex coordinator launch.
 
 ## Open risks
 

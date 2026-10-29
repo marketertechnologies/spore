@@ -25,7 +25,9 @@ Subcommands:
   ls [--all] [--done]          List tasks (default hides done).
   edit <slug>                  Open task file in $EDITOR.
   pick                         Interactive rofi/fzf task picker.
-  start <slug>                 Flip to active, spawn worktree + tmux session.
+  start <slug> [--agent <a>]   Flip to active, spawn worktree + tmux session.
+                               --agent claude|codex writes agent: first,
+                               replacing any existing value.
   pause <slug>                 Flip active task to paused (no teardown).
   block <slug>                 Flip active task to blocked (no teardown).
   done <slug> [--force]         Flip to done, kill tmux + remove worktree.
@@ -53,6 +55,9 @@ Flags for 'new':
   --body <text>                Inline body text (skips editor).
   --body-stdin                 Read body from stdin (skips editor).
   --needs <slug>               Add a dependency (repeatable).
+  --agent <claude|codex>       Write agent: so the worker (or every role
+                               pane with --role) runs that agent instead
+                               of the [fleet.workers] default.
   --edit                       Force editor open.
   --no-edit                    Suppress editor.
 `
@@ -259,10 +264,15 @@ func runTaskRoleDrive(args []string) error {
 }
 
 func runTaskStart(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: spore task start <slug>")
+	fs := flag.NewFlagSet("task start", flag.ContinueOnError)
+	agent := fs.String("agent", "", "write agent: (claude|codex) before starting")
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
+		return err
 	}
-	session, err := task.Start("tasks", args[0])
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: spore task start <slug> [--agent claude|codex]")
+	}
+	session, err := task.StartWithOptions("tasks", fs.Arg(0), task.StartOptions{Agent: *agent})
 	if err != nil {
 		return err
 	}
@@ -340,6 +350,7 @@ func runTaskNew(args []string) error {
 	_ = fs.Bool("draft", true, "set status=draft (default)")
 	editFlag := fs.Bool("edit", false, "force editor open")
 	noEdit := fs.Bool("no-edit", false, "suppress editor")
+	agent := fs.String("agent", "", "write agent: (claude|codex)")
 	var needs needsFlag
 	fs.Var(&needs, "needs", "add dependency slug (repeatable)")
 	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
@@ -350,6 +361,11 @@ func runTaskNew(args []string) error {
 	}
 	if *roleFlag && *startFlag {
 		return fmt.Errorf("--role does not combine with --start: start spawns a homogeneous worker session; edit status to active and let the reconciler drive the role loop")
+	}
+	if *agent != "" {
+		if err := task.ValidateAgent(*agent); err != nil {
+			return err
+		}
 	}
 	title := fs.Arg(0)
 	if strings.TrimSpace(title) == "" {
@@ -391,6 +407,7 @@ func runTaskNew(args []string) error {
 		Created: time.Now().UTC().Format(time.RFC3339),
 		Project: project,
 		Loop:    loop,
+		Agent:   *agent,
 		Needs:   []string(needs),
 	}
 	out := frontmatter.Write(m, body)

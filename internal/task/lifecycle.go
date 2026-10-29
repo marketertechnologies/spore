@@ -25,7 +25,9 @@ import (
 const EvidenceWarnOnlyEnv = "SPORE_EVIDENCE_WARN_ONLY"
 
 // AgentBinaryEnv is the env var used to override the binary spawned in
-// the per-task tmux session. Defaults to defaultAgentBinary when unset.
+// the per-task tmux session for claude workers (on hosts it names the
+// spore-worker-brief launcher, which always runs claude). Defaults to
+// defaultAgentBinary when unset. Codex workers never use it.
 const AgentBinaryEnv = "SPORE_AGENT_BINARY"
 
 const defaultAgentBinary = "claude-code"
@@ -34,62 +36,9 @@ const defaultAgentBinary = "claude-code"
 // launches. Empty lets the codex CLI use its own default.
 const CodexModelEnv = "SPORE_CODEX_MODEL"
 
-// Start flips status to active and (when starting from draft) creates
-// the worktree and wt/<slug> branch under <projectRoot>/.worktrees/.
-// In every case it spawns a detached tmux session named
-// "spore/<project>/<slug>" running ${SPORE_AGENT_BINARY:-claude-code}
-// in the worktree, with SPORE_TASK_SLUG=<slug> in the session env.
-// Returns the tmux session name on success.
-func Start(tasksDir, slug string) (string, error) {
-	path := filepath.Join(tasksDir, slug+".md")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	m, body, err := frontmatter.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	// A role-looped task must never get the homogeneous worker session
-	// Start spawns: its panes are owned by DriveRoleLoop and share the
-	// same wt/<slug> branch.
-	if m.Loop == LoopRole {
-		return "", fmt.Errorf(
-			"task %s: has loop: role; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
-			slug, slug,
-		)
-	}
-	prev := m.Status
-	switch prev {
-	case "draft", "paused", "blocked":
-	case "active":
-		return "", fmt.Errorf("task %s: already active", slug)
-	case "done":
-		return "", fmt.Errorf("task %s: already done", slug)
-	default:
-		return "", fmt.Errorf("task %s: unexpected status %q", slug, prev)
-	}
-	m.Status = "active"
-	if err := os.WriteFile(path, frontmatter.Write(m, body), 0o644); err != nil {
-		return "", err
-	}
-
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
-	if err != nil {
-		return "", err
-	}
-	session := taskTmuxSession(tasksDir, projectRoot, slug)
-	// Pause leaves the session alive for the operator; Start
-	// replaces it so a resume gets a fresh agent and new-session
-	// does not collide on the name.
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
-	out, err := ensureSession(tasksDir, slug)
-	if err != nil {
-		return "", err
-	}
-	notifyMatterSpawn(projectRoot, slug, m, os.Stderr)
-	return out, nil
-}
+// CodexBinEnv replaces the codex executable in worker and role-pane
+// launches (and the inbox sidecar, see hooks.CodexBin).
+const CodexBinEnv = "SPORE_CODEX_BIN"
 
 // Ensure makes sure the wt/<slug> branch, worktree, and tmux session
 // for slug exist. Idempotent: missing pieces get created, present
@@ -554,7 +503,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 		return "", err
 	}
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
-	args = append(args, workerShellCommand(prelude, agent))
+	if meta.Agent == "codex" {
+		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
+	} else {
+		args = append(args, workerShellCommand(prelude, agent))
+	}
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
@@ -609,18 +562,27 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 	return m, nil
 }
 
+// workerAgentCommand returns the agent command for a worker. The
+// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
+// it is a claude launcher, so honouring it for codex would run claude.
 func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	if override := os.Getenv(AgentBinaryEnv); override != "" {
-		return override, nil
-	}
-	agent := m.Agent
-	if agent == "" || agent == "claude" || agent == "claude-code" {
+	switch m.Agent {
+	case "", "claude", "claude-code":
+		if override := os.Getenv(AgentBinaryEnv); override != "" {
+			return override, nil
+		}
 		return defaultAgentBinary, nil
+	case "codex":
+		return CodexAgentCommand(m)
+	default:
+		return m.Agent, nil
 	}
-	if agent != "codex" {
-		return agent, nil
-	}
+}
 
+// CodexAgentCommand returns the interactive codex command line for a
+// task, without a prompt: effort and model from the frontmatter, the
+// model falling back to SPORE_CODEX_MODEL. Role panes share it.
+func CodexAgentCommand(m frontmatter.Meta) (string, error) {
 	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
 	if err != nil {
 		return "", err
@@ -629,7 +591,30 @@ func workerAgentCommand(m frontmatter.Meta) (string, error) {
 	if model == "" {
 		model = os.Getenv(CodexModelEnv)
 	}
-	return shellJoin(codexpolicy.InteractiveArgs(model, effort)), nil
+	args := codexpolicy.InteractiveArgs(model, effort)
+	if bin := os.Getenv(CodexBinEnv); bin != "" {
+		args[0] = bin
+	}
+	return shellJoin(args), nil
+}
+
+// briefRelPath is the brief's path relative to the worktree, where
+// copyBriefToWorktree puts it.
+func briefRelPath(tasksDir, slug string) string {
+	return filepath.Join(filepath.Base(filepath.Clean(tasksDir)), slug+".md")
+}
+
+// codexWorkerShellCommand starts codex on the brief, the job
+// spore-worker-brief does for claude. A pre-start failure note heads
+// the brief. `--` keeps the brief's leading `---` out of flag parsing.
+// No readable brief: codex starts with the note alone, or no prompt.
+func codexWorkerShellCommand(prelude, agent, brief string) string {
+	return prelude + fmt.Sprintf(
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s -- "${%[3]s:+$%[3]s
+
+}$(cat %[1]s)"; else exec %[2]s ${%[3]s:+"$%[3]s"}; fi`,
+		shellQuote(brief), agent, PreStartNoteVar,
+	)
 }
 
 func shellJoin(args []string) string {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,5 +109,37 @@ func TestFleetReplenishHook_StdoutEmpty(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "replenish-hook: active=1 spawned=1") {
 		t.Errorf("stderr = %q, want status line", stderr)
+	}
+}
+
+func TestFleetWorkerAgentSetPrintClear(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	t.Setenv("SPORE_PROJECT_ROOT", root)
+
+	if err := runFleet([]string{"worker-agent", "gemini"}); err == nil {
+		t.Error("unknown agent accepted")
+	}
+	if err := runFleet([]string{"worker-agent", "codex"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if a, src, err := fleet.EffectiveWorkerDefault(root); err != nil || a != "codex" || src != fleet.WorkerDefaultFromOverlay {
+		t.Errorf("after set = %q %q %v, want codex from overlay", a, src, err)
+	}
+	if err := runFleet([]string{"worker-agent"}); err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	if err := runFleet([]string{"worker-agent", "--clear"}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if a, src, _ := fleet.EffectiveWorkerDefault(root); a != "claude" || src != fleet.WorkerDefaultFromKernel {
+		t.Errorf("after clear = %q %q, want kernel claude", a, src)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("project root not untouched: %v", entries)
 	}
 }
