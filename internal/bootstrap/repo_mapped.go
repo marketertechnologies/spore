@@ -69,14 +69,18 @@ func detectRepoMapped(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	skills, err := install.Install(root, spore.BundledSkills, "bootstrap/skills")
-	if err != nil {
-		return "", fmt.Errorf("install skills: %w", err)
-	}
 
 	notes := "detected: " + strings.Join(hits, ",")
 	if len(wrote) > 0 {
 		notes += "; wrote starter " + strings.Join(wrote, " / ")
+	}
+	home, _ := os.UserHomeDir()
+	if install.HostProvides(home, spore.BundledSkills, "bootstrap/skills") {
+		return notes + "; skills provided host-wide", nil
+	}
+	skills, err := install.Install(root, spore.BundledSkills, "bootstrap/skills")
+	if err != nil {
+		return "", fmt.Errorf("install skills: %w", err)
 	}
 	if len(skills.Written) > 0 {
 		notes += fmt.Sprintf("; installed %d skill file(s)", len(skills.Written))

@@ -11,7 +11,9 @@
 //   - Exit 0 on success, non-zero on failure. Failures halt the run
 //     and the ledger is not updated for the failing migration.
 //   - Stdin closed. Env inherited from the caller. Working dir is the
-//     invoker's $HOME.
+//     invoker's $HOME. The caller's PATH must carry bash plus the tool
+//     set in docs/migrations.md; the engine never falls back to a
+//     hardcoded interpreter location.
 //   - Set -e is enabled implicitly via `bash -eu`.
 package migrations
 
@@ -220,7 +222,11 @@ func run(m migration, workDir string, stdout, stderr io.Writer) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	cmd := exec.Command("bash", "-eu", tmp.Name())
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		return fmt.Errorf("interpreter bash not found on PATH=%q; the caller must put bash and the tools listed in docs/migrations.md on PATH", os.Getenv("PATH"))
+	}
+	cmd := exec.Command(bash, "-eu", tmp.Name())
 	cmd.Env = os.Environ()
 	cmd.Dir = workDir
 	cmd.Stdin = nil

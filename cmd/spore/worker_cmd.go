@@ -17,12 +17,21 @@ Usage:
 
 Subcommands:
   token-monitor   Stop-hook: check the worker's context budget and fire
-                  a wrap-up reminder once it crosses the tier-keyed cap.
+                  banded reminders (soft warn, finish-unit wrap, force)
+                  as it crosses the tier-keyed caps.
                   Tier read from $SPORE_ACCOUNT_TIER (defaults to non-max);
                   override per-tier caps with $SPORE_WORKER_TOKEN_WRAP,
-                  $SPORE_WORKER_TOKEN_WRAP_MAX, $SPORE_WORKER_TOKEN_WRAP_SUB.
+                  $SPORE_WORKER_TOKEN_WRAP_MAX, $SPORE_WORKER_TOKEN_WRAP_SUB
+                  and $SPORE_WORKER_TOKEN_FORCE, $SPORE_WORKER_TOKEN_FORCE_MAX,
+                  $SPORE_WORKER_TOKEN_FORCE_SUB.
+                  Role-loop panes ($SPORE_ROLE engineer/reviewer) are
+                  metered with the same bands and caps but role wrap
+                  semantics: commit to the task branch, write the phase
+                  artifact if complete, self-kill; the role-loop driver
+                  respawns the pane.
                   Skips coordinator inboxes (handled by spore coordinator
-                  token-monitor) and sessions with no $SPORE_TASK_INBOX.
+                  token-monitor) and non-role sessions with no
+                  $SPORE_TASK_INBOX.
 `
 
 func runWorker(args []string) int {
@@ -56,11 +65,18 @@ func runWorkerTokenMonitor(_ []string) int {
 	}
 
 	cfg := tokenmonitor.Config{
-		Inbox:        os.Getenv("SPORE_TASK_INBOX"),
-		Tier:         os.Getenv("SPORE_ACCOUNT_TIER"),
-		WrapOverride: envInt("SPORE_WORKER_TOKEN_WRAP"),
-		WrapMax:      envInt("SPORE_WORKER_TOKEN_WRAP_MAX"),
-		WrapSub:      envInt("SPORE_WORKER_TOKEN_WRAP_SUB"),
+		Inbox:            os.Getenv("SPORE_TASK_INBOX"),
+		Tier:             os.Getenv("SPORE_ACCOUNT_TIER"),
+		Role:             os.Getenv("SPORE_ROLE"),
+		ReviewerInstance: os.Getenv("SPORE_REVIEWER_INSTANCE"),
+		RoleSlug:         os.Getenv("SPORE_TASK_SLUG"),
+		TaskDir:          os.Getenv("SPORE_TASK_DIR"),
+		WrapOverride:     envInt("SPORE_WORKER_TOKEN_WRAP"),
+		WrapMax:          envInt("SPORE_WORKER_TOKEN_WRAP_MAX"),
+		WrapSub:          envInt("SPORE_WORKER_TOKEN_WRAP_SUB"),
+		ForceOverride:    envInt("SPORE_WORKER_TOKEN_FORCE"),
+		ForceMax:         envInt("SPORE_WORKER_TOKEN_FORCE_MAX"),
+		ForceSub:         envInt("SPORE_WORKER_TOKEN_FORCE_SUB"),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)

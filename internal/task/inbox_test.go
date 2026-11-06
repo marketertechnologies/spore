@@ -81,3 +81,30 @@ func TestWriteUniqueInboxFilePreservesCollisions(t *testing.T) {
 		t.Errorf("second body = %s, want %s", second, body2)
 	}
 }
+
+func TestTellCoordinatorWritesCoordinatorInbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+
+	if err := Tell("coordinator", "ready abc123"); err != nil {
+		t.Fatalf("Tell: %v", err)
+	}
+
+	want, err := CoordinatorInboxDirForProject("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != filepath.Join(state, "spore", "coordinator", filepath.Base(dir), "inbox") {
+		t.Fatalf("CoordinatorInboxDirForProject = %q", want)
+	}
+	entries, err := os.ReadDir(want)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("coordinator inbox entries = %v (err %v), want 1", entries, err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "spore", filepath.Base(dir), "coordinator")); !os.IsNotExist(err) {
+		t.Errorf("Tell wrote the legacy per-project coordinator dir (stat err %v)", err)
+	}
+}

@@ -39,7 +39,7 @@ func TestSettings_EmptyEventsOmitHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "{\n  \"$schema\": \"https://json.schemastore.org/claude-code-settings.json\"\n}\n"
+	want := "{\n  \"$schema\": \"https://json.schemastore.org/claude-code-settings.json\",\n  \"permissions\": {\n    \"deny\": [\n      \"SendMessage\"\n    ]\n  }\n}\n"
 	if string(got) != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}

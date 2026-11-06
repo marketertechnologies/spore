@@ -49,11 +49,51 @@ func captureWorkerTokenMonitor(t *testing.T, input string) (code int, stderr str
 	return code, errBuf.String()
 }
 
+// clearRoleEnv pins the role-pane env empty so tests exercise the
+// worker path even when the test process itself runs inside a role
+// pane (which exports SPORE_ROLE).
+func clearRoleEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SPORE_ROLE", "")
+	t.Setenv("SPORE_REVIEWER_INSTANCE", "")
+	t.Setenv("SPORE_TASK_SLUG", "")
+	t.Setenv("SPORE_TASK_DIR", "")
+}
+
 func TestRunWorkerTokenMonitorSkipNoInbox(t *testing.T) {
+	clearRoleEnv(t)
 	t.Setenv("SPORE_TASK_INBOX", "")
 	code, _ := captureWorkerTokenMonitor(t, `{"session_id":"s","transcript_path":""}`)
 	if code != 0 {
 		t.Fatalf("expected exit 0 with no inbox, got %d", code)
+	}
+}
+
+func TestRunWorkerTokenMonitorRolePane(t *testing.T) {
+	dir := t.TempDir()
+	transcriptFile := filepath.Join(dir, "session.jsonl")
+	line := `{"role":"assistant","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`
+	if err := os.WriteFile(transcriptFile, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SPORE_TASK_INBOX", "")
+	t.Setenv("SPORE_ROLE", "engineer")
+	t.Setenv("SPORE_REVIEWER_INSTANCE", "")
+	t.Setenv("SPORE_TASK_SLUG", "role-slug")
+	t.Setenv("SPORE_TASK_DIR", filepath.Join(dir, ".spore", "role-slug"))
+	t.Setenv("SPORE_ACCOUNT_TIER", "max")
+
+	payload := `{"session_id":"sid","transcript_path":"` + transcriptFile + `"}`
+	code, stderr := captureWorkerTokenMonitor(t, payload)
+	if code != 2 {
+		t.Fatalf("expected exit 2 on role wrap, got %d (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "ROLE TOKEN MONITOR") {
+		t.Errorf("expected ROLE TOKEN MONITOR in stderr, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "wt/role-slug") {
+		t.Errorf("expected task branch in stderr, got %q", stderr)
 	}
 }
 
@@ -65,6 +105,7 @@ func TestRunWorkerTokenMonitorWrap(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	clearRoleEnv(t)
 	t.Setenv("SPORE_TASK_INBOX", filepath.Join(dir, "workers", "wrapme", "inbox"))
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(dir, "coord"))
 	t.Setenv("SPORE_ACCOUNT_TIER", "max")
@@ -90,6 +131,7 @@ func TestRunWorkerTokenMonitorOk(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	clearRoleEnv(t)
 	t.Setenv("SPORE_TASK_INBOX", filepath.Join(dir, "workers", "ok", "inbox"))
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(dir, "coord"))
 	t.Setenv("SPORE_ACCOUNT_TIER", "max")

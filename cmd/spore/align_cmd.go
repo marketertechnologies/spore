@@ -16,7 +16,9 @@ Usage:
 Subcommands:
   status              Print N/M criteria met plus a checklist.
   flip                Mark alignment mode off (operator confirmation).
-                      The next compose drops the alignment-mode rule.
+                      Writes "flipped = true" under [align] in
+                      spore.toml; commit it so CI agrees. The next
+                      compose drops the alignment-mode rule.
   note "<line>"       Append one observation to alignment.md. Prefix
                       the body with "[promoted]" when the operator
                       promotes the preference to a rule-pool entry.
@@ -24,7 +26,7 @@ Subcommands:
 State lives under "$XDG_STATE_HOME/spore/<project>/" (default
 "$HOME/.local/state/spore/<project>/"). Defaults can be overridden
 in a top-level "spore.toml" with an [align] section
-(required_notes, required_promoted).
+(required_notes, required_promoted, flipped).
 `
 
 func runAlign(args []string) error {
@@ -60,7 +62,7 @@ func runAlign(args []string) error {
 			return err
 		}
 		fmt.Printf("alignment flipped off for %s\n", paths.Project)
-		fmt.Println("rerun `spore compose` to drop the alignment-mode rule from the instruction files.")
+		fmt.Printf("set flipped = true in %s; commit it, then rerun `spore compose` to drop the alignment-mode rule from the instruction files.\n", paths.ConfigFile)
 		return nil
 	case "note":
 		if len(args) != 2 {

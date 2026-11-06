@@ -38,5 +38,10 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "deny": [
+      "SendMessage"
+    ]
   }
 }

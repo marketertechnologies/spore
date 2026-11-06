@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/versality/spore/internal/editor"
 )
 
 func TestParseCoordinatorTOML(t *testing.T) {
@@ -115,6 +117,62 @@ func TestLoadCoordinatorConfigReadsFile(t *testing.T) {
 	}
 }
 
+func TestLoadCoordinatorConfigDriverOverride(t *testing.T) {
+	const toml = "[coordinator]\ndriver = \"claude\"\nmodel = \"opus\"\nbrief = \"docs/helm.md\"\n"
+	cases := []struct {
+		name, override string
+		want           CoordinatorConfig
+		wantErr        bool
+	}{
+		{"no override", "", CoordinatorConfig{Driver: "claude", Model: "opus", Brief: "docs/helm.md"}, false},
+		{"driver only clears model", "[coordinator]\ndriver = \"codex\"\n", CoordinatorConfig{Driver: "codex", Brief: "docs/helm.md"}, false},
+		{"driver and model", "[coordinator]\ndriver = \"codex\"\nmodel = \"gpt-5.5\"\n", CoordinatorConfig{Driver: "codex", Model: "gpt-5.5", Brief: "docs/helm.md"}, false},
+		{"model without driver ignored", "[coordinator]\nmodel = \"gpt-5.5\"\n", CoordinatorConfig{Driver: "claude", Model: "opus", Brief: "docs/helm.md"}, false},
+		{"bad key", "[coordinator]\ndriver = \"codex\"\nbrief = \"x.md\"\n", CoordinatorConfig{Driver: "claude", Model: "opus", Brief: "docs/helm.md"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "spore.toml"), []byte(toml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if c.override != "" {
+				p, err := DriverOverridePath(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writePrivateFile(p, c.override); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := LoadCoordinatorConfig(dir)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			if got != c.want {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestLoadCoordinatorConfigOverrideWithoutSporeTOML(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	p, err := DriverOverridePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateFile(p, "[coordinator]\ndriver = \"codex\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadCoordinatorConfig(dir)
+	if err != nil || got != (CoordinatorConfig{Driver: "codex"}) {
+		t.Errorf("got %+v, err %v", got, err)
+	}
+}
+
 func TestCoordinatorRolePathPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
@@ -192,4 +250,65 @@ func TestCoordinatorProviderModel(t *testing.T) {
 			t.Errorf("model = %q, want empty", got)
 		}
 	})
+}
+
+func TestCoordinatorSessionArgsAutoConnectIDE(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	cases := []struct {
+		name string
+		toml string
+		env  string
+		want string
+	}{
+		{"knob off", "", "", ""},
+		{"knob on", "[editor]\nauto_connect_ide = true\n", "", "1"},
+		{"knob explicitly off", "[editor]\nauto_connect_ide = false\n", "", ""},
+		{"env wins over knob", "[editor]\nauto_connect_ide = true\n", "0", "0"},
+		{"env without knob", "", "1", "1"},
+		{"malformed section leaves it off", "[editor]\nauto_connect_ide = yes\n", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newGitRepoFor(t, "demo-project")
+			if tc.toml != "" {
+				if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(tc.toml), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv(editor.AutoConnectIDEEnv, tc.env)
+			args, err := coordinatorSessionArgs(root, "s", "/role.md", CoordinatorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := envValue(args, editor.AutoConnectIDEEnv); got != tc.want {
+				t.Errorf("%s = %q, want %q", editor.AutoConnectIDEEnv, got, tc.want)
+			}
+			if tc.want == "" && hasEnvArg(args, editor.AutoConnectIDEEnv) {
+				t.Errorf("unexpected %s in %v", editor.AutoConnectIDEEnv, args)
+			}
+		})
+	}
+}
+
+func TestCoordinatorSessionArgsRecordsExplicitAgent(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	root := newGitRepoFor(t, "demo-project")
+
+	t.Setenv(CoordinatorAgentEnv, "")
+	args, err := coordinatorSessionArgs(root, "s", "/role.md", CoordinatorConfig{Driver: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnvArg(args, CoordinatorAgentEnv) {
+		t.Errorf("driver-derived agent recorded as an override: %v", args)
+	}
+
+	t.Setenv(CoordinatorAgentEnv, "/usr/local/bin/spore-coordinator-launch")
+	args, err = coordinatorSessionArgs(root, "s", "/role.md", CoordinatorConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValue(args, CoordinatorAgentEnv); got != "/usr/local/bin/spore-coordinator-launch" {
+		t.Errorf("%s = %q", CoordinatorAgentEnv, got)
+	}
 }

@@ -26,8 +26,11 @@ spore bootstrap                  # re-enter the bootstrap; advance
 ```
 
 `spore align flip` writes the sentinel that turns alignment mode
-off. The next compose drops the alignment-mode rule from the
-project's instruction files.
+off and sets `flipped = true` under `[align]` in `spore.toml`.
+Commit `spore.toml` with the recomposed instruction files: CI and
+other machines have no sentinel, so the committed key is what keeps
+the drift lint agreeing with the rendered files. The next compose
+drops the alignment-mode rule from the project's instruction files.
 
 ## Why this stage exists
 

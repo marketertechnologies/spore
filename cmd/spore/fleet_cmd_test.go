@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/fleet"
 )
 
 func TestIsCoordinatorSession(t *testing.T) {
@@ -73,3 +77,69 @@ func TestResolveMaxWorkers_BadWTFloorErrors(t *testing.T) {
 // internal/fleet/matter_test.go) and the Linear adapter has its own
 // integration suite (internal/matter/linear/linear_test.go), so the
 // CLI no longer owns its own coverage of the matter pass.
+
+func TestFleetReplenishHook_StdoutEmpty(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
+	t.Setenv("SKYHELM_STATE_DIR", "")
+	t.Setenv("SPORE_TASK_INBOX", filepath.Join(state, "inbox"))
+	t.Setenv("AGENT_BUDGET_STATE_DIR", t.TempDir())
+	t.Setenv("AGENT_BUDGET_MODE", "api")
+	t.Setenv("SPORE_FLEET_MAX_WORKERS", "2")
+	t.Chdir(t.TempDir())
+
+	orig := replenishReconcile
+	t.Cleanup(func() { replenishReconcile = orig })
+	replenishReconcile = func(fleet.Config) (fleet.Result, error) {
+		return fleet.Result{Active: []string{"a"}, Spawned: []string{"a"}}, nil
+	}
+
+	code, stdout, stderr := captureHook(t, `{"hook_event_name":"Stop"}`, func() int {
+		if err := runFleetReplenishHook(nil); err != nil {
+			t.Errorf("runFleetReplenishHook: %v", err)
+			return 1
+		}
+		return 0
+	})
+	if code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty (codex parses it as JSON)", stdout)
+	}
+	if !strings.Contains(stderr, "replenish-hook: active=1 spawned=1") {
+		t.Errorf("stderr = %q, want status line", stderr)
+	}
+}
+
+func TestFleetWorkerAgentSetPrintClear(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	t.Setenv("SPORE_PROJECT_ROOT", root)
+
+	if err := runFleet([]string{"worker-agent", "gemini"}); err == nil {
+		t.Error("unknown agent accepted")
+	}
+	if err := runFleet([]string{"worker-agent", "codex"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if a, src, err := fleet.EffectiveWorkerDefault(root); err != nil || a != "codex" || src != fleet.WorkerDefaultFromOverlay {
+		t.Errorf("after set = %q %q %v, want codex from overlay", a, src, err)
+	}
+	if err := runFleet([]string{"worker-agent"}); err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	if err := runFleet([]string{"worker-agent", "--clear"}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if a, src, _ := fleet.EffectiveWorkerDefault(root); a != "claude" || src != fleet.WorkerDefaultFromKernel {
+		t.Errorf("after clear = %q %q, want kernel claude", a, src)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("project root not untouched: %v", entries)
+	}
+}
