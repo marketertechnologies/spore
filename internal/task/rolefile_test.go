@@ -102,6 +102,67 @@ func TestEnsureLegacyMarkerGrandfathersExistingFilesOnly(t *testing.T) {
 	}
 }
 
+// A strict review written before severity order was enforced must not
+// be bounced on upgrade; one written after it must.
+func TestOrderExemptMarkerGrandfathersUnsortedReviews(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	if err := EnsureLegacyMarker(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	unsorted := `{"author":"A","verdict":"request_changes","summary":"s","comments":[` +
+		`{"severity":"low","category":"nit","text":"rename"},` +
+		`{"severity":"high","category":"correctness","text":"nil deref","reason":"r","trigger":"t"}]}`
+	write := func(round int) RoleFile {
+		t.Helper()
+		p := ReviewPath(root, slug, ReviewerA, round)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(unsorted), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return RoleFile{Path: p, Rel: relTo(RoleTaskDir(root, slug), p), Instance: ReviewerA, Round: round}
+	}
+	old := write(1)
+	if err := ValidateRoleFile(root, slug, old); err != nil {
+		t.Fatalf("pre-marker unsorted file: %v", err)
+	}
+	if err := EnsureOrderExemptMarker(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRoleFile(root, slug, old); err != nil {
+		t.Fatalf("exempt unsorted file rejected: %v", err)
+	}
+	if _, err := ReadReview(root, slug, ReviewerA, 1); err != nil {
+		t.Fatalf("exempt unsorted file unreadable: %v", err)
+	}
+	fresh := write(2)
+	if err := ValidateRoleFile(root, slug, fresh); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), "sort comments by severity") {
+		t.Fatalf("post-marker unsorted file: err = %v, want severity-order invalid", err)
+	}
+	if _, err := ReadReview(root, slug, ReviewerA, 2); !errors.Is(err, ErrInvalidRoleFile) {
+		t.Fatalf("post-marker unsorted ReadReview: err = %v, want invalid", err)
+	}
+}
+
+func TestParseEngineerOutcomeDetailAndSHA(t *testing.T) {
+	ok := `{"author":"engineer","addressed":[],"pushback":[],"outcomes":[` +
+		`{"reviewer":"A","round":1,"comment":0,"outcome":"fixed","detail":"guard nil session","sha":"abc1234"},` +
+		`{"reviewer":"A","round":1,"comment":1,"outcome":"declined"}]}`
+	r, err := ParseEngineerResponse("x", []byte(ok), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := r.Outcomes[0]; o.Detail != "guard nil session" || o.SHA != "abc1234" {
+		t.Errorf("outcome = %+v", o)
+	}
+	bad := `{"author":"engineer","addressed":[],"pushback":[],"outcomes":[{"reviewer":"A","round":1,"comment":0,"outcome":"fixed","sha":"HEAD"}]}`
+	if _, err := ParseEngineerResponse("x", []byte(bad), false); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), `sha "HEAD"`) {
+		t.Errorf("bad sha: err = %v", err)
+	}
+}
+
 func TestQuarantinePathIncrements(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "round-1.json")
 	dest, prior := QuarantinePath(p)

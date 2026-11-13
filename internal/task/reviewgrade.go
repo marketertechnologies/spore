@@ -221,3 +221,41 @@ func checkGrades(r Review, round int) error {
 	}
 	return nil
 }
+
+// severityOrder ranks grades in the order a verdict lists them. A
+// plain string in a graded review counts like a medium.
+func severityOrder(c ReviewComment) int {
+	switch c.Severity {
+	case SeverityHigh:
+		return 0
+	case SeverityLow:
+		return 2
+	case SeverityQuestion:
+		return 3
+	}
+	return 1
+}
+
+// checkSeverityOrder requires a graded review's comments sorted high,
+// medium, low, question, so the on-disk index order is the ID order
+// the engineer and the PR see. Ungraded reviews keep any order.
+func checkSeverityOrder(r Review) error {
+	if !r.Graded() {
+		return nil
+	}
+	for i := 1; i < len(r.Comments); i++ {
+		prev, cur := r.Comments[i-1], r.Comments[i]
+		if severityOrder(cur) < severityOrder(prev) {
+			return fmt.Errorf("comments[%d] (%s) follows comments[%d] (%s): sort comments by severity, high, medium, low, question, so IDs follow severity",
+				i, gradeName(cur), i-1, gradeName(prev))
+		}
+	}
+	return nil
+}
+
+func gradeName(c ReviewComment) string {
+	if c.Severity == "" {
+		return "ungraded"
+	}
+	return c.Severity
+}

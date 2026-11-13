@@ -15,8 +15,8 @@ import (
 // ReviewerModeCodeReview runs reviewer-code-review.md, which drives
 // Claude Code's built-in /code-review skill. See ResolveRoleBody.
 const (
-	ReviewerModeFleet      = "fleet"
-	ReviewerModeCodeReview = "code-review"
+	ReviewerModeFleet      = task.ReviewModeFleet
+	ReviewerModeCodeReview = task.ReviewModeCodeReview
 )
 
 // DefaultReviewEffort is the /code-review level a code-review slot

@@ -44,7 +44,7 @@ func TestParseReviewGraded(t *testing.T) {
 		{"r2 medium approve", 2, reviewJSON("approve", lowNit, medEdge), `round 2 verdict "approve" but comments[1] is medium: from round 2 any high or medium requires "request_changes"`},
 		{"r3 low only approve", 3, reviewJSON("approve", lowNit, lowNit), ""},
 		{"r3 no comments approve", 3, reviewJSON("approve"), ""},
-		{"r3 medium request_changes", 3, reviewJSON("request_changes", lowNit, medEdge), ""},
+		{"r3 medium request_changes", 3, reviewJSON("request_changes", medEdge, lowNit), ""},
 		{"r3 high request_changes", 3, reviewJSON("request_changes", highCorrect), ""},
 		{"r3 medium approve", 3, reviewJSON("approve", lowNit, medSpec), `round 3 verdict "approve" but comments[1] is medium`},
 		{"r3 low request_changes", 3, reviewJSON("request_changes", lowNit), `every comment is low or question`},
@@ -143,6 +143,61 @@ func TestReviewCommentMarshalRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in, out) {
 		t.Errorf("round trip = %+v, want %+v", out, in)
+	}
+}
+
+func TestParseReviewSeverityOrder(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"sorted all grades", reviewJSON("request_changes", highCorrect, medEdge, medSpec, lowNit, question), ""},
+		{"ties keep any order", reviewJSON("request_changes", medSpec, medEdge), ""},
+		{"string sorts as medium", reviewJSON("request_changes", highCorrect, legacyString, lowNit), ""},
+		{"all-string review any order", reviewJSON("request_changes", legacyString, `"another"`), ""},
+		{"low before high", reviewJSON("request_changes", lowNit, highCorrect), "comments[1] (high) follows comments[0] (low): sort comments by severity"},
+		{"question before low", reviewJSON("request_changes", question, lowNit), "comments[1] (low) follows comments[0] (question)"},
+		{"medium before high", reviewJSON("request_changes", medEdge, highCorrect), "comments[1] (high) follows comments[0] (medium)"},
+		{"low before string", reviewJSON("request_changes", lowNit, legacyString), "comments[1] (ungraded) follows comments[0] (low)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, 1, false)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want invalid containing %q", err, tc.want)
+			}
+			// Legacy files keep any order.
+			if _, err := ParseReview("x.json", []byte(tc.body), ReviewerA, 1, true); err != nil {
+				t.Errorf("legacy: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseReviewPrefix(t *testing.T) {
+	ok := `{"author":"A","verdict":"approve","summary":"s","prefix":"R","comments":[]}`
+	r, err := ParseReview("x", []byte(ok), ReviewerA, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.IDPrefix(ReviewerA); got != "R" {
+		t.Errorf("IDPrefix = %q, want R", got)
+	}
+	bad := `{"author":"A","verdict":"approve","summary":"s","prefix":"X","comments":[]}`
+	if _, err := ParseReview("x", []byte(bad), ReviewerA, 1, false); err == nil || !strings.Contains(err.Error(), `prefix "X"`) {
+		t.Errorf("unknown prefix: err = %v", err)
+	}
+	old, err := ParseReview("x", []byte(reviewJSON("approve")), ReviewerA, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := old.IDPrefix(ReviewerA); got != "A" {
+		t.Errorf("IDPrefix without prefix = %q, want instance letter A", got)
 	}
 }
 

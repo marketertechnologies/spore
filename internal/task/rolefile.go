@@ -27,6 +27,12 @@ const InvalidSuffix = ".invalid"
 // would rewind an in-flight loop that already consumed them.
 const legacyMarker = "legacy-files"
 
+// orderExemptMarker lists, like legacyMarker, the role files on disk
+// when a tree was first driven by a binary that enforces severity
+// order. Those reviews may keep an unsorted `comments` list: their
+// IDs already went out, and bouncing them would rewind the loop.
+const orderExemptMarker = "order-exempt-files"
+
 // ErrInvalidRoleFile is wrapped by every validation failure so callers
 // can tell a bad file (skip it, bounce it) from an I/O error.
 var ErrInvalidRoleFile = errors.New("invalid role file")
@@ -95,25 +101,47 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 	if err != nil {
 		return err
 	}
-	legacy, err := isLegacyFile(projectRoot, slug, f.Rel)
+	if f.Instance == "" {
+		legacy, err := isLegacyFile(projectRoot, slug, f.Rel)
+		if err != nil {
+			return err
+		}
+		_, err = ParseEngineerResponse(f.Path, b, legacy)
+		return err
+	}
+	legacy, sorted, err := reviewStrictness(projectRoot, slug, f.Rel)
 	if err != nil {
 		return err
 	}
-	if f.Instance == "" {
-		_, err = ParseEngineerResponse(f.Path, b, legacy)
-	} else {
-		_, err = ParseReview(f.Path, b, f.Instance, f.Round, legacy)
-	}
+	_, err = parseReview(f.Path, b, f.Instance, f.Round, legacy, sorted)
 	return err
 }
 
+// reviewStrictness reports whether the review at rel is grandfathered
+// (legacy) and whether its comments must be sorted by severity.
+func reviewStrictness(projectRoot, slug, rel string) (legacy, sorted bool, err error) {
+	if legacy, err = isLegacyFile(projectRoot, slug, rel); err != nil || legacy {
+		return legacy, false, err
+	}
+	exempt, err := listedInMarker(projectRoot, slug, orderExemptMarker, rel)
+	return false, !exempt, err
+}
+
 // ParseReview decodes a reviewer verdict. Strict mode rejects unknown
-// keys, trailing data, a missing summary, and an author other than
-// the reviewer instance. Legacy mode (grandfathered files) tolerates
-// unknown keys and a missing author. Both enforce the verdict enum,
-// the graded comment shape, and the grade-derived verdict rule for
-// round (the N in round-N.json).
+// keys, trailing data, a missing summary, an author other than the
+// reviewer instance, and graded comments out of severity order.
+// Legacy mode (grandfathered files) tolerates unknown keys, a missing
+// author, and any comment order. Both enforce the verdict enum, a
+// known `prefix`, the graded comment shape, and the grade-derived
+// verdict rule for round (the N in round-N.json).
 func ParseReview(path string, b []byte, instance ReviewerInstance, round int, legacy bool) (Review, error) {
+	return parseReview(path, b, instance, round, legacy, !legacy)
+}
+
+// parseReview is ParseReview with the severity-order check split from
+// legacy: a strict file written before the check existed is exempt
+// (see orderExemptMarker).
+func parseReview(path string, b []byte, instance ReviewerInstance, round int, legacy, sorted bool) (Review, error) {
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
 		return r, invalid(path, err.Error())
@@ -127,8 +155,16 @@ func ParseReview(path string, b []byte, instance ReviewerInstance, round int, le
 	if !legacy && strings.TrimSpace(r.Summary) == "" {
 		return r, invalid(path, `missing required field "summary"`)
 	}
+	if r.Prefix != "" && !knownPrefix(r.Prefix) {
+		return r, invalid(path, fmt.Sprintf("prefix %q is not a reviewer ID prefix: copy $SPORE_REVIEWER_PREFIX", r.Prefix))
+	}
 	if err := checkGrades(r, round); err != nil {
 		return r, invalid(path, err.Error())
+	}
+	if sorted {
+		if err := checkSeverityOrder(r); err != nil {
+			return r, invalid(path, err.Error())
+		}
 	}
 	return r, nil
 }
@@ -204,8 +240,19 @@ func QuarantinePath(path string) (string, int) {
 // of a task tree by this binary. Idempotent: an existing marker is left
 // alone. A fresh tree records an empty list, so every file is strict.
 func EnsureLegacyMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, legacyMarker)
+}
+
+// EnsureOrderExemptMarker records the role files present on the first
+// drive by a binary that enforces severity order; see
+// orderExemptMarker. Idempotent like EnsureLegacyMarker.
+func EnsureOrderExemptMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, orderExemptMarker)
+}
+
+func ensureListMarker(projectRoot, slug, name string) error {
 	stateDir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
-	marker := filepath.Join(stateDir, legacyMarker)
+	marker := filepath.Join(stateDir, name)
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
@@ -239,7 +286,13 @@ func EnsureLegacyMarker(projectRoot, slug string) error {
 // disk (a pre-upgrade tree not yet driven), every file counts as
 // legacy: that is what the first drive will record.
 func isLegacyFile(projectRoot, slug, rel string) (bool, error) {
-	f, err := os.Open(filepath.Join(RoleTaskDir(projectRoot, slug), "state", legacyMarker))
+	return listedInMarker(projectRoot, slug, legacyMarker, rel)
+}
+
+// listedInMarker reports whether rel is listed in the named state
+// marker. A missing marker lists every file (see isLegacyFile).
+func listedInMarker(projectRoot, slug, name, rel string) (bool, error) {
+	f, err := os.Open(filepath.Join(RoleTaskDir(projectRoot, slug), "state", name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return true, nil

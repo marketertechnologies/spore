@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -139,14 +140,21 @@ const (
 var CommentOutcomes = []string{OutcomeFixed, OutcomePushedBack, OutcomeDeclined, OutcomeAnswered}
 
 // CommentOutcome names one review comment (reviewer instance, round,
-// 0-based index into that review's `comments`) and what the engineer
-// did with it.
+// 0-based index into that review's `comments`, so comment ID R1.3 is
+// index 2) and what the engineer did with it. Detail is one line: the
+// fix, the decline or pushback reason, or the answer. SHA optionally
+// names the commit of a fix. Both are optional on disk; files written
+// before they existed still parse.
 type CommentOutcome struct {
 	Reviewer ReviewerInstance `json:"reviewer"`
 	Round    int              `json:"round"`
 	Comment  int              `json:"comment"`
 	Outcome  string           `json:"outcome"`
+	Detail   string           `json:"detail,omitempty"`
+	SHA      string           `json:"sha,omitempty"`
 }
+
+var commitSHARE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 func (o CommentOutcome) validate() error {
 	if err := validateInstance(o.Reviewer); err != nil {
@@ -154,6 +162,9 @@ func (o CommentOutcome) validate() error {
 	}
 	if o.Round < 1 || o.Comment < 0 {
 		return fmt.Errorf("round must be >= 1 and comment >= 0, got round %d comment %d", o.Round, o.Comment)
+	}
+	if o.SHA != "" && !commitSHARE.MatchString(o.SHA) {
+		return fmt.Errorf("sha %q is not a 7-40 character lowercase hex commit id", o.SHA)
 	}
 	for _, k := range CommentOutcomes {
 		if o.Outcome == k {
@@ -170,8 +181,14 @@ type Review struct {
 	Author  string `json:"author"`
 	Verdict string `json:"verdict"`
 	Summary string `json:"summary"`
+	// Prefix is the slot's comment ID prefix ($SPORE_REVIEWER_PREFIX
+	// at spawn, see ReviewerPrefix). Optional: files without it number
+	// their comments with the instance letter (see IDPrefix).
+	Prefix string `json:"prefix,omitempty"`
 	// Comments holds graded objects or legacy plain strings; see
-	// ReviewComment and checkGrades for the verdict rule.
+	// ReviewComment and checkGrades for the verdict rule. Graded
+	// comments are sorted by severity (see checkSeverityOrder), so
+	// index order is ID order.
 	Comments []ReviewComment `json:"comments"`
 }
 
@@ -342,11 +359,12 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 	if err != nil {
 		return Review{}, err
 	}
-	legacy, err := isLegacyFile(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
+	rel := relTo(RoleTaskDir(projectRoot, slug), path)
+	legacy, sorted, err := reviewStrictness(projectRoot, slug, rel)
 	if err != nil {
 		return Review{}, err
 	}
-	return ParseReview(path, b, instance, round, legacy)
+	return parseReview(path, b, instance, round, legacy, sorted)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given
