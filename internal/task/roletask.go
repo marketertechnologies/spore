@@ -122,6 +122,45 @@ type EngineerResponse struct {
 	// Followups proposes out-of-scope work (new services, extra
 	// features) for a separate PR instead of growing this one.
 	Followups []string `json:"followups,omitempty"`
+	// Outcomes optionally records, per review comment, what the
+	// engineer did with it. Read by `spore task review-stats`.
+	Outcomes []CommentOutcome `json:"outcomes,omitempty"`
+}
+
+// Comment outcome values an engineer response may record.
+const (
+	OutcomeFixed      = "fixed"
+	OutcomePushedBack = "pushed_back"
+	OutcomeDeclined   = "declined"
+	OutcomeAnswered   = "answered"
+)
+
+// CommentOutcomes is the closed set of CommentOutcome.Outcome values.
+var CommentOutcomes = []string{OutcomeFixed, OutcomePushedBack, OutcomeDeclined, OutcomeAnswered}
+
+// CommentOutcome names one review comment (reviewer instance, round,
+// 0-based index into that review's `comments`) and what the engineer
+// did with it.
+type CommentOutcome struct {
+	Reviewer ReviewerInstance `json:"reviewer"`
+	Round    int              `json:"round"`
+	Comment  int              `json:"comment"`
+	Outcome  string           `json:"outcome"`
+}
+
+func (o CommentOutcome) validate() error {
+	if err := validateInstance(o.Reviewer); err != nil {
+		return err
+	}
+	if o.Round < 1 || o.Comment < 0 {
+		return fmt.Errorf("round must be >= 1 and comment >= 0, got round %d comment %d", o.Round, o.Comment)
+	}
+	for _, k := range CommentOutcomes {
+		if o.Outcome == k {
+			return nil
+		}
+	}
+	return fmt.Errorf("outcome %q not one of %s", o.Outcome, strings.Join(CommentOutcomes, ", "))
 }
 
 // Review is a reviewer's verdict for one round. Persisted as

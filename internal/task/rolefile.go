@@ -143,6 +143,11 @@ func ParseEngineerResponse(path string, b []byte, legacy bool) (EngineerResponse
 	if err := checkAuthor(path, r.Author, EngineerAuthor, legacy); err != nil {
 		return r, err
 	}
+	for i, o := range r.Outcomes {
+		if err := o.validate(); err != nil {
+			return r, invalid(path, fmt.Sprintf("outcomes[%d]: %v", i, err))
+		}
+	}
 	return r, nil
 }
 
