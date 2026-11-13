@@ -20,7 +20,7 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs splitting",
-		Comments: []string{"split commit X", "drop file Y"},
+		Comments: []task.ReviewComment{task.Ungraded("split commit X"), task.Ungraded("drop file Y")},
 	})
 	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{
 		Verdict: task.VerdictApprove,
@@ -112,7 +112,7 @@ func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
 	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs work",
-		Comments: []string{"fix bug X"},
+		Comments: []task.ReviewComment{task.Ungraded("fix bug X")},
 	})
 	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{
 		Addressed: []string{"bug X -> commit Y"},

@@ -614,9 +614,7 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 				fmt.Fprintf(&b, "%s\n\n", rev.Summary)
 			}
 			if len(rev.Comments) > 0 {
-				for _, c := range rev.Comments {
-					fmt.Fprintf(&b, "- %s\n", c)
-				}
+				b.WriteString(renderReviewComments(rev))
 				b.WriteString("\n")
 			}
 		}

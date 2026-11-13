@@ -110,7 +110,8 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 // ParseReview decodes a reviewer verdict. Strict mode rejects unknown
 // keys, trailing data, a missing summary, and an author other than
 // the reviewer instance. Legacy mode (grandfathered files) tolerates
-// unknown keys and a missing author. Both enforce the verdict enum.
+// unknown keys and a missing author. Both enforce the verdict enum,
+// the graded comment shape, and the grade-derived verdict rule.
 func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) (Review, error) {
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
@@ -124,6 +125,9 @@ func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) 
 	}
 	if !legacy && strings.TrimSpace(r.Summary) == "" {
 		return r, invalid(path, `missing required field "summary"`)
+	}
+	if err := checkGrades(r); err != nil {
+		return r, invalid(path, err.Error())
 	}
 	return r, nil
 }

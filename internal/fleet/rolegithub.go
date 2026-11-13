@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -334,8 +335,67 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 	if s := strings.TrimSpace(rev.Summary); s != "" {
 		b.WriteString(s + "\n\n")
 	}
+	b.WriteString(renderReviewComments(rev))
+	return b.String()
+}
+
+// renderReviewComments lists rev's comments as markdown bullets.
+// Graded comments sort blocking first, then by severity, and carry
+// their grade inline so the operator can scan what gates the verdict.
+// Ungraded (legacy string) comments render bare, in file order.
+func renderReviewComments(rev task.Review) string {
+	type item struct {
+		rank int
+		line string
+	}
+	graded := rev.Graded()
+	items := make([]item, 0, len(rev.Comments))
 	for _, c := range rev.Comments {
-		fmt.Fprintf(&b, "- %s\n", c)
+		switch {
+		case !graded:
+			items = append(items, item{line: c.Text})
+		case !c.IsGraded():
+			// A plain string in a graded review blocks: list it after
+			// the graded blockers, before the optional comments.
+			items = append(items, item{rank: 2, line: "**ungraded** / blocking - " + c.Text})
+		default:
+			rank := severityRank(c.Severity)
+			if !c.Blocking() {
+				rank += 3
+			}
+			items = append(items, item{rank: rank, line: gradedCommentLine(c)})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].rank < items[j].rank })
+	var b strings.Builder
+	for _, it := range items {
+		fmt.Fprintf(&b, "- %s\n", it.line)
+	}
+	return b.String()
+}
+
+func severityRank(sev string) int {
+	switch sev {
+	case task.SeverityHigh:
+		return 0
+	case task.SeverityMedium:
+		return 1
+	}
+	return 2
+}
+
+func gradedCommentLine(c task.ReviewComment) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s** / %s", c.Severity, c.Category)
+	if c.Blocking() {
+		b.WriteString(" / blocking")
+	}
+	if w := strings.TrimSpace(c.Where); w != "" {
+		fmt.Fprintf(&b, " / `%s`", w)
+	}
+	fmt.Fprintf(&b, " - %s", strings.TrimSpace(c.Text))
+	if r := strings.TrimSpace(c.Reason); r != "" {
+		fmt.Fprintf(&b, " (%s)", r)
 	}
 	return b.String()
 }

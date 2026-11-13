@@ -128,10 +128,12 @@ type EngineerResponse struct {
 // `reviews/<instance>/round-N.json`. Author must equal the instance
 // directory the file sits in; see ParseReview.
 type Review struct {
-	Author   string   `json:"author"`
-	Verdict  string   `json:"verdict"`
-	Summary  string   `json:"summary"`
-	Comments []string `json:"comments"`
+	Author  string `json:"author"`
+	Verdict string `json:"verdict"`
+	Summary string `json:"summary"`
+	// Comments holds graded objects or legacy plain strings; see
+	// ReviewComment and checkGrades for the verdict rule.
+	Comments []ReviewComment `json:"comments"`
 }
 
 // RoleTaskDir returns the absolute path to `<projectRoot>/.spore/<slug>/`.

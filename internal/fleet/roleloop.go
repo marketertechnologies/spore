@@ -68,6 +68,9 @@ type Snapshot struct {
 	// LastVerdict is the verdict on the latest reviewer round in
 	// the current phase, or empty when none has been written yet.
 	LastVerdict string
+	// LastBlocking and LastNonBlocking count the comments on that
+	// verdict by task.Review.Blocking. Both zero with no verdict.
+	LastBlocking, LastNonBlocking int
 }
 
 // DeriveSnapshot reads `<projectRoot>/.spore/<slug>/` and returns the
@@ -104,6 +107,13 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 	}
 	snap.Phase, snap.CurrentReviewer, snap.ReviewerRound, snap.LastVerdict =
 		derivePhase(len(engRounds), aReviews, bReviews)
+	if snap.LastVerdict != "" {
+		revs := aReviews
+		if snap.CurrentReviewer == task.ReviewerB {
+			revs = bReviews
+		}
+		snap.LastBlocking, snap.LastNonBlocking = revs[len(revs)-1].CountBlocking()
+	}
 	return snap, nil
 }
 

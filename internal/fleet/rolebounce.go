@@ -17,7 +17,7 @@ import (
 var wakeRole = wakeSession
 
 const (
-	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "comments"`
+	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "comments" (objects {"severity","category","where","text","reason"})`
 	engineerKeys = `"author", "addressed", "pushback", "notes", "followups"`
 )
 

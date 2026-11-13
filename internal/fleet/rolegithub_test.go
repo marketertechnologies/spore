@@ -233,7 +233,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("state = %+v", s)
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Comments: []string{"add a test"}})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	writeEng(2)(t, f.root, f.slug)
 	head2 := f.commit(t, "two")

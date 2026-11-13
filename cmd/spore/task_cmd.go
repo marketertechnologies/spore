@@ -221,18 +221,24 @@ func runTaskStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	printRoleSnapshot(snap)
+	return nil
+}
+
+func printRoleSnapshot(snap fleet.Snapshot) {
 	fmt.Printf("slug:     %s\n", snap.Slug)
 	fmt.Printf("phase:    %s\n", snap.Phase)
 	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	if snap.CurrentReviewer == "" {
+		return
 	}
-	return nil
+	verdict := snap.LastVerdict
+	if verdict == "" {
+		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
+		return
+	}
+	fmt.Printf("reviewer: %s round %d, last verdict %s (%d blocking, %d non-blocking)\n",
+		snap.CurrentReviewer, snap.ReviewerRound, verdict, snap.LastBlocking, snap.LastNonBlocking)
 }
 
 func runTaskRoleDrive(args []string) error {
@@ -249,17 +255,7 @@ func runTaskRoleDrive(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("slug:     %s\n", snap.Slug)
-	fmt.Printf("phase:    %s\n", snap.Phase)
-	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
-	}
+	printRoleSnapshot(snap)
 	return nil
 }
 
