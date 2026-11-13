@@ -11,11 +11,14 @@ see `spore recipes show github`.
 
 ```
 engineer round 1 done  -> push branch (app), open DRAFT PR, assign operator
-review verdict         -> COMMENT review "Review #1 (round N): <verdict>" (A) / "Review #2" (B)
-engineer round 2+      -> push, PR comment "Engineer (round N)"
+review verdict         -> COMMENT review "<label> (round N): <verdict>", items numbered R1.1, C2.3, ...
+engineer round 2+      -> push, PR comment "Engineer (round N)": outcome table by ID, then notes
 PhaseDone              -> gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
 PhaseEscalated         -> one PR comment naming the cap and reviewer; PR stays draft
 ```
+
+`<label>` is the slot's display name from its mode (`Requirements
+review`, `Code review`; see "Comment IDs" in `docs/role-loop.md`).
 
 `DriveRoleLoop` does all of it (`internal/fleet/rolegithub.go`). Agents
 still only write their `.spore/<slug>/` files; GitHub is a mirror,

@@ -60,7 +60,8 @@ Never measure against a sibling task branch.
 The skill's findings carry no severity. You grade each one when you
 map it to a `comments` entry (see "Grading comments"):
 
-- One graded comment per finding. `where` is the finding's
+- One graded comment per finding, sorted by severity (see "Comment
+  IDs"). `where` is the finding's
   `path:line`; `text` is the defect and its failure scenario, no
   repeat of the inline comment's full body.
 - Pick `severity` and `category` yourself from the rubric. Judge how
@@ -100,8 +101,8 @@ New `high` / `medium` findings on unchanged code are still mapped:
 a real defect is worth raising late.
 
 Declined lows are closed. When the engineer declined a `low` with a
-reason (in `pushback`, or `outcomes` says `declined`), do not raise
-it again in a later round, even reworded. A pushback on a `medium`
+reason (its ID has outcome `declined`, or a `pushback` entry names
+it), do not raise it again in a later round, even reworded. A pushback on a `medium`
 or `high` may still be re-raised when its reasoning is wrong; say
 so in the comment (`pushback rejected: <why>`).
 
@@ -114,6 +115,7 @@ so in the comment (`pushback rejected: <why>`).
   ```json
   {
     "author": "A",
+    "prefix": "R",
     "verdict": "approve" | "request_changes",
     "summary": "one-line overall take",
     "comments": [
@@ -132,6 +134,10 @@ so in the comment (`pushback rejected: <why>`).
 
   - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`; it
     must match the directory you write into.
+  - `prefix`: the value of `$SPORE_REVIEWER_PREFIX` (`R` for the
+    requirements review, `C` for the code review; `S` / `D` when both
+    slots run the same mode). It numbers your comments (see "Comment
+    IDs").
   - `comments`: one graded object per mapped finding.
   - No other keys. The coordinator validates the file on every
     tick; an invalid file does not count, is moved to
@@ -164,6 +170,17 @@ Comment keys:
   otherwise.
 
 No other keys in a comment.
+
+## Comment IDs
+
+Sort `comments` by severity: every `high`, then `medium`, then `low`,
+then `question`. The coordinator rejects an unsorted file. Each
+comment's ID is `<prefix><round>.<n>`, n counting from 1 in file
+order: `R2.3` is the third comment of your round-2 verdict. The PR
+review lists your comments under these IDs (headed with
+`$SPORE_REVIEWER_LABEL`), the engineer answers them by ID, and you
+cite earlier comments by ID in later rounds (`R1.4 still open`,
+`pushback on R1.2 rejected: <why>`).
 
 Severity is likelihood times impact:
 
@@ -255,8 +272,12 @@ path.
   files. Your output is your verdict file (plus the skill's inline
   PR comments, when a PR is open).
 - Do not approve, merge, or push. Inline comments from `--comment`
-  are the only thing you post; the driver posts your verdict as
-  `Review #1` (A) or `Review #2` (B). Never read the PR thread: it
-  holds the other instance's reviews.
+  are the only thing you post; the driver posts your verdict headed
+  with `$SPORE_REVIEWER_LABEL`, each comment led by its ID. That
+  review body is the authoritative numbered list: the skill posts its
+  inline comments before you grade and sort the findings, so they
+  carry no ID. If the skill lets you word the inline comments it
+  posts, start each with the finding's ID. Never read the PR thread:
+  it holds the other instance's reviews.
 - Stay inside the working repo and `.spore/<task>/`. Do not write
   elsewhere on the host.

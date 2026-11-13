@@ -181,8 +181,11 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   grades each one (see "Graded review comments") and the verdict
   follows from the grades. Rounds 2+ drop new `low` findings on code
   the engineer did not change that round, since the skill re-reviews
-  the whole PR each time. The verdict file schema and the
-  `Review #1` / `Review #2` mirror are shared with `fleet` mode. The
+  the whole PR each time. The verdict file schema, comment IDs and
+  the PR mirror are shared with `fleet` mode. The skill's own inline
+  PR comments carry no ID (it posts them before the reviewer grades
+  and sorts); the review body the driver posts is the authoritative
+  numbered list. The
   run has no spec context, so the engineer pushes back with a
   one-line reason on findings the spec contradicts, and later rounds
   do not re-raise a finding with a sound pushback.
@@ -201,8 +204,9 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   spawn from the current config, like the task agent, and never from
   the worker ratio: a live pane keeps its agent, but a pane spawned
   after a config edit picks up the new one.
-- Panes get `SPORE_REVIEWER_MODE`, plus `SPORE_REVIEW_EFFORT` in
-  code-review mode.
+- Panes get `SPORE_REVIEWER_MODE`, `SPORE_REVIEWER_PREFIX`,
+  `SPORE_REVIEWER_LABEL` (see "Comment IDs"), plus
+  `SPORE_REVIEW_EFFORT` in code-review mode.
 
 The default pairing is A = fleet, B = code-review: requirements
 first, code review last. The engineer settles what the spec asks for
@@ -254,10 +258,14 @@ by writing `responses/engineer-round-N.json`:
 
     {
       "author": "engineer",
-      "addressed": ["comment 1 -> commit X"],
-      "pushback": ["comment 3 -> disagree because Z"],
+      "addressed": ["R1.1: guard the nil session"],
+      "pushback": ["R1.3: disagree because Z"],
       "notes": "free-form context for the reviewer",
-      "followups": ["out-of-scope idea for a separate PR"]
+      "followups": ["out-of-scope idea for a separate PR"],
+      "outcomes": [
+        {"reviewer": "A", "round": 1, "comment": 0, "outcome": "fixed",
+         "detail": "guard the nil session", "sha": "abc1234"}
+      ]
     }
 
 Reviewer (`spore-role/<project>/<slug>/reviewer-<instance>`): one
@@ -270,11 +278,12 @@ B's own verdicts. Each round a reviewer writes
 
     {
       "author": "A",
+      "prefix": "R",
       "verdict": "approve" | "request_changes",
       "summary": "one-line overall take",
       "comments": [
         {
-          "severity": "high" | "medium" | "low",
+          "severity": "high" | "medium" | "low" | "question",
           "category": "correctness",
           "where": "path:line",
           "text": "the defect and its failure scenario",
@@ -343,13 +352,63 @@ comments are all ungraded (or empty) keeps its verdict as written,
 exactly as before grading, at any round. In a review that grades
 any comment, a plain string counts like a `medium`.
 
-The draft-PR mirror renders graded comments by severity (high, then
-medium, then ungraded strings, then question, then low) as `**high**
-/ correctness / `path:line` - text (reason)`, with the trigger on an
-indented `Trigger:` line and the suggestion as an indented fenced
-block (tagged `diff` when it is a unified diff) under the comment. Comments of a fully ungraded review
-render as plain bullets. The escalation comment on the PR says the
-engineer was asked for one fix pass and that the operator decides.
+## Comment IDs
+
+Each slot has a display label and a comment ID prefix, derived from
+its mode, not its letter (`task.ReviewerPrefix`):
+
+| Slot modes (A, B) | A | B |
+| --- | --- | --- |
+| fleet, code-review (default) | `R` Requirements review | `C` Code review |
+| code-review, fleet | `C` Code review | `R` Requirements review |
+| fleet, fleet | `R` Requirements review | `S` Requirements review 2 |
+| code-review, code-review | `C` Code review | `D` Code review 2 |
+
+The spawn settles both slots' modes (including the non-claude
+fallback) and passes the result as `SPORE_REVIEWER_PREFIX` and
+`SPORE_REVIEWER_LABEL`. The reviewer copies the prefix into its
+verdict as `prefix`, so each file names its own IDs even if a slot's
+mode changes between rounds. Internals keep A and B: `reviews/A/`,
+`[fleet.reviewers.A]`, `SPORE_REVIEWER_INSTANCE`, and the `reviewer`
+field of engineer outcomes.
+
+A comment's ID is `<prefix><round>.<n>`, n counting from 1 in file
+order: `R1.3` is the third comment of the requirements review's
+round-1 verdict, `comment` index 2 in an engineer outcome. A graded
+verdict must list its comments high, then medium (an ungraded string
+counts as medium), then low, then question; validation rejects an
+unsorted file, so on-disk order, ID order and PR order agree. A file
+without `prefix` (written before IDs, or by a project role body that
+does not set it) is numbered with its instance letter (`A1.2`) and
+labelled `Reviewer A`.
+
+The draft-PR mirror heads each review `**<label> (round N):
+<verdict>**` and lists the comments in file order as `**R1.1** |
+high | correctness | `path:line` - text (reason)`, with the trigger
+on an indented `Trigger:` line and the suggestion as an indented
+fenced block (tagged `diff` when it is a unified diff). An ungraded
+string reads `**R1.2** | ungraded | text`; a fully ungraded review
+lists `**A1.1** text`. The escalation comment names the reviewer by
+label, says the engineer was asked for one fix pass, and that the
+operator decides.
+
+An engineer response comment starts with a table built from its
+`outcomes`, one row per outcome in ID order (slot A, then B; round;
+comment):
+
+    | ID | Grade | Outcome | Details |
+    | --- | --- | --- | --- |
+    | R1.1 | high | fixed | `abc1234` guard the nil session |
+    | R1.3 | low | declined | rename churns callers |
+
+The grade is joined from the verdict file (`?` when the file is gone
+or the index is past its comments); details are the outcome's `sha`
+and `detail`. The free-text `addressed` / `pushback` / notes /
+follow-ups follow, minus `addressed` / `pushback` entries that lead
+with an ID whose row already has details. Responses without
+`outcomes` render their lists as before. The engineer wake names the
+reviewer by label and the IDs to cite (`Code review (reviewer B,
+comment IDs C2.N) requested changes at round 2`).
 
 ## File validation
 
@@ -359,8 +418,10 @@ JSON object, carries a key outside its schema, lacks a required field
 (`author` everywhere; `verdict` and `summary` on reviews), has a
 verdict outside `approve` / `request_changes`, has a malformed graded
 comment (unknown severity or category, unknown key, missing `text`,
-missing `reason` or `trigger` on `high` / `medium`), has an engineer
-`outcomes` entry with an unknown reviewer or outcome, has a verdict
+missing `reason` or `trigger` on `high` / `medium`), lists graded
+comments out of severity order, has an unknown `prefix`, has an
+engineer `outcomes` entry with an unknown reviewer or outcome or a
+`sha` that is not a 7-40 character hex commit id, has a verdict
 that
 contradicts its grades for its round (the error names the round
 and the rule), or has an `author`
@@ -383,6 +444,10 @@ verdict enum still applies), so an in-flight loop does not rewind.
 Files written after that point are strict. Panes spawned before the
 upgrade still run the old role body; their next file without
 `author` is bounced, and the wake message names the missing field.
+The severity-order rule has its own marker: the first drive by a
+binary that enforces it writes `state/order-exempt-files`, and the
+verdicts listed there keep their order (their IDs already went out).
+A tree with no marker yet is exempt in full until its first drive.
 
 ## Observing a running loop
 
@@ -393,12 +458,14 @@ its comment counts (high/medium, low, question, ungraded), and an
 owed.
 
 `spore task review-stats` scans every `.spore/*/reviews/{A,B}/
-round-*.json` under the main repo root and prints two tables, by
-severity and by category: comments raised, and how the engineer
-handled them (`fixed`, `pushed_back`, `declined`, `answered`) as
-recorded in the optional `outcomes` list of engineer responses
-(`{reviewer, round, comment, outcome}`, comment being the 0-based
-index into that review's `comments`; the latest record wins).
+round-*.json` under the main repo root and prints three tables, by
+reviewer label (`Requirements review`, `Code review`, `Reviewer A`
+for files without a prefix), by severity and by category: comments
+raised, and how the engineer handled them (`fixed`, `pushed_back`,
+`declined`, `answered`) as recorded in the `outcomes` list of
+engineer responses (`{reviewer, round, comment, outcome, detail,
+sha}`, comment being the 0-based index into that review's
+`comments`, so ID n minus 1; the latest record wins).
 Comments with no record count as `unrecorded`; invalid files are
 skipped and counted.
 
@@ -415,6 +482,8 @@ Markers under `.spore/<slug>/state/`:
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
+- `order-exempt-files`: verdicts grandfathered from before the
+  severity-order rule.
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).

@@ -61,6 +61,7 @@ responses to read.
   ```json
   {
     "author": "A",
+    "prefix": "R",
     "verdict": "approve" | "request_changes",
     "summary": "one-line overall take",
     "comments": [
@@ -79,6 +80,10 @@ responses to read.
 
   - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`
     (`A` or `B`); it must match the directory you write into.
+  - `prefix`: the value of `$SPORE_REVIEWER_PREFIX` (`R` for the
+    requirements review, `C` for the code review; `S` / `D` when both
+    slots run the same mode). It numbers your comments (see "Comment
+    IDs").
   - `verdict`: `approve` clears the round; `request_changes` sends
     the branch back to the engineer. It must follow from the
     comment grades (see "Grading comments").
@@ -118,6 +123,17 @@ Comment keys:
   otherwise.
 
 No other keys in a comment.
+
+## Comment IDs
+
+Sort `comments` by severity: every `high`, then `medium`, then `low`,
+then `question`. The coordinator rejects an unsorted file. Each
+comment's ID is `<prefix><round>.<n>`, n counting from 1 in file
+order: `R2.3` is the third comment of your round-2 verdict. The PR
+review lists your comments under these IDs (headed with
+`$SPORE_REVIEWER_LABEL`), the engineer answers them by ID, and you
+cite earlier comments by ID in later rounds (`R1.4 still open`,
+`pushback on R1.2 rejected: <why>`).
 
 Severity is likelihood times impact:
 
@@ -184,8 +200,8 @@ comment (still unaddressed, or pushed back on with a wrong reason)
 is not new.
 
 Declined lows are closed. When the engineer declined a `low` with a
-reason (in `pushback`, or `outcomes` says `declined`), do not raise
-it again in a later round, even reworded. A pushback on a `medium`
+reason (its ID has outcome `declined`, or a `pushback` entry names
+it), do not raise it again in a later round, even reworded. A pushback on a `medium`
 or `high` may still be re-raised when its reasoning is wrong; say
 so in the comment (`pushback rejected: <why>`).
 
@@ -264,8 +280,10 @@ regardless of cwd.
   after both reviewer phases clear.
 - Do not push to remotes.
 - When the project runs the draft-PR flow, the driver posts your
-  verdict on the PR as a comment review headed `Review #1` (A) or
-  `Review #2` (B). Still never comment on or approve the PR
+  verdict on the PR as a comment review headed with
+  `$SPORE_REVIEWER_LABEL` (for example `Requirements review (round
+  1): request changes`), each comment led by its ID. Still never
+  comment on or approve the PR
   yourself, and never read the PR thread (it holds the other
   instance's reviews). Your summary and comments are public to the
   team: write them for a reader who has not seen the spec.
