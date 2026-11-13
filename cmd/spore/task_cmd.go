@@ -237,9 +237,10 @@ func printRoleSnapshot(snap fleet.Snapshot) {
 		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
 		return
 	}
-	counts := fmt.Sprintf("%d high/medium, %d low", snap.LastHighMedium, snap.LastLow)
-	if snap.LastUngraded > 0 {
-		counts += fmt.Sprintf(", %d ungraded", snap.LastUngraded)
+	n := snap.LastCounts
+	counts := fmt.Sprintf("%d high/medium, %d low, %d question", n.HighMedium, n.Low, n.Question)
+	if n.Ungraded > 0 {
+		counts += fmt.Sprintf(", %d ungraded", n.Ungraded)
 	}
 	fmt.Printf("reviewer: %s round %d, last verdict %s (%s)\n",
 		snap.CurrentReviewer, snap.ReviewerRound, verdict, counts)

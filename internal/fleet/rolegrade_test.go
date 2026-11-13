@@ -6,14 +6,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/versality/spore/internal/task"
 )
 
 var (
 	lowNit  = task.ReviewComment{Severity: task.SeverityLow, Category: "nit", Text: "rename foo"}
-	medEdge = task.ReviewComment{Severity: task.SeverityMedium, Category: "edge-case", Text: "empty list", Reason: "plausible"}
-	highBug = task.ReviewComment{Severity: task.SeverityHigh, Category: "correctness", Text: "nil deref", Reason: "every run"}
+	medEdge = task.ReviewComment{Severity: task.SeverityMedium, Category: "edge-case", Text: "empty list", Reason: "plausible", Trigger: "empty tasks/ dir"}
+	highBug = task.ReviewComment{Severity: task.SeverityHigh, Category: "correctness", Text: "nil deref", Reason: "every run", Trigger: "any run"}
+	askWhy  = task.ReviewComment{Severity: task.SeverityQuestion, Category: "spec", Text: "is the cap intended?"}
 )
 
 func writeGraded(instance task.ReviewerInstance, round int, verdict string, comments ...task.ReviewComment) stepFn {
@@ -54,17 +56,23 @@ func TestReviewBodyGradedBySeverity(t *testing.T) {
 		Summary: "one bug",
 		Comments: []task.ReviewComment{
 			lowNit,
+			askWhy,
 			medEdge,
-			{Severity: "medium", Category: "correctness", Where: "a.go:3", Text: "off by one", Reason: "every page"},
-			{Severity: "high", Category: "security", Text: "token logged", Reason: "leaks creds"},
+			{Severity: "medium", Category: "correctness", Where: "a.go:3", Text: "off by one", Reason: "every page", Trigger: "page 2",
+				Suggestion: "--- a/a.go\n+++ b/a.go\n@@ -3 +3 @@\n-i <= n\n+i < n\n"},
+			{Severity: "high", Category: "security", Text: "token logged", Reason: "leaks creds", Trigger: "any login"},
+			{Severity: "low", Category: "nit", Where: "b.go:1", Text: "name", Suggestion: "x := ```\n"},
 		},
 	}
 	got := reviewBody(task.ReviewerA, 2, rev)
 	want := "**Review #1 (round 2): request changes**\n\none bug\n\n" +
-		"- **high** / security - token logged (leaks creds)\n" +
-		"- **medium** / edge-case - empty list (plausible)\n" +
-		"- **medium** / correctness / `a.go:3` - off by one (every page)\n" +
-		"- **low** / nit - rename foo\n"
+		"- **high** / security - token logged (leaks creds)\n  Trigger: any login\n" +
+		"- **medium** / edge-case - empty list (plausible)\n  Trigger: empty tasks/ dir\n" +
+		"- **medium** / correctness / `a.go:3` - off by one (every page)\n  Trigger: page 2\n\n" +
+		"  ```diff\n  --- a/a.go\n  +++ b/a.go\n  @@ -3 +3 @@\n  -i <= n\n  +i < n\n  ```\n" +
+		"- **question** / spec - is the cap intended?\n" +
+		"- **low** / nit - rename foo\n" +
+		"- **low** / nit / `b.go:1` - name\n\n  ````\n  x := ```\n  ````\n"
 	if got != want {
 		t.Errorf("body:\n%s\nwant:\n%s", got, want)
 	}
@@ -85,7 +93,7 @@ func TestReviewBodyUngradedInGradedReview(t *testing.T) {
 		lowNit, task.Ungraded("plain"), highBug,
 	}}
 	got := renderReviewComments(rev)
-	want := "- **high** / correctness - nil deref (every run)\n- **ungraded** - plain\n- **low** / nit - rename foo\n"
+	want := "- **high** / correctness - nil deref (every run)\n  Trigger: any run\n- **ungraded** - plain\n- **low** / nit - rename foo\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -97,29 +105,58 @@ func TestDeriveSnapshotSeverityCounts(t *testing.T) {
 		{writeEng(1), PhaseReviewA, task.ReviewerA, 0},
 		{writeGraded(task.ReviewerA, 1, task.VerdictRequestChanges, highBug, medEdge, lowNit), PhaseEngineerReviseA, task.ReviewerA, 1},
 	})
-	if snap.LastHighMedium != 2 || snap.LastLow != 1 || snap.LastUngraded != 0 {
-		t.Errorf("counts = %d high/medium, %d low, %d ungraded; want 2, 1, 0", snap.LastHighMedium, snap.LastLow, snap.LastUngraded)
+	if got, want := snap.LastCounts, (task.GradeCounts{HighMedium: 2, Low: 1}); got != want {
+		t.Errorf("counts = %+v, want %+v", got, want)
 	}
 }
 
-// R1 mixed -> R2 lows -> R3 lows-only approve -> review-B, never
-// escalated; B approving at R3 with lows reaches done.
-func TestDerivePhaseFinalRoundLowsApprove(t *testing.T) {
+// R1 mixed -> R2 medium -> R3 lows-only approve -> review-B, never
+// escalated; B's R1 low costs a round, its R2 lows-only approve
+// reaches done.
+func TestDerivePhaseLowsCostOnlyRoundOne(t *testing.T) {
 	A, B := task.ReviewerA, task.ReviewerB
 	root, slug := t.TempDir(), "demo"
 	walkPhases(t, root, slug, []phaseRow{
 		{writeEng(1), PhaseReviewA, A, 0},
 		{writeGraded(A, 1, task.VerdictRequestChanges, highBug, lowNit), PhaseEngineerReviseA, A, 1},
 		{writeEng(2), PhaseReviewA, A, 1},
-		{writeGraded(A, 2, task.VerdictRequestChanges, lowNit), PhaseEngineerReviseA, A, 2},
+		{writeGraded(A, 2, task.VerdictRequestChanges, medEdge, lowNit), PhaseEngineerReviseA, A, 2},
 		{writeEng(3), PhaseReviewA, A, 2},
-		{writeGraded(A, 3, task.VerdictApprove, lowNit, lowNit), PhaseReviewB, B, 0},
+		{writeGraded(A, 3, task.VerdictApprove, lowNit, askWhy), PhaseReviewB, B, 0},
 		{writeGraded(B, 1, task.VerdictRequestChanges, lowNit), PhaseEngineerReviseB, B, 1},
 		{writeEng(4), PhaseReviewB, B, 1},
-		{writeGraded(B, 2, task.VerdictRequestChanges, medEdge), PhaseEngineerReviseB, B, 2},
-		{writeEng(5), PhaseReviewB, B, 2},
-		{writeGraded(B, 3, task.VerdictApprove, lowNit), PhaseDone, B, 3},
+		{writeGraded(B, 2, task.VerdictApprove, lowNit, askWhy), PhaseDone, B, 2},
 	})
+}
+
+// A round-2 approve carrying lows and a question hands over to B and
+// does not wake the engineer.
+func TestDriveRoundTwoLowsApproveNoEngineerWake(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	walkPhases(t, root, slug, []phaseRow{
+		{writeEng(1), PhaseReviewA, task.ReviewerA, 0},
+		{writeGraded(task.ReviewerA, 1, task.VerdictRequestChanges, lowNit), PhaseEngineerReviseA, task.ReviewerA, 1},
+		{writeEng(2), PhaseReviewA, task.ReviewerA, 1},
+		{writeGraded(task.ReviewerA, 2, task.VerdictApprove, lowNit, askWhy), PhaseReviewB, task.ReviewerB, 0},
+	})
+	stubPanes(t)
+	outcome := wakeDelivered
+	calls := stubWakeRole(t, &outcome)
+	snap, err := DriveRoleLoop(root, tasksDir, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Phase != PhaseReviewB {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseReviewB)
+	}
+	for _, c := range *calls {
+		if strings.HasSuffix(c.session, "/engineer") {
+			t.Errorf("engineer woken on a lows-only approve: %+v", c)
+		}
+	}
 }
 
 // A legacy all-string tree derives exactly as before grading.
@@ -141,7 +178,7 @@ func escalateA(t *testing.T, root, slug string) {
 		{writeEng(1), PhaseReviewA, task.ReviewerA, 0},
 		{writeGraded(task.ReviewerA, 1, task.VerdictRequestChanges, highBug), PhaseEngineerReviseA, task.ReviewerA, 1},
 		{writeEng(2), PhaseReviewA, task.ReviewerA, 1},
-		{writeGraded(task.ReviewerA, 2, task.VerdictRequestChanges, lowNit), PhaseEngineerReviseA, task.ReviewerA, 2},
+		{writeGraded(task.ReviewerA, 2, task.VerdictRequestChanges, medEdge), PhaseEngineerReviseA, task.ReviewerA, 2},
 		{writeEng(3), PhaseReviewA, task.ReviewerA, 2},
 		{writeGraded(task.ReviewerA, 3, task.VerdictRequestChanges, medEdge, lowNit), PhaseEscalated, task.ReviewerA, 3},
 	})
@@ -217,6 +254,40 @@ func TestDerivePhaseForceApproveAfterFixPass(t *testing.T) {
 	})
 }
 
+// Operator force-approves A's final verdict BEFORE the fix pass
+// lands: B's first request_changes is answered by the next engineer
+// response; the loop must not wait for an extra round.
+func TestDerivePhaseForceApproveBeforeFixPass(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	escalateA(t, root, slug)
+	stateDir := filepath.Join(task.RoleTaskDir(root, slug), "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "escalated-A-3"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	B := task.ReviewerB
+	// The B revision lands strictly after B's verdict, whatever the
+	// filesystem's timestamp granularity.
+	engAfterB1 := func(t *testing.T, root, slug string) {
+		writeEng(4)(t, root, slug)
+		b1, err := os.Stat(task.ReviewPath(root, slug, B, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		later := b1.ModTime().Add(time.Second)
+		if err := os.Chtimes(task.EngineerResponsePath(root, slug, 4), later, later); err != nil {
+			t.Fatal(err)
+		}
+	}
+	walkPhases(t, root, slug, []phaseRow{
+		{writeGraded(task.ReviewerA, 3, task.VerdictApprove), PhaseReviewB, B, 0},
+		{writeGraded(B, 1, task.VerdictRequestChanges, lowNit), PhaseEngineerReviseB, B, 1},
+		{engAfterB1, PhaseReviewB, B, 1},
+	})
+}
+
 func TestMirrorEventsEscalationPostsFixPass(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	escalateA(t, root, slug)
@@ -241,10 +312,10 @@ func TestMirrorEventsFinalRoundLowsReady(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	writeEng(1)(t, root, slug)
 	writeGraded(task.ReviewerA, 1, task.VerdictApprove)(t, root, slug)
-	for r := 1; r <= 2; r++ {
-		writeGraded(task.ReviewerB, r, task.VerdictRequestChanges, lowNit)(t, root, slug)
-		writeEng(r+1)(t, root, slug)
-	}
+	writeGraded(task.ReviewerB, 1, task.VerdictRequestChanges, lowNit)(t, root, slug)
+	writeEng(2)(t, root, slug)
+	writeGraded(task.ReviewerB, 2, task.VerdictRequestChanges, medEdge)(t, root, slug)
+	writeEng(3)(t, root, slug)
 	writeGraded(task.ReviewerB, 3, task.VerdictApprove, lowNit)(t, root, slug)
 	snap, _ := DeriveSnapshot(root, slug)
 	evs, _ := mirrorEvents(root, slug, snap)
@@ -283,9 +354,35 @@ func TestBounceNamesVerdictRule(t *testing.T) {
 		t.Fatalf("calls = %+v, want one wake", *calls)
 	}
 	msg := (*calls)[0].msg
-	for _, s := range []string{`round 1 verdict "approve"`, "in rounds 1-2 any comment (high, medium or low) requires", `"request_changes"`} {
+	for _, s := range []string{`round 1 verdict "approve"`, "in round 1 any comment (high, medium, low or question) requires", `"request_changes"`} {
 		if !strings.Contains(msg, s) {
 			t.Errorf("msg missing %q:\n%s", s, msg)
 		}
+	}
+}
+
+// A fully ungraded (legacy) final verdict escalates with a fix-pass
+// wake that does not mention grades it never had.
+func TestDriveEscalationFixPassUngradedMessage(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	for i := 1; i <= MaxReviewerRounds; i++ {
+		writeEng(i)(t, root, slug)
+		writeGraded(task.ReviewerA, i, task.VerdictRequestChanges, task.Ungraded("fix it"))(t, root, slug)
+	}
+	stubPanes(t)
+	outcome := wakeDelivered
+	calls := stubWakeRole(t, &outcome)
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("wakes = %+v, want one", *calls)
+	}
+	msg := (*calls)[0].msg
+	if !strings.Contains(msg, "address its comments in one fix pass") || strings.Contains(msg, "high and medium") {
+		t.Errorf("ungraded fix-pass msg = %s", msg)
 	}
 }

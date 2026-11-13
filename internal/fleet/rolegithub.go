@@ -341,10 +341,12 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 }
 
 // renderReviewComments lists rev's comments as markdown bullets.
-// Graded comments sort by severity (high, medium, then low) and carry
-// their grade inline so the operator can scan them. A plain string in
-// a graded review counts like a medium and sorts just after them.
-// Ungraded (legacy string) reviews render bare, in file order.
+// Graded comments sort by severity (high, medium, question, then
+// low) and carry their grade inline so the operator can scan them. A
+// plain string in a graded review counts like a medium and sorts just
+// after them. A trigger renders as an indented line and a suggestion
+// as an indented fenced block under its comment. Ungraded (legacy
+// string) reviews render bare, in file order.
 func renderReviewComments(rev task.Review) string {
 	type item struct {
 		rank int
@@ -376,8 +378,10 @@ func severityRank(sev string) int {
 		return 0
 	case task.SeverityMedium:
 		return 1
+	case task.SeverityQuestion:
+		return 3
 	}
-	return 3
+	return 4
 }
 
 func gradedCommentLine(c task.ReviewComment) string {
@@ -390,7 +394,46 @@ func gradedCommentLine(c task.ReviewComment) string {
 	if r := strings.TrimSpace(c.Reason); r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
+	if t := strings.TrimSpace(c.Trigger); t != "" {
+		fmt.Fprintf(&b, "\n  Trigger: %s", t)
+	}
+	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
+		b.WriteString("\n\n" + indentLines(fencedBlock(sug), "  "))
+	}
 	return b.String()
+}
+
+// fencedBlock wraps code in a markdown fence longer than any backtick
+// run inside it, tagged `diff` when it reads as a unified diff.
+func fencedBlock(code string) string {
+	longest, run := 0, 0
+	for _, r := range code {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", max(3, longest+1))
+	lang := ""
+	for _, p := range []string{"diff --git", "--- ", "@@"} {
+		if strings.HasPrefix(code, p) {
+			lang = "diff"
+			break
+		}
+	}
+	return fence + lang + "\n" + code + "\n" + fence
+}
+
+func indentLines(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = prefix + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *githubMirror) prComment(body string) error {

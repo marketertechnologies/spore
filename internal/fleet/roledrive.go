@@ -194,10 +194,15 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
 		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
 	if snap.Phase == PhaseEscalated {
+		// A fully ungraded (legacy) verdict has no grades to name.
+		what := "its comments"
+		if n := snap.LastCounts; n.HighMedium+n.Low+n.Question > 0 {
+			what = "its high and medium comments (lows are optional; answer any questions)"
+		}
 		msg = fmt.Sprintf("Reviewer %s requested changes at round %d, the final round: the loop is escalated to the operator. "+
-			"Read %s and address its high and medium comments in one fix pass (lows are optional), then write %s. "+
+			"Read %s and address %s in one fix pass, then write %s. "+
 			"No re-review follows; the operator takes it from there.",
-			snap.CurrentReviewer, snap.ReviewerRound, verdictPath,
+			snap.CurrentReviewer, snap.ReviewerRound, verdictPath, what,
 			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1))
 	}
 	_, err := wakeRole(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)

@@ -13,6 +13,10 @@ const (
 	SeverityHigh   = "high"
 	SeverityMedium = "medium"
 	SeverityLow    = "low"
+	// SeverityQuestion asks the engineer for an answer. It requests
+	// changes only at round 1 (so the engineer answers it) and never
+	// blocks after that.
+	SeverityQuestion = "question"
 )
 
 // ReviewCategories is the closed set of graded comment categories.
@@ -22,8 +26,8 @@ var ReviewCategories = []string{
 }
 
 // FinalReviewRound is each reviewer's last round (fleet's
-// MaxReviewerRounds). The verdict rule changes there: lows no longer
-// block, and a request_changes escalates to the operator.
+// MaxReviewerRounds). A request_changes there escalates to the
+// operator instead of looping.
 const FinalReviewRound = 3
 
 // ReviewComment is one entry of a review's `comments`. On disk it is
@@ -36,6 +40,23 @@ type ReviewComment struct {
 	Where    string `json:"where,omitempty"`
 	Text     string `json:"text"`
 	Reason   string `json:"reason,omitempty"`
+	// Trigger is the concrete inputs or steps that cause the failure.
+	// Required for high and medium, optional otherwise.
+	Trigger string `json:"trigger,omitempty"`
+	// Suggestion is an optional fix for Where: replacement code or a
+	// small unified diff.
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+// blocksAfterFirstRound reports whether c forces request_changes in
+// rounds 2+: a high or medium, or a plain string inside a graded
+// review (counted like a medium).
+func (c ReviewComment) blocksAfterFirstRound() bool {
+	switch c.Severity {
+	case SeverityLow, SeverityQuestion:
+		return false
+	}
+	return true
 }
 
 // Ungraded returns a legacy plain-string comment.
@@ -83,9 +104,9 @@ func (c ReviewComment) MarshalJSON() ([]byte, error) {
 
 func (c ReviewComment) validate() error {
 	switch c.Severity {
-	case SeverityHigh, SeverityMedium, SeverityLow:
+	case SeverityHigh, SeverityMedium, SeverityLow, SeverityQuestion:
 	default:
-		return fmt.Errorf("severity %q not one of high, medium, low", c.Severity)
+		return fmt.Errorf("severity %q not one of high, medium, low, question", c.Severity)
 	}
 	if !knownCategory(c.Category) {
 		return fmt.Errorf("category %q not one of %s", c.Category, strings.Join(ReviewCategories, ", "))
@@ -93,8 +114,14 @@ func (c ReviewComment) validate() error {
 	if strings.TrimSpace(c.Text) == "" {
 		return errors.New(`missing required field "text"`)
 	}
-	if c.Severity != SeverityLow && strings.TrimSpace(c.Reason) == "" {
+	if c.Severity != SeverityHigh && c.Severity != SeverityMedium {
+		return nil
+	}
+	if strings.TrimSpace(c.Reason) == "" {
 		return fmt.Errorf(`%s comment missing required field "reason" (one line why this severity)`, c.Severity)
+	}
+	if strings.TrimSpace(c.Trigger) == "" {
+		return fmt.Errorf(`%s comment missing required field "trigger" (the inputs or steps that cause the failure; file it as low or question if you could not find one)`, c.Severity)
 	}
 	return nil
 }
@@ -121,29 +148,37 @@ func (r Review) Graded() bool {
 	return false
 }
 
-// SeverityCounts tallies r's comments by grade: high or medium, low,
-// and ungraded (plain strings).
-func (r Review) SeverityCounts() (highMedium, low, ungraded int) {
+// GradeCounts tallies a review's comments by grade.
+type GradeCounts struct {
+	HighMedium, Low, Question, Ungraded int
+}
+
+// Counts tallies r's comments by grade; plain strings are Ungraded.
+func (r Review) Counts() GradeCounts {
+	var n GradeCounts
 	for _, c := range r.Comments {
 		switch c.Severity {
 		case SeverityHigh, SeverityMedium:
-			highMedium++
+			n.HighMedium++
 		case SeverityLow:
-			low++
+			n.Low++
+		case SeverityQuestion:
+			n.Question++
 		default:
-			ungraded++
+			n.Ungraded++
 		}
 	}
-	return highMedium, low, ungraded
+	return n
 }
 
 // checkGrades validates every graded comment and, for a graded
 // review, that the verdict follows from the grades at this round:
 //
-//   - rounds before FinalReviewRound: any comment requires
-//     request_changes (the engineer revises, the reviewer re-reviews);
-//   - FinalReviewRound: any high or medium requires request_changes
-//     (escalation); only lows requires approve (lows are dropped).
+//   - round 1: any comment (any grade, questions included) requires
+//     request_changes; none requires approve;
+//   - rounds 2+: any high or medium requires request_changes (at
+//     FinalReviewRound that escalates); only lows and questions
+//     requires approve (they stay on record, nobody is woken).
 //
 // A plain string inside a graded review counts like a medium.
 func checkGrades(r Review, round int) error {
@@ -158,16 +193,16 @@ func checkGrades(r Review, round int) error {
 	if !r.Graded() {
 		return nil
 	}
-	if round < FinalReviewRound {
+	if round <= 1 {
 		if r.Verdict != VerdictRequestChanges {
-			return fmt.Errorf("round %d verdict %q but the review has %d comment(s): in rounds 1-%d any comment (high, medium or low) requires %q; approve only with no comments",
-				round, r.Verdict, len(r.Comments), FinalReviewRound-1, VerdictRequestChanges)
+			return fmt.Errorf("round 1 verdict %q but the review has %d comment(s): in round 1 any comment (high, medium, low or question) requires %q; approve only with no comments",
+				r.Verdict, len(r.Comments), VerdictRequestChanges)
 		}
 		return nil
 	}
 	first := -1
 	for i, c := range r.Comments {
-		if c.Severity != SeverityLow {
+		if c.blocksAfterFirstRound() {
 			first = i
 			break
 		}
@@ -178,10 +213,10 @@ func checkGrades(r Review, round int) error {
 		if grade == "" {
 			grade = "an ungraded string"
 		}
-		return fmt.Errorf("round %d (final) verdict %q but comments[%d] is %s: at the final round any high or medium requires %q (escalates to the operator)",
+		return fmt.Errorf("round %d verdict %q but comments[%d] is %s: from round 2 any high or medium requires %q",
 			round, r.Verdict, first, grade, VerdictRequestChanges)
 	case first < 0 && r.Verdict != VerdictApprove:
-		return fmt.Errorf("round %d (final) verdict %q but every comment is low: at the final round lows are ignored and the verdict must be %q",
+		return fmt.Errorf("round %d verdict %q but every comment is low or question: from round 2 those never block and the verdict must be %q",
 			round, r.Verdict, VerdictApprove)
 	}
 	return nil
