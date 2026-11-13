@@ -63,9 +63,6 @@ type mirrorEvent struct {
 	kind     string
 	round    int
 	instance task.ReviewerInstance
-	// optional marks an engineer round that answers an approval's
-	// comments (no re-review follows).
-	optional bool
 }
 
 const (
@@ -91,14 +88,14 @@ func mirrorEvents(projectRoot, slug string, snap Snapshot) ([]mirrorEvent, error
 	}
 	var out []mirrorEvent
 	engRound := 1
-	addEng := func(optional bool) bool {
+	addEng := func() bool {
 		if engRound > len(eng) {
 			return false
 		}
-		out = append(out, mirrorEvent{name: fmt.Sprintf("engineer-round-%d.json", engRound), kind: eventEngineer, round: engRound, optional: optional})
+		out = append(out, mirrorEvent{name: fmt.Sprintf("engineer-round-%d.json", engRound), kind: eventEngineer, round: engRound})
 		return true
 	}
-	addEng(false)
+	addEng()
 reviews:
 	for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
@@ -114,9 +111,9 @@ reviews:
 				return nil, err
 			}
 			out = append(out, mirrorEvent{name: fmt.Sprintf("%s/round-%d.json", inst, r), kind: eventReview, round: r, instance: inst})
-			if engineerOwesResponse(rev) {
+			if rev.Verdict == task.VerdictRequestChanges {
 				engRound++
-				if !addEng(rev.OptionalPass()) {
+				if !addEng() {
 					break reviews
 				}
 			}
@@ -295,11 +292,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			return err
 		}
 		var b strings.Builder
-		if e.optional {
-			fmt.Fprintf(&b, "**Engineer (round %d, optional pass after approval)**\n\n", e.round)
-		} else {
-			fmt.Fprintf(&b, "**Engineer (round %d)**\n\n", e.round)
-		}
+		fmt.Fprintf(&b, "**Engineer (round %d)**\n\n", e.round)
 		writeEngineerResponse(&b, resp)
 		return m.prComment(b.String())
 	case eventReview:

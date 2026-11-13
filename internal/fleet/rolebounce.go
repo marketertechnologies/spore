@@ -12,8 +12,8 @@ import (
 	"github.com/versality/spore/internal/task"
 )
 
-// wakeRole is the wake seam bounceInvalidRoleFiles and wakeEngineer
-// deliver through. Tests swap it to observe wakes without tmux.
+// wakeRole is the wake seam bounceInvalidRoleFiles delivers through.
+// Tests swap it to observe bounces without tmux.
 var wakeRole = wakeSession
 
 const (

@@ -55,28 +55,13 @@ transition. Verdict files hold `approve` or `request_changes`.
 | `engineer-initial` | no engineer response yet | (start state) |
 | `review-A` | A owns the next verdict | `responses/engineer-round-N.json` |
 | `engineer-revise-A` | A requested changes | `reviews/A/round-N.json` (request_changes) |
-| `engineer-optional-A` | A approved with graded comments; engineer's optional pass | `reviews/A/round-N.json` (approve, graded comments) |
-| `review-B` | A approved; B owns the verdict | `reviews/A/round-N.json` (approve, no graded comments), or the optional-pass response |
+| `review-B` | A approved; B owns the verdict | `reviews/A/round-N.json` (approve) |
 | `engineer-revise-B` | B requested changes | `reviews/B/round-N.json` (request_changes) |
-| `engineer-optional-B` | B approved with graded comments; engineer's optional pass | `reviews/B/round-N.json` (approve, graded comments) |
-| `done` | B approved; branch ready | `reviews/B/round-N.json` (approve, no graded comments), or the optional-pass response |
+| `done` | B approved; branch ready | `reviews/B/round-N.json` (approve) |
 | `escalated` | cap hit; operator decides | request_changes at round 3 |
 
 A revise phase flips back to the review phase once the engineer
-writes the response to the latest verdict. An optional phase moves
-forward instead: the approval stands, so the engineer's response
-advances A to `review-B` and B to `done` with no re-review. The
-optional pass never consumes a reviewer round and never escalates.
-Engineer rounds pair with verdicts in order: round 1 is the initial
-response, then one round per `request_changes` and one per approve
-that grades at least one comment. An approve with no comments, or
-with only plain-string (ungraded) comments, advances at once, as it
-did before grading; this also keeps grandfathered files from
-rewinding an in-flight loop into a pass.
-
-Because the verdict follows from the grades, a round-3 review whose
-comments are all `low` (or non-blocking `medium`) is an approve: it
-takes the optional pass and moves on, it never escalates. Each reviewer phase is
+writes the response to the latest verdict. Each reviewer phase is
 capped at 3 rounds (`MaxReviewerRounds`): a `request_changes` verdict
 at round 3 escalates instead of looping. On escalation the driver
 leaves all panes alive; the operator can clarify the spec,
@@ -87,9 +72,6 @@ Per-phase side effects of a drive tick:
 - engineer phases: keep the engineer pane alive (see Pane liveness);
   on revise phases, nudge it (tmux send-keys) with the latest verdict
   path
-- optional phases: reap the approving reviewer's pane and nudge the
-  engineer with the approval's path, saying the comments are
-  optional, any may be declined, and no re-review follows
 - `review-A`: keep engineer and reviewer A panes alive
 - `review-B`: reap reviewer A's pane, keep reviewer B alive; the
   engineer pane stays alive across the handover
@@ -308,9 +290,7 @@ blocking comment must be `request_changes`, a review without one
 must be `approve`. The engineer must fix `high`, fixes or pushes
 back on `medium`, and takes `low` items that are cheap and sensible,
 deferring (`followups`) or declining (`pushback`) the rest with a
-one-line reason. An approve that carries graded comments wakes the
-engineer for one optional pass (see the phase machine). From round
-2, reviewers do not raise new `low`
+one-line reason. From round 2, reviewers do not raise new `low`
 comments on code the engineer left unchanged that round.
 
 Plain-string comments (legacy files, project role overrides that
@@ -322,10 +302,7 @@ grades any comment, a plain string counts as blocking.
 
 The draft-PR mirror renders graded comments blocking first, then by
 severity, as `**high** / correctness / blocking / `path:line` - text
-(reason)`. Ungraded comments render as plain bullets. An optional-pass
-response is posted as `Engineer (round N, optional pass after
-approval)`, after the approving review; the ready event and done
-notice wait for B's optional pass.
+(reason)`. Ungraded comments render as plain bullets.
 
 ## File validation
 

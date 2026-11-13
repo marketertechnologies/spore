@@ -18,19 +18,11 @@
   sensible, else defer or decline in one line). The draft-PR mirror
   lists graded comments blocking first with severity and category;
   `spore task status` shows blocking / non-blocking counts for the
-  last verdict. An approve that grades at least one comment wakes the
-  engineer for one optional pass (new phases `engineer-optional-A` /
-  `engineer-optional-B`): it takes, defers, or declines each comment,
-  then the loop advances (A to review-B, B to done) with no
-  re-review; the pass uses no reviewer round and cannot escalate, so a
-  round-3 review with only optional comments approves. An approve
-  with no comments advances at once. Plain-string comments still
-  parse: a review with only strings keeps its written verdict and
-  gets no optional pass, as before; in a graded review a string
-  counts as blocking. Consumer impact: reviewers spawned on
+  last verdict. Plain-string comments still parse: a review with only
+  strings keeps its written verdict as before; in a graded review a
+  string counts as blocking. Consumer impact: reviewers spawned on
   the new bodies write graded comments and approve with optional
-  findings instead of looping on them, and the engineer gets an extra
-  optional round after such approvals; projects overriding
+  findings instead of looping on them; projects overriding
   `bootstrap/roles/reviewer*.md` keep working (ungraded) and should
   port the grading section; a review mixing grades with a
   contradicting verdict is now rejected.

@@ -18,8 +18,7 @@ files only.
   on affected comments; the operator decides whether to revise.
 - `.spore/<task>/reviews/<reviewer>/round-N.json`: a reviewer's
   verdict on round N. The coordinator wakes you with the latest
-  verdict file when a reviewer requests changes, or approves with
-  graded comments (the optional pass).
+  verdict file when a reviewer requests changes.
 - The current task branch (`git diff <base>...HEAD`). `<base>` is the
   PR's real parent: the task's `base:` frontmatter (the stack parent
   branch) when set or when the spec or brief says this task stacks
@@ -114,26 +113,9 @@ as a `followups` entry proposing a separate PR.
 4. Mark the round done. The coordinator wakes the reviewer.
 5. Wait. If the reviewer requests changes, the coordinator wakes
    you with the new verdict file. Go back to step 2.
-6. When a reviewer approves with no comments, the coordinator
-   either spawns the next reviewer or hands the branch to the
-   operator. Your work for this round is finished.
-7. When a reviewer approves with graded comments, you get one
-   optional pass (see "Optional pass").
-
-## Optional pass
-
-An approval that carries comments wakes you once to look at them.
-All of them are non-blocking and the approval already stands: no
-re-review follows, the pass cannot escalate, and the loop moves on
-as soon as you write the response. Judge each comment on its own:
-
-- implement it when it is simple or clearly makes sense;
-- defer it to `followups` when it is worth doing but not here;
-- decline it in `pushback` with a one-line reason. You have the
-  right to reject any of them.
-
-Then write the next `responses/engineer-round-N.json` as usual. Keep
-the changes small: nobody reviews them again before the operator.
+6. When a reviewer approves, the coordinator either spawns the next
+   reviewer or hands the branch to the operator. Your work for this
+   round is finished.
 
 ## Where you run
 
