@@ -71,9 +71,12 @@ no re-review follows. The engineer's fix-pass response keeps the
 phase `escalated` (`EscalationFixPending` clears). The operator can
 then clarify the spec, force-approve, kill the task, or hand it back
 for another loop. If the operator force-approves A's final verdict,
-the `escalated-A-*` marker tells the phase machine that the fix-pass
-response belongs to A's phase, so B's revisions still count from a
-fresh engineer round.
+the fix-pass response counts toward A's phase only when it exists
+and predates B's first verdict (and an `escalated-A-*` marker shows
+the driver escalated A). So B's revisions count from a fresh
+engineer round whether the operator force-approved after the fix
+pass landed or before it (in which case the next engineer response
+answers B).
 
 Per-phase side effects of a drive tick:
 
@@ -282,16 +285,25 @@ B's own verdicts. Each round a reviewer writes
 
 Each review comment is an object (`internal/task/reviewgrade.go`):
 
-- `severity`: `high`, `medium`, or `low`, rated as likelihood times
-  impact. `high`: users hit it in normal use, or data loss, a
-  security hole, a spec violation. `medium`: a plausible path with
-  real impact, or a missing test for a spec-required rule. `low`: a
-  rare edge case, a theoretical race, a code-quality note.
+- `severity`: `high`, `medium`, `low`, or `question`, rated as
+  likelihood times impact. `high`: users hit it in normal use, or
+  data loss, a security hole, a spec violation. `medium`: a
+  plausible path with real impact, or a missing test for a
+  spec-required rule. `low`: a rare edge case, a theoretical race, a
+  code-quality note. `question`: the reviewer is unsure or wants an
+  explanation; the engineer must answer it. Severity is not
+  confidence: anything the reviewer could not verify is `low` or
+  `question`, never `high` / `medium`.
 - `category`: `security`, `correctness`, `spec`, `data-loss`,
   `edge-case`, `test`, `perf`, `maintainability`, or `nit`.
 - `where`: optional `path:line`.
 - `text`: required.
 - `reason`: one line on the grade; required for `high` and `medium`.
+- `trigger`: the concrete inputs or steps that cause the failure;
+  required for `high` and `medium`.
+- `suggestion`: optional on any grade; replacement code or a small
+  unified diff for `where`, included only when the reviewer is
+  confident it applies.
 
 The grade alone decides the verdict; `category` is only a label.
 Validation enforces the rule per reviewer round
@@ -299,17 +311,29 @@ Validation enforces the rule per reviewer round
 
 | Round | Comments | Required verdict | Next |
 | --- | --- | --- | --- |
-| 1-2 | none | `approve` | next reviewer, or done |
-| 1-2 | any (`high`, `medium`, or `low`) | `request_changes` | engineer revises, reviewer re-reviews |
-| 3 (final) | none, or only `low` | `approve` | lows dropped; next reviewer, or done (PR marked ready) |
+| 1 | none | `approve` | next reviewer, or done |
+| 1 | any (`high`, `medium`, `low`, or `question`) | `request_changes` | engineer revises (answers questions), reviewer re-reviews |
+| 2 | none, or only `low` / `question` | `approve` | kept on record and mirrored, engineer not woken; next reviewer, or done |
+| 2 | any `high` or `medium` | `request_changes` | engineer revises, reviewer re-reviews |
+| 3 (final) | none, or only `low` / `question` | `approve` | as round 2 (PR marked ready when B approves) |
 | 3 (final) | any `high` or `medium` | `request_changes` | escalated: one engineer fix pass, then the operator |
 
 The engineer must fix `high`, fixes or pushes back (one-line reason)
 on `medium`, and implements a `low` if it is simple or sensible,
 otherwise declines it (`pushback`) or defers it (`followups`) with a
-reason; lows are not blanket-discarded. From round 2, reviewers do
-not raise new `low` comments on code the engineer left unchanged
-that round.
+reason; lows are not blanket-discarded. It answers every
+`question`. From round 2, reviewers do not raise new `low` comments
+on code the engineer left unchanged that round, and a low the
+engineer declined with a reason is closed: it is not raised again (a
+pushback on a `medium` / `high` may be re-raised when its reasoning
+is wrong). These two are role-body rules, not enforced in code.
+
+Per-project calibration: reviewer bodies read
+`$SPORE_PROJECT_ROOT/REVIEW.md` when it exists. It calibrates
+severity for the project (for example "a missing required test is
+medium here") and overrides the generic rubric examples, never the
+verdict rules above. Spore only points the reviewer at it (the role
+body is not composed in code); there is no default file.
 
 Plain-string comments (legacy files, project role overrides that
 predate grading) still parse and are ungraded. A review whose
@@ -318,8 +342,10 @@ exactly as before grading, at any round. In a review that grades
 any comment, a plain string counts like a `medium`.
 
 The draft-PR mirror renders graded comments by severity (high, then
-medium, then ungraded strings, then low) as `**high** / correctness /
-`path:line` - text (reason)`. Comments of a fully ungraded review
+medium, then ungraded strings, then question, then low) as `**high**
+/ correctness / `path:line` - text (reason)`, with the trigger on an
+indented `Trigger:` line and the suggestion as an indented fenced
+block (tagged `diff` when it is a unified diff) under the comment. Comments of a fully ungraded review
 render as plain bullets. The escalation comment on the PR says the
 engineer was asked for one fix pass and that the operator decides.
 
@@ -331,7 +357,9 @@ JSON object, carries a key outside its schema, lacks a required field
 (`author` everywhere; `verdict` and `summary` on reviews), has a
 verdict outside `approve` / `request_changes`, has a malformed graded
 comment (unknown severity or category, unknown key, missing `text`,
-missing `reason` on `high` / `medium`), has a verdict that
+missing `reason` or `trigger` on `high` / `medium`), has an engineer
+`outcomes` entry with an unknown reviewer or outcome, has a verdict
+that
 contradicts its grades for its round (the error names the round
 and the rule), or has an `author`
 that does not match its location: `reviews/A/` needs `"A"`,
@@ -358,9 +386,19 @@ upgrade still run the old role body; their next file without
 
 `spore task status <slug>` prints the derived snapshot: phase,
 engineer round, current reviewer, reviewer round, last verdict with
-its comment counts (high/medium, low, ungraded), and an
+its comment counts (high/medium, low, question, ungraded), and an
 `engineer: fix pass pending` line while an escalation's fix pass is
 owed.
+
+`spore task review-stats` scans every `.spore/*/reviews/{A,B}/
+round-*.json` under the main repo root and prints two tables, by
+severity and by category: comments raised, and how the engineer
+handled them (`fixed`, `pushed_back`, `declined`, `answered`) as
+recorded in the optional `outcomes` list of engineer responses
+(`{reviewer, round, comment, outcome}`, comment being the 0-based
+index into that review's `comments`; the latest record wins).
+Comments with no record count as `unrecorded`; invalid files are
+skipped and counted.
 
 Markers under `.spore/<slug>/state/`:
 
@@ -368,9 +406,10 @@ Markers under `.spore/<slug>/state/`:
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
 - `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve). While an
-  `escalated-A-*` marker exists, the phase machine counts A's fix
-  pass as one extra engineer round.
+  the loop later reaches done (operator force-approve). After a
+  force-approve of A, an `escalated-A-*` marker lets the phase
+  machine count A's fix pass as one extra engineer round, provided
+  that response exists and predates B's first verdict.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.

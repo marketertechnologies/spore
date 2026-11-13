@@ -38,7 +38,10 @@ files only.
     "addressed": ["comment 1 -> commit X", "comment 2 -> approach Y"],
     "pushback": ["comment 3 -> I disagree because Z"],
     "notes": "free-form context for the reviewer",
-    "followups": ["retry service for X: separate PR, not in scope here"]
+    "followups": ["retry service for X: separate PR, not in scope here"],
+    "outcomes": [
+      {"reviewer": "A", "round": 1, "comment": 0, "outcome": "fixed"}
+    ]
   }
   ```
 
@@ -52,6 +55,14 @@ files only.
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
+  - `outcomes`: optional but encouraged. One entry per comment of the
+    verdict you are answering: `reviewer` (`A` or `B`), `round` (the
+    verdict's round), `comment` (0-based index into its `comments`),
+    and `outcome`: `fixed`, `pushed_back` (a high/medium you
+    dispute), `declined` (a low you will not take, including one
+    deferred to `followups`), or `answered` (a question). `spore task
+    review-stats` reads these; comments without one count as
+    unrecorded.
 
   No other keys. The coordinator validates the file on every tick;
   an invalid file does not count, is moved to `<name>.invalid`, and
@@ -68,13 +79,17 @@ files only.
 
 ## Review comment grades
 
-Each review comment carries a `severity` (`high`, `medium`, `low`),
-a `category`, an optional `where` (`path:line`), the `text`, and a
-`reason` for the grade. The grade alone sets your obligation; the
-category is only a label. In rounds 1 and 2 the reviewer requests
-changes on any comment, lows included. In round 3 (its last) it
-approves when only lows remain (those are dropped) and requests
-changes only for a `high` or `medium`. A plain-string comment (an
+Each review comment carries a `severity` (`high`, `medium`, `low`,
+`question`), a `category`, an optional `where` (`path:line`), the
+`text`, a `reason` for the grade, a `trigger` (the inputs or steps
+that cause the failure; always present on high and medium), and an
+optional `suggestion` (replacement code or a small diff for
+`where`). The grade alone sets your obligation; the category is only
+a label. In round 1 the reviewer requests changes on any comment,
+lows and questions included. From round 2 it requests changes only
+for a `high` or `medium`; an approve may still carry lows and
+questions, and you are not woken for them. A `request_changes` at
+round 3 escalates (see "Escalation"). A plain-string comment (an
 older reviewer body) is ungraded: treat it like a `medium`.
 
 Your obligation per grade:
@@ -84,7 +99,14 @@ Your obligation per grade:
 - `low`: implement it if it is simple or clearly makes sense;
   otherwise decline it in `pushback` (one line why) or defer it to
   `followups`. Do not blanket-discard lows. Declining a low item
-  with a reason is not overusing pushback.
+  with a reason is not overusing pushback, and a declined low is
+  closed: the reviewer does not raise it again.
+- `question`: answer every one, in `notes` or the matching
+  `addressed` entry (and record it as `answered` in `outcomes`).
+  Change code only if the answer shows a defect.
+
+A `suggestion` shows what the reviewer means: apply it as-is or
+adapt it; either way say so in `addressed`.
 
 Valid pushback reasons:
 
@@ -100,9 +122,9 @@ Valid pushback reasons:
 
 In a revision round, change only what the reviewers raised: every
 `high`, every `medium` you do not push back on, and the lows you
-take. Do not
-add new services, features, or refactors on the way: they grow the
-PR past its size cap and restart review. Record anything worth doing
+take; answer every question. Do not add new services, features, or
+refactors on the way: they grow the PR past its size cap and restart
+review. Record anything worth doing
 as a `followups` entry proposing a separate PR.
 
 ## The loop

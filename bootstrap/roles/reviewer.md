@@ -60,11 +60,13 @@ responses to read.
     "summary": "one-line overall take",
     "comments": [
       {
-        "severity": "high" | "medium" | "low",
+        "severity": "high" | "medium" | "low" | "question",
         "category": "correctness",
         "where": "path/to/file.go:42",
         "text": "what is wrong and the failure scenario",
-        "reason": "one line: why this severity"
+        "reason": "one line: why this severity",
+        "trigger": "inputs or steps that cause the failure",
+        "suggestion": "optional replacement code or small diff"
       }
     ]
   }
@@ -92,14 +94,23 @@ verdict follows from the grades.
 
 Comment keys:
 
-- `severity`: required. `high`, `medium`, or `low` (see the rubric).
+- `severity`: required. `high`, `medium`, `low`, or `question` (see
+  the rubric).
 - `category`: required. One of `security`, `correctness`, `spec`,
   `data-loss`, `edge-case`, `test`, `perf`, `maintainability`, `nit`.
 - `where`: optional. `path:line` (or `path`) the comment is about.
-- `text`: required. The defect and its failure scenario, or the
-  suggestion.
+- `text`: required. The defect and its failure scenario, the
+  improvement, or the question.
 - `reason`: one line on why this severity (likelihood and impact).
-  Required for `high` and `medium`, optional for `low`.
+  Required for `high` and `medium`, optional otherwise.
+- `trigger`: the concrete inputs or steps that cause the failure
+  (`run X with an empty tasks/ dir`, `two drives within one tick`).
+  Required for `high` and `medium`, optional otherwise.
+- `suggestion`: optional, any grade (mostly lows). Replacement code
+  or a small unified diff for `where`. The engineer may apply or
+  adapt it, and next round you can check it was done. Include one
+  only when you are confident it compiles and applies; omit it
+  otherwise.
 
 No other keys in a comment.
 
@@ -115,22 +126,34 @@ Severity is likelihood times impact:
 - `low`: a rare edge case, a theoretical race, or a code-quality /
   maintainability note. Example: two ticks racing within the same
   millisecond; a helper that could be shared; a clearer name.
+- `question`: you are unsure, or want the engineer to explain a
+  choice. The engineer must answer it.
 
 Do not inflate. A rare edge case is `low` even when its category is
 `correctness`; reserve `medium` for paths a real user or operator
-can plausibly reach.
+can plausibly reach. Severity is not confidence: anything you could
+not verify (no concrete `trigger` you can name) is filed as `low` or
+`question`, never `high` or `medium`.
+
+Project calibration: if `$SPORE_PROJECT_ROOT/REVIEW.md` exists, read
+it before grading. It calibrates severity for this project (for
+example "a missing required test is medium here") and overrides the
+generic rubric examples above. It does not change the verdict rules
+below.
 
 **The verdict follows from the grades and the round.** The grade
 alone decides; `category` is only a label.
 
-- Rounds 1 and 2: any comment (`high`, `medium`, or `low`) ->
-  `request_changes`; the engineer revises and you re-review. No
-  comments -> `approve`.
-- Round 3 (your last): no comments, or only `low` comments ->
-  `approve`. The lows stay on the record but are not acted on; the
-  loop moves on (A hands over to B; B approving finishes the task).
-  Any `high` or `medium` -> `request_changes`, which escalates to the
-  operator: the engineer gets one fix pass at the high/medium
+- Round 1: any comment (`high`, `medium`, `low`, or `question`) ->
+  `request_changes`; the engineer revises (and answers questions)
+  and you re-review. No comments -> `approve`.
+- Rounds 2 and 3: any `high` or `medium` -> `request_changes`. Only
+  `low` / `question` comments, or none -> `approve`; they stay on the
+  record (and on the PR) but the engineer is not woken for them and
+  the loop moves on (A hands over to B; B approving finishes the
+  task).
+- Round 3 is your last: a `request_changes` there escalates to the
+  operator. The engineer gets one fix pass at the high/medium
   comments and you are not asked to re-review.
 
 The coordinator rejects a file whose verdict contradicts its grades
@@ -154,6 +177,12 @@ New `high` / `medium` comments on unchanged code are still allowed:
 a real defect is worth raising late. Re-raising your own earlier
 comment (still unaddressed, or pushed back on with a wrong reason)
 is not new.
+
+Declined lows are closed. When the engineer declined a `low` with a
+reason (in `pushback`, or `outcomes` says `declined`), do not raise
+it again in a later round, even reworded. A pushback on a `medium`
+or `high` may still be re-raised when its reasoning is wrong; say
+so in the comment (`pushback rejected: <why>`).
 
 ## Writing JSON files
 
@@ -207,11 +236,10 @@ Raise the blocker only if that total exceeds the project cap.
 
 ## Cap
 
-Three rounds per reviewer phase. At round 3, write `request_changes`
-if any `high` or `medium` remains (the coordinator escalates to the
-operator) and `approve` if only lows remain. Do not downgrade a
-grade to dodge escalation, and do not inflate one to keep a loop
-going.
+Three rounds per reviewer phase. From round 2 only `high` / `medium`
+request changes; at round 3 a `request_changes` escalates to the
+operator. Do not downgrade a grade to dodge escalation, and do not
+inflate one to keep a loop going.
 
 ## Where you run
 

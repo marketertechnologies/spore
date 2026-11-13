@@ -4,40 +4,49 @@
 
 - Role loop: graded review comments. Each `comments` entry in a
   review file is now an object `{severity, category, where, text,
-  reason}`: severity `high` / `medium` / `low` (likelihood times
-  impact), category one of `security`, `correctness`, `spec`,
-  `data-loss`, `edge-case`, `test`, `perf`, `maintainability`, `nit`
-  (a label only), `reason` required on high and medium. The grade
-  alone decides the verdict, per reviewer round: in rounds 1-2 any
-  comment, lows included, requires `request_changes` (the engineer
-  revises, the reviewer re-reviews) and no comments requires
-  `approve`; at round 3, the last, only lows (or none) requires
-  `approve` (the lows are dropped and the loop advances: A to B, B to
-  done with the PR marked ready), and any high or medium requires
-  `request_changes`, which escalates. A file whose verdict
-  contradicts its grades for its round is bounced with the round and
-  rule named. On escalation the engineer is woken once to address the
-  final verdict's high/medium comments; no re-review follows and the
-  operator decides (`spore task status` shows the pending fix pass;
-  the PR escalation comment says so). `reviewer.md` and
-  `reviewer-code-review.md` carry the rubric and the per-round rule
-  and, from round 2, stop raising new low comments on code the
-  engineer did not change that round; `engineer.md` sets per-grade
-  duties (high: fix; medium: fix or push back with a reason; low:
-  implement if simple or sensible, else decline or defer with a
-  reason, never blanket-discard) and the escalation fix pass. The
-  draft-PR mirror lists graded comments by severity with severity
-  and category; `spore task status` shows high/medium, low, and
-  ungraded counts for the last verdict. Plain-string comments still
-  parse: a review with only strings keeps its written verdict as
-  before; in a graded review a string counts like a medium. Consumer
-  impact: reviewers spawned on the new bodies write graded comments
-  and request changes on lows in rounds 1-2, so loops run a revision
-  for them; a round-3 review with only lows now approves instead of
-  escalating; projects overriding `bootstrap/roles/reviewer*.md` keep
-  working (ungraded) and should port the grading section; a graded
-  review with a verdict that contradicts its round's rule is now
-  rejected.
+  reason, trigger, suggestion}`: severity `high` / `medium` / `low`
+  (likelihood times impact) or `question` (the reviewer is unsure;
+  the engineer must answer), category one of `security`,
+  `correctness`, `spec`, `data-loss`, `edge-case`, `test`, `perf`,
+  `maintainability`, `nit` (a label only). High and medium require a
+  `reason` and a concrete `trigger` (the inputs or steps that cause
+  the failure); anything the reviewer could not verify is low or
+  question. `suggestion` (optional, any grade) carries replacement
+  code or a small diff. The grade alone decides the verdict, per
+  reviewer round: in round 1 any comment, lows and questions
+  included, requires `request_changes`; from round 2 only a high or
+  medium does, and lows and questions ride on an `approve` (kept on
+  record and mirrored, the engineer is not woken). A file whose
+  verdict contradicts its grades for its round is bounced with the
+  round and rule named. A `request_changes` at round 3 escalates:
+  the engineer is woken once to address the high/medium comments, no
+  re-review follows, and the operator decides (`spore task status`
+  shows the pending fix pass; the PR escalation comment says so). A
+  force-approve of A's final verdict counts that fix pass toward A
+  only if it landed before B's first verdict, so B never waits for a
+  round that is not coming. Role bodies: reviewers get the rubric,
+  the per-round rule, project calibration from
+  `$SPORE_PROJECT_ROOT/REVIEW.md` when present (it overrides the
+  rubric examples, not the verdict rules), no new lows on code
+  unchanged since their previous round, and no re-raising a low the
+  engineer declined; the engineer gets per-grade duties (high: fix;
+  medium: fix or push back with a reason; low: implement if simple
+  or sensible, else decline or defer with a reason; question:
+  answer) and the escalation fix pass. Engineer responses may record
+  per-comment `outcomes` (`fixed` / `pushed_back` / `declined` /
+  `answered`), and the new `spore task review-stats` tallies comments
+  raised per severity and category with those outcomes (the rest
+  count as unrecorded). The draft-PR mirror lists graded comments by
+  severity with the trigger and a fenced suggestion; `spore task
+  status` shows high/medium, low, question and ungraded counts.
+  Plain-string comments still parse: a review with only strings
+  keeps its written verdict as before; in a graded review a string
+  counts like a medium. Consumer impact: reviewers spawned on the new
+  bodies write graded comments; a low costs a revision round only in
+  round 1; a high/medium without `trigger` is rejected; projects
+  overriding `bootstrap/roles/reviewer*.md` keep working (ungraded)
+  and should port the grading section; a graded review with a
+  verdict that contradicts its round's rule is now rejected.
 
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
