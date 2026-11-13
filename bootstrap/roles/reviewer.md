@@ -127,8 +127,15 @@ comments remain; they reach the engineer and the PR as optional. The
 coordinator rejects a file whose verdict contradicts its grades and
 wakes you with the rule it broke.
 
-On `approve` the engineer is not woken: optional comments stay on
-the record (and on the PR, in the draft-PR flow) for the operator.
+Approving with optional comments is fine and expected: do not hold
+a verdict back to get a low item fixed. An `approve` that grades at
+least one comment wakes the engineer for one optional pass over
+those comments. The engineer may take or decline each one, and you
+do not review again: your approval stands. An `approve` with no
+comments advances at once.
+
+A round-3 review whose comments are all optional is an `approve`
+like any other round: the cap only escalates blocking comments.
 
 Plain-string comments still parse but are ungraded: in a review with
 any graded comment they count as blocking. Do not write them.

@@ -36,7 +36,18 @@ const (
 	// the engineer has not responded to it.
 	PhaseEngineerReviseB Phase = "engineer-revise-B"
 
-	// PhaseDone: B approved. The branch is ready for the operator.
+	// PhaseEngineerOptionalA: A approved with graded (necessarily
+	// non-blocking) comments and the engineer has not yet written its
+	// one optional-pass response. The approval stands: the response
+	// advances to review-B with no A re-review.
+	PhaseEngineerOptionalA Phase = "engineer-optional-A"
+
+	// PhaseEngineerOptionalB: same as PhaseEngineerOptionalA for B;
+	// the response advances to done.
+	PhaseEngineerOptionalB Phase = "engineer-optional-B"
+
+	// PhaseDone: B approved (and any optional pass was answered). The
+	// branch is ready for the operator.
 	PhaseDone Phase = "done"
 
 	// PhaseEscalated: the current reviewer issued request_changes at
@@ -154,6 +165,11 @@ func validEngineerRounds(projectRoot, slug string) ([]int, error) {
 // derivePhase is the pure state-machine kernel. It takes the counts
 // of engineer responses and the ordered reviewer verdicts; it
 // returns the derived phase plus per-status fields.
+//
+// Engineer rounds pair with verdicts in order: round 1 is the initial
+// response, then one round per request_changes and one per approve
+// that earns an optional pass (task.Review.OptionalPass). An optional
+// pass never consumes a reviewer round and never escalates.
 func derivePhase(engCount int, aRev, bRev []task.Review) (Phase, task.ReviewerInstance, int, string) {
 	if engCount == 0 {
 		return PhaseEngineerInitial, "", 0, ""
@@ -165,15 +181,18 @@ func derivePhase(engCount int, aRev, bRev []task.Review) (Phase, task.ReviewerIn
 	}
 
 	lastA := aRev[len(aRev)-1]
+	expected := 1 + engineerRoundsOwed(aRev)
 	if lastA.Verdict == task.VerdictApprove {
-		return derivePhaseB(engCount, countRequestChanges(aRev), bRev)
+		if engCount < expected {
+			return PhaseEngineerOptionalA, task.ReviewerA, len(aRev), lastA.Verdict
+		}
+		return derivePhaseB(engCount, expected, bRev)
 	}
 
 	// A's latest verdict is request_changes.
 	if len(aRev) >= MaxReviewerRounds {
 		return PhaseEscalated, task.ReviewerA, len(aRev), lastA.Verdict
 	}
-	expected := 1 + countRequestChanges(aRev)
 	if engCount >= expected {
 		// Engineer has responded to the latest A verdict; A owns the
 		// next write.
@@ -182,35 +201,45 @@ func derivePhase(engCount int, aRev, bRev []task.Review) (Phase, task.ReviewerIn
 	return PhaseEngineerReviseA, task.ReviewerA, len(aRev), lastA.Verdict
 }
 
-func derivePhaseB(engCount, aRC int, bRev []task.Review) (Phase, task.ReviewerInstance, int, string) {
+// derivePhaseB continues after A approved; afterA is the engineer
+// round count the A phase accounts for.
+func derivePhaseB(engCount, afterA int, bRev []task.Review) (Phase, task.ReviewerInstance, int, string) {
 	if len(bRev) == 0 {
 		// A approved, B not yet spawned/written. Either way, B owns
 		// the next write; no LastVerdict for the B phase.
 		return PhaseReviewB, task.ReviewerB, 0, ""
 	}
 	lastB := bRev[len(bRev)-1]
+	expected := afterA + engineerRoundsOwed(bRev)
 	if lastB.Verdict == task.VerdictApprove {
+		if engCount < expected {
+			return PhaseEngineerOptionalB, task.ReviewerB, len(bRev), lastB.Verdict
+		}
 		return PhaseDone, task.ReviewerB, len(bRev), lastB.Verdict
 	}
 	// last B is request_changes
 	if len(bRev) >= MaxReviewerRounds {
 		return PhaseEscalated, task.ReviewerB, len(bRev), lastB.Verdict
 	}
-	expected := 1 + aRC + countRequestChanges(bRev)
 	if engCount >= expected {
 		return PhaseReviewB, task.ReviewerB, len(bRev), lastB.Verdict
 	}
 	return PhaseEngineerReviseB, task.ReviewerB, len(bRev), lastB.Verdict
 }
 
-// countRequestChanges returns how many verdicts in revs are
-// request_changes.
-func countRequestChanges(revs []task.Review) int {
+// engineerRoundsOwed counts the verdicts in revs that each call for
+// one engineer response: request_changes, and approves that earn an
+// optional pass.
+func engineerRoundsOwed(revs []task.Review) int {
 	n := 0
 	for _, r := range revs {
-		if r.Verdict == task.VerdictRequestChanges {
+		if engineerOwesResponse(r) {
 			n++
 		}
 	}
 	return n
+}
+
+func engineerOwesResponse(r task.Review) bool {
+	return r.Verdict == task.VerdictRequestChanges || r.OptionalPass()
 }

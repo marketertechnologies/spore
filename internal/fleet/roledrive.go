@@ -29,6 +29,9 @@ import (
 //   - When the snapshot is engineer-revise-*, sends a tmux send-keys
 //     wake to the engineer pane pointing at the latest verdict file.
 //     A delivery marker guards against re-sending the same verdict.
+//   - When the snapshot is engineer-optional-*, reaps the approving
+//     reviewer and wakes the engineer for its one optional pass over
+//     the approval's comments. No re-review follows.
 //   - When the snapshot is review-A / review-B and the reviewer has
 //     already issued a verdict (round >= 1), sends the same style of
 //     wake to the reviewer pane pointing at the latest engineer
@@ -84,6 +87,18 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 			if err := wakeEngineer(projectRoot, slug, snap); err != nil {
 				return snap, fmt.Errorf("drive %s: wake engineer: %w", slug, err)
 			}
+		}
+	case PhaseEngineerOptionalA, PhaseEngineerOptionalB:
+		// The reviewer approved and will not review again: free its
+		// pane while the engineer takes the optional pass.
+		if _, err := ReapRole(ReviewerSpec(projectRoot, slug, snap.CurrentReviewer)); err != nil {
+			return snap, fmt.Errorf("drive %s: reap reviewer %s: %w", slug, snap.CurrentReviewer, err)
+		}
+		if err := ensureRolePane(engineer, snap.EngineerRound); err != nil {
+			return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
+		}
+		if err := wakeEngineer(projectRoot, slug, snap); err != nil {
+			return snap, fmt.Errorf("drive %s: wake engineer: %w", slug, err)
 		}
 	case PhaseReviewA, PhaseReviewB:
 		if snap.Phase == PhaseReviewB {
@@ -155,7 +170,8 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 // ok is false in terminal phases.
 func activeRole(projectRoot, slug string, snap Snapshot) (RoleSpawnSpec, int, string, bool) {
 	switch snap.Phase {
-	case PhaseEngineerInitial, PhaseEngineerReviseA, PhaseEngineerReviseB:
+	case PhaseEngineerInitial, PhaseEngineerReviseA, PhaseEngineerReviseB,
+		PhaseEngineerOptionalA, PhaseEngineerOptionalB:
 		return EngineerSpec(projectRoot, slug), snap.EngineerRound,
 			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1), true
 	case PhaseReviewA, PhaseReviewB:
@@ -176,7 +192,15 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
 	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
 		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
-	_, err := wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+	if snap.Phase == PhaseEngineerOptionalA || snap.Phase == PhaseEngineerOptionalB {
+		msg = fmt.Sprintf("Reviewer %s APPROVED at round %d with optional comments in %s. "+
+			"Optional pass: judge each comment on its own; implement the simple or sensible ones, "+
+			"decline the rest in pushback (one line why) or defer them to followups. You may decline any of them. "+
+			"No re-review follows: the approval stands. Write %s when done.",
+			snap.CurrentReviewer, snap.ReviewerRound, verdictPath,
+			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1))
+	}
+	_, err := wakeRole(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
 	return err
 }
 

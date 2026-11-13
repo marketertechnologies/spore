@@ -201,3 +201,12 @@ func checkGrades(r Review) error {
 	}
 	return nil
 }
+
+// OptionalPass reports whether r earns the engineer one optional pass:
+// an approve that grades at least one comment. The pass never
+// re-triggers review. An ungraded approve (plain strings only, as in
+// grandfathered files and pre-grading role bodies) advances at once,
+// as it always did, so an in-flight loop never rewinds into a pass.
+func (r Review) OptionalPass() bool {
+	return r.Verdict == VerdictApprove && r.Graded()
+}
