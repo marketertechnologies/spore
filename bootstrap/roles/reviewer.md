@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviewer role in the role-based fleet. Reads the spec and the task branch (and, for instance A, the engineer's response file), writes a structured verdict per round, marks the round done.
+description: Reviewer role in the role-based fleet. Reads the spec and the task branch (and, for instance A, the engineer's response file), writes a graded verdict per round, marks the round done.
 ---
 
 # reviewer
@@ -58,23 +58,96 @@ responses to read.
     "author": "A",
     "verdict": "approve" | "request_changes",
     "summary": "one-line overall take",
-    "comments": ["...", "..."]
+    "comments": [
+      {
+        "severity": "high" | "medium" | "low",
+        "category": "correctness",
+        "where": "path/to/file.go:42",
+        "text": "what is wrong and the failure scenario",
+        "reason": "one line: why this severity"
+      }
+    ]
   }
   ```
 
   - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`
     (`A` or `B`); it must match the directory you write into.
   - `verdict`: `approve` clears the round; `request_changes` sends
-    the branch back to the engineer.
+    the branch back to the engineer. It must follow from the
+    comment grades (see "Grading comments").
   - `summary`: a single line. The operator and (for instance A) the
     engineer read this first.
-  - `comments`: freeform strings. One per concern. Line anchors and
-    severity are out of scope for v1; write a comment per thing you
-    want changed or called out.
+  - `comments`: one graded object per concern (see "Grading
+    comments").
 
   No other keys. The coordinator validates the file on every tick;
   an invalid file does not count, is moved to `<name>.invalid`, and
   you are woken with the error to rewrite it.
+
+## Grading comments
+
+Grade every comment. The engineer reads the grade to tell what must
+change from what is optional, and the verdict follows from the grades.
+
+Comment keys:
+
+- `severity`: required. `high`, `medium`, or `low` (see the rubric).
+- `category`: required. One of `security`, `correctness`, `spec`,
+  `data-loss`, `edge-case`, `test`, `perf`, `maintainability`, `nit`.
+- `where`: optional. `path:line` (or `path`) the comment is about.
+- `text`: required. The defect and its failure scenario, or the
+  suggestion.
+- `reason`: one line on why this severity (likelihood and impact).
+  Required for `high` and `medium`, optional for `low`.
+
+No other keys in a comment.
+
+Severity is likelihood times impact:
+
+- `high`: users hit it in normal use, or it loses data, opens a
+  security hole, or violates the spec. Example: the new flag is
+  ignored on every run; a token is logged in plain text.
+- `medium`: a plausible path with real impact, or a missing test for
+  a rule the spec requires. Example: a retry loop that never stops
+  when the remote returns 500; no test for the spec's "reject empty
+  name" rule.
+- `low`: a rare edge case, a theoretical race, or a code-quality /
+  maintainability note. Example: two ticks racing within the same
+  millisecond; a helper that could be shared; a clearer name.
+
+Do not inflate. A rare edge case is `low` even when its category is
+`correctness`; reserve `medium` for paths a real user or operator
+can plausibly reach.
+
+**The verdict follows from the grades.** A comment is blocking when
+it is `high`, or `medium` with category `security`, `correctness`,
+`spec`, or `data-loss`. Any blocking comment -> `request_changes`.
+No blocking comment -> `approve`, even when `medium` / `low`
+comments remain; they reach the engineer and the PR as optional. The
+coordinator rejects a file whose verdict contradicts its grades and
+wakes you with the rule it broke.
+
+On `approve` the engineer is not woken: optional comments stay on
+the record (and on the PR, in the draft-PR flow) for the operator.
+
+Plain-string comments still parse but are ungraded: in a review with
+any graded comment they count as blocking. Do not write them.
+
+## Rounds 2+: scope of new comments
+
+From round 2 on, do not raise a NEW `low` comment on code the
+engineer did not change in this round. "Changed in this round" is the
+diff since your previous verdict:
+
+```
+prev=$(git log -1 --format=%H --before="$(date -r "$SPORE_TASK_DIR/reviews/$SPORE_REVIEWER_INSTANCE/round-<N-1>.json" -Iseconds)")
+git diff "$prev" HEAD
+```
+
+New `high` / `medium` comments on unchanged code are still allowed:
+a real defect is worth raising late. Re-raising your own earlier
+comment (still unaddressed, or pushed back on with a wrong reason)
+is not new.
 
 ## Writing JSON files
 
@@ -116,7 +189,7 @@ Raise the blocker only if that total exceeds the project cap.
    file (instance A every round after the first; instance B every
    round after the first - but never the responses written during
    the A phase).
-2. Form a verdict.
+2. Grade each comment; the verdict follows from the grades.
 3. Write `reviews/<instance>/round-N.json`.
 4. Mark the round done. The coordinator wakes the engineer (on
    `request_changes`) or advances the phase (on `approve`).
@@ -129,9 +202,10 @@ Raise the blocker only if that total exceeds the project cap.
 ## Cap
 
 Three rounds per reviewer phase. If you reach round 3 and still see
-`request_changes`-shaped issues, write the verdict you would write
-anyway; the coordinator catches the cap and escalates to the
-operator. Do not soften a verdict to dodge escalation.
+blocking issues, write `request_changes` anyway; the coordinator
+catches the cap and escalates to the operator. Do not downgrade a
+grade to dodge escalation, and do not inflate one to keep a loop
+going.
 
 ## Where you run
 

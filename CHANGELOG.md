@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Role loop: graded review comments. Each `comments` entry in a
+  review file is now an object `{severity, category, where, text,
+  reason}`: severity `high` / `medium` / `low` (likelihood times
+  impact), category one of `security`, `correctness`, `spec`,
+  `data-loss`, `edge-case`, `test`, `perf`, `maintainability`, `nit`,
+  `reason` required on high and medium. A comment blocks when it is
+  high, or medium in security / correctness / spec / data-loss; the
+  verdict must follow (blocking -> `request_changes`, none ->
+  `approve`) or the file is bounced with the broken rule named.
+  `reviewer.md` and `reviewer-code-review.md` carry the rubric and,
+  from round 2, stop raising new low comments on code the engineer
+  did not change that round; `engineer.md` sets per-grade duties
+  (high: fix; medium: fix or push back; low: take it when cheap and
+  sensible, else defer or decline in one line). The draft-PR mirror
+  lists graded comments blocking first with severity and category;
+  `spore task status` shows blocking / non-blocking counts for the
+  last verdict. Plain-string comments still parse: a review with only
+  strings keeps its written verdict as before; in a graded review a
+  string counts as blocking. Consumer impact: reviewers spawned on
+  the new bodies write graded comments and approve with optional
+  findings instead of looping on them; projects overriding
+  `bootstrap/roles/reviewer*.md` keep working (ungraded) and should
+  port the grading section; a review mixing grades with a
+  contradicting verdict is now rejected.
+
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
   `bootstrap/roles/<name>.md` still overrides the bundled body; with

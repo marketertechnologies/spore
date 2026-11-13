@@ -44,9 +44,11 @@ files only.
 
   - `author`: required. The value of `$SPORE_ROLE` (`engineer`).
   - `addressed`: one entry per review comment you fixed, with how.
-  - `pushback`: comments you do not intend to address, with the
-    reason. Pushback is allowed; overusing it risks the loop hitting
-    the 3-round cap and escalating to the operator.
+  - `pushback`: comments you do not intend to address, each with a
+    one-line concrete reason. Pushing back on a blocking comment
+    without a solid reason risks the loop hitting the 3-round cap
+    and escalating to the operator; declining an optional one does
+    not (see "Review comment grades").
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
@@ -64,14 +66,40 @@ files only.
 - Never run a bare `cat` with no file argument. It waits on stdin
   and hangs the pane.
 
-A reviewer slot in code-review mode runs `/code-review` without the
-spec, so its findings may lack spec context. When a finding
-contradicts the spec, push back with a one-line reason (spec intends
-it / pre-existing code / out of scope) instead of implementing it.
+## Review comment grades
+
+Each review comment carries a `severity` (`high`, `medium`, `low`),
+a `category`, an optional `where` (`path:line`), the `text`, and a
+`reason` for the grade. A comment is blocking when it is `high`, or
+`medium` with category `security`, `correctness`, `spec`, or
+`data-loss`; the reviewer requests changes only when at least one
+comment blocks. A plain-string comment (an older reviewer body) is
+ungraded: treat it as blocking.
+
+Your obligation per grade:
+
+- `high`: must fix.
+- `medium`: fix it, or push back with a one-line concrete reason.
+- `low`: optional, but do not blanket-discard low items. If it is a
+  simple change or clearly makes sense, implement it. Defer it to
+  `followups` or decline it in `pushback` (one line why) only when
+  it is costly, risky, out of scope, or not worth it. Declining a
+  low item with a reason is not overusing pushback.
+
+Valid pushback reasons:
+
+- The comment contradicts the spec. A reviewer slot in code-review
+  mode runs `/code-review` without the spec, so its findings may
+  lack spec context.
+- Likelihood and impact do not justify the change: the path is
+  unreachable or rare in real use and the failure is cheap, so the
+  fix costs more than it saves. Say why in one line.
+- Pre-existing code, or out of scope for this task.
 
 ## Fix rounds
 
-In a revision round, change only what the reviewers raised. Do not
+In a revision round, change only what the reviewers raised: every
+blocking comment, plus the optional ones you choose to take. Do not
 add new services, features, or refactors on the way: they grow the
 PR past its size cap and restart review. Record anything worth doing
 as a `followups` entry proposing a separate PR.

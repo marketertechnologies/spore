@@ -164,13 +164,15 @@ mode = "fleet"
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
   diff (on the draft PR with `--comment` when `github.json` holds a
-  PR number). Findings map to the verdict: any non-cosmetic finding
-  is `request_changes`, none or cosmetic-only is `approve`, one
-  `path:line: text` comment per finding. The verdict file schema and
-  the `Review #1` / `Review #2` mirror are unchanged. The run has no
-  spec context, so the engineer pushes back with a one-line reason
-  on findings the spec contradicts, and later rounds do not re-raise
-  a finding with a sound pushback.
+  PR number). The skill's findings carry no severity: the reviewer
+  grades each one (see "Graded review comments") and the verdict
+  follows from the grades. Rounds 2+ drop new `low` findings on code
+  the engineer did not change that round, since the skill re-reviews
+  the whole PR each time. The verdict file schema and the
+  `Review #1` / `Review #2` mirror are shared with `fleet` mode. The
+  run has no spec context, so the engineer pushes back with a
+  one-line reason on findings the spec contradicts, and later rounds
+  do not re-raise a finding with a sound pushback.
 - `code-review` is claude-only. A defaults to it (effort `medium`)
   when no `mode` is set, but falls back to `fleet` when its agent
   (slot `agent`, else the task `agent:`, else the `[fleet.workers]`
@@ -255,8 +257,52 @@ B's own verdicts. Each round a reviewer writes
       "author": "A",
       "verdict": "approve" | "request_changes",
       "summary": "one-line overall take",
-      "comments": ["one string per concern"]
+      "comments": [
+        {
+          "severity": "high" | "medium" | "low",
+          "category": "correctness",
+          "where": "path:line",
+          "text": "the defect and its failure scenario",
+          "reason": "one line: why this severity"
+        }
+      ]
     }
+
+## Graded review comments
+
+Each review comment is an object (`internal/task/reviewgrade.go`):
+
+- `severity`: `high`, `medium`, or `low`, rated as likelihood times
+  impact. `high`: users hit it in normal use, or data loss, a
+  security hole, a spec violation. `medium`: a plausible path with
+  real impact, or a missing test for a spec-required rule. `low`: a
+  rare edge case, a theoretical race, a code-quality note.
+- `category`: `security`, `correctness`, `spec`, `data-loss`,
+  `edge-case`, `test`, `perf`, `maintainability`, or `nit`.
+- `where`: optional `path:line`.
+- `text`: required.
+- `reason`: one line on the grade; required for `high` and `medium`.
+
+A comment is blocking when it is `high`, or `medium` with category
+`security`, `correctness`, `spec`, or `data-loss`. The verdict
+follows from the grades and validation enforces it: a review with a
+blocking comment must be `request_changes`, a review without one
+must be `approve`. The engineer must fix `high`, fixes or pushes
+back on `medium`, and takes `low` items that are cheap and sensible,
+deferring (`followups`) or declining (`pushback`) the rest with a
+one-line reason. From round 2, reviewers do not raise new `low`
+comments on code the engineer left unchanged that round.
+
+Plain-string comments (legacy files, project role overrides that
+predate grading) still parse and are ungraded. A review whose
+comments are all ungraded (or empty) keeps its verdict as written,
+exactly as before grading; its comments count as blocking under
+`request_changes` and non-blocking under `approve`. In a review that
+grades any comment, a plain string counts as blocking.
+
+The draft-PR mirror renders graded comments blocking first, then by
+severity, as `**high** / correctness / blocking / `path:line` - text
+(reason)`. Ungraded comments render as plain bullets.
 
 ## File validation
 
@@ -264,7 +310,10 @@ Every drive tick validates each role file before deriving the phase
 (`internal/task/rolefile.go`). A file is invalid when it is not one
 JSON object, carries a key outside its schema, lacks a required field
 (`author` everywhere; `verdict` and `summary` on reviews), has a
-verdict outside `approve` / `request_changes`, or has an `author`
+verdict outside `approve` / `request_changes`, has a malformed graded
+comment (unknown severity or category, unknown key, missing `text`,
+missing `reason` on `high` / `medium`), has a verdict that
+contradicts its grades (the error names the rule), or has an `author`
 that does not match its location: `reviews/A/` needs `"A"`,
 `reviews/B/` needs `"B"`, `responses/` needs `"engineer"`. Panes fill
 it from `$SPORE_REVIEWER_INSTANCE` / `$SPORE_ROLE`.
@@ -288,7 +337,8 @@ upgrade still run the old role body; their next file without
 ## Observing a running loop
 
 `spore task status <slug>` prints the derived snapshot: phase,
-engineer round, current reviewer, reviewer round, last verdict.
+engineer round, current reviewer, reviewer round, last verdict with
+its blocking and non-blocking comment counts.
 
 Markers under `.spore/<slug>/state/`:
 

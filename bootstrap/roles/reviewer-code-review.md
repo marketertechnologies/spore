@@ -1,6 +1,6 @@
 ---
 name: reviewer-code-review
-description: Reviewer role in code-review mode. Runs Claude Code's /code-review skill on the task branch, maps its findings to the structured verdict file, marks the round done.
+description: Reviewer role in code-review mode. Runs Claude Code's /code-review skill on the task branch, grades its findings into the structured verdict file, marks the round done.
 ---
 
 # reviewer (code-review mode)
@@ -55,24 +55,42 @@ Never measure against a sibling task branch.
 
 ## Verdict mapping
 
-- Any finding that is not purely cosmetic (naming, formatting,
-  comment wording) -> `request_changes`.
-- Zero findings, or cosmetic findings only -> `approve`.
-- One `comments` entry per finding, shaped `path:line: text`. Keep
-  each to the defect and its failure scenario; no repeat of the
-  inline comment's full body.
-- `summary`: one line, e.g. `2 findings: nil deref in X, missing
-  error check in Y`.
+The skill's findings carry no severity. You grade each one when you
+map it to a `comments` entry (see "Grading comments"):
+
+- One graded comment per finding. `where` is the finding's
+  `path:line`; `text` is the defect and its failure scenario, no
+  repeat of the inline comment's full body.
+- Pick `severity` and `category` yourself from the rubric. Judge how
+  likely the failure scenario is in real use: a bug hunt surfaces
+  many rare edge cases, and those are `low`.
+- The verdict follows from the grades: any blocking comment ->
+  `request_changes`; none -> `approve`.
+- Zero findings -> `approve` with empty `comments`.
+- `summary`: one line, e.g. `1 blocking (nil deref in X), 2 optional`.
 
 ## Rounds 2+
 
 Read the engineer's latest response first. Do not re-raise a finding
 the engineer pushed back on with a concrete reason (out of scope,
-intended by the spec, pre-existing code) unless the reason is wrong.
-When it is wrong, say so explicitly in that finding's comment
-(`pushback rejected: <why>`). A finding the engineer marked addressed
-but that the new run still reports is a fresh `request_changes`
-comment.
+intended by the spec, pre-existing code, unlikely or low impact)
+unless the reason is wrong. When it is wrong, say so explicitly in
+that finding's comment (`pushback rejected: <why>`). A finding the
+engineer marked addressed but that the new run still reports is a
+fresh comment, graded on its own merits.
+
+The skill re-reviews the whole PR every round, so it keeps surfacing
+new rare cases in code nobody touched. Do not map a NEW `low`
+finding on code the engineer did not change in this round. "Changed
+in this round" is the diff since your previous verdict:
+
+```
+prev=$(git log -1 --format=%H --before="$(date -r "$SPORE_TASK_DIR/reviews/$SPORE_REVIEWER_INSTANCE/round-<N-1>.json" -Iseconds)")
+git diff "$prev" HEAD
+```
+
+New `high` / `medium` findings on unchanged code are still mapped:
+a real defect is worth raising late.
 
 ## What you write
 
@@ -85,15 +103,73 @@ comment.
     "author": "A",
     "verdict": "approve" | "request_changes",
     "summary": "one-line overall take",
-    "comments": ["path:line: ...", "..."]
+    "comments": [
+      {
+        "severity": "high" | "medium" | "low",
+        "category": "correctness",
+        "where": "path/to/file.go:42",
+        "text": "what is wrong and the failure scenario",
+        "reason": "one line: why this severity"
+      }
+    ]
   }
   ```
 
   - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`; it
     must match the directory you write into.
+  - `comments`: one graded object per mapped finding.
   - No other keys. The coordinator validates the file on every
     tick; an invalid file does not count, is moved to
     `<name>.invalid`, and you are woken with the error to rewrite it.
+
+## Grading comments
+
+Grade every comment. The engineer reads the grade to tell what must
+change from what is optional, and the verdict follows from the grades.
+
+Comment keys:
+
+- `severity`: required. `high`, `medium`, or `low` (see the rubric).
+- `category`: required. One of `security`, `correctness`, `spec`,
+  `data-loss`, `edge-case`, `test`, `perf`, `maintainability`, `nit`.
+- `where`: optional. `path:line` (or `path`) the comment is about.
+- `text`: required. The defect and its failure scenario, or the
+  suggestion.
+- `reason`: one line on why this severity (likelihood and impact).
+  Required for `high` and `medium`, optional for `low`.
+
+No other keys in a comment.
+
+Severity is likelihood times impact:
+
+- `high`: users hit it in normal use, or it loses data, opens a
+  security hole, or violates the spec. Example: the new flag is
+  ignored on every run; a token is logged in plain text.
+- `medium`: a plausible path with real impact, or a missing test for
+  a rule the spec requires. Example: a retry loop that never stops
+  when the remote returns 500; no test for the spec's "reject empty
+  name" rule.
+- `low`: a rare edge case, a theoretical race, or a code-quality /
+  maintainability note. Example: two ticks racing within the same
+  millisecond; a helper that could be shared; a clearer name.
+
+Do not inflate. A rare edge case is `low` even when its category is
+`correctness`; reserve `medium` for paths a real user or operator
+can plausibly reach.
+
+**The verdict follows from the grades.** A comment is blocking when
+it is `high`, or `medium` with category `security`, `correctness`,
+`spec`, or `data-loss`. Any blocking comment -> `request_changes`.
+No blocking comment -> `approve`, even when `medium` / `low`
+comments remain; they reach the engineer and the PR as optional. The
+coordinator rejects a file whose verdict contradicts its grades and
+wakes you with the rule it broke.
+
+On `approve` the engineer is not woken: optional comments stay on
+the record (and on the PR, in the draft-PR flow) for the operator.
+
+Plain-string comments still parse but are ungraded: in a review with
+any graded comment they count as blocking. Do not write them.
 
 ## Writing JSON files
 
@@ -110,7 +186,7 @@ comment.
 
 1. Rounds 2+: read the engineer's latest response.
 2. Run the review (see "Running the review").
-3. Map findings to a verdict and write `reviews/<instance>/round-N.json`.
+3. Grade each finding, derive the verdict, and write `reviews/<instance>/round-N.json`.
 4. Mark the round done. The coordinator wakes the engineer (on
    `request_changes`) or advances the phase (on `approve`).
 5. Wait. If the engineer revises, the coordinator wakes you with the
@@ -118,9 +194,10 @@ comment.
 
 ## Cap
 
-Three rounds per reviewer phase. If round 3 still has non-cosmetic
+Three rounds per reviewer phase. If round 3 still has blocking
 findings, write `request_changes` anyway; the coordinator escalates
-to the operator. Do not soften a verdict to dodge escalation.
+to the operator. Do not downgrade a grade to dodge escalation, and
+do not inflate one to keep a loop going.
 
 ## Where you run
 
