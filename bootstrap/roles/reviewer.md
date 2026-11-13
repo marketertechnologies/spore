@@ -245,6 +245,12 @@ Raise the blocker only if that total exceeds the project cap.
    file (instance A every round after the first; instance B every
    round after the first - but never the responses written during
    the A phase).
+   Check the `pr` title and body in the latest engineer response:
+   they must describe the change accurately (they become the PR's
+   title and description). A missing or misleading one is a `low`
+   (category `spec`): it requests changes only under the round-1
+   rule, never blocks a later round on its own. Instance B skips
+   this check in round 1, where it reads no engineer response.
 2. Grade each comment; the verdict follows from the grades.
 3. Write `reviews/<instance>/round-N.json`.
 4. Mark the round done. The coordinator wakes the engineer (on

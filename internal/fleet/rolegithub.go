@@ -3,6 +3,8 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,8 +40,12 @@ type githubState struct {
 	Ready     bool     `json:"ready,omitempty"`
 	// DoneNotified records the plain "<slug>: done" fallback sent while
 	// the mirror was failing at PhaseDone.
-	DoneNotified bool   `json:"done_notified,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	DoneNotified bool `json:"done_notified,omitempty"`
+	// PRDescription keys the engineer `pr` title/body last applied
+	// (response file name plus content hash), so a re-tick never edits
+	// the PR twice.
+	PRDescription string `json:"pr_description,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -307,6 +313,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			"The engineer was asked to address them in one fix pass; no re-review follows. Operator intervention is required: the PR stays draft until the operator decides.",
 			label, e.round, MaxReviewerRounds))
 	case eventReady:
+		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err
 		}
@@ -538,8 +545,91 @@ func (m *githubMirror) prBody(title string) string {
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
 	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Requirements review` and `Code review` comments whose items carry stable IDs (`R1.2` is requirements review, round 1, item 2; `C` items come from the code review), and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
-		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+	return summary + "\n\n" + m.prFooter()
+}
+
+// prFooter is the fixed spore paragraph every PR body ends with.
+func (m *githubMirror) prFooter() string {
+	return fmt.Sprintf("Dispatched by @%s. Opened by spore's role loop: reviews arrive as `Requirements review` and `Code review` comments whose items carry stable IDs (`R1.2` is requirements review, round 1, item 2; `C` items come from the code review), and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
+		m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+}
+
+// applyPRDescription replaces the PR title and body with the `pr` of
+// the latest engineer response that carries one, body followed by the
+// review outcome and the spore footer. No `pr` leaves the PR as
+// opened. Best-effort: a failure is logged and told to the coordinator
+// but never holds back marking the PR ready, and it is not retried.
+func (m *githubMirror) applyPRDescription() {
+	name, pr, err := latestPRDescription(m.projectRoot, m.slug)
+	if err != nil || pr == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: pr description: %v\n", m.slug, err)
+		}
+		return
+	}
+	sum := sha256.Sum256([]byte(pr.Title + "\x00" + pr.Body))
+	key := name + ":" + hex.EncodeToString(sum[:6])
+	if m.state.PRDescription == key {
+		return
+	}
+	body := strings.TrimSpace(pr.Body) + "\n\n---\n\n"
+	if line := reviewOutcomeLine(m.projectRoot, m.slug); line != "" {
+		body += line + "\n\n"
+	}
+	body += m.prFooter()
+	if _, err := m.gh(body, "pr", "edit", strconv.Itoa(m.state.PRNumber), "--title", strings.TrimSpace(pr.Title), "--body-file", "-"); err != nil {
+		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: pr edit: %v\n", m.slug, err)
+		notifyRoleLoop(m.projectRoot, fmt.Sprintf("%s: could not apply the engineer's PR title/body (%s); PR marked ready with the original", m.slug, mirrorErrorKey(err)))
+		return
+	}
+	m.state.PRDescription = key
+	m.save()
+}
+
+// latestPRDescription returns the `pr` of the newest valid engineer
+// response that carries one, with that response's file name.
+func latestPRDescription(projectRoot, slug string) (string, *task.PRDescription, error) {
+	rounds, err := task.ListEngineerRounds(projectRoot, slug)
+	if err != nil {
+		return "", nil, err
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		resp, err := task.ReadEngineerResponse(projectRoot, slug, rounds[i])
+		if errors.Is(err, task.ErrInvalidRoleFile) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		if resp.PR != nil {
+			return filepath.Base(task.EngineerResponsePath(projectRoot, slug, rounds[i])), resp.PR, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// reviewOutcomeLine summarises each reviewer's final verdict, e.g.
+// "Requirements review: approved at round 2. Code review: approved at
+// round 1."
+func reviewOutcomeLine(projectRoot, slug string) string {
+	var parts []string
+	for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
+		rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
+		if err != nil || len(rounds) == 0 {
+			continue
+		}
+		last := rounds[len(rounds)-1]
+		rev, err := task.ReadReview(projectRoot, slug, inst, last)
+		if err != nil {
+			continue
+		}
+		verdict := "approved"
+		if rev.Verdict == task.VerdictRequestChanges {
+			verdict = "requested changes"
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s at round %d.", task.ReviewerLabel(rev.IDPrefix(inst)), verdict, last))
+	}
+	return strings.Join(parts, " ")
 }
 
 var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")

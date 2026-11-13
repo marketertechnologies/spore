@@ -163,6 +163,34 @@ func TestParseEngineerOutcomeDetailAndSHA(t *testing.T) {
 	}
 }
 
+func TestParseEngineerResponsePR(t *testing.T) {
+	resp := func(pr string) string {
+		return `{"author":"engineer","addressed":[],"pushback":[],"pr":` + pr + `}`
+	}
+	r, err := ParseEngineerResponse("x", []byte(resp(`{"title":"fix(orders): HK-761 drop the stale error","body":"## Problem\nx"}`)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PR == nil || r.PR.Title != "fix(orders): HK-761 drop the stale error" {
+		t.Errorf("pr = %+v", r.PR)
+	}
+	if r, err := ParseEngineerResponse("x", []byte(`{"author":"engineer","addressed":[],"pushback":[]}`), false); err != nil || r.PR != nil {
+		t.Errorf("absent pr: %+v, %v", r.PR, err)
+	}
+	for name, c := range map[string]struct{ pr, want string }{
+		"empty title": {`{"title":" ","body":"b"}`, `pr: missing required field "title"`},
+		"multi-line":  {`{"title":"a\nb","body":"b"}`, "single line"},
+		"long title":  {`{"title":"` + strings.Repeat("x", MaxPRTitleLen+1) + `","body":"b"}`, "max 120"},
+		"empty body":  {`{"title":"t","body":""}`, `pr: missing required field "body"`},
+		"unknown key": {`{"title":"t","body":"b","labels":[]}`, `unknown field "labels"`},
+		"not object":  {`"fix: x"`, "decode"},
+	} {
+		if _, err := ParseEngineerResponse("x", []byte(resp(c.pr)), false); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want invalid containing %q", name, err, c.want)
+		}
+	}
+}
+
 func TestQuarantinePathIncrements(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "round-1.json")
 	dest, prior := QuarantinePath(p)

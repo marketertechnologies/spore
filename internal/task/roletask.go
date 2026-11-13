@@ -126,6 +126,36 @@ type EngineerResponse struct {
 	// Outcomes optionally records, per review comment, what the
 	// engineer did with it. Read by `spore task review-stats`.
 	Outcomes []CommentOutcome `json:"outcomes,omitempty"`
+	// PR is the engineer's current title and description for the
+	// task's PR. Optional; the draft-PR mirror applies the latest one
+	// when the loop reaches done.
+	PR *PRDescription `json:"pr,omitempty"`
+}
+
+// MaxPRTitleLen caps PRDescription.Title, well under GitHub's limit,
+// so a pasted paragraph is rejected instead of posted.
+const MaxPRTitleLen = 120
+
+// PRDescription is the final PR title and markdown body the engineer
+// proposes, written for a human reviewer who has not seen the spec.
+type PRDescription struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+func (p PRDescription) validate() error {
+	title := strings.TrimSpace(p.Title)
+	switch {
+	case title == "":
+		return errors.New(`missing required field "title"`)
+	case strings.ContainsAny(p.Title, "\r\n"):
+		return errors.New("title must be a single line")
+	case len(title) > MaxPRTitleLen:
+		return fmt.Errorf("title is %d characters, max %d", len(title), MaxPRTitleLen)
+	case strings.TrimSpace(p.Body) == "":
+		return errors.New(`missing required field "body"`)
+	}
+	return nil
 }
 
 // Comment outcome values an engineer response may record.

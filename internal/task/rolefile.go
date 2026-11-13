@@ -184,6 +184,11 @@ func ParseEngineerResponse(path string, b []byte, legacy bool) (EngineerResponse
 			return r, invalid(path, fmt.Sprintf("outcomes[%d]: %v", i, err))
 		}
 	}
+	if r.PR != nil {
+		if err := r.PR.validate(); err != nil {
+			return r, invalid(path, "pr: "+err.Error())
+		}
+	}
 	return r, nil
 }
 

@@ -50,7 +50,11 @@ files only.
        "detail": "guard the nil session", "sha": "abc1234"},
       {"reviewer": "A", "round": 1, "comment": 1, "outcome": "pushed_back",
        "detail": "the spec allows an empty list"}
-    ]
+    ],
+    "pr": {
+      "title": "fix(orders): HK-761 drop the stale activation error once the order is activated",
+      "body": "## Problem\n...\n\n## Change\n...\n\n## Tests\n...\n\n## Notes for reviewers\n..."
+    }
   }
   ```
 
@@ -77,6 +81,17 @@ files only.
     with the grade; `spore task review-stats` tallies them.
     `addressed` / `pushback` entries led by an ID with a `detail` row
     are not repeated on the PR, so keep anything extra in `notes`.
+  - `pr`: the PR title and description, kept current in every
+    response (the latest one wins). `title`: one line, at most 120
+    characters, conventional-commit style with the ticket key when
+    the task has one (`fix(orders): HK-761 drop the stale activation
+    error once the order is activated`). `body`: markdown with
+    Problem / Change / Tests / Notes for reviewers, written for a
+    human reviewer who has not seen the spec; no spore internals (no
+    round numbers, comment IDs, `.spore/` paths). When the loop
+    reaches done with the draft-PR flow on, the driver sets the PR's
+    title and body from the latest response that carries `pr`.
+    Optional in the schema, but write it in every response.
 
   No other keys. The coordinator validates the file on every tick;
   an invalid file does not count, is moved to `<name>.invalid`, and

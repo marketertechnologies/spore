@@ -406,7 +406,20 @@ or the index is past its comments); details are the outcome's `sha`
 and `detail`. The free-text `addressed` / `pushback` / notes /
 follow-ups follow, minus `addressed` / `pushback` entries that lead
 with an ID whose row already has details. Responses without
-`outcomes` render their lists as before. The engineer wake names the
+`outcomes` render their lists as before.
+
+### Final PR title and description
+
+Engineer responses may carry `pr: {"title", "body"}`; the engineer
+keeps it current in every response. Validation: `title` non-empty,
+one line, at most 120 characters; `body` non-empty; no other keys. An
+invalid `pr` bounces the file like any schema error; a missing one is
+valid. With the draft-PR flow on, reaching done applies the `pr` of
+the latest engineer response that carries one to the PR (title, and
+body plus each reviewer's final verdict and the spore footer) just
+before `gh pr ready`; see `docs/github-app.md`. The fleet reviewer
+checks the `pr` text describes the change; a missing or misleading
+one is a `low`. The engineer wake names the
 reviewer by label and the IDs to cite (`Code review (reviewer B,
 comment IDs C2.N) requested changes at round 2`).
 
