@@ -40,8 +40,9 @@ Subcommands:
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
   status <slug>                Print role-loop phase, round, last verdict.
-  review-stats                 Tally role-loop review comments by severity and
-                               category, with the engineer's recorded outcome.
+  review-stats                 Tally role-loop review comments by reviewer,
+                               severity and category, with the engineer's
+                               recorded outcome.
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary

@@ -50,51 +50,101 @@ func walkPhases(t *testing.T, root, slug string, rows []phaseRow) Snapshot {
 	return snap
 }
 
-func TestReviewBodyGradedBySeverity(t *testing.T) {
+func TestReviewBodyNumberedIDs(t *testing.T) {
 	rev := task.Review{
 		Verdict: task.VerdictRequestChanges,
 		Summary: "one bug",
+		Prefix:  "R",
 		Comments: []task.ReviewComment{
-			lowNit,
-			askWhy,
+			{Severity: "high", Category: "security", Text: "token logged", Reason: "leaks creds", Trigger: "any login"},
 			medEdge,
 			{Severity: "medium", Category: "correctness", Where: "a.go:3", Text: "off by one", Reason: "every page", Trigger: "page 2",
 				Suggestion: "--- a/a.go\n+++ b/a.go\n@@ -3 +3 @@\n-i <= n\n+i < n\n"},
-			{Severity: "high", Category: "security", Text: "token logged", Reason: "leaks creds", Trigger: "any login"},
+			lowNit,
 			{Severity: "low", Category: "nit", Where: "b.go:1", Text: "name", Suggestion: "x := ```\n"},
+			askWhy,
 		},
 	}
 	got := reviewBody(task.ReviewerA, 2, rev)
-	want := "**Review #1 (round 2): request changes**\n\none bug\n\n" +
-		"- **high** / security - token logged (leaks creds)\n  Trigger: any login\n" +
-		"- **medium** / edge-case - empty list (plausible)\n  Trigger: empty tasks/ dir\n" +
-		"- **medium** / correctness / `a.go:3` - off by one (every page)\n  Trigger: page 2\n\n" +
+	want := "**Requirements review (round 2): request changes**\n\none bug\n\n" +
+		"- **R2.1** | high | security - token logged (leaks creds)\n  Trigger: any login\n" +
+		"- **R2.2** | medium | edge-case - empty list (plausible)\n  Trigger: empty tasks/ dir\n" +
+		"- **R2.3** | medium | correctness | `a.go:3` - off by one (every page)\n  Trigger: page 2\n\n" +
 		"  ```diff\n  --- a/a.go\n  +++ b/a.go\n  @@ -3 +3 @@\n  -i <= n\n  +i < n\n  ```\n" +
-		"- **question** / spec - is the cap intended?\n" +
-		"- **low** / nit - rename foo\n" +
-		"- **low** / nit / `b.go:1` - name\n\n  ````\n  x := ```\n  ````\n"
+		"- **R2.4** | low | nit - rename foo\n" +
+		"- **R2.5** | low | nit | `b.go:1` - name\n\n  ````\n  x := ```\n  ````\n" +
+		"- **R2.6** | question | spec - is the cap intended?\n"
 	if got != want {
 		t.Errorf("body:\n%s\nwant:\n%s", got, want)
 	}
 }
 
-func TestReviewBodyLegacyStringsUnchanged(t *testing.T) {
-	rev := task.Review{Verdict: task.VerdictApprove, Summary: "ok",
-		Comments: []task.ReviewComment{task.Ungraded("b first"), task.Ungraded("a second")}}
+func TestReviewBodyCodeReviewLabel(t *testing.T) {
+	rev := task.Review{Verdict: task.VerdictRequestChanges, Summary: "s", Prefix: "D", Comments: []task.ReviewComment{highBug}}
 	got := reviewBody(task.ReviewerB, 1, rev)
-	want := "**Review #2 (round 1): approve**\n\nok\n\n- b first\n- a second\n"
-	if got != want {
-		t.Errorf("body:\n%q\nwant:\n%q", got, want)
+	if !strings.HasPrefix(got, "**Code review 2 (round 1): request changes**") || !strings.Contains(got, "- **D1.1** | high") {
+		t.Errorf("body = %q", got)
 	}
 }
 
-func TestReviewBodyUngradedInGradedReview(t *testing.T) {
-	rev := task.Review{Verdict: task.VerdictRequestChanges, Comments: []task.ReviewComment{
+// Verdicts written before prefixes (and older unsorted ones) render in
+// file order, numbered with the instance letter.
+func TestReviewBodyOldFilesWithoutPrefix(t *testing.T) {
+	rev := task.Review{Verdict: task.VerdictApprove, Summary: "ok",
+		Comments: []task.ReviewComment{task.Ungraded("b first"), task.Ungraded("a second")}}
+	got := reviewBody(task.ReviewerB, 1, rev)
+	want := "**Reviewer B (round 1): approve**\n\nok\n\n- **B1.1** b first\n- **B1.2** a second\n"
+	if got != want {
+		t.Errorf("body:\n%q\nwant:\n%q", got, want)
+	}
+	unsorted := task.Review{Verdict: task.VerdictRequestChanges, Comments: []task.ReviewComment{
 		lowNit, task.Ungraded("plain"), highBug,
 	}}
-	got := renderReviewComments(rev)
-	want := "- **high** / correctness - nil deref (every run)\n  Trigger: any run\n- **ungraded** - plain\n- **low** / nit - rename foo\n"
+	got = renderReviewComments(task.ReviewerA, 1, unsorted)
+	want = "- **A1.1** | low | nit - rename foo\n- **A1.2** | ungraded | plain\n- **A1.3** | high | correctness - nil deref (every run)\n  Trigger: any run\n"
 	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestEngineerResponseOutcomeTable(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s", Prefix: "R",
+		Comments: []task.ReviewComment{highBug, medEdge, lowNit, askWhy}})
+	resp := task.EngineerResponse{
+		Addressed: []string{"R1.1: guarded the session", "bumped VERSION"},
+		Pushback:  []string{"R1.3 rename churns callers"},
+		Notes:     "ready for round 2",
+		Followups: []string{"retry service: separate PR"},
+		Outcomes: []task.CommentOutcome{
+			{Reviewer: "A", Round: 1, Comment: 3, Outcome: task.OutcomeAnswered, Detail: "yes, the spec caps retries at 3"},
+			{Reviewer: "A", Round: 1, Comment: 0, Outcome: task.OutcomeFixed, Detail: "guard nil session", SHA: "abc1234"},
+			{Reviewer: "A", Round: 1, Comment: 2, Outcome: task.OutcomeDeclined, Detail: "rename churns | callers"},
+			{Reviewer: "A", Round: 1, Comment: 1, Outcome: task.OutcomePushedBack},
+			{Reviewer: "B", Round: 2, Comment: 0, Outcome: task.OutcomeFixed},
+		},
+	}
+	var b strings.Builder
+	writeEngineerResponse(&b, root, slug, resp)
+	want := "| ID | Grade | Outcome | Details |\n| --- | --- | --- | --- |\n" +
+		"| R1.1 | high | fixed | `abc1234` guard nil session |\n" +
+		"| R1.2 | medium | pushed back |  |\n" +
+		"| R1.3 | low | declined | rename churns \\| callers |\n" +
+		"| R1.4 | question | answered | yes, the spec caps retries at 3 |\n" +
+		"| B2.1 | ? | fixed |  |\n\n" +
+		"Addressed:\n- bumped VERSION\n\n" +
+		"Notes: ready for round 2\n\n" +
+		"Proposed follow-ups:\n- retry service: separate PR\n\n"
+	if got := b.String(); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// An engineer response from before outcomes renders its lists as before.
+func TestEngineerResponseWithoutOutcomes(t *testing.T) {
+	var b strings.Builder
+	writeEngineerResponse(&b, t.TempDir(), "demo", task.EngineerResponse{Addressed: []string{"A r1 #0 -> fixed"}, Pushback: []string{"no"}})
+	if got, want := b.String(), "Addressed:\n- A r1 #0 -> fixed\n\nPushback:\n- no\n\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

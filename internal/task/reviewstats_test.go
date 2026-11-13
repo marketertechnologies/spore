@@ -3,6 +3,7 @@ package task
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ func writeFixture(t *testing.T, path, body string) {
 
 // statsFixture lays out two role-loop tasks plus a non-task dir.
 //
-//	alpha: A/1 request_changes (high, low, question), engineer 2
+//	alpha: A/1 request_changes (high, low, question; prefix R), engineer 2
 //	       records fixed / declined / answered; A/2 approve (low,
 //	       no outcome); B/1 approve, no comments.
 //	beta:  A/1 legacy strings (no outcomes); A/2 invalid JSON.
@@ -29,7 +30,7 @@ func statsFixture(t *testing.T) string {
 	root := t.TempDir()
 	spore := filepath.Join(root, RoleTaskRoot)
 	writeFixture(t, filepath.Join(spore, "alpha", "reviews", "A", "round-1.json"),
-		reviewJSON("request_changes", highCorrect, lowNit, question))
+		strings.Replace(reviewJSON("request_changes", highCorrect, lowNit, question), `"summary":"s"`, `"summary":"s","prefix":"R"`, 1))
 	writeFixture(t, filepath.Join(spore, "alpha", "responses", "engineer-round-1.json"), `{"author":"engineer","addressed":[],"pushback":[]}`)
 	writeFixture(t, filepath.Join(spore, "alpha", "responses", "engineer-round-2.json"), `{"author":"engineer","addressed":["a"],"pushback":["b"],"outcomes":[
 		{"reviewer":"A","round":1,"comment":0,"outcome":"fixed"},
@@ -77,6 +78,13 @@ func TestCollectReviewStats(t *testing.T) {
 	if _, ok := sev[SeverityMedium]; ok {
 		t.Errorf("medium row present with no medium comments")
 	}
+	var who []string
+	for _, r := range st.ByReviewer {
+		who = append(who, fmt.Sprintf("%s=%d", r.Key, r.Raised))
+	}
+	if got, want := strings.Join(who, ","), "Requirements review=3,Reviewer A=3"; got != want {
+		t.Errorf("reviewer rows = %s, want %s", got, want)
+	}
 	var order []string
 	for _, r := range st.ByCategory {
 		order = append(order, r.Key)
@@ -110,6 +118,8 @@ func TestWriteReviewStats(t *testing.T) {
 		"question  1       0      0            0         1         0",
 		"CATEGORY",
 		"nit",
+		"REVIEWER             RAISED",
+		"Requirements review  3       1      0            1         1         0",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

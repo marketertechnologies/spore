@@ -17,8 +17,8 @@ import (
 var wakeRole = wakeSession
 
 const (
-	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "comments" (objects {"severity","category","where","text","reason"})`
-	engineerKeys = `"author", "addressed", "pushback", "notes", "followups"`
+	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "prefix" ($SPORE_REVIEWER_PREFIX), "comments" (objects {"severity","category","where","text","reason","trigger","suggestion"}, sorted high, medium, low, question)`
+	engineerKeys = `"author", "addressed", "pushback", "notes", "followups", "outcomes"`
 )
 
 // bounceInvalidRoleFiles hands every role file that fails validation

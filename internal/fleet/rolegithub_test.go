@@ -221,7 +221,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("branch not pushed to origin")
 	}
 	log := f.log(t)
-	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`Review #1` / `Review #2`"} {
+	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`R1.2` is requirements review, round 1, item 2"} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
 		}
@@ -233,13 +233,13 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("state = %+v", s)
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	writeEng(2)(t, f.root, f.slug)
 	head2 := f.commit(t, "two")
 	f.tick(t)
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "good"})
-	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "good", Prefix: "R"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it", Prefix: "C"})
 	if snap := f.tick(t); snap.Phase != PhaseDone {
 		t.Fatalf("phase = %s", snap.Phase)
 	}
@@ -261,10 +261,10 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 	}
 	log = f.log(t)
 	for _, s := range []string{
-		"**Review #1 (round 1): request changes**\n\nneeds tests\n\n- add a test\n",
+		"**Requirements review (round 1): request changes**\n\nneeds tests\n\n- **R1.1** add a test\n",
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",
-		"**Review #1 (round 2): approve**",
-		"**Review #2 (round 1): approve**\n\nship it",
+		"**Requirements review (round 2): approve**",
+		"**Code review (round 1): approve**\n\nship it",
 	} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
@@ -378,7 +378,7 @@ func TestGitHubMirrorEscalationCommentsOnce(t *testing.T) {
 		}
 	}
 	// Two engineer revision comments plus one escalation comment.
-	if n != 3 || !strings.Contains(f.log(t), "Review #1 requested changes at round 3, the cap of 3") {
+	if n != 3 || !strings.Contains(f.log(t), "Reviewer A requested changes at round 3, the cap of 3") {
 		t.Fatalf("comments = %d, log:\n%s", n, f.log(t))
 	}
 }

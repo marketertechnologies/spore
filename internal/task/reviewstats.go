@@ -28,8 +28,8 @@ type StatsRow struct {
 // ReviewStats aggregates review comments across every role-loop task
 // under a project root.
 type ReviewStats struct {
-	Tasks, Reviews, Skipped int
-	BySeverity, ByCategory  []StatsRow
+	Tasks, Reviews, Skipped            int
+	ByReviewer, BySeverity, ByCategory []StatsRow
 }
 
 type commentKey struct {
@@ -39,7 +39,7 @@ type commentKey struct {
 
 // CollectReviewStats scans `<projectRoot>/.spore/*/reviews/{A,B}/
 // round-*.json` and `responses/engineer-round-*.json`. Each comment
-// counts once under its severity and category (ungraded strings
+// counts once under its reviewer label, severity and category (ungraded strings
 // under "ungraded" and "-"); its outcome is the last one an engineer
 // response recorded for it, else "unrecorded". Invalid files are
 // skipped and counted in Skipped.
@@ -54,6 +54,11 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 	}
 	sev := newTally(SeverityHigh, SeverityMedium, SeverityLow, SeverityQuestion, "ungraded")
 	cat := newTally(append(append([]string{}, ReviewCategories...), "-")...)
+	var labels []string
+	for _, p := range []string{"R", "S", "C", "D", "A", "B"} {
+		labels = append(labels, ReviewerLabel(p))
+	}
+	who := newTally(labels...)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -80,6 +85,7 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 				}
 				seen = true
 				st.Reviews++
+				label := ReviewerLabel(rev.IDPrefix(inst))
 				for i, c := range rev.Comments {
 					out, ok := outcomes[commentKey{inst, r, i}]
 					if !ok {
@@ -91,6 +97,7 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 					}
 					sev.add(s, out)
 					cat.add(k, out)
+					who.add(label, out)
 				}
 			}
 		}
@@ -98,7 +105,7 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 			st.Tasks++
 		}
 	}
-	st.BySeverity, st.ByCategory = sev.rows(), cat.rows()
+	st.ByReviewer, st.BySeverity, st.ByCategory = who.rows(), sev.rows(), cat.rows()
 	return st, nil
 }
 
@@ -154,8 +161,8 @@ func (t *tally) rows() []StatsRow {
 	return out
 }
 
-// WriteReviewStats prints st as two tables, by severity and by
-// category.
+// WriteReviewStats prints st as three tables: by reviewer (display
+// label from the verdict's ID prefix), by severity, and by category.
 func WriteReviewStats(w io.Writer, st ReviewStats) error {
 	fmt.Fprintf(w, "%d task(s), %d review file(s)", st.Tasks, st.Reviews)
 	if st.Skipped > 0 {
@@ -166,7 +173,7 @@ func WriteReviewStats(w io.Writer, st ReviewStats) error {
 	for _, tbl := range []struct {
 		name string
 		rows []StatsRow
-	}{{"SEVERITY", st.BySeverity}, {"CATEGORY", st.ByCategory}} {
+	}{{"REVIEWER", st.ByReviewer}, {"SEVERITY", st.BySeverity}, {"CATEGORY", st.ByCategory}} {
 		fmt.Fprintf(tw, "\n%s\tRAISED", tbl.name)
 		for _, c := range statsColumns {
 			fmt.Fprintf(tw, "\t%s", strings.ToUpper(c))

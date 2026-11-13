@@ -127,6 +127,11 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if s.Role == "reviewer" {
 		args = append(args, "-e", "SPORE_REVIEWER_INSTANCE="+string(s.ReviewerInstance))
 		args = append(args, "-e", "SPORE_REVIEWER_MODE="+slot.Mode)
+		prefix, err := s.reviewerPrefix(slot)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "-e", "SPORE_REVIEWER_PREFIX="+prefix, "-e", "SPORE_REVIEWER_LABEL="+task.ReviewerLabel(prefix))
 		if slot.Mode == ReviewerModeCodeReview {
 			args = append(args, "-e", "SPORE_REVIEW_EFFORT="+slot.Effort)
 		}
@@ -206,6 +211,22 @@ func (s RoleSpawnSpec) resolve() (slot ReviewerSlot, meta frontmatter.Meta, agen
 		slot.Effort = ""
 	}
 	return slot, meta, agent, nil
+}
+
+// reviewerPrefix derives the pane's comment ID prefix from its own
+// settled slot and the other slot as a spawn with no spec agent would
+// settle it, so the same-mode case (S, D) is detected.
+func (s RoleSpawnSpec) reviewerPrefix(slot ReviewerSlot) (string, error) {
+	other := RoleSpawnSpec{ProjectRoot: s.ProjectRoot, Slug: s.Slug, Role: "reviewer", TasksDir: s.TasksDir, ReviewerInstance: task.ReviewerA}
+	if s.ReviewerInstance == task.ReviewerA {
+		other.ReviewerInstance = task.ReviewerB
+	}
+	otherSlot, _, _, err := other.resolve()
+	if err != nil {
+		return "", err
+	}
+	modes := map[task.ReviewerInstance]string{s.ReviewerInstance: slot.Mode, other.ReviewerInstance: otherSlot.Mode}
+	return task.ReviewerPrefix(s.ReviewerInstance, modes[task.ReviewerA], modes[task.ReviewerB]), nil
 }
 
 // invocations returns the pane's agent command with and without a

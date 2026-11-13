@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -194,18 +196,20 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		return nil
 	}
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
-	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
-		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
+	label, prefix := reviewerName(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
+	who := fmt.Sprintf("%s (reviewer %s, comment IDs %s%d.N)", label, snap.CurrentReviewer, prefix, snap.ReviewerRound)
+	msg := fmt.Sprintf("%s requested changes at round %d. Read %s and start the revision; cite comments by ID in your response.",
+		who, snap.ReviewerRound, verdictPath)
 	if snap.Phase == PhaseEscalated {
 		// A fully ungraded (legacy) verdict has no grades to name.
 		what := "its comments"
 		if n := snap.LastCounts; n.HighMedium+n.Low+n.Question > 0 {
 			what = "its high and medium comments (lows are optional; answer any questions)"
 		}
-		msg = fmt.Sprintf("Reviewer %s requested changes at round %d, the final round: the loop is escalated to the operator. "+
+		msg = fmt.Sprintf("%s requested changes at round %d, the final round: the loop is escalated to the operator. "+
 			"Read %s and address %s in one fix pass, then write %s. "+
 			"No re-review follows; the operator takes it from there.",
-			snap.CurrentReviewer, snap.ReviewerRound, verdictPath, what,
+			who, snap.ReviewerRound, verdictPath, what,
 			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1))
 	}
 	_, err := wakeRole(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
@@ -646,7 +650,7 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 				fmt.Fprintf(&b, "%s\n\n", rev.Summary)
 			}
 			if len(rev.Comments) > 0 {
-				b.WriteString(renderReviewComments(rev))
+				b.WriteString(renderReviewComments(instance, r, rev))
 				b.WriteString("\n")
 			}
 		}
@@ -667,22 +671,44 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 				return "", err
 			}
 			fmt.Fprintf(&b, "### round %d\n\n", r)
-			writeEngineerResponse(&b, resp)
+			writeEngineerResponse(&b, projectRoot, slug, resp)
 		}
 	}
 
 	return b.String(), nil
 }
 
-// writeEngineerResponse renders resp's lists and notes; shared by the
-// summary and the PR mirror's engineer comment.
-func writeEngineerResponse(b *strings.Builder, resp task.EngineerResponse) {
+// writeEngineerResponse renders resp for the summary and the PR
+// mirror's engineer comment: a table of its structured `outcomes` in
+// ID order (grade joined from the verdict files), then the free-text
+// lists and notes. An `addressed` / `pushback` entry that leads with
+// an ID the table already details is dropped as a repeat.
+func writeEngineerResponse(b *strings.Builder, projectRoot, slug string, resp task.EngineerResponse) {
+	rows := outcomeRows(projectRoot, slug, resp.Outcomes)
+	covered := map[string]bool{}
+	if len(rows) > 0 {
+		b.WriteString("| ID | Grade | Outcome | Details |\n| --- | --- | --- | --- |\n")
+		for _, r := range rows {
+			fmt.Fprintf(b, "| %s | %s | %s | %s |\n", r.id, r.grade, r.outcome, tableCell(r.details))
+			if r.details != "" {
+				covered[r.id] = true
+			}
+		}
+		b.WriteString("\n")
+	}
 	list := func(head string, items []string) {
-		if len(items) == 0 {
+		var keep []string
+		for _, c := range items {
+			if m := leadingIDRE.FindStringSubmatch(c); m != nil && covered[m[1]] {
+				continue
+			}
+			keep = append(keep, c)
+		}
+		if len(keep) == 0 {
 			return
 		}
 		b.WriteString(head + ":\n")
-		for _, c := range items {
+		for _, c := range keep {
 			fmt.Fprintf(b, "- %s\n", c)
 		}
 		b.WriteString("\n")
@@ -693,4 +719,73 @@ func writeEngineerResponse(b *strings.Builder, resp task.EngineerResponse) {
 		fmt.Fprintf(b, "Notes: %s\n\n", resp.Notes)
 	}
 	list("Proposed follow-ups", resp.Followups)
+}
+
+// leadingIDRE matches a free-text entry that starts with a comment ID
+// such as `R1.3:` or `**C2.1**`.
+var leadingIDRE = regexp.MustCompile(`^\W*([A-Z]\d+\.\d+)\b`)
+
+type outcomeRow struct {
+	inst                        task.ReviewerInstance
+	round, index                int
+	id, grade, outcome, details string
+}
+
+// outcomeRows resolves each outcome against its verdict file for the
+// ID prefix and grade, sorted by slot, round, then comment index. A
+// verdict that is missing or invalid, or an index past its comments,
+// renders grade `?` with the instance letter as prefix.
+func outcomeRows(projectRoot, slug string, outs []task.CommentOutcome) []outcomeRow {
+	type key struct {
+		inst  task.ReviewerInstance
+		round int
+	}
+	reviews := map[key]*task.Review{}
+	rows := make([]outcomeRow, 0, len(outs))
+	for _, o := range outs {
+		k := key{o.Reviewer, o.Round}
+		rev, seen := reviews[k]
+		if !seen {
+			if r, err := task.ReadReview(projectRoot, slug, o.Reviewer, o.Round); err == nil {
+				rev = &r
+			}
+			reviews[k] = rev
+		}
+		prefix, grade := string(o.Reviewer), "?"
+		if rev != nil {
+			prefix = rev.IDPrefix(o.Reviewer)
+			if o.Comment < len(rev.Comments) {
+				grade = rev.Comments[o.Comment].Severity
+				if grade == "" {
+					grade = "ungraded"
+				}
+			}
+		}
+		details := strings.TrimSpace(o.Detail)
+		if o.SHA != "" {
+			details = strings.TrimSpace("`" + o.SHA + "` " + details)
+		}
+		rows = append(rows, outcomeRow{
+			inst: o.Reviewer, round: o.Round, index: o.Comment,
+			id: task.CommentID(prefix, o.Round, o.Comment), grade: grade,
+			outcome: strings.ReplaceAll(o.Outcome, "_", " "), details: details,
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.inst != b.inst {
+			return a.inst < b.inst
+		}
+		if a.round != b.round {
+			return a.round < b.round
+		}
+		return a.index < b.index
+	})
+	return rows
+}
+
+// tableCell keeps a value on one markdown table row.
+func tableCell(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.ReplaceAll(s, "|", "\\|")
 }

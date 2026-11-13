@@ -179,6 +179,11 @@ func TestRoleSpawnReviewerModes(t *testing.T) {
 	if e := envValue(argsB, "SPORE_REVIEWER_MODE"); e != "fleet" {
 		t.Errorf("B SPORE_REVIEWER_MODE = %q, want fleet", e)
 	}
+	for args, want := range map[*[]string][2]string{&argsA: {"C", "Code review"}, &argsB: {"R", "Requirements review"}} {
+		if p, l := envValue(*args, "SPORE_REVIEWER_PREFIX"), envValue(*args, "SPORE_REVIEWER_LABEL"); p != want[0] || l != want[1] {
+			t.Errorf("prefix, label = %q, %q, want %q, %q", p, l, want[0], want[1])
+		}
+	}
 	if hasEnvArg(argsB, "SPORE_REVIEW_EFFORT") {
 		t.Errorf("B carries SPORE_REVIEW_EFFORT in fleet mode")
 	}
@@ -189,6 +194,49 @@ func TestRoleSpawnReviewerModes(t *testing.T) {
 	}
 	if hasEnvArg(argsE, "SPORE_REVIEWER_MODE") {
 		t.Errorf("engineer carries SPORE_REVIEWER_MODE")
+	}
+}
+
+func TestRoleSpawnReviewerPrefixes(t *testing.T) {
+	t.Setenv(task.CodexBinEnv, "")
+	t.Setenv(task.CodexModelEnv, "")
+	cases := []struct {
+		name, taskAgent, toml string
+		wantA, wantB          string
+		labelB                string
+	}{
+		{name: "default order", wantA: "R", wantB: "C", labelB: "Code review"},
+		{name: "both fleet", toml: "[fleet.reviewers.B]\nmode = \"fleet\"\n", wantA: "R", wantB: "S", labelB: "Requirements review 2"},
+		{name: "both code-review", toml: "[fleet.reviewers.A]\nmode = \"code-review\"\n", wantA: "C", wantB: "D", labelB: "Code review 2"},
+		// The defaulted code-review slot falls back to fleet on codex,
+		// so both slots run fleet and B must not reuse R.
+		{name: "codex fallback", taskAgent: "codex", wantA: "R", wantB: "S", labelB: "Requirements review 2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			root := newGitRepoFor(t, "demo-project")
+			writeRoleTask(t, root, c.taskAgent)
+			if c.toml != "" {
+				writeSporeTOML(t, root, c.toml)
+			}
+			got := map[task.ReviewerInstance]string{}
+			for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
+				args, err := ReviewerSpec(root, "feature-x", inst).TmuxArgs()
+				if err != nil {
+					t.Fatalf("%s TmuxArgs: %v", inst, err)
+				}
+				got[inst] = envValue(args, "SPORE_REVIEWER_PREFIX")
+				if inst == task.ReviewerB {
+					if l := envValue(args, "SPORE_REVIEWER_LABEL"); l != c.labelB {
+						t.Errorf("B label = %q, want %q", l, c.labelB)
+					}
+				}
+			}
+			if got[task.ReviewerA] != c.wantA || got[task.ReviewerB] != c.wantB {
+				t.Errorf("prefixes = %v, want A=%s B=%s", got, c.wantA, c.wantB)
+			}
+		})
 	}
 }
 
