@@ -67,5 +67,10 @@
       }
     ]
   },
+  "permissions": {
+    "deny": [
+      "SendMessage"
+    ]
+  },
   "skipDangerousModePermissionPrompt": true
 }

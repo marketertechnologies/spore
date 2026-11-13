@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "additionalContextLimit": 0,
+            "command": "/run/current-system/sw/bin/spore hooks codex-session-start",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/run/current-system/sw/bin/spore coordinator token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/run/current-system/sw/bin/spore worker token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/run/current-system/sw/bin/spore fleet replenish-hook",
+            "timeout": 30,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

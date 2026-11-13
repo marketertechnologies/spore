@@ -210,3 +210,29 @@ func TestApply_emptyDirectory(t *testing.T) {
 
 // Compile-time: Options.Stdout/Stderr accept any io.Writer.
 var _ fs.FS = (fstest.MapFS)(nil)
+
+func TestApply_missingBashNamesInterpreter(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	ledger := filepath.Join(dir, "ledger")
+	fsys := fstest.MapFS{
+		"bootstrap/migrations/001-ok.sh": {Data: []byte("true\n")},
+	}
+	res, err := Apply(fsys, "bootstrap/migrations", Options{
+		LedgerPath: ledger,
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+	})
+	if err == nil {
+		t.Fatalf("Apply: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "interpreter bash not found on PATH") {
+		t.Fatalf("err = %q, want it to name the missing interpreter", err)
+	}
+	if res.Failed != "001-ok.sh" {
+		t.Fatalf("Failed = %q, want 001-ok.sh", res.Failed)
+	}
+	if _, err := os.Stat(ledger); !os.IsNotExist(err) {
+		t.Fatalf("ledger written despite missing interpreter: %v", err)
+	}
+}

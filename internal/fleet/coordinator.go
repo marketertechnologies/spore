@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/codexpolicy"
+	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -102,38 +104,11 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	}
 	agent := coordinatorAgent(tomlCfg)
 	rolePath := CoordinatorRolePath(projectRoot)
-	project, err := task.ProjectName(projectRoot)
+	args, err := coordinatorSessionArgs(projectRoot, session, rolePath, tomlCfg)
 	if err != nil {
 		return "", false, err
 	}
-	inbox, err := task.CoordinatorInboxDirForProject(projectRoot)
-	if err != nil {
-		return "", false, err
-	}
-	coordinatorState, err := task.CoordinatorStateDir()
-	if err != nil {
-		return "", false, err
-	}
-
-	cmd := coordinatorShellCommand(agent, rolePath)
-	args := []string{
-		"new-session", "-d",
-		"-s", session,
-		"-c", projectRoot,
-		"-e", "SPORE_TASK_SLUG=" + CoordinatorSlug,
-		"-e", "SPORE_COORDINATOR_ROLE=" + rolePath,
-		"-e", "SPORE_PROJECT_ROOT=" + projectRoot,
-		"-e", "WT_PROJECT=" + project,
-		"-e", "SPORE_TASK_INBOX=" + inbox,
-		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
-	}
-	if v := coordinatorProvider(tomlCfg); v != "" {
-		args = append(args, "-e", "SPORE_COORDINATOR_PROVIDER="+v)
-	}
-	if v := coordinatorModel(tomlCfg); v != "" {
-		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
-	}
-	args = append(args, cmd)
+	args = append(args, coordinatorShellCommand(agent, rolePath))
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
@@ -152,11 +127,55 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	return session, true, nil
 }
 
+// coordinatorSessionArgs builds the `tmux new-session` argv for the
+// coordinator, minus the trailing shell command.
+func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg CoordinatorConfig) ([]string, error) {
+	project, err := task.ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	inbox, err := task.CoordinatorInboxDirForProject(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	coordinatorState, err := task.CoordinatorStateDir()
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{
+		"new-session", "-d",
+		"-s", session,
+		"-c", projectRoot,
+		"-e", "SPORE_TASK_SLUG=" + CoordinatorSlug,
+		"-e", "SPORE_COORDINATOR_ROLE=" + rolePath,
+		"-e", "SPORE_PROJECT_ROOT=" + projectRoot,
+		"-e", "WT_PROJECT=" + project,
+		"-e", "SPORE_TASK_INBOX=" + inbox,
+		"-e", "SPORE_COORDINATOR_STATE_DIR=" + coordinatorState,
+	}
+	// Recorded so `spore coordinator swap` respawns through the same
+	// launcher from a shell that lacks the reconciler's env.
+	if v := os.Getenv(CoordinatorAgentEnv); v != "" {
+		args = append(args, "-e", CoordinatorAgentEnv+"="+v)
+	}
+	if v := coordinatorProvider(tomlCfg); v != "" {
+		args = append(args, "-e", "SPORE_COORDINATOR_PROVIDER="+v)
+	}
+	if v := coordinatorModel(tomlCfg); v != "" {
+		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
+	}
+	if v := coordinatorAutoConnectIDE(projectRoot); v != "" {
+		args = append(args, "-e", editor.AutoConnectIDEEnv+"="+v)
+	}
+	return args, nil
+}
+
 // coordinatorAgent picks the binary the coordinator session execs.
 // Precedence: SPORE_COORDINATOR_AGENT (lets operators run a different
 // agent for the singleton coordinator) > SPORE_AGENT_BINARY (the same
-// var workers honour) > spore.toml [coordinator].driver mapped to a
-// known binary > "claude" (the kernel default).
+// var workers honour) > [coordinator].driver (host override, then
+// spore.toml) mapped to a known binary > "claude" (the kernel default).
 func coordinatorAgent(cfg CoordinatorConfig) string {
 	if a := os.Getenv(CoordinatorAgentEnv); a != "" {
 		return a
@@ -172,7 +191,7 @@ func coordinatorAgent(cfg CoordinatorConfig) string {
 
 // coordinatorProvider returns the provider name for launcher scripts
 // that dispatch on $SPORE_COORDINATOR_PROVIDER (e.g. the bundled
-// spore-coordinator-launch.sh). Env wins over the spore.toml driver.
+// spore-coordinator-launch.sh). Env wins over the configured driver.
 // Empty when nothing is configured: the session env stays clean.
 func coordinatorProvider(cfg CoordinatorConfig) string {
 	if v := os.Getenv("SPORE_COORDINATOR_PROVIDER"); v != "" {
@@ -182,13 +201,33 @@ func coordinatorProvider(cfg CoordinatorConfig) string {
 }
 
 // coordinatorModel returns the model identifier injected into the
-// session env. Env wins over the spore.toml model. Empty when neither
+// session env. Env wins over the configured model. Empty when neither
 // source set it.
 func coordinatorModel(cfg CoordinatorConfig) string {
 	if v := os.Getenv("SPORE_COORDINATOR_MODEL"); v != "" {
 		return v
 	}
 	return cfg.Model
+}
+
+// coordinatorAutoConnectIDE returns the CLAUDE_CODE_AUTO_CONNECT_IDE
+// value for the coordinator session. Env wins over spore.toml
+// [editor].auto_connect_ide. Empty when neither is set. A malformed
+// [editor] section is reported to stderr and leaves the knob off so
+// the coordinator still spawns.
+func coordinatorAutoConnectIDE(projectRoot string) string {
+	if v := os.Getenv(editor.AutoConnectIDEEnv); v != "" {
+		return v
+	}
+	cfg, err := editor.LoadConfig(projectRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spore: %v\n", err)
+		return ""
+	}
+	if cfg.AutoConnectIDE {
+		return "1"
+	}
+	return ""
 }
 
 // driverToBinary maps a friendly driver name to the binary to exec.
@@ -212,13 +251,54 @@ func driverToBinary(driver string) string {
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers
 // can pass space-bearing values (e.g. SPORE_AGENT_BINARY="sleep 30")
-// the same way worker spawn does.
+// the same way worker spawn does. The claude CLI needs
+// `--dangerously-skip-permissions` to boot non-interactively and `--`
+// to keep the role body out of flag parsing (matches
+// bootstrap/handover/spore-worker-brief.sh); we inject those flags
+// only for claude-shaped agents so a sleep-based test agent still
+// boots clean.
 func coordinatorShellCommand(agent, rolePath string) string {
-	q := shellSingleQuote(rolePath)
+	cmdWithBody, cmdBare := agentInvocations(agent)
+	return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+}
+
+func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
 	return fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[2]s; fi`,
-		q, agent,
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "$(cat %[1]s)"; else exec %[3]s; fi`,
+		shellSingleQuote(rolePath), cmdWithBody, cmdBare,
 	)
+}
+
+// agentInvocations returns the agent command for a run with a prompt
+// body and for a bare run. Role bodies open with `---` frontmatter, so
+// the body run ends in `--` for both claude and codex.
+func agentInvocations(agent string) (withBody, bare string) {
+	if isClaudeAgent(agent) {
+		return agent + " --dangerously-skip-permissions --", agent + " --dangerously-skip-permissions"
+	}
+	if isCodexAgent(agent) {
+		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig)
+		return codex + " --", codex
+	}
+	return agent, agent
+}
+
+// isClaudeAgent reports whether the agent string resolves to the
+// claude CLI. The agent value can carry trailing args (sleep 30,
+// codex exec --model ...), so we tokenise and check field 0's
+// basename.
+func isClaudeAgent(agent string) bool {
+	fields := strings.Fields(agent)
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	return base == "claude" || base == "claude-code"
+}
+
+func isCodexAgent(agent string) bool {
+	fields := strings.Fields(agent)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "codex"
 }
 
 // shellSingleQuote returns s wrapped in single quotes, with embedded

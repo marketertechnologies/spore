@@ -4,9 +4,14 @@ package hooks
 
 import (
 	"syscall"
+	"time"
 )
 
 func initPlatformWatcher(dir string) (inboxWaiter, error) {
+	return newPlatformWatcher(dir, envDurationSeconds("WATCH_TIMEOUT", 604800))
+}
+
+func newPlatformWatcher(dir string, timeout time.Duration) (inboxWaiter, error) {
 	inFd, err := syscall.InotifyInit1(syscall.IN_CLOEXEC)
 	if err != nil {
 		return nil, err
@@ -26,7 +31,6 @@ func initPlatformWatcher(dir string) (inboxWaiter, error) {
 		_ = syscall.Close(epFd)
 		return nil, err
 	}
-	timeout := envDurationSeconds("WATCH_TIMEOUT", 604800)
 	return &inotifyWaiter{inFd: inFd, epFd: epFd, timeoutMs: int(timeout.Milliseconds())}, nil
 }
 

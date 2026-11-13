@@ -8,11 +8,14 @@ core/tier-policy
 core/role
 core/writing-style
 core/tldr-first
+core/diagnosis-before-proposal
 core/commits
+core/version-bump-by-change-size
 core/search-kagi
 core/fetch-files
 core/validate-before-report
 core/validation
+core/fix-vulns-at-root
 core/code-comments
 core/tmux-api
 core/worker-etiquette

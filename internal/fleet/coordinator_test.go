@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/versality/spore/codexpolicy"
 )
 
 func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
@@ -251,14 +254,97 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 	}
 }
 
-// sessionCreated returns the tmux #{session_created} for name. Used by
-// the idempotency check to detect a respawn.
-func sessionCreated(name string) (string, error) {
-	out, err := exec.Command(
-		"tmux", "-L", testTmuxSocket, "display-message", "-p", "-t", name, "#{session_created}",
-	).Output()
-	if err != nil {
-		return "", err
+func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
+	got := coordinatorShellCommand("claude", "/tmp/role.md")
+	if !strings.Contains(got, "exec claude --dangerously-skip-permissions -- \"$(cat") {
+		t.Errorf("claude command missing flag injection: %s", got)
 	}
-	return string(out), nil
+	if !strings.Contains(got, "else exec claude --dangerously-skip-permissions;") {
+		t.Errorf("claude bare command missing skip-permissions: %s", got)
+	}
+}
+
+func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
+	got := coordinatorShellCommand("sleep 30", "/tmp/role.md")
+	if strings.Contains(got, "dangerously-skip-permissions") {
+		t.Errorf("sleep agent should not get claude flags: %s", got)
+	}
+}
+
+func TestCoordinatorShellCommandCodexReadsClaudeMD(t *testing.T) {
+	got := coordinatorShellCommand("/run/current-system/sw/bin/codex", "/tmp/role.md")
+	flag := `-c 'project_doc_fallback_filenames=["CLAUDE.md"]'`
+	if !strings.Contains(got, "exec /run/current-system/sw/bin/codex "+flag+` -- "$(cat`) {
+		t.Errorf("codex command missing CLAUDE.md fallback: %s", got)
+	}
+	if !strings.Contains(got, "else exec /run/current-system/sw/bin/codex "+flag+";") {
+		t.Errorf("codex bare command missing CLAUDE.md fallback: %s", got)
+	}
+}
+
+// The coordinator launch shim is bash and cannot import codexpolicy, so
+// pin its codex argv to the same fallback config here.
+func TestCoordinatorLaunchShimCodexReadsClaudeMD(t *testing.T) {
+	raw, err := os.ReadFile("../../bootstrap/handover/spore-coordinator-launch.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "-c '" + codexpolicy.ProjectDocFallbackConfig + "'"; !strings.Contains(string(raw), want) {
+		t.Errorf("spore-coordinator-launch.sh codex args missing %s", want)
+	}
+}
+
+func TestIsClaudeAgent(t *testing.T) {
+	cases := map[string]bool{
+		"claude":                            true,
+		"claude-code":                       true,
+		"/run/current-system/sw/bin/claude": true,
+		"sleep 30":                          false,
+		"codex exec --model foo":            false,
+		"":                                  false,
+	}
+	for agent, want := range cases {
+		if got := isClaudeAgent(agent); got != want {
+			t.Errorf("isClaudeAgent(%q) = %v, want %v", agent, got, want)
+		}
+	}
+}
+
+// A reconciler respawn after kill-session has no session env left, so
+// the swapped driver must come back from the host-side override.
+func TestEnsureCoordinatorUsesDriverOverride(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 30")
+	t.Setenv("SPORE_COORDINATOR_PROVIDER", "")
+	t.Setenv("SPORE_COORDINATOR_MODEL", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "spore.toml"),
+		[]byte("[coordinator]\ndriver = \"claude\"\nmodel = \"opus\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := DriverOverridePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateFile(p, "[coordinator]\ndriver = \"codex\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	session := CoordinatorSessionName(dir)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run()
+	})
+	if _, spawned, err := EnsureCoordinator(dir); err != nil || !spawned {
+		t.Fatalf("EnsureCoordinator: spawned %v, err %v", spawned, err)
+	}
+	out, err := exec.Command("tmux", "-L", testTmuxSocket, "show-environment", "-t", "="+session).CombinedOutput()
+	if err != nil {
+		t.Fatalf("show-environment: %v: %s", err, out)
+	}
+	env := string(out)
+	if !strings.Contains(env, "SPORE_COORDINATOR_PROVIDER=codex\n") || strings.Contains(env, "SPORE_COORDINATOR_MODEL=") {
+		t.Errorf("session env = %s; want provider codex and no model", env)
+	}
 }

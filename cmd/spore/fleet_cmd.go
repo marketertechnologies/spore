@@ -27,6 +27,7 @@ Usage:
   spore fleet enable
   spore fleet disable
   spore fleet status
+  spore fleet worker-agent [claude|codex | --clear]
 
 Subcommands:
   reconcile       Run a single reconcile pass: when [matter.linear] is
@@ -47,6 +48,12 @@ Subcommands:
                   spawning; running sessions are left alone).
   status          Print the kill-switch state plus the list of slugs whose
                   session is currently alive.
+  worker-agent    Print the effective [fleet.workers] default agent and its
+                  source. With claude|codex, write it to the host-side
+                  overlay (<state dir>/workers.toml, which beats
+                  spore.toml; the project tree is never written). --clear
+                  drops the overlay key. Project: $SPORE_PROJECT_ROOT,
+                  else the cwd repo (a worktree resolves to its main repo).
 
 Flags (reconcile):
   --max-workers N   Override concurrency cap. Beats spore.toml.
@@ -73,6 +80,8 @@ func runFleet(args []string) error {
 		return runFleetDisable(rest)
 	case "status":
 		return runFleetStatus(rest)
+	case "worker-agent":
+		return runFleetWorkerAgent(rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q\n\n%s", sub, fleetUsage)
 	}
@@ -104,7 +113,7 @@ func runFleetReconcile(args []string) error {
 		return err
 	}
 
-	res, err := fleet.Reconcile(fleet.Config{
+	res, err := replenishReconcile(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
@@ -216,6 +225,9 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 	return fleet.LoadMaxWorkers(projectRoot)
 }
 
+// replenishReconcile is a test seam: the real Reconcile drives tmux.
+var replenishReconcile = fleet.Reconcile
+
 // runFleetReplenishHook is the Stop-hook entry point for `spore fleet
 // replenish-hook`. It reads context entirely from the environment so a
 // settings.json hook entry can be a static string (no slug
@@ -228,6 +240,8 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 //   - skip the spawn pass when budget advice is "tighten" / "ration"
 //   - never exit non-zero: a failing reconcile must not block the Stop
 //     hook
+//   - keep stdout empty and report on stderr: Codex parses Stop-hook
+//     stdout as JSON
 //
 // $WT_PROJECT and $WT_FLEET_FLOOR are read by the helpers above
 // (resolveMaxWorkers honours $WT_FLEET_FLOOR; project root is the
@@ -258,7 +272,7 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	res, err := fleet.Reconcile(fleet.Config{
+	res, err := replenishReconcile(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
@@ -270,7 +284,7 @@ func runFleetReplenishHook(args []string) error {
 	if res.Disabled {
 		return nil
 	}
-	fmt.Printf("replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
+	fmt.Fprintf(os.Stderr, "replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
 		len(res.Active), len(res.Spawned), len(res.Kept), len(res.Reaped), len(res.Skipped))
 	return nil
 }
@@ -294,4 +308,55 @@ func isCoordinatorSession() bool {
 		}
 	}
 	return false
+}
+
+func runFleetWorkerAgent(args []string) error {
+	fs := flag.NewFlagSet("fleet worker-agent", flag.ContinueOnError)
+	clearKey := fs.Bool("clear", false, "")
+	help := fs.Bool("h", false, "")
+	helpLong := fs.Bool("help", false, "")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if *help || *helpLong {
+		fmt.Print(fleetUsage)
+		return nil
+	}
+	if fs.NArg() > 1 || (*clearKey && fs.NArg() > 0) {
+		return fmt.Errorf("usage: spore fleet worker-agent [claude|codex | --clear]")
+	}
+	root, err := task.MainRepoRoot(os.Getenv("SPORE_PROJECT_ROOT"))
+	if err != nil {
+		return err
+	}
+	switch {
+	case *clearKey:
+		path, err := fleet.SetWorkerDefault(root, "")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("cleared worker default in %s\n", path)
+	case fs.NArg() == 1:
+		agent := fs.Arg(0)
+		if agent != "claude" && agent != "codex" {
+			return fmt.Errorf("worker agent %q: want claude or codex", agent)
+		}
+		path, err := fleet.SetWorkerDefault(root, agent)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("worker default %s written to %s\n", agent, path)
+		return nil
+	}
+	agent, source, err := fleet.EffectiveWorkerDefault(root)
+	if err != nil {
+		return err
+	}
+	if source == fleet.WorkerDefaultFromOverlay {
+		path, _ := fleet.WorkersOverlayPath(root)
+		source += " " + path
+	}
+	fmt.Printf("%s (%s)\n", agent, source)
+	return nil
 }

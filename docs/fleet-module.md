@@ -79,6 +79,75 @@ as MCP server keys or git-push tokens. It wires them through systemd
 `LoadCredential=` so values never enter Nix evaluation or the
 `/nix/store`.
 
+## Skills
+
+With `services.spore-fleet.enable`, home-manager links each skill the
+spore binary embeds (`bootstrap/skills/`: diagram, select-agent,
+spore-bootstrap) into the operator user's scopes, refreshed on every
+rebuild:
+
+- `~/.claude/skills/<name>`: Claude Code personal scope.
+- `~/.agents/skills/<name>`: Codex user scope. Codex resolves it from
+  `$HOME`, not `CODEX_HOME`, so coordinators on a per-session
+  `CODEX_HOME` see it with no shim change.
+
+The bodies are rendered at build time by `spore install --dest` from
+`services.spore-fleet.package`. Each skill is a directory symlink into
+the store: Codex 0.162 skips file symlinks during discovery, and
+per-name links leave unmanaged siblings (`~/.claude/skills/synced`,
+`~/.codex/skills/.system`) alone. Nothing is written into project
+checkouts.
+
+`spore bootstrap` (repo-mapped stage) skips its per-project skill
+install when the host already provides every embedded skill: each
+name has a `SKILL.md` under both `~/.claude/skills/` and
+`~/.agents/skills/` (`install.HostProvides`). A partial host set, or
+a host without the module, keeps the project install into
+`.claude/skills` and `.agents/skills`.
+
+When a project also ships a skill of the same name:
+
+- Claude Code runs the personal copy: personal beats project
+  (code.claude.com/docs/en/skills, "Resolve skills that share a
+  name"). marketer and publishing commit older diagram and
+  spore-bootstrap copies under `.claude/skills`; the host-wide copy
+  wins there.
+- Codex reads project skills from `.agents/skills` only, which those
+  consumers do not ship, so they see one copy. On a real collision
+  Codex 0.162.1 keeps both; it dedupes by path only
+  (`ext/skills/src/loader/host_merge.rs`). The catalog lists the repo
+  copy first, and a plain `$name` mention is ambiguous, so it selects
+  neither (`skills/src/selection.rs`). The bootstrap skip above keeps
+  new consumers out of that state.
+
+## tmux baseline
+
+`services.spore-fleet.tmux` prepends a block to `/etc/tmux.conf`:
+
+- `history-limit` from `tmux.historyLimit` (default 250000; tmux's
+  own 2000 loses long agent output);
+- `mouse` from `tmux.mouse` (default on: wheel enters copy-mode);
+- `allow-passthrough`, `extended-keys`, and the `xterm*:extkeys`
+  terminal feature, for the Claude Code TUI;
+- `detach-on-destroy off`: a killed session moves its clients to
+  another session instead of detaching them. `spore-attach` execs
+  the tmux client straight under sshd, so a detach closes the SSH
+  connection;
+- `S-PageUp` enters copy-mode a page up without the prefix, and the
+  wheel scrolls a half-page in copy-mode;
+- `default-shell` when `tmux.defaultShell` is set (needed when the
+  operator user's login shell is `spore-attach`);
+- `tmux.extraConfig`, verbatim.
+
+`tmux.enable` defaults to `services.spore-fleet.enable`. Set it
+explicitly to get the baseline on a host that does not run the fleet
+yet; `bootstrap/flake/` does this for `spore infect` targets.
+
+The block is merged with `lib.mkBefore`, so a host's own
+`environment.etc."tmux.conf".text` lines render after it and win.
+`programs.tmux.historyLimit` is seeded at `mkDefault` so enabling the
+stock NixOS tmux module does not reset scrollback to 2000.
+
 The full option reference lives in `nixosModules/spore-fleet.nix`.
 
 ## Horizontal Scale

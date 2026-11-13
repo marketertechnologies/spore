@@ -1,6 +1,6 @@
 ---
 name: spore-bootstrap
-description: Walk an adopted project through spore's bootstrap stage gates. Invoke when the operator runs `/spore-bootstrap`, drops into a fresh tree, or sees `spore bootstrap` block on a stage that needs the agent (info-gathered, readme-followed). The skill introspects the on-disk stage state, runs the stage's runbook, and writes the sentinel files the Go detectors check.
+description: Walk an adopted project through spore's bootstrap stage gates. Only for projects the operator has chosen to adopt into spore; never start it on your own in an unrelated repo. Invoke when the operator runs `/spore-bootstrap`, or when `spore bootstrap` blocks on a stage that needs the agent (info-gathered, readme-followed). The skill introspects the on-disk stage state, runs the stage's runbook, and writes the sentinel files the Go detectors check.
 ---
 
 # spore-bootstrap

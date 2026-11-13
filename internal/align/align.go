@@ -13,6 +13,10 @@
 //
 // Per-project defaults can be overridden in a top-level "spore.toml"
 // with an [align] section: required_notes, required_promoted (ints).
+// `flipped = true` there also turns alignment off. Flip writes both:
+// the committed key is what CI and other machines see, since the
+// rendered instruction files are checked in and must not depend on
+// per-machine state.
 package align
 
 import (
@@ -76,6 +80,7 @@ type Paths struct {
 	StateDir      string
 	AlignmentFile string
 	FlippedFile   string
+	ConfigFile    string
 }
 
 // Resolve picks the state directory for projectRoot, honouring
@@ -99,6 +104,7 @@ func Resolve(projectRoot string) (Paths, error) {
 		StateDir:      dir,
 		AlignmentFile: filepath.Join(dir, "alignment.md"),
 		FlippedFile:   filepath.Join(dir, "flipped"),
+		ConfigFile:    filepath.Join(projectRoot, "spore.toml"),
 	}, nil
 }
 
@@ -125,14 +131,30 @@ func Note(p Paths, line string) error {
 	return err
 }
 
-// Flip drops the sentinel file that turns alignment mode off.
-// Repeat calls are idempotent; the file's mtime updates each time.
+// Flip turns alignment mode off: it drops the sentinel file and sets
+// `flipped = true` under [align] in spore.toml. Repeat calls are
+// idempotent; the sentinel's mtime updates each time.
 func Flip(p Paths) error {
 	if err := os.MkdirAll(p.StateDir, 0o755); err != nil {
 		return err
 	}
 	stamp := time.Now().UTC().Format(time.RFC3339)
-	return os.WriteFile(p.FlippedFile, []byte(stamp+"\n"), 0o644)
+	if err := os.WriteFile(p.FlippedFile, []byte(stamp+"\n"), 0o644); err != nil {
+		return err
+	}
+	return setFlippedTOML(p.ConfigFile)
+}
+
+func isFlipped(p Paths) (bool, error) {
+	marker, err := exists(p.FlippedFile)
+	if err != nil || marker {
+		return marker, err
+	}
+	cfg, err := readAlignTOML(p.ConfigFile)
+	if err != nil {
+		return false, err
+	}
+	return cfg.flipped, nil
 }
 
 // Read returns a Status snapshot. Missing alignment.md / flipped is
@@ -142,7 +164,7 @@ func Read(p Paths, c Criteria) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	flipped, err := exists(p.FlippedFile)
+	flipped, err := isFlipped(p)
 	if err != nil {
 		return Status{}, err
 	}
@@ -163,7 +185,7 @@ func Active(projectRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	flipped, err := exists(p.FlippedFile)
+	flipped, err := isFlipped(p)
 	if err != nil {
 		return false, err
 	}
@@ -175,25 +197,73 @@ func Active(projectRoot string) (bool, error) {
 // missing keys fall through to defaults.
 func LoadCriteria(projectRoot string) (Criteria, error) {
 	c := DefaultCriteria()
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(tomlPath)
+	cfg, err := readAlignTOML(filepath.Join(projectRoot, "spore.toml"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return c, nil
-		}
 		return c, err
 	}
-	overrides, err := parseAlignTOML(string(b))
-	if err != nil {
-		return c, fmt.Errorf("align: parse %s: %w", tomlPath, err)
-	}
-	if v, ok := overrides["required_notes"]; ok {
+	if v, ok := cfg.ints["required_notes"]; ok {
 		c.RequiredNotes = v
 	}
-	if v, ok := overrides["required_promoted"]; ok {
+	if v, ok := cfg.ints["required_promoted"]; ok {
 		c.RequiredPromoted = v
 	}
 	return c, nil
+}
+
+func readAlignTOML(path string) (alignTOML, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return alignTOML{}, nil
+		}
+		return alignTOML{}, err
+	}
+	cfg, err := parseAlignTOML(string(b))
+	if err != nil {
+		return alignTOML{}, fmt.Errorf("align: parse %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// setFlippedTOML sets `flipped = true` in the [align] section of the
+// spore.toml at path, creating the file or section when missing. Other
+// lines are kept byte for byte.
+func setFlippedTOML(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(b)
+	lines := strings.Split(content, "\n")
+	inAlign := false
+	header := -1
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inAlign = strings.TrimSpace(line[1:len(line)-1]) == "align"
+			if inAlign {
+				header = i
+			}
+			continue
+		}
+		if inAlign {
+			if eq := strings.IndexByte(line, '='); eq > 0 && strings.TrimSpace(line[:eq]) == "flipped" {
+				lines[i] = "flipped = true"
+				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+			}
+		}
+	}
+	if header >= 0 {
+		lines = append(lines[:header+1], append([]string{"flipped = true"}, lines[header+1:]...)...)
+		return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if content != "" {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content+"[align]\nflipped = true\n"), 0o644)
 }
 
 func countNotes(path string) (notes, promoted int, err error) {
@@ -234,13 +304,18 @@ func exists(path string) (bool, error) {
 	return false, err
 }
 
+type alignTOML struct {
+	ints    map[string]int
+	flipped bool
+}
+
 // parseAlignTOML reads a tiny TOML subset: only the [align] section,
-// only `key = N` integer scalars. Lines outside [align], blanks,
-// comments (`#`), and unknown keys are ignored. Returns a map of the
-// integer keys it understood. Anything malformed inside [align] is an
-// error so misconfiguration surfaces loudly.
-func parseAlignTOML(content string) (map[string]int, error) {
-	out := make(map[string]int)
+// only `key = N` integer scalars plus the boolean `flipped`. Lines
+// outside [align], blanks, and comments (`#`) are ignored. Anything
+// malformed inside [align] is an error so misconfiguration surfaces
+// loudly.
+func parseAlignTOML(content string) (alignTOML, error) {
+	out := alignTOML{ints: make(map[string]int)}
 	inAlign := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for lineNum := 1; scanner.Scan(); lineNum++ {
@@ -258,21 +333,29 @@ func parseAlignTOML(content string) (map[string]int, error) {
 		}
 		eq := strings.IndexByte(line, '=')
 		if eq <= 0 {
-			return nil, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
+			return alignTOML{}, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
 		}
 		key := strings.TrimSpace(line[:eq])
 		val := strings.TrimSpace(line[eq+1:])
 		if i := strings.IndexByte(val, '#'); i >= 0 {
 			val = strings.TrimSpace(val[:i])
 		}
+		if key == "flipped" {
+			f, err := strconv.ParseBool(val)
+			if err != nil {
+				return alignTOML{}, fmt.Errorf("line %d: key %q: want true or false, got %q", lineNum, key, val)
+			}
+			out.flipped = f
+			continue
+		}
 		n, err := strconv.Atoi(val)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: key %q: want integer, got %q", lineNum, key, val)
+			return alignTOML{}, fmt.Errorf("line %d: key %q: want integer, got %q", lineNum, key, val)
 		}
-		out[key] = n
+		out.ints[key] = n
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return alignTOML{}, err
 	}
 	return out, nil
 }

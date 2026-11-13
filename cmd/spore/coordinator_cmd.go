@@ -38,7 +38,10 @@ Subcommands:
   stop            Kill the coordinator tmux session.
   restart         Stop then start.
   status          Print whether the coordinator session is alive.
+  swap            Respawn the coordinator under another driver (claude|codex).
+  agents          List swap drivers: current, available, or missing.
   role-brief      Render the coordinator role brief to stdout.
+  state           List state.md blocks and archive done ones host-side.
   state-debt      Scan state.md for prose lessons that should be lifted.
   verify-done     Run the verify-done verdict for a slug.
   loop-guard      Check the respawn circuit breaker.
@@ -64,8 +67,14 @@ func runCoordinator(args []string) int {
 		return runCoordinatorRestart(rest)
 	case "status":
 		return runCoordinatorStatus(rest)
+	case "swap":
+		return runCoordinatorSwap(rest)
+	case "agents":
+		return runCoordinatorAgents(rest)
 	case "role-brief":
 		return runCoordinatorRoleBrief(rest)
+	case "state":
+		return runCoordinatorState(rest)
 	case "state-debt":
 		return runCoordinatorStateDebt(rest)
 	case "verify-done":
@@ -306,26 +315,39 @@ func runCoordinatorStateDebt(args []string) int {
 	fs := flag.NewFlagSet("coordinator state-debt", flag.ContinueOnError)
 	verbose := fs.Bool("verbose", false, "print full classification table")
 	verboseShort := fs.Bool("v", false, "print full classification table")
-	stateFile := fs.String("state-file", "", "path to state.md (default: auto-detect)")
+	stateFile := fs.String("state-file", "", "path to state.md (default: <main repo root>/state.md)")
+	project := fs.String("project", "", "project name or path whose state.md to scan")
 	ageDays := fs.Int("age-days", statedebt.DefaultAgeDays, "threshold in days")
 	help := fs.Bool("h", false, "show help")
 	helpLong := fs.Bool("help", false, "show help")
 	fs.SetOutput(io.Discard)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
 		fmt.Fprintln(os.Stderr, "spore coordinator state-debt:", err)
 		return 2
 	}
 	if *help || *helpLong {
 		fmt.Println("spore coordinator state-debt - scan state.md for stale lessons")
-		fmt.Println("  --verbose, -v     print full classification table")
-		fmt.Println("  --state-file      path to state.md")
-		fmt.Println("  --age-days N      threshold in days (default 14)")
+		fmt.Println("  --verbose, -v        print full classification table")
+		fmt.Println("  --project NAME|PATH  scan <main repo root>/state.md of this project")
+		fmt.Println("                       (default: the repo containing cwd; worktrees hop")
+		fmt.Println("                       to the main repo root)")
+		fmt.Println("  --state-file         path to state.md (overrides --project)")
+		fmt.Println("  --age-days N         threshold in days (default 14)")
 		return 0
 	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "spore coordinator state-debt: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
 
-	cfg := statedebt.Config{AgeDays: *ageDays}
-	if *stateFile != "" {
-		cfg.StateFile = *stateFile
+	cfg := statedebt.Config{AgeDays: *ageDays, StateFile: *stateFile}
+	if cfg.StateFile == "" {
+		root, err := resolveStateProjectRoot(*project)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "spore coordinator state-debt:", err)
+			return 1
+		}
+		cfg.StateFile = filepath.Join(root, "state.md")
 	}
 
 	result, err := statedebt.Scan(cfg)
