@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- Role loop (0.33.1): reviewer order, comment IDs, final PR text.
+  Behaviour change: without an explicit `mode`, reviewer slot A now
+  runs the requirements review (`fleet`) and slot B the
+  `/code-review` bug hunt: requirements first, code review last. The
+  non-claude fallback follows the defaulted slot, so a defaulted B
+  drops to `fleet` on codex. spore's own spore.toml pins A = fleet,
+  B = code-review (effort medium). Slots get display names from
+  their mode, not their letter: `Requirements review` (comment ID
+  prefix `R`) and `Code review` (`C`); when both slots share a mode,
+  B becomes `Requirements review 2` (`S`) or `Code review 2` (`D`).
+  Reviewer panes get `SPORE_REVIEWER_PREFIX` and
+  `SPORE_REVIEWER_LABEL` and copy the prefix into the verdict as
+  `prefix`. Each comment has a stable ID `<prefix><round>.<n>` (n
+  from 1, `R1.3` is `comment` index 2); a verdict without `prefix`
+  is numbered with its instance letter (`A1.2`, `Reviewer A`).
+  Graded comments must be sorted high, medium, low, question; an
+  unsorted verdict is bounced like any invalid file, except verdicts
+  already on disk when the tree is first driven by this binary
+  (`state/order-exempt-files`). The PR mirror heads reviews
+  `**Requirements review (round 1): request changes**` and lists
+  `**R1.1** | medium | correctness | `path:line` - text` in file
+  order; `Review #1` / `Review #2` are gone. Engineer outcomes take
+  optional `detail` and `sha`, and an engineer PR comment starts with
+  an `| ID | Grade | Outcome | Details |` table in ID order (grade
+  joined from the verdict), followed by the free text minus entries
+  the table already details. The engineer wake, escalation comment
+  and PR footer use labels and IDs; `spore task review-stats` adds a
+  per-reviewer table. Engineer responses may carry `pr: {title,
+  body}`; at done the mirror applies the latest one with `gh pr edit`
+  (body plus final verdicts and the spore footer), once, and an edit
+  failure never blocks `gh pr ready`. Role bodies: reviewers sort by
+  severity, cite by ID, and close declined lows by ID; the code-review
+  body notes that the skill's inline comments carry no ID and the
+  review body is the numbered list; the engineer records an outcome
+  with a one-line detail per comment and keeps `pr` current; the
+  fleet reviewer checks `pr` as a low. Consumer impact: projects
+  without reviewer config swap their review order (pin both `mode`s
+  to keep A = code-review); projects overriding `bootstrap/roles/
+  reviewer*.md` keep working with letter IDs and should port the
+  `prefix` and sorting rules, since an unsorted graded verdict is now
+  rejected.
+
 - Role loop: graded review comments. Each `comments` entry in a
   review file is now an object `{severity, category, where, text,
   reason, trigger, suggestion}`: severity `high` / `medium` / `low`
