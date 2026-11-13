@@ -102,7 +102,7 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 	if f.Instance == "" {
 		_, err = ParseEngineerResponse(f.Path, b, legacy)
 	} else {
-		_, err = ParseReview(f.Path, b, f.Instance, legacy)
+		_, err = ParseReview(f.Path, b, f.Instance, f.Round, legacy)
 	}
 	return err
 }
@@ -111,8 +111,9 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 // keys, trailing data, a missing summary, and an author other than
 // the reviewer instance. Legacy mode (grandfathered files) tolerates
 // unknown keys and a missing author. Both enforce the verdict enum,
-// the graded comment shape, and the grade-derived verdict rule.
-func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) (Review, error) {
+// the graded comment shape, and the grade-derived verdict rule for
+// round (the N in round-N.json).
+func ParseReview(path string, b []byte, instance ReviewerInstance, round int, legacy bool) (Review, error) {
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
 		return r, invalid(path, err.Error())
@@ -126,7 +127,7 @@ func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) 
 	if !legacy && strings.TrimSpace(r.Summary) == "" {
 		return r, invalid(path, `missing required field "summary"`)
 	}
-	if err := checkGrades(r); err != nil {
+	if err := checkGrades(r, round); err != nil {
 		return r, invalid(path, err.Error())
 	}
 	return r, nil

@@ -21,15 +21,10 @@ var ReviewCategories = []string{
 	"test", "perf", "maintainability", "nit",
 }
 
-// blockingMediumCategories are the categories that make a medium
-// comment blocking. Any high comment blocks regardless of category.
-var blockingMediumCategories = map[string]bool{
-	"security": true, "correctness": true, "spec": true, "data-loss": true,
-}
-
-// blockingRule is quoted in verdict-mismatch errors so the reviewer
-// sees the exact rule it broke.
-const blockingRule = "blocking = any high, or medium security/correctness/spec/data-loss"
+// FinalReviewRound is each reviewer's last round (fleet's
+// MaxReviewerRounds). The verdict rule changes there: lows no longer
+// block, and a request_changes escalates to the operator.
+const FinalReviewRound = 3
 
 // ReviewComment is one entry of a review's `comments`. On disk it is
 // either a graded object or a plain string. A plain string decodes
@@ -48,18 +43,6 @@ func Ungraded(text string) ReviewComment { return ReviewComment{Text: text} }
 
 // IsGraded reports whether c came from the object shape.
 func (c ReviewComment) IsGraded() bool { return c.Severity != "" }
-
-// Blocking reports whether a graded comment forces request_changes.
-// Ungraded comments return false here; Review.Blocking decides them.
-func (c ReviewComment) Blocking() bool {
-	switch c.Severity {
-	case SeverityHigh:
-		return true
-	case SeverityMedium:
-		return blockingMediumCategories[c.Category]
-	}
-	return false
-}
 
 // UnmarshalJSON accepts a plain string (ungraded) or the graded
 // object. The object is always decoded strictly: it postdates the
@@ -126,9 +109,9 @@ func knownCategory(cat string) bool {
 }
 
 // Graded reports whether r grades any comment. A graded review's
-// verdict is derived from its grades; an ungraded one (only plain
-// strings, or no comments) keeps the verdict as written, which is how
-// every review behaved before grading existed.
+// verdict is derived from its grades and round; an ungraded one (only
+// plain strings, or no comments) keeps the verdict as written, which
+// is how every review behaved before grading existed.
 func (r Review) Graded() bool {
 	for _, c := range r.Comments {
 		if c.IsGraded() {
@@ -138,37 +121,32 @@ func (r Review) Graded() bool {
 	return false
 }
 
-// Blocking reports whether c must be resolved before r can approve.
-// In a graded review a plain string counts as blocking (the reviewer
-// gave it no grade to relax it). In an ungraded review every comment
-// follows the written verdict.
-func (r Review) Blocking(c ReviewComment) bool {
-	if c.IsGraded() {
-		return c.Blocking()
-	}
-	if r.Graded() {
-		return true
-	}
-	return r.Verdict == VerdictRequestChanges
-}
-
-// CountBlocking returns how many comments of r are blocking and how
-// many are not.
-func (r Review) CountBlocking() (blocking, nonBlocking int) {
+// SeverityCounts tallies r's comments by grade: high or medium, low,
+// and ungraded (plain strings).
+func (r Review) SeverityCounts() (highMedium, low, ungraded int) {
 	for _, c := range r.Comments {
-		if r.Blocking(c) {
-			blocking++
-		} else {
-			nonBlocking++
+		switch c.Severity {
+		case SeverityHigh, SeverityMedium:
+			highMedium++
+		case SeverityLow:
+			low++
+		default:
+			ungraded++
 		}
 	}
-	return blocking, nonBlocking
+	return highMedium, low, ungraded
 }
 
 // checkGrades validates every graded comment and, for a graded
-// review, that the verdict follows from the grades.
-func checkGrades(r Review) error {
-	firstBlocking := -1
+// review, that the verdict follows from the grades at this round:
+//
+//   - rounds before FinalReviewRound: any comment requires
+//     request_changes (the engineer revises, the reviewer re-reviews);
+//   - FinalReviewRound: any high or medium requires request_changes
+//     (escalation); only lows requires approve (lows are dropped).
+//
+// A plain string inside a graded review counts like a medium.
+func checkGrades(r Review, round int) error {
 	for i, c := range r.Comments {
 		if !c.IsGraded() {
 			continue
@@ -180,24 +158,31 @@ func checkGrades(r Review) error {
 	if !r.Graded() {
 		return nil
 	}
+	if round < FinalReviewRound {
+		if r.Verdict != VerdictRequestChanges {
+			return fmt.Errorf("round %d verdict %q but the review has %d comment(s): in rounds 1-%d any comment (high, medium or low) requires %q; approve only with no comments",
+				round, r.Verdict, len(r.Comments), FinalReviewRound-1, VerdictRequestChanges)
+		}
+		return nil
+	}
+	first := -1
 	for i, c := range r.Comments {
-		if r.Blocking(c) {
-			firstBlocking = i
+		if c.Severity != SeverityLow {
+			first = i
 			break
 		}
 	}
 	switch {
-	case firstBlocking >= 0 && r.Verdict != VerdictRequestChanges:
-		c := r.Comments[firstBlocking]
-		grade := "an ungraded string"
-		if c.IsGraded() {
-			grade = c.Severity + " " + c.Category
+	case first >= 0 && r.Verdict != VerdictRequestChanges:
+		grade := r.Comments[first].Severity
+		if grade == "" {
+			grade = "an ungraded string"
 		}
-		return fmt.Errorf("verdict %q but comments[%d] (%s) is blocking (%s; a plain string in a graded review also blocks): verdict must be %q",
-			r.Verdict, firstBlocking, grade, blockingRule, VerdictRequestChanges)
-	case firstBlocking < 0 && r.Verdict != VerdictApprove:
-		return fmt.Errorf("verdict %q but no comment is blocking (%s): verdict must be %q, the rest are optional for the engineer",
-			r.Verdict, blockingRule, VerdictApprove)
+		return fmt.Errorf("round %d (final) verdict %q but comments[%d] is %s: at the final round any high or medium requires %q (escalates to the operator)",
+			round, r.Verdict, first, grade, VerdictRequestChanges)
+	case first < 0 && r.Verdict != VerdictApprove:
+		return fmt.Errorf("round %d (final) verdict %q but every comment is low: at the final round lows are ignored and the verdict must be %q",
+			round, r.Verdict, VerdictApprove)
 	}
 	return nil
 }

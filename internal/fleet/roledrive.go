@@ -37,7 +37,9 @@ import (
 //   - When the snapshot is PhaseDone, writes a synthesized summary at
 //     .spore/<slug>/summary.md (idempotent: skip if file already
 //     exists).
-//   - When the snapshot is PhaseEscalated, leaves panes alive.
+//   - When the snapshot is PhaseEscalated, leaves panes alive and,
+//     until the engineer answers the final verdict, wakes it once for
+//     a fix pass at the high/medium comments. No reviewer is woken.
 //   - Bounces any role file that fails validation back to its author
 //     (see bounceInvalidRoleFiles). Runs after the spawn pass so the
 //     owning pane is up to receive the wake.
@@ -125,14 +127,24 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		_, _ = ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerB))
 	case PhaseEscalated:
 		// Leave panes alive per spec: the operator inspects. Drop a
-		// marker so the waybar chip can surface the escalation.
+		// marker so the waybar chip can surface the escalation. The
+		// marker goes first: DeriveSnapshot reads it to account for
+		// the fix pass woken below.
 		created, err := writeEscalationMarker(projectRoot, slug, snap)
 		if err != nil {
 			return snap, fmt.Errorf("drive %s: write escalation marker: %w", slug, err)
 		}
 		if created {
-			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: escalated (reviewer %s, round %d)",
+			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: escalated (reviewer %s, round %d); engineer asked to address the high/medium comments once, operator intervention required",
 				slug, snap.CurrentReviewer, snap.ReviewerRound))
+		}
+		if snap.EscalationFixPending {
+			if err := ensureRolePane(engineer, snap.EngineerRound); err != nil {
+				return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
+			}
+			if err := wakeEngineer(projectRoot, slug, snap); err != nil {
+				return snap, fmt.Errorf("drive %s: wake engineer: %w", slug, err)
+			}
 		}
 	}
 
@@ -161,6 +173,11 @@ func activeRole(projectRoot, slug string, snap Snapshot) (RoleSpawnSpec, int, st
 	case PhaseReviewA, PhaseReviewB:
 		return ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), snap.ReviewerRound,
 			task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound+1), true
+	case PhaseEscalated:
+		if snap.EscalationFixPending {
+			return EngineerSpec(projectRoot, slug), snap.EngineerRound,
+				task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1), true
+		}
 	}
 	return RoleSpawnSpec{}, 0, "", false
 }
@@ -176,7 +193,14 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
 	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
 		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
-	_, err := wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+	if snap.Phase == PhaseEscalated {
+		msg = fmt.Sprintf("Reviewer %s requested changes at round %d, the final round: the loop is escalated to the operator. "+
+			"Read %s and address its high and medium comments in one fix pass (lows are optional), then write %s. "+
+			"No re-review follows; the operator takes it from there.",
+			snap.CurrentReviewer, snap.ReviewerRound, verdictPath,
+			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1))
+	}
+	_, err := wakeRole(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
 	return err
 }
 

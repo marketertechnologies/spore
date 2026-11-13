@@ -290,6 +290,11 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 		})
 	}
 
+	// Escalation wakes the engineer for its fix pass; keep that off
+	// real tmux.
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop (escalation): %v", err)
@@ -535,6 +540,9 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 		})
 	}
 
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop: %v", err)
@@ -551,7 +559,8 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 	if envs[0].Source != "role-loop" {
 		t.Errorf("source = %q, want %q", envs[0].Source, "role-loop")
 	}
-	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) + ")"
+	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) +
+		"); engineer asked to address the high/medium comments once, operator intervention required"
 	if envs[0].Body != wantBody {
 		t.Errorf("body = %q, want %q", envs[0].Body, wantBody)
 	}

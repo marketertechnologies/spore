@@ -25,7 +25,7 @@ func TestParseReviewStrict(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, false)
+			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, 1, false)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want nil", err)
@@ -43,13 +43,13 @@ func TestParseReviewStrict(t *testing.T) {
 }
 
 func TestParseReviewLegacyTolerance(t *testing.T) {
-	if _, err := ParseReview("x", []byte(`{"verdict":"approve","extra":1}`), ReviewerA, true); err != nil {
+	if _, err := ParseReview("x", []byte(`{"verdict":"approve","extra":1}`), ReviewerA, 1, true); err != nil {
 		t.Errorf("legacy file without author / with extra key: %v", err)
 	}
-	if _, err := ParseReview("x", []byte(`{"verdict":"lgtm"}`), ReviewerA, true); !errors.Is(err, ErrInvalidRoleFile) {
+	if _, err := ParseReview("x", []byte(`{"verdict":"lgtm"}`), ReviewerA, 1, true); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Errorf("legacy bad verdict err = %v, want invalid", err)
 	}
-	if _, err := ParseReview("x", []byte(`{"author":"B","verdict":"approve"}`), ReviewerA, true); !errors.Is(err, ErrInvalidRoleFile) {
+	if _, err := ParseReview("x", []byte(`{"author":"B","verdict":"approve"}`), ReviewerA, 1, true); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Errorf("legacy wrong author err = %v, want invalid", err)
 	}
 }

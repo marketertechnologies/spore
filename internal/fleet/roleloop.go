@@ -3,6 +3,7 @@ package fleet
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/versality/spore/internal/task"
 )
@@ -40,15 +41,17 @@ const (
 	PhaseDone Phase = "done"
 
 	// PhaseEscalated: the current reviewer issued request_changes at
-	// round MaxReviewerRounds. Panes are left alive; the operator
-	// decides whether to clarify spec, force-approve, kill the task,
-	// or hand back for another loop.
+	// round MaxReviewerRounds (only possible with a high or medium
+	// comment). The engineer gets one fix pass at those comments (see
+	// Snapshot.EscalationFixPending); no re-review follows, and the
+	// loop stays here for the operator to clarify spec, force-approve,
+	// kill the task, or hand back for another loop.
 	PhaseEscalated Phase = "escalated"
 )
 
 // MaxReviewerRounds caps each reviewer phase. A request_changes
 // verdict at this round escalates instead of looping for round N+1.
-const MaxReviewerRounds = 3
+const MaxReviewerRounds = task.FinalReviewRound
 
 // Snapshot is the current view of a task's role-loop state.
 type Snapshot struct {
@@ -68,9 +71,12 @@ type Snapshot struct {
 	// LastVerdict is the verdict on the latest reviewer round in
 	// the current phase, or empty when none has been written yet.
 	LastVerdict string
-	// LastBlocking and LastNonBlocking count the comments on that
-	// verdict by task.Review.Blocking. Both zero with no verdict.
-	LastBlocking, LastNonBlocking int
+	// LastHighMedium, LastLow and LastUngraded count the comments on
+	// that verdict by grade. All zero with no verdict.
+	LastHighMedium, LastLow, LastUngraded int
+	// EscalationFixPending is true in PhaseEscalated until the
+	// engineer writes its one fix-pass response to the final verdict.
+	EscalationFixPending bool
 }
 
 // DeriveSnapshot reads `<projectRoot>/.spore/<slug>/` and returns the
@@ -105,15 +111,21 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 	if len(engRounds) > 0 {
 		snap.EngineerRound = engRounds[len(engRounds)-1]
 	}
-	snap.Phase, snap.CurrentReviewer, snap.ReviewerRound, snap.LastVerdict =
-		derivePhase(len(engRounds), aReviews, bReviews)
+	aFixOwed, err := escalationMarked(projectRoot, slug, task.ReviewerA)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var expected int
+	snap.Phase, snap.CurrentReviewer, snap.ReviewerRound, snap.LastVerdict, expected =
+		derivePhase(len(engRounds), aReviews, bReviews, aFixOwed)
 	if snap.LastVerdict != "" {
 		revs := aReviews
 		if snap.CurrentReviewer == task.ReviewerB {
 			revs = bReviews
 		}
-		snap.LastBlocking, snap.LastNonBlocking = revs[len(revs)-1].CountBlocking()
+		snap.LastHighMedium, snap.LastLow, snap.LastUngraded = revs[len(revs)-1].SeverityCounts()
 	}
+	snap.EscalationFixPending = snap.Phase == PhaseEscalated && len(engRounds) < expected
 	return snap, nil
 }
 
@@ -151,56 +163,76 @@ func validEngineerRounds(projectRoot, slug string) ([]int, error) {
 	return out, nil
 }
 
+// escalationMarked reports whether the driver ever escalated inst
+// (an `escalated-<inst>-*` marker in state/). The engineer was then
+// woken for a fix pass, which owes one engineer round even after the
+// operator force-approves the final verdict.
+func escalationMarked(projectRoot, slug string, inst task.ReviewerInstance) (bool, error) {
+	m, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(inst)+"-*"))
+	return len(m) > 0, err
+}
+
 // derivePhase is the pure state-machine kernel. It takes the counts
 // of engineer responses and the ordered reviewer verdicts; it
-// returns the derived phase plus per-status fields.
-func derivePhase(engCount int, aRev, bRev []task.Review) (Phase, task.ReviewerInstance, int, string) {
+// returns the derived phase plus per-status fields, and the number
+// of engineer rounds the verdicts so far call for (one initial, one
+// per request_changes, including the final-round one that escalates).
+// aFixOwed adds a round when A escalated and the operator then
+// overwrote the final verdict to approve: the escalation fix pass
+// still answered it.
+func derivePhase(engCount int, aRev, bRev []task.Review, aFixOwed bool) (Phase, task.ReviewerInstance, int, string, int) {
 	if engCount == 0 {
-		return PhaseEngineerInitial, "", 0, ""
+		return PhaseEngineerInitial, "", 0, "", 1
 	}
 
 	// Pre-A: engineer shipped initial, A has not written anything.
 	if len(aRev) == 0 {
-		return PhaseReviewA, task.ReviewerA, 0, ""
+		return PhaseReviewA, task.ReviewerA, 0, "", 1
 	}
 
 	lastA := aRev[len(aRev)-1]
+	expected := 1 + countRequestChanges(aRev)
 	if lastA.Verdict == task.VerdictApprove {
-		return derivePhaseB(engCount, countRequestChanges(aRev), bRev)
+		if aFixOwed {
+			expected++
+		}
+		return derivePhaseB(engCount, expected, bRev)
 	}
 
-	// A's latest verdict is request_changes.
+	// A's latest verdict is request_changes. At the final round the
+	// loop escalates whether or not the engineer's fix pass landed.
 	if len(aRev) >= MaxReviewerRounds {
-		return PhaseEscalated, task.ReviewerA, len(aRev), lastA.Verdict
+		return PhaseEscalated, task.ReviewerA, len(aRev), lastA.Verdict, expected
 	}
-	expected := 1 + countRequestChanges(aRev)
 	if engCount >= expected {
 		// Engineer has responded to the latest A verdict; A owns the
 		// next write.
-		return PhaseReviewA, task.ReviewerA, len(aRev), lastA.Verdict
+		return PhaseReviewA, task.ReviewerA, len(aRev), lastA.Verdict, expected
 	}
-	return PhaseEngineerReviseA, task.ReviewerA, len(aRev), lastA.Verdict
+	return PhaseEngineerReviseA, task.ReviewerA, len(aRev), lastA.Verdict, expected
 }
 
-func derivePhaseB(engCount, aRC int, bRev []task.Review) (Phase, task.ReviewerInstance, int, string) {
+// derivePhaseB continues after A approved; afterA is the engineer
+// round count the A phase accounts for.
+func derivePhaseB(engCount, afterA int, bRev []task.Review) (Phase, task.ReviewerInstance, int, string, int) {
 	if len(bRev) == 0 {
 		// A approved, B not yet spawned/written. Either way, B owns
 		// the next write; no LastVerdict for the B phase.
-		return PhaseReviewB, task.ReviewerB, 0, ""
+		return PhaseReviewB, task.ReviewerB, 0, "", afterA
 	}
 	lastB := bRev[len(bRev)-1]
+	expected := afterA + countRequestChanges(bRev)
 	if lastB.Verdict == task.VerdictApprove {
-		return PhaseDone, task.ReviewerB, len(bRev), lastB.Verdict
+		return PhaseDone, task.ReviewerB, len(bRev), lastB.Verdict, expected
 	}
 	// last B is request_changes
 	if len(bRev) >= MaxReviewerRounds {
-		return PhaseEscalated, task.ReviewerB, len(bRev), lastB.Verdict
+		return PhaseEscalated, task.ReviewerB, len(bRev), lastB.Verdict, expected
 	}
-	expected := 1 + aRC + countRequestChanges(bRev)
 	if engCount >= expected {
-		return PhaseReviewB, task.ReviewerB, len(bRev), lastB.Verdict
+		return PhaseReviewB, task.ReviewerB, len(bRev), lastB.Verdict, expected
 	}
-	return PhaseEngineerReviseB, task.ReviewerB, len(bRev), lastB.Verdict
+	return PhaseEngineerReviseB, task.ReviewerB, len(bRev), lastB.Verdict, expected
 }
 
 // countRequestChanges returns how many verdicts in revs are

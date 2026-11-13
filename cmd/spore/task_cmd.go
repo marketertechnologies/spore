@@ -237,8 +237,15 @@ func printRoleSnapshot(snap fleet.Snapshot) {
 		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
 		return
 	}
-	fmt.Printf("reviewer: %s round %d, last verdict %s (%d blocking, %d non-blocking)\n",
-		snap.CurrentReviewer, snap.ReviewerRound, verdict, snap.LastBlocking, snap.LastNonBlocking)
+	counts := fmt.Sprintf("%d high/medium, %d low", snap.LastHighMedium, snap.LastLow)
+	if snap.LastUngraded > 0 {
+		counts += fmt.Sprintf(", %d ungraded", snap.LastUngraded)
+	}
+	fmt.Printf("reviewer: %s round %d, last verdict %s (%s)\n",
+		snap.CurrentReviewer, snap.ReviewerRound, verdict, counts)
+	if snap.EscalationFixPending {
+		fmt.Println("engineer: fix pass pending (escalated; no re-review)")
+	}
 }
 
 func runTaskRoleDrive(args []string) error {

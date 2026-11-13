@@ -22,31 +22,43 @@ const (
 
 func TestParseReviewGraded(t *testing.T) {
 	cases := []struct {
-		name, body, want string
+		name  string
+		round int
+		body  string
+		want  string
 	}{
-		{"high blocks", reviewJSON("request_changes", highCorrect, lowNit), ""},
-		{"medium spec blocks", reviewJSON("request_changes", medSpec), ""},
-		{"medium edge-case allows approve", reviewJSON("approve", medEdge, lowNit), ""},
-		{"low without reason ok", reviewJSON("approve", lowNit), ""},
-		{"legacy strings approve", reviewJSON("approve", legacyString), ""},
-		{"legacy strings request_changes", reviewJSON("request_changes", legacyString), ""},
-		{"mixed string blocks", reviewJSON("request_changes", legacyString, lowNit), ""},
-		{"mixed string cannot approve", reviewJSON("approve", legacyString, lowNit), `comments[0] (an ungraded string) is blocking`},
-		{"approve with high", reviewJSON("approve", lowNit, highCorrect), `verdict "approve" but comments[1] (high correctness) is blocking`},
-		{"approve with medium spec", reviewJSON("approve", medSpec), `must be "request_changes"`},
-		{"request_changes with only optional", reviewJSON("request_changes", medEdge, lowNit), `verdict "request_changes" but no comment is blocking`},
-		{"high missing reason", reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x"}`), `comments[0]: high comment missing required field "reason"`},
-		{"medium missing reason", reviewJSON("approve", `{"severity":"medium","category":"perf","text":"x"}`), `medium comment missing required field "reason"`},
-		{"unknown severity", reviewJSON("approve", `{"severity":"critical","category":"nit","text":"x","reason":"r"}`), `severity "critical" not one of`},
-		{"unknown category", reviewJSON("approve", `{"severity":"low","category":"style","text":"x"}`), `category "style" not one of`},
-		{"missing severity", reviewJSON("approve", `{"category":"nit","text":"x"}`), `missing required field "severity"`},
-		{"missing text", reviewJSON("approve", `{"severity":"low","category":"nit"}`), `missing required field "text"`},
-		{"unknown comment key", reviewJSON("approve", `{"severity":"low","category":"nit","text":"x","file":"a.go"}`), `unknown field "file"`},
-		{"non-object comment", reviewJSON("approve", `3`), "decode"},
+		// Rounds 1-2: any comment requests changes, none approves.
+		{"r1 high", 1, reviewJSON("request_changes", highCorrect, lowNit), ""},
+		{"r1 low only", 1, reviewJSON("request_changes", lowNit), ""},
+		{"r2 medium", 2, reviewJSON("request_changes", medEdge), ""},
+		{"r1 no comments approve", 1, reviewJSON("approve"), ""},
+		{"r1 low approve", 1, reviewJSON("approve", lowNit), `round 1 verdict "approve" but the review has 1 comment(s): in rounds 1-2 any comment (high, medium or low) requires "request_changes"`},
+		{"r2 medium approve", 2, reviewJSON("approve", medEdge, lowNit), `round 2 verdict "approve" but the review has 2 comment(s)`},
+		// Final round: high/medium escalate, lows are ignored.
+		{"r3 low only approve", 3, reviewJSON("approve", lowNit, lowNit), ""},
+		{"r3 no comments approve", 3, reviewJSON("approve"), ""},
+		{"r3 medium request_changes", 3, reviewJSON("request_changes", lowNit, medEdge), ""},
+		{"r3 high request_changes", 3, reviewJSON("request_changes", highCorrect), ""},
+		{"r3 medium approve", 3, reviewJSON("approve", lowNit, medSpec), `round 3 (final) verdict "approve" but comments[1] is medium: at the final round any high or medium requires "request_changes"`},
+		{"r3 low request_changes", 3, reviewJSON("request_changes", lowNit), `round 3 (final) verdict "request_changes" but every comment is low: at the final round lows are ignored and the verdict must be "approve"`},
+		{"r3 string in graded blocks", 3, reviewJSON("approve", lowNit, legacyString), `comments[1] is an ungraded string`},
+		// All-string reviews keep the written verdict at any round.
+		{"legacy strings approve", 1, reviewJSON("approve", legacyString), ""},
+		{"legacy strings request_changes r3", 3, reviewJSON("request_changes", legacyString), ""},
+		{"legacy no comments request_changes", 1, reviewJSON("request_changes"), ""},
+		// Comment shape.
+		{"high missing reason", 1, reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x"}`), `comments[0]: high comment missing required field "reason"`},
+		{"medium missing reason", 1, reviewJSON("request_changes", `{"severity":"medium","category":"perf","text":"x"}`), `medium comment missing required field "reason"`},
+		{"unknown severity", 1, reviewJSON("request_changes", `{"severity":"critical","category":"nit","text":"x","reason":"r"}`), `severity "critical" not one of`},
+		{"unknown category", 1, reviewJSON("request_changes", `{"severity":"low","category":"style","text":"x"}`), `category "style" not one of`},
+		{"missing severity", 1, reviewJSON("request_changes", `{"category":"nit","text":"x"}`), `missing required field "severity"`},
+		{"missing text", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit"}`), `missing required field "text"`},
+		{"unknown comment key", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit","text":"x","file":"a.go"}`), `unknown field "file"`},
+		{"non-object comment", 1, reviewJSON("approve", `3`), "decode"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, false)
+			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, tc.round, false)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want nil", err)
@@ -63,12 +75,25 @@ func TestParseReviewGraded(t *testing.T) {
 	}
 }
 
+// Category is a label only: a medium of any category behaves the same.
+func TestCategoryDoesNotChangeVerdictRule(t *testing.T) {
+	for _, cat := range ReviewCategories {
+		c := `{"severity":"medium","category":"` + cat + `","text":"x","reason":"r"}`
+		if _, err := ParseReview("x", []byte(reviewJSON("request_changes", c)), ReviewerA, 3, false); err != nil {
+			t.Errorf("%s medium at r3 request_changes: %v", cat, err)
+		}
+		if _, err := ParseReview("x", []byte(reviewJSON("approve", c)), ReviewerA, 3, false); err == nil {
+			t.Errorf("%s medium at r3 approve accepted", cat)
+		}
+	}
+}
+
 // Grandfathered files hold plain strings only; legacy mode must keep
 // accepting them under either verdict.
 func TestParseReviewLegacyStringsUnchanged(t *testing.T) {
 	for _, v := range []string{"approve", "request_changes"} {
 		body := `{"verdict":"` + v + `","comments":["a","b"],"extra":1}`
-		r, err := ParseReview("x", []byte(body), ReviewerA, true)
+		r, err := ParseReview("x", []byte(body), ReviewerA, 3, true)
 		if err != nil {
 			t.Fatalf("%s: %v", v, err)
 		}
@@ -79,7 +104,7 @@ func TestParseReviewLegacyStringsUnchanged(t *testing.T) {
 }
 
 func TestParseReviewObjectShape(t *testing.T) {
-	r, err := ParseReview("x", []byte(reviewJSON("request_changes", highCorrect, legacyString)), ReviewerA, false)
+	r, err := ParseReview("x", []byte(reviewJSON("request_changes", highCorrect, legacyString)), ReviewerA, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,26 +135,12 @@ func TestReviewCommentMarshalRoundTrip(t *testing.T) {
 	}
 }
 
-func TestReviewCountBlocking(t *testing.T) {
-	cases := []struct {
-		name           string
-		r              Review
-		wantB, wantNon int
-	}{
-		{"graded", Review{Verdict: VerdictRequestChanges, Comments: []ReviewComment{
-			{Severity: "high", Category: "perf"},
-			{Severity: "medium", Category: "data-loss"},
-			{Severity: "medium", Category: "test"},
-			{Severity: "low", Category: "security"},
-			Ungraded("x"),
-		}}, 3, 2},
-		{"ungraded request_changes", Review{Verdict: VerdictRequestChanges, Comments: []ReviewComment{Ungraded("a"), Ungraded("b")}}, 2, 0},
-		{"ungraded approve", Review{Verdict: VerdictApprove, Comments: []ReviewComment{Ungraded("a")}}, 0, 1},
-	}
-	for _, tc := range cases {
-		b, n := tc.r.CountBlocking()
-		if b != tc.wantB || n != tc.wantNon {
-			t.Errorf("%s: CountBlocking = %d, %d; want %d, %d", tc.name, b, n, tc.wantB, tc.wantNon)
-		}
+func TestReviewSeverityCounts(t *testing.T) {
+	r := Review{Comments: []ReviewComment{
+		{Severity: "high"}, {Severity: "medium"}, {Severity: "low"}, {Severity: "low"}, Ungraded("x"),
+	}}
+	hm, low, ung := r.SeverityCounts()
+	if hm != 2 || low != 2 || ung != 1 {
+		t.Errorf("SeverityCounts = %d, %d, %d; want 2, 2, 1", hm, low, ung)
 	}
 }

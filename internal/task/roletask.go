@@ -286,7 +286,7 @@ func WriteReview(projectRoot, slug string, instance ReviewerInstance, round int,
 	if err != nil {
 		return err
 	}
-	if _, err := ParseReview(path, b, instance, false); err != nil {
+	if _, err := ParseReview(path, b, instance, round, false); err != nil {
 		return fmt.Errorf("roletask: %w", err)
 	}
 	return writeJSON(path, v)
@@ -307,7 +307,7 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 	if err != nil {
 		return Review{}, err
 	}
-	return ParseReview(path, b, instance, legacy)
+	return ParseReview(path, b, instance, round, legacy)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

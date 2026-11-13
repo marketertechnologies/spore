@@ -303,7 +303,8 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		_, err = m.gh(reviewBody(e.instance, e.round, rev), "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
 		return err
 	case eventEscalated:
-		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer. The PR stays draft until the operator decides.",
+		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
+			"The engineer was asked to address them in one fix pass; no re-review follows. Operator intervention is required: the PR stays draft until the operator decides.",
 			reviewLabel(e.instance), e.round, MaxReviewerRounds))
 	case eventReady:
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
@@ -340,9 +341,10 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 }
 
 // renderReviewComments lists rev's comments as markdown bullets.
-// Graded comments sort blocking first, then by severity, and carry
-// their grade inline so the operator can scan what gates the verdict.
-// Ungraded (legacy string) comments render bare, in file order.
+// Graded comments sort by severity (high, medium, then low) and carry
+// their grade inline so the operator can scan them. A plain string in
+// a graded review counts like a medium and sorts just after them.
+// Ungraded (legacy string) reviews render bare, in file order.
 func renderReviewComments(rev task.Review) string {
 	type item struct {
 		rank int
@@ -355,15 +357,9 @@ func renderReviewComments(rev task.Review) string {
 		case !graded:
 			items = append(items, item{line: c.Text})
 		case !c.IsGraded():
-			// A plain string in a graded review blocks: list it after
-			// the graded blockers, before the optional comments.
-			items = append(items, item{rank: 2, line: "**ungraded** / blocking - " + c.Text})
+			items = append(items, item{rank: 2, line: "**ungraded** - " + c.Text})
 		default:
-			rank := severityRank(c.Severity)
-			if !c.Blocking() {
-				rank += 3
-			}
-			items = append(items, item{rank: rank, line: gradedCommentLine(c)})
+			items = append(items, item{rank: severityRank(c.Severity), line: gradedCommentLine(c)})
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].rank < items[j].rank })
@@ -381,15 +377,12 @@ func severityRank(sev string) int {
 	case task.SeverityMedium:
 		return 1
 	}
-	return 2
+	return 3
 }
 
 func gradedCommentLine(c task.ReviewComment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s** / %s", c.Severity, c.Category)
-	if c.Blocking() {
-		b.WriteString(" / blocking")
-	}
 	if w := strings.TrimSpace(c.Where); w != "" {
 		fmt.Fprintf(&b, " / `%s`", w)
 	}
