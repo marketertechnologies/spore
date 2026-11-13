@@ -45,10 +45,10 @@ files only.
   - `author`: required. The value of `$SPORE_ROLE` (`engineer`).
   - `addressed`: one entry per review comment you fixed, with how.
   - `pushback`: comments you do not intend to address, each with a
-    one-line concrete reason. Pushing back on a blocking comment
-    without a solid reason risks the loop hitting the 3-round cap
-    and escalating to the operator; declining an optional one does
-    not (see "Review comment grades").
+    one-line concrete reason. Pushing back on a `high` or `medium`
+    comment without a solid reason risks the loop hitting the
+    3-round cap and escalating to the operator (see "Review comment
+    grades").
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
@@ -70,21 +70,21 @@ files only.
 
 Each review comment carries a `severity` (`high`, `medium`, `low`),
 a `category`, an optional `where` (`path:line`), the `text`, and a
-`reason` for the grade. A comment is blocking when it is `high`, or
-`medium` with category `security`, `correctness`, `spec`, or
-`data-loss`; the reviewer requests changes only when at least one
-comment blocks. A plain-string comment (an older reviewer body) is
-ungraded: treat it as blocking.
+`reason` for the grade. The grade alone sets your obligation; the
+category is only a label. In rounds 1 and 2 the reviewer requests
+changes on any comment, lows included. In round 3 (its last) it
+approves when only lows remain (those are dropped) and requests
+changes only for a `high` or `medium`. A plain-string comment (an
+older reviewer body) is ungraded: treat it like a `medium`.
 
 Your obligation per grade:
 
 - `high`: must fix.
 - `medium`: fix it, or push back with a one-line concrete reason.
-- `low`: optional, but do not blanket-discard low items. If it is a
-  simple change or clearly makes sense, implement it. Defer it to
-  `followups` or decline it in `pushback` (one line why) only when
-  it is costly, risky, out of scope, or not worth it. Declining a
-  low item with a reason is not overusing pushback.
+- `low`: implement it if it is simple or clearly makes sense;
+  otherwise decline it in `pushback` (one line why) or defer it to
+  `followups`. Do not blanket-discard lows. Declining a low item
+  with a reason is not overusing pushback.
 
 Valid pushback reasons:
 
@@ -99,7 +99,8 @@ Valid pushback reasons:
 ## Fix rounds
 
 In a revision round, change only what the reviewers raised: every
-blocking comment, plus the optional ones you choose to take. Do not
+`high`, every `medium` you do not push back on, and the lows you
+take. Do not
 add new services, features, or refactors on the way: they grow the
 PR past its size cap and restart review. Record anything worth doing
 as a `followups` entry proposing a separate PR.
@@ -116,6 +117,15 @@ as a `followups` entry proposing a separate PR.
 6. When a reviewer approves, the coordinator either spawns the next
    reviewer or hands the branch to the operator. Your work for this
    round is finished.
+
+## Escalation
+
+If a reviewer still requests changes at round 3 (only possible with
+a `high` or `medium` comment), the loop escalates to the operator.
+The coordinator wakes you once with that verdict: address its high
+and medium comments in a single fix pass (lows are optional), write
+the next `responses/engineer-round-N.json`, and mark the round done.
+No re-review follows; wait for the operator.
 
 ## Where you run
 

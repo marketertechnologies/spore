@@ -63,9 +63,17 @@ transition. Verdict files hold `approve` or `request_changes`.
 A revise phase flips back to the review phase once the engineer
 writes the response to the latest verdict. Each reviewer phase is
 capped at 3 rounds (`MaxReviewerRounds`): a `request_changes` verdict
-at round 3 escalates instead of looping. On escalation the driver
-leaves all panes alive; the operator can clarify the spec,
-force-approve, kill the task, or hand it back for another loop.
+at round 3 escalates instead of looping (see "Graded review comments"
+for which verdicts each round allows). On escalation the driver
+leaves all panes alive and wakes the engineer once for a fix pass at
+the final verdict's high/medium comments; no reviewer is woken and
+no re-review follows. The engineer's fix-pass response keeps the
+phase `escalated` (`EscalationFixPending` clears). The operator can
+then clarify the spec, force-approve, kill the task, or hand it back
+for another loop. If the operator force-approves A's final verdict,
+the `escalated-A-*` marker tells the phase machine that the fix-pass
+response belongs to A's phase, so B's revisions still count from a
+fresh engineer round.
 
 Per-phase side effects of a drive tick:
 
@@ -77,7 +85,9 @@ Per-phase side effects of a drive tick:
   engineer pane stays alive across the handover
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
-- `escalated`: write the `escalated-*` marker, touch nothing else
+- `escalated`: write the `escalated-*` marker; until the engineer
+  answers the final verdict, keep its pane alive and nudge it once
+  for the fix pass. Reviewers are left alone
 - every phase: bounce invalid role files (see below)
 - non-terminal phases: check the active role for a stall (see Pane
   liveness)
@@ -283,26 +293,35 @@ Each review comment is an object (`internal/task/reviewgrade.go`):
 - `text`: required.
 - `reason`: one line on the grade; required for `high` and `medium`.
 
-A comment is blocking when it is `high`, or `medium` with category
-`security`, `correctness`, `spec`, or `data-loss`. The verdict
-follows from the grades and validation enforces it: a review with a
-blocking comment must be `request_changes`, a review without one
-must be `approve`. The engineer must fix `high`, fixes or pushes
-back on `medium`, and takes `low` items that are cheap and sensible,
-deferring (`followups`) or declining (`pushback`) the rest with a
-one-line reason. From round 2, reviewers do not raise new `low`
-comments on code the engineer left unchanged that round.
+The grade alone decides the verdict; `category` is only a label.
+Validation enforces the rule per reviewer round
+(`checkGrades(review, round)`):
+
+| Round | Comments | Required verdict | Next |
+| --- | --- | --- | --- |
+| 1-2 | none | `approve` | next reviewer, or done |
+| 1-2 | any (`high`, `medium`, or `low`) | `request_changes` | engineer revises, reviewer re-reviews |
+| 3 (final) | none, or only `low` | `approve` | lows dropped; next reviewer, or done (PR marked ready) |
+| 3 (final) | any `high` or `medium` | `request_changes` | escalated: one engineer fix pass, then the operator |
+
+The engineer must fix `high`, fixes or pushes back (one-line reason)
+on `medium`, and implements a `low` if it is simple or sensible,
+otherwise declines it (`pushback`) or defers it (`followups`) with a
+reason; lows are not blanket-discarded. From round 2, reviewers do
+not raise new `low` comments on code the engineer left unchanged
+that round.
 
 Plain-string comments (legacy files, project role overrides that
 predate grading) still parse and are ungraded. A review whose
 comments are all ungraded (or empty) keeps its verdict as written,
-exactly as before grading; its comments count as blocking under
-`request_changes` and non-blocking under `approve`. In a review that
-grades any comment, a plain string counts as blocking.
+exactly as before grading, at any round. In a review that grades
+any comment, a plain string counts like a `medium`.
 
-The draft-PR mirror renders graded comments blocking first, then by
-severity, as `**high** / correctness / blocking / `path:line` - text
-(reason)`. Ungraded comments render as plain bullets.
+The draft-PR mirror renders graded comments by severity (high, then
+medium, then ungraded strings, then low) as `**high** / correctness /
+`path:line` - text (reason)`. Comments of a fully ungraded review
+render as plain bullets. The escalation comment on the PR says the
+engineer was asked for one fix pass and that the operator decides.
 
 ## File validation
 
@@ -313,7 +332,8 @@ JSON object, carries a key outside its schema, lacks a required field
 verdict outside `approve` / `request_changes`, has a malformed graded
 comment (unknown severity or category, unknown key, missing `text`,
 missing `reason` on `high` / `medium`), has a verdict that
-contradicts its grades (the error names the rule), or has an `author`
+contradicts its grades for its round (the error names the round
+and the rule), or has an `author`
 that does not match its location: `reviews/A/` needs `"A"`,
 `reviews/B/` needs `"B"`, `responses/` needs `"engineer"`. Panes fill
 it from `$SPORE_REVIEWER_INSTANCE` / `$SPORE_ROLE`.
@@ -338,7 +358,9 @@ upgrade still run the old role body; their next file without
 
 `spore task status <slug>` prints the derived snapshot: phase,
 engineer round, current reviewer, reviewer round, last verdict with
-its blocking and non-blocking comment counts.
+its comment counts (high/medium, low, ungraded), and an
+`engineer: fix pass pending` line while an escalation's fix pass is
+owed.
 
 Markers under `.spore/<slug>/state/`:
 
@@ -346,7 +368,9 @@ Markers under `.spore/<slug>/state/`:
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
 - `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve).
+  the loop later reaches done (operator force-approve). While an
+  `escalated-A-*` marker exists, the phase machine counts A's fix
+  pass as one extra engineer round.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.

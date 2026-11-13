@@ -87,7 +87,8 @@ responses to read.
 ## Grading comments
 
 Grade every comment. The engineer reads the grade to tell what must
-change from what is optional, and the verdict follows from the grades.
+change, what it may push back on, and what it may decline, and the
+verdict follows from the grades.
 
 Comment keys:
 
@@ -119,19 +120,24 @@ Do not inflate. A rare edge case is `low` even when its category is
 `correctness`; reserve `medium` for paths a real user or operator
 can plausibly reach.
 
-**The verdict follows from the grades.** A comment is blocking when
-it is `high`, or `medium` with category `security`, `correctness`,
-`spec`, or `data-loss`. Any blocking comment -> `request_changes`.
-No blocking comment -> `approve`, even when `medium` / `low`
-comments remain; they reach the engineer and the PR as optional. The
-coordinator rejects a file whose verdict contradicts its grades and
-wakes you with the rule it broke.
+**The verdict follows from the grades and the round.** The grade
+alone decides; `category` is only a label.
 
-On `approve` the engineer is not woken: optional comments stay on
-the record (and on the PR, in the draft-PR flow) for the operator.
+- Rounds 1 and 2: any comment (`high`, `medium`, or `low`) ->
+  `request_changes`; the engineer revises and you re-review. No
+  comments -> `approve`.
+- Round 3 (your last): no comments, or only `low` comments ->
+  `approve`. The lows stay on the record but are not acted on; the
+  loop moves on (A hands over to B; B approving finishes the task).
+  Any `high` or `medium` -> `request_changes`, which escalates to the
+  operator: the engineer gets one fix pass at the high/medium
+  comments and you are not asked to re-review.
+
+The coordinator rejects a file whose verdict contradicts its grades
+for its round and wakes you with the rule it broke.
 
 Plain-string comments still parse but are ungraded: in a review with
-any graded comment they count as blocking. Do not write them.
+any graded comment they count like a `medium`. Do not write them.
 
 ## Rounds 2+: scope of new comments
 
@@ -201,9 +207,9 @@ Raise the blocker only if that total exceeds the project cap.
 
 ## Cap
 
-Three rounds per reviewer phase. If you reach round 3 and still see
-blocking issues, write `request_changes` anyway; the coordinator
-catches the cap and escalates to the operator. Do not downgrade a
+Three rounds per reviewer phase. At round 3, write `request_changes`
+if any `high` or `medium` remains (the coordinator escalates to the
+operator) and `approve` if only lows remain. Do not downgrade a
 grade to dodge escalation, and do not inflate one to keep a loop
 going.
 
