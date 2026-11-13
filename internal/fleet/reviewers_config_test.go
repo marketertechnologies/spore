@@ -18,23 +18,23 @@ func TestLoadReviewersConfig(t *testing.T) {
 		want    ReviewersConfig
 	}{
 		{
-			name: "defaults A to code-review, B to fleet",
+			name: "defaults A to fleet, B to code-review",
 			want: ReviewersConfig{
-				A: ReviewerSlot{Mode: "code-review", DefaultMode: true},
-				B: ReviewerSlot{Mode: "fleet", DefaultMode: true},
+				A: ReviewerSlot{Mode: "fleet", DefaultMode: true},
+				B: ReviewerSlot{Mode: "code-review", DefaultMode: true},
 			},
 		},
 		{
-			name: "explicit fleet on A honored",
-			toml: "[fleet.reviewers.A]\nmode = \"fleet\"\n",
-			want: ReviewersConfig{A: ReviewerSlot{Mode: "fleet"}, B: ReviewerSlot{Mode: "fleet", DefaultMode: true}},
+			name: "explicit fleet on B honored",
+			toml: "[fleet.reviewers.B]\nmode = \"fleet\"\n",
+			want: ReviewersConfig{A: ReviewerSlot{Mode: "fleet", DefaultMode: true}, B: ReviewerSlot{Mode: "fleet"}},
 		},
 		{
-			name: "implicit A with codex slot agent loads, spawn settles it",
-			toml: "[fleet.reviewers.A]\nagent = \"codex\"\n",
+			name: "implicit B with codex slot agent loads, spawn settles it",
+			toml: "[fleet.reviewers.B]\nagent = \"codex\"\n",
 			want: ReviewersConfig{
-				A: ReviewerSlot{Mode: "code-review", Agent: "codex", DefaultMode: true},
-				B: ReviewerSlot{Mode: "fleet", DefaultMode: true},
+				A: ReviewerSlot{Mode: "fleet", DefaultMode: true},
+				B: ReviewerSlot{Mode: "code-review", Agent: "codex", DefaultMode: true},
 			},
 		},
 		{
@@ -47,16 +47,16 @@ func TestLoadReviewersConfig(t *testing.T) {
 		},
 		{
 			name: "claude-code alias",
-			toml: "[fleet.reviewers.A]\nmode = \"code-review\"\nagent = \"claude-code\"\n",
-			want: ReviewersConfig{A: ReviewerSlot{Mode: "code-review", Agent: "claude"}, B: ReviewerSlot{Mode: "fleet", DefaultMode: true}},
+			toml: "[fleet.reviewers.B]\nmode = \"code-review\"\nagent = \"claude-code\"\n",
+			want: ReviewersConfig{A: ReviewerSlot{Mode: "fleet", DefaultMode: true}, B: ReviewerSlot{Mode: "code-review", Agent: "claude"}},
 		},
 		{
 			name:    "overlay wins key by key",
-			toml:    "[fleet.reviewers.A]\nmode = \"code-review\"\neffort = \"low\"\n",
-			overlay: "[fleet.workers]\ndefault = \"codex\"\n[fleet.reviewers.A]\neffort = \"max\"\n[fleet.reviewers.B]\nagent = \"codex\"\n",
+			toml:    "[fleet.reviewers.B]\nmode = \"code-review\"\neffort = \"low\"\n",
+			overlay: "[fleet.workers]\ndefault = \"codex\"\n[fleet.reviewers.B]\neffort = \"max\"\n[fleet.reviewers.A]\nagent = \"codex\"\n",
 			want: ReviewersConfig{
-				A: ReviewerSlot{Mode: "code-review", Effort: "max"},
-				B: ReviewerSlot{Mode: "fleet", Agent: "codex", DefaultMode: true},
+				A: ReviewerSlot{Mode: "fleet", Agent: "codex", DefaultMode: true},
+				B: ReviewerSlot{Mode: "code-review", Effort: "max"},
 			},
 		},
 	}
@@ -230,10 +230,10 @@ func TestRoleSpawnImplicitCodeReviewFallsBackToFleet(t *testing.T) {
 	}{
 		{name: "claude default", wantMode: "code-review", wantCmd: "exec claude ", wantBody: "reviewer-code-review.md"},
 		{name: "task pins codex", taskAgent: "codex", wantMode: "fleet", wantCmd: "exec codex ", wantBody: "reviewer.md"},
-		{name: "slot agent codex", toml: "[fleet.reviewers.A]\nagent = \"codex\"\n", wantMode: "fleet", wantCmd: "exec codex ", wantBody: "reviewer.md"},
+		{name: "slot agent codex", toml: "[fleet.reviewers.B]\nagent = \"codex\"\n", wantMode: "fleet", wantCmd: "exec codex ", wantBody: "reviewer.md"},
 		{name: "workers default codex", toml: "[fleet.workers]\ndefault = \"codex\"\n", wantMode: "fleet", wantCmd: "exec codex ", wantBody: "reviewer.md"},
 		{name: "spec agent", specAgent: "sleep 30", wantMode: "fleet", wantCmd: "exec sleep 30", wantBody: "reviewer.md"},
-		{name: "explicit code-review keeps claude", taskAgent: "codex", toml: "[fleet.reviewers.A]\nmode = \"code-review\"\n", wantMode: "code-review", wantCmd: "exec claude ", wantBody: "reviewer-code-review.md"},
+		{name: "explicit code-review keeps claude", taskAgent: "codex", toml: "[fleet.reviewers.B]\nmode = \"code-review\"\n", wantMode: "code-review", wantCmd: "exec claude ", wantBody: "reviewer-code-review.md"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -242,7 +242,7 @@ func TestRoleSpawnImplicitCodeReviewFallsBackToFleet(t *testing.T) {
 			if c.toml != "" {
 				writeSporeTOML(t, root, c.toml)
 			}
-			spec := ReviewerSpec(root, "feature-x", task.ReviewerA)
+			spec := ReviewerSpec(root, "feature-x", task.ReviewerB)
 			spec.Agent = c.specAgent
 			args, err := spec.TmuxArgs()
 			if err != nil {
@@ -301,26 +301,26 @@ func TestRoleSpawnMixedRoleSources(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "bootstrap", "roles", "reviewer-code-review.md")); err != nil {
 		t.Fatal(err)
 	}
-	argsA, err := ReviewerSpec(root, "feature-x", task.ReviewerA).TmuxArgs()
+	argsB, err := ReviewerSpec(root, "feature-x", task.ReviewerB).TmuxArgs()
 	if err != nil {
-		t.Fatalf("A TmuxArgs: %v", err)
+		t.Fatalf("B TmuxArgs: %v", err)
 	}
 	bundled, err := ResolveRoleBody(root, "reviewer-code-review.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.HasPrefix(bundled, root) || !strings.Contains(argsA[len(argsA)-1], bundled) {
-		t.Errorf("A command = %q, want bundled body %s", argsA[len(argsA)-1], bundled)
+	if strings.HasPrefix(bundled, root) || !strings.Contains(argsB[len(argsB)-1], bundled) {
+		t.Errorf("B command = %q, want bundled body %s", argsB[len(argsB)-1], bundled)
 	}
 	if !strings.Contains(warn.String(), "no reviewer-code-review.md") {
 		t.Errorf("warnings = %q, want a mixed-source warning", warn.String())
 	}
-	argsB, err := ReviewerSpec(root, "feature-x", task.ReviewerB).TmuxArgs()
+	argsA, err := ReviewerSpec(root, "feature-x", task.ReviewerA).TmuxArgs()
 	if err != nil {
-		t.Fatalf("B TmuxArgs: %v", err)
+		t.Fatalf("A TmuxArgs: %v", err)
 	}
-	if want := filepath.Join(root, "bootstrap", "roles", "reviewer.md"); !strings.Contains(argsB[len(argsB)-1], want) {
-		t.Errorf("B command = %q, want project body %s", argsB[len(argsB)-1], want)
+	if want := filepath.Join(root, "bootstrap", "roles", "reviewer.md"); !strings.Contains(argsA[len(argsA)-1], want) {
+		t.Errorf("A command = %q, want project body %s", argsA[len(argsA)-1], want)
 	}
 }
 
@@ -344,8 +344,8 @@ func TestSporeTOMLReviewerSlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spore.toml: %v", err)
 	}
-	if cfg.A.Mode != ReviewerModeCodeReview || cfg.B.Mode != ReviewerModeFleet {
-		t.Errorf("spore.toml reviewers = %+v, want A code-review, B fleet", cfg)
+	if cfg.A.Mode != ReviewerModeFleet || cfg.B.Mode != ReviewerModeCodeReview {
+		t.Errorf("spore.toml reviewers = %+v, want A fleet, B code-review", cfg)
 	}
 	if _, err := os.Stat(filepath.Join(root, "bootstrap", "roles", "reviewer-code-review.md")); err != nil {
 		t.Errorf("code-review body: %v", err)

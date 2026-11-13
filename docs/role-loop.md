@@ -164,16 +164,16 @@ which wins key by key):
 
 ```toml
 [fleet.reviewers.A]
-mode   = "code-review"  # "fleet" | "code-review" (A defaults to code-review, B to fleet)
-agent  = "claude"       # optional; default is the task / [fleet.workers] agent
-effort = "medium"       # code-review only: low|medium|high|xhigh|max (default medium)
+mode = "fleet"          # "fleet" | "code-review" (A defaults to fleet, B to code-review)
 
 [fleet.reviewers.B]
-mode = "fleet"
+mode   = "code-review"
+agent  = "claude"       # optional; default is the task / [fleet.workers] agent
+effort = "medium"       # code-review only: low|medium|high|xhigh|max (default medium)
 ```
 
-- `fleet` runs the `reviewer.md` body: spec conformance, runs tests
-  and lints. B defaults to it.
+- `fleet` runs the `reviewer.md` body: spec and acceptance-criteria
+  conformance, runs tests and lints. A defaults to it.
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
   diff (on the draft PR with `--comment` when `github.json` holds a
@@ -186,14 +186,14 @@ mode = "fleet"
   run has no spec context, so the engineer pushes back with a
   one-line reason on findings the spec contradicts, and later rounds
   do not re-raise a finding with a sound pushback.
-- `code-review` is claude-only. A defaults to it (effort `medium`)
+- `code-review` is claude-only. B defaults to it (effort `medium`)
   when no `mode` is set, but falls back to `fleet` when its agent
   (slot `agent`, else the task `agent:`, else the `[fleet.workers]`
   default) resolves to non-claude; an `effort` it set is then
   ignored with a stderr warning, as on any fleet slot. The fallback
   is re-evaluated at every spawn, like the agent, so changing the
-  task agent or `[fleet.workers]` default mid-task can switch A
-  between the two protocols across rounds; pin `mode` on A to rule
+  task agent or `[fleet.workers]` default mid-task can switch B
+  between the two protocols across rounds; pin `mode` on B to rule
   that out. An explicit `mode = "code-review"` with a non-claude
   `agent` fails config load; without `agent` it runs claude even
   when the task pins codex.
@@ -204,9 +204,11 @@ mode = "fleet"
 - Panes get `SPORE_REVIEWER_MODE`, plus `SPORE_REVIEW_EFFORT` in
   code-review mode.
 
-The default pairing is A = code-review, B = fleet: bug hunt first,
-spec and verification second. spore's own spore.toml pins it
-explicitly.
+The default pairing is A = fleet, B = code-review: requirements
+first, code review last. The engineer settles what the spec asks for
+before the bug hunt runs over the final shape of the change. spore's
+own spore.toml pins it explicitly. Before 0.33.1 the default was the
+reverse (A = code-review); pin both `mode`s to keep that order.
 
 ### Pre-start hook
 

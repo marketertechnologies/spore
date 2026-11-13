@@ -161,8 +161,8 @@ func commitIdentityEnv(projectRoot string) []string {
 // slot whose agent is non-claude drops to fleet; Effort is filled in
 // code-review mode and cleared, with a warning, in fleet mode. Like
 // the agent itself, the defaulted mode follows the config at each
-// spawn, so editing the agent config mid-task can switch A's protocol
-// between rounds (see docs/role-loop.md).
+// spawn, so editing the agent config mid-task can switch that slot's
+// protocol between rounds (see docs/role-loop.md).
 func (s RoleSpawnSpec) resolve() (slot ReviewerSlot, meta frontmatter.Meta, agent string, err error) {
 	if s.Role == "reviewer" {
 		cfg, err := LoadReviewersConfig(s.ProjectRoot)
