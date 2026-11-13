@@ -3,6 +3,8 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,8 +40,12 @@ type githubState struct {
 	Ready     bool     `json:"ready,omitempty"`
 	// DoneNotified records the plain "<slug>: done" fallback sent while
 	// the mirror was failing at PhaseDone.
-	DoneNotified bool   `json:"done_notified,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	DoneNotified bool `json:"done_notified,omitempty"`
+	// PRDescription keys the engineer `pr` title/body last applied
+	// (response file name plus content hash), so a re-tick never edits
+	// the PR twice.
+	PRDescription string `json:"pr_description,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -292,7 +298,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "**Engineer (round %d)**\n\n", e.round)
-		writeEngineerResponse(&b, resp)
+		writeEngineerResponse(&b, m.projectRoot, m.slug, resp)
 		return m.prComment(b.String())
 	case eventReview:
 		rev, err := task.ReadReview(m.projectRoot, m.slug, e.instance, e.round)
@@ -302,9 +308,12 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		_, err = m.gh(reviewBody(e.instance, e.round, rev), "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
 		return err
 	case eventEscalated:
-		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer. The PR stays draft until the operator decides.",
-			reviewLabel(e.instance), e.round, MaxReviewerRounds))
+		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
+		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
+			"The engineer was asked to address them in one fix pass; no re-review follows. Operator intervention is required: the PR stays draft until the operator decides.",
+			label, e.round, MaxReviewerRounds))
 	case eventReady:
+		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err
 		}
@@ -316,12 +325,16 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 	return fmt.Errorf("unknown mirror event kind %q", e.kind)
 }
 
-// reviewLabel names a reviewer instance the way the PR thread does.
-func reviewLabel(inst task.ReviewerInstance) string {
-	if inst == task.ReviewerB {
-		return "Review #2"
+// reviewerName returns the display label and comment ID prefix of
+// inst's verdict at round, read from the file's `prefix`. A missing or
+// invalid file, or one without a prefix, falls back to the instance
+// letter ("Reviewer A", A).
+func reviewerName(projectRoot, slug string, inst task.ReviewerInstance, round int) (label, prefix string) {
+	prefix = string(inst)
+	if rev, err := task.ReadReview(projectRoot, slug, inst, round); err == nil {
+		prefix = rev.IDPrefix(inst)
 	}
-	return "Review #1"
+	return task.ReviewerLabel(prefix), prefix
 }
 
 func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
@@ -330,14 +343,91 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 		verdict = "request changes"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%s (round %d): %s**\n\n", reviewLabel(inst), round, verdict)
+	fmt.Fprintf(&b, "**%s (round %d): %s**\n\n", task.ReviewerLabel(rev.IDPrefix(inst)), round, verdict)
 	if s := strings.TrimSpace(rev.Summary); s != "" {
 		b.WriteString(s + "\n\n")
 	}
-	for _, c := range rev.Comments {
-		fmt.Fprintf(&b, "- %s\n", c)
+	b.WriteString(renderReviewComments(inst, round, rev))
+	return b.String()
+}
+
+// renderReviewComments lists rev's comments as markdown bullets in
+// file order, each led by its stable ID (`**R1.2**`). Strict files are
+// sorted by severity on disk (see task.checkSeverityOrder), so file
+// order is severity order and ID order at once; an older unsorted file
+// keeps its order so its IDs still match the indices engineers cited.
+// Graded comments carry grade, category and where inline, the trigger
+// on an indented line and a suggestion as an indented fenced block. A
+// plain string renders as `ungraded` in a graded review and bare in an
+// ungraded one.
+func renderReviewComments(inst task.ReviewerInstance, round int, rev task.Review) string {
+	graded := rev.Graded()
+	prefix := rev.IDPrefix(inst)
+	var b strings.Builder
+	for i, c := range rev.Comments {
+		id := task.CommentID(prefix, round, i)
+		switch {
+		case !graded:
+			fmt.Fprintf(&b, "- **%s** %s\n", id, c.Text)
+		case !c.IsGraded():
+			fmt.Fprintf(&b, "- **%s** | ungraded | %s\n", id, c.Text)
+		default:
+			fmt.Fprintf(&b, "- **%s** | %s\n", id, gradedCommentLine(c))
+		}
 	}
 	return b.String()
+}
+
+func gradedCommentLine(c task.ReviewComment) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s | %s", c.Severity, c.Category)
+	if w := strings.TrimSpace(c.Where); w != "" {
+		fmt.Fprintf(&b, " | `%s`", w)
+	}
+	fmt.Fprintf(&b, " - %s", strings.TrimSpace(c.Text))
+	if r := strings.TrimSpace(c.Reason); r != "" {
+		fmt.Fprintf(&b, " (%s)", r)
+	}
+	if t := strings.TrimSpace(c.Trigger); t != "" {
+		fmt.Fprintf(&b, "\n  Trigger: %s", t)
+	}
+	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
+		b.WriteString("\n\n" + indentLines(fencedBlock(sug), "  "))
+	}
+	return b.String()
+}
+
+// fencedBlock wraps code in a markdown fence longer than any backtick
+// run inside it, tagged `diff` when it reads as a unified diff.
+func fencedBlock(code string) string {
+	longest, run := 0, 0
+	for _, r := range code {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", max(3, longest+1))
+	lang := ""
+	for _, p := range []string{"diff --git", "--- ", "@@"} {
+		if strings.HasPrefix(code, p) {
+			lang = "diff"
+			break
+		}
+	}
+	return fence + lang + "\n" + code + "\n" + fence
+}
+
+func indentLines(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = prefix + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *githubMirror) prComment(body string) error {
@@ -455,8 +545,91 @@ func (m *githubMirror) prBody(title string) string {
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
 	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
-		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+	return summary + "\n\n" + m.prFooter()
+}
+
+// prFooter is the fixed spore paragraph every PR body ends with.
+func (m *githubMirror) prFooter() string {
+	return fmt.Sprintf("Dispatched by @%s. Opened by spore's role loop: reviews arrive as `Requirements review` and `Code review` comments whose items carry stable IDs (`R1.2` is requirements review, round 1, item 2; `C` items come from the code review), and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
+		m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+}
+
+// applyPRDescription replaces the PR title and body with the `pr` of
+// the latest engineer response that carries one, body followed by the
+// review outcome and the spore footer. No `pr` leaves the PR as
+// opened. Best-effort: a failure is logged and told to the coordinator
+// but never holds back marking the PR ready, and it is not retried.
+func (m *githubMirror) applyPRDescription() {
+	name, pr, err := latestPRDescription(m.projectRoot, m.slug)
+	if err != nil || pr == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: pr description: %v\n", m.slug, err)
+		}
+		return
+	}
+	sum := sha256.Sum256([]byte(pr.Title + "\x00" + pr.Body))
+	key := name + ":" + hex.EncodeToString(sum[:6])
+	if m.state.PRDescription == key {
+		return
+	}
+	body := strings.TrimSpace(pr.Body) + "\n\n---\n\n"
+	if line := reviewOutcomeLine(m.projectRoot, m.slug); line != "" {
+		body += line + "\n\n"
+	}
+	body += m.prFooter()
+	if _, err := m.gh(body, "pr", "edit", strconv.Itoa(m.state.PRNumber), "--title", strings.TrimSpace(pr.Title), "--body-file", "-"); err != nil {
+		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: pr edit: %v\n", m.slug, err)
+		notifyRoleLoop(m.projectRoot, fmt.Sprintf("%s: could not apply the engineer's PR title/body (%s); PR marked ready with the original", m.slug, mirrorErrorKey(err)))
+		return
+	}
+	m.state.PRDescription = key
+	m.save()
+}
+
+// latestPRDescription returns the `pr` of the newest valid engineer
+// response that carries one, with that response's file name.
+func latestPRDescription(projectRoot, slug string) (string, *task.PRDescription, error) {
+	rounds, err := task.ListEngineerRounds(projectRoot, slug)
+	if err != nil {
+		return "", nil, err
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		resp, err := task.ReadEngineerResponse(projectRoot, slug, rounds[i])
+		if errors.Is(err, task.ErrInvalidRoleFile) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		if resp.PR != nil {
+			return filepath.Base(task.EngineerResponsePath(projectRoot, slug, rounds[i])), resp.PR, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// reviewOutcomeLine summarises each reviewer's final verdict, e.g.
+// "Requirements review: approved at round 2. Code review: approved at
+// round 1."
+func reviewOutcomeLine(projectRoot, slug string) string {
+	var parts []string
+	for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
+		rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
+		if err != nil || len(rounds) == 0 {
+			continue
+		}
+		last := rounds[len(rounds)-1]
+		rev, err := task.ReadReview(projectRoot, slug, inst, last)
+		if err != nil {
+			continue
+		}
+		verdict := "approved"
+		if rev.Verdict == task.VerdictRequestChanges {
+			verdict = "requested changes"
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s at round %d.", task.ReviewerLabel(rev.IDPrefix(inst)), verdict, last))
+	}
+	return strings.Join(parts, " ")
 }
 
 var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")

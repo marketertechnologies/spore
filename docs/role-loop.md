@@ -63,9 +63,20 @@ transition. Verdict files hold `approve` or `request_changes`.
 A revise phase flips back to the review phase once the engineer
 writes the response to the latest verdict. Each reviewer phase is
 capped at 3 rounds (`MaxReviewerRounds`): a `request_changes` verdict
-at round 3 escalates instead of looping. On escalation the driver
-leaves all panes alive; the operator can clarify the spec,
-force-approve, kill the task, or hand it back for another loop.
+at round 3 escalates instead of looping (see "Graded review comments"
+for which verdicts each round allows). On escalation the driver
+leaves all panes alive and wakes the engineer once for a fix pass at
+the final verdict's high/medium comments; no reviewer is woken and
+no re-review follows. The engineer's fix-pass response keeps the
+phase `escalated` (`EscalationFixPending` clears). The operator can
+then clarify the spec, force-approve, kill the task, or hand it back
+for another loop. If the operator force-approves A's final verdict,
+the fix-pass response counts toward A's phase only when it exists
+and predates B's first verdict (and an `escalated-A-*` marker shows
+the driver escalated A). So B's revisions count from a fresh
+engineer round whether the operator force-approved after the fix
+pass landed or before it (in which case the next engineer response
+answers B).
 
 Per-phase side effects of a drive tick:
 
@@ -77,7 +88,9 @@ Per-phase side effects of a drive tick:
   engineer pane stays alive across the handover
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
-- `escalated`: write the `escalated-*` marker, touch nothing else
+- `escalated`: write the `escalated-*` marker; until the engineer
+  answers the final verdict, keep its pane alive and nudge it once
+  for the fix pass. Reviewers are left alone
 - every phase: bounce invalid role files (see below)
 - non-terminal phases: check the active role for a stall (see Pane
   liveness)
@@ -151,34 +164,39 @@ which wins key by key):
 
 ```toml
 [fleet.reviewers.A]
-mode   = "code-review"  # "fleet" | "code-review" (A defaults to code-review, B to fleet)
-agent  = "claude"       # optional; default is the task / [fleet.workers] agent
-effort = "medium"       # code-review only: low|medium|high|xhigh|max (default medium)
+mode = "fleet"          # "fleet" | "code-review" (A defaults to fleet, B to code-review)
 
 [fleet.reviewers.B]
-mode = "fleet"
+mode   = "code-review"
+agent  = "claude"       # optional; default is the task / [fleet.workers] agent
+effort = "medium"       # code-review only: low|medium|high|xhigh|max (default medium)
 ```
 
-- `fleet` runs the `reviewer.md` body: spec conformance, runs tests
-  and lints. B defaults to it.
+- `fleet` runs the `reviewer.md` body: spec and acceptance-criteria
+  conformance, runs tests and lints. A defaults to it.
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
   diff (on the draft PR with `--comment` when `github.json` holds a
-  PR number). Findings map to the verdict: any non-cosmetic finding
-  is `request_changes`, none or cosmetic-only is `approve`, one
-  `path:line: text` comment per finding. The verdict file schema and
-  the `Review #1` / `Review #2` mirror are unchanged. The run has no
-  spec context, so the engineer pushes back with a one-line reason
-  on findings the spec contradicts, and later rounds do not re-raise
-  a finding with a sound pushback.
-- `code-review` is claude-only. A defaults to it (effort `medium`)
+  PR number). The skill's findings carry no severity: the reviewer
+  grades each one (see "Graded review comments") and the verdict
+  follows from the grades. Rounds 2+ drop new `low` findings on code
+  the engineer did not change that round, since the skill re-reviews
+  the whole PR each time. The verdict file schema, comment IDs and
+  the PR mirror are shared with `fleet` mode. The skill's own inline
+  PR comments carry no ID (it posts them before the reviewer grades
+  and sorts); the review body the driver posts is the authoritative
+  numbered list. The
+  run has no spec context, so the engineer pushes back with a
+  one-line reason on findings the spec contradicts, and later rounds
+  do not re-raise a finding with a sound pushback.
+- `code-review` is claude-only. B defaults to it (effort `medium`)
   when no `mode` is set, but falls back to `fleet` when its agent
   (slot `agent`, else the task `agent:`, else the `[fleet.workers]`
   default) resolves to non-claude; an `effort` it set is then
   ignored with a stderr warning, as on any fleet slot. The fallback
   is re-evaluated at every spawn, like the agent, so changing the
-  task agent or `[fleet.workers]` default mid-task can switch A
-  between the two protocols across rounds; pin `mode` on A to rule
+  task agent or `[fleet.workers]` default mid-task can switch B
+  between the two protocols across rounds; pin `mode` on B to rule
   that out. An explicit `mode = "code-review"` with a non-claude
   `agent` fails config load; without `agent` it runs claude even
   when the task pins codex.
@@ -186,12 +204,15 @@ mode = "fleet"
   spawn from the current config, like the task agent, and never from
   the worker ratio: a live pane keeps its agent, but a pane spawned
   after a config edit picks up the new one.
-- Panes get `SPORE_REVIEWER_MODE`, plus `SPORE_REVIEW_EFFORT` in
-  code-review mode.
+- Panes get `SPORE_REVIEWER_MODE`, `SPORE_REVIEWER_PREFIX`,
+  `SPORE_REVIEWER_LABEL` (see "Comment IDs"), plus
+  `SPORE_REVIEW_EFFORT` in code-review mode.
 
-The default pairing is A = code-review, B = fleet: bug hunt first,
-spec and verification second. spore's own spore.toml pins it
-explicitly.
+The default pairing is A = fleet, B = code-review: requirements
+first, code review last. The engineer settles what the spec asks for
+before the bug hunt runs over the final shape of the change. spore's
+own spore.toml pins it explicitly. Before 0.33.1 the default was the
+reverse (A = code-review); pin both `mode`s to keep that order.
 
 ### Pre-start hook
 
@@ -237,10 +258,14 @@ by writing `responses/engineer-round-N.json`:
 
     {
       "author": "engineer",
-      "addressed": ["comment 1 -> commit X"],
-      "pushback": ["comment 3 -> disagree because Z"],
+      "addressed": ["R1.1: guard the nil session"],
+      "pushback": ["R1.3: disagree because Z"],
       "notes": "free-form context for the reviewer",
-      "followups": ["out-of-scope idea for a separate PR"]
+      "followups": ["out-of-scope idea for a separate PR"],
+      "outcomes": [
+        {"reviewer": "A", "round": 1, "comment": 0, "outcome": "fixed",
+         "detail": "guard the nil session", "sha": "abc1234"}
+      ]
     }
 
 Reviewer (`spore-role/<project>/<slug>/reviewer-<instance>`): one
@@ -253,10 +278,150 @@ B's own verdicts. Each round a reviewer writes
 
     {
       "author": "A",
+      "prefix": "R",
       "verdict": "approve" | "request_changes",
       "summary": "one-line overall take",
-      "comments": ["one string per concern"]
+      "comments": [
+        {
+          "severity": "high" | "medium" | "low" | "question",
+          "category": "correctness",
+          "where": "path:line",
+          "text": "the defect and its failure scenario",
+          "reason": "one line: why this severity"
+        }
+      ]
     }
+
+## Graded review comments
+
+Each review comment is an object (`internal/task/reviewgrade.go`):
+
+- `severity`: `high`, `medium`, `low`, or `question`, rated as
+  likelihood times impact. `high`: users hit it in normal use, or
+  data loss, a security hole, a spec violation. `medium`: a
+  plausible path with real impact, or a missing test for a
+  spec-required rule. `low`: a rare edge case, a theoretical race, a
+  code-quality note. `question`: the reviewer is unsure or wants an
+  explanation; the engineer must answer it. Severity is not
+  confidence: anything the reviewer could not verify is `low` or
+  `question`, never `high` / `medium`.
+- `category`: `security`, `correctness`, `spec`, `data-loss`,
+  `edge-case`, `test`, `perf`, `maintainability`, or `nit`.
+- `where`: optional `path:line`.
+- `text`: required.
+- `reason`: one line on the grade; required for `high` and `medium`.
+- `trigger`: the concrete inputs or steps that cause the failure;
+  required for `high` and `medium`.
+- `suggestion`: optional on any grade; replacement code or a small
+  unified diff for `where`, included only when the reviewer is
+  confident it applies.
+
+The grade alone decides the verdict; `category` is only a label.
+Validation enforces the rule per reviewer round
+(`checkGrades(review, round)`):
+
+| Round | Comments | Required verdict | Next |
+| --- | --- | --- | --- |
+| 1 | none | `approve` | next reviewer, or done |
+| 1 | any (`high`, `medium`, `low`, or `question`) | `request_changes` | engineer revises (answers questions), reviewer re-reviews |
+| 2 | none, or only `low` / `question` | `approve` | kept on record and mirrored, engineer not woken; next reviewer, or done |
+| 2 | any `high` or `medium` | `request_changes` | engineer revises, reviewer re-reviews |
+| 3 (final) | none, or only `low` / `question` | `approve` | as round 2 (PR marked ready when B approves) |
+| 3 (final) | any `high` or `medium` | `request_changes` | escalated: one engineer fix pass, then the operator |
+
+The engineer must fix `high`, fixes or pushes back (one-line reason)
+on `medium`, and implements a `low` if it is simple or sensible,
+otherwise declines it (`pushback`) or defers it (`followups`) with a
+reason; lows are not blanket-discarded. It answers every
+`question`. From round 2, reviewers do not raise new `low` comments
+on code the engineer left unchanged that round, and a low the
+engineer declined with a reason is closed: it is not raised again (a
+pushback on a `medium` / `high` may be re-raised when its reasoning
+is wrong). These two are role-body rules, not enforced in code.
+
+Per-project calibration: reviewer bodies read
+`$SPORE_PROJECT_ROOT/REVIEW.md` when it exists. It calibrates
+severity for the project (for example "a missing required test is
+medium here") and overrides the generic rubric examples, never the
+verdict rules above. Spore only points the reviewer at it (the role
+body is not composed in code); there is no default file.
+
+Plain-string comments (legacy files, project role overrides that
+predate grading) still parse and are ungraded. A review whose
+comments are all ungraded (or empty) keeps its verdict as written,
+exactly as before grading, at any round. In a review that grades
+any comment, a plain string counts like a `medium`.
+
+## Comment IDs
+
+Each slot has a display label and a comment ID prefix, derived from
+its mode, not its letter (`task.ReviewerPrefix`):
+
+| Slot modes (A, B) | A | B |
+| --- | --- | --- |
+| fleet, code-review (default) | `R` Requirements review | `C` Code review |
+| code-review, fleet | `C` Code review | `R` Requirements review |
+| fleet, fleet | `R` Requirements review | `S` Requirements review 2 |
+| code-review, code-review | `C` Code review | `D` Code review 2 |
+
+The spawn settles both slots' modes (including the non-claude
+fallback) and passes the result as `SPORE_REVIEWER_PREFIX` and
+`SPORE_REVIEWER_LABEL`. The reviewer copies the prefix into its
+verdict as `prefix`, so each file names its own IDs even if a slot's
+mode changes between rounds. Internals keep A and B: `reviews/A/`,
+`[fleet.reviewers.A]`, `SPORE_REVIEWER_INSTANCE`, and the `reviewer`
+field of engineer outcomes.
+
+A comment's ID is `<prefix><round>.<n>`, n counting from 1 in file
+order: `R1.3` is the third comment of the requirements review's
+round-1 verdict, `comment` index 2 in an engineer outcome. A graded
+verdict must list its comments high, then medium (an ungraded string
+counts as medium), then low, then question; validation rejects an
+unsorted file, so on-disk order, ID order and PR order agree. A file
+without `prefix` (written before IDs, or by a project role body that
+does not set it) is numbered with its instance letter (`A1.2`) and
+labelled `Reviewer A`.
+
+The draft-PR mirror heads each review `**<label> (round N):
+<verdict>**` and lists the comments in file order as `**R1.1** |
+high | correctness | `path:line` - text (reason)`, with the trigger
+on an indented `Trigger:` line and the suggestion as an indented
+fenced block (tagged `diff` when it is a unified diff). An ungraded
+string reads `**R1.2** | ungraded | text`; a fully ungraded review
+lists `**A1.1** text`. The escalation comment names the reviewer by
+label, says the engineer was asked for one fix pass, and that the
+operator decides.
+
+An engineer response comment starts with a table built from its
+`outcomes`, one row per outcome in ID order (slot A, then B; round;
+comment):
+
+    | ID | Grade | Outcome | Details |
+    | --- | --- | --- | --- |
+    | R1.1 | high | fixed | `abc1234` guard the nil session |
+    | R1.3 | low | declined | rename churns callers |
+
+The grade is joined from the verdict file (`?` when the file is gone
+or the index is past its comments); details are the outcome's `sha`
+and `detail`. The free-text `addressed` / `pushback` / notes /
+follow-ups follow, minus `addressed` / `pushback` entries that lead
+with an ID whose row already has details. Responses without
+`outcomes` render their lists as before.
+
+### Final PR title and description
+
+Engineer responses may carry `pr: {"title", "body"}`; the engineer
+keeps it current in every response. Validation: `title` non-empty,
+one line, at most 120 characters; `body` non-empty; no other keys. An
+invalid `pr` bounces the file like any schema error; a missing one is
+valid. With the draft-PR flow on, reaching done applies the `pr` of
+the latest engineer response that carries one to the PR (title, and
+body plus each reviewer's final verdict and the spore footer) just
+before `gh pr ready`; see `docs/github-app.md`. The fleet reviewer
+checks the `pr` text describes the change; a missing or misleading
+one is a `low`. The engineer wake names the
+reviewer by label and the IDs to cite (`Code review (reviewer B,
+comment IDs C2.N) requested changes at round 2`).
 
 ## File validation
 
@@ -264,7 +429,15 @@ Every drive tick validates each role file before deriving the phase
 (`internal/task/rolefile.go`). A file is invalid when it is not one
 JSON object, carries a key outside its schema, lacks a required field
 (`author` everywhere; `verdict` and `summary` on reviews), has a
-verdict outside `approve` / `request_changes`, or has an `author`
+verdict outside `approve` / `request_changes`, has a malformed graded
+comment (unknown severity or category, unknown key, missing `text`,
+missing `reason` or `trigger` on `high` / `medium`), lists graded
+comments out of severity order, has an unknown `prefix`, has an
+engineer `outcomes` entry with an unknown reviewer or outcome or a
+`sha` that is not a 7-40 character hex commit id, has a verdict
+that
+contradicts its grades for its round (the error names the round
+and the rule), or has an `author`
 that does not match its location: `reviews/A/` needs `"A"`,
 `reviews/B/` needs `"B"`, `responses/` needs `"engineer"`. Panes fill
 it from `$SPORE_REVIEWER_INSTANCE` / `$SPORE_ROLE`.
@@ -284,11 +457,30 @@ verdict enum still applies), so an in-flight loop does not rewind.
 Files written after that point are strict. Panes spawned before the
 upgrade still run the old role body; their next file without
 `author` is bounced, and the wake message names the missing field.
+The severity-order rule has its own marker: the first drive by a
+binary that enforces it writes `state/order-exempt-files`, and the
+verdicts listed there keep their order (their IDs already went out).
+A tree with no marker yet is exempt in full until its first drive.
 
 ## Observing a running loop
 
 `spore task status <slug>` prints the derived snapshot: phase,
-engineer round, current reviewer, reviewer round, last verdict.
+engineer round, current reviewer, reviewer round, last verdict with
+its comment counts (high/medium, low, question, ungraded), and an
+`engineer: fix pass pending` line while an escalation's fix pass is
+owed.
+
+`spore task review-stats` scans every `.spore/*/reviews/{A,B}/
+round-*.json` under the main repo root and prints three tables, by
+reviewer label (`Requirements review`, `Code review`, `Reviewer A`
+for files without a prefix), by severity and by category: comments
+raised, and how the engineer handled them (`fixed`, `pushed_back`,
+`declined`, `answered`) as recorded in the `outcomes` list of
+engineer responses (`{reviewer, round, comment, outcome, detail,
+sha}`, comment being the 0-based index into that review's
+`comments`, so ID n minus 1; the latest record wins).
+Comments with no record count as `unrecorded`; invalid files are
+skipped and counted.
 
 Markers under `.spore/<slug>/state/`:
 
@@ -296,10 +488,15 @@ Markers under `.spore/<slug>/state/`:
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
 - `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve).
+  the loop later reaches done (operator force-approve). After a
+  force-approve of A, an `escalated-A-*` marker lets the phase
+  machine count A's fix pass as one extra engineer round, provided
+  that response exists and predates B's first verdict.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
+- `order-exempt-files`: verdicts grandfathered from before the
+  severity-order rule.
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).

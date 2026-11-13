@@ -2,6 +2,94 @@
 
 ## Unreleased
 
+- Role loop (0.33.1): reviewer order, comment IDs, final PR text.
+  Behaviour change: without an explicit `mode`, reviewer slot A now
+  runs the requirements review (`fleet`) and slot B the
+  `/code-review` bug hunt: requirements first, code review last. The
+  non-claude fallback follows the defaulted slot, so a defaulted B
+  drops to `fleet` on codex. spore's own spore.toml pins A = fleet,
+  B = code-review (effort medium). Slots get display names from
+  their mode, not their letter: `Requirements review` (comment ID
+  prefix `R`) and `Code review` (`C`); when both slots share a mode,
+  B becomes `Requirements review 2` (`S`) or `Code review 2` (`D`).
+  Reviewer panes get `SPORE_REVIEWER_PREFIX` and
+  `SPORE_REVIEWER_LABEL` and copy the prefix into the verdict as
+  `prefix`. Each comment has a stable ID `<prefix><round>.<n>` (n
+  from 1, `R1.3` is `comment` index 2); a verdict without `prefix`
+  is numbered with its instance letter (`A1.2`, `Reviewer A`).
+  Graded comments must be sorted high, medium, low, question; an
+  unsorted verdict is bounced like any invalid file, except verdicts
+  already on disk when the tree is first driven by this binary
+  (`state/order-exempt-files`). The PR mirror heads reviews
+  `**Requirements review (round 1): request changes**` and lists
+  `**R1.1** | medium | correctness | `path:line` - text` in file
+  order; `Review #1` / `Review #2` are gone. Engineer outcomes take
+  optional `detail` and `sha`, and an engineer PR comment starts with
+  an `| ID | Grade | Outcome | Details |` table in ID order (grade
+  joined from the verdict), followed by the free text minus entries
+  the table already details. The engineer wake, escalation comment
+  and PR footer use labels and IDs; `spore task review-stats` adds a
+  per-reviewer table. Engineer responses may carry `pr: {title,
+  body}`; at done the mirror applies the latest one with `gh pr edit`
+  (body plus final verdicts and the spore footer), once, and an edit
+  failure never blocks `gh pr ready`. Role bodies: reviewers sort by
+  severity, cite by ID, and close declined lows by ID; the code-review
+  body notes that the skill's inline comments carry no ID and the
+  review body is the numbered list; the engineer records an outcome
+  with a one-line detail per comment and keeps `pr` current; the
+  fleet reviewer checks `pr` as a low. Consumer impact: projects
+  without reviewer config swap their review order (pin both `mode`s
+  to keep A = code-review); projects overriding `bootstrap/roles/
+  reviewer*.md` keep working with letter IDs and should port the
+  `prefix` and sorting rules, since an unsorted graded verdict is now
+  rejected.
+
+- Role loop: graded review comments. Each `comments` entry in a
+  review file is now an object `{severity, category, where, text,
+  reason, trigger, suggestion}`: severity `high` / `medium` / `low`
+  (likelihood times impact) or `question` (the reviewer is unsure;
+  the engineer must answer), category one of `security`,
+  `correctness`, `spec`, `data-loss`, `edge-case`, `test`, `perf`,
+  `maintainability`, `nit` (a label only). High and medium require a
+  `reason` and a concrete `trigger` (the inputs or steps that cause
+  the failure); anything the reviewer could not verify is low or
+  question. `suggestion` (optional, any grade) carries replacement
+  code or a small diff. The grade alone decides the verdict, per
+  reviewer round: in round 1 any comment, lows and questions
+  included, requires `request_changes`; from round 2 only a high or
+  medium does, and lows and questions ride on an `approve` (kept on
+  record and mirrored, the engineer is not woken). A file whose
+  verdict contradicts its grades for its round is bounced with the
+  round and rule named. A `request_changes` at round 3 escalates:
+  the engineer is woken once to address the high/medium comments, no
+  re-review follows, and the operator decides (`spore task status`
+  shows the pending fix pass; the PR escalation comment says so). A
+  force-approve of A's final verdict counts that fix pass toward A
+  only if it landed before B's first verdict, so B never waits for a
+  round that is not coming. Role bodies: reviewers get the rubric,
+  the per-round rule, project calibration from
+  `$SPORE_PROJECT_ROOT/REVIEW.md` when present (it overrides the
+  rubric examples, not the verdict rules), no new lows on code
+  unchanged since their previous round, and no re-raising a low the
+  engineer declined; the engineer gets per-grade duties (high: fix;
+  medium: fix or push back with a reason; low: implement if simple
+  or sensible, else decline or defer with a reason; question:
+  answer) and the escalation fix pass. Engineer responses may record
+  per-comment `outcomes` (`fixed` / `pushed_back` / `declined` /
+  `answered`), and the new `spore task review-stats` tallies comments
+  raised per severity and category with those outcomes (the rest
+  count as unrecorded). The draft-PR mirror lists graded comments by
+  severity with the trigger and a fenced suggestion; `spore task
+  status` shows high/medium, low, question and ungraded counts.
+  Plain-string comments still parse: a review with only strings
+  keeps its written verdict as before; in a graded review a string
+  counts like a medium. Consumer impact: reviewers spawned on the new
+  bodies write graded comments; a low costs a revision round only in
+  round 1; a high/medium without `trigger` is rejected; projects
+  overriding `bootstrap/roles/reviewer*.md` keep working (ungraded)
+  and should port the grading section; a graded review with a
+  verdict that contradicts its round's rule is now rejected.
+
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
   `bootstrap/roles/<name>.md` still overrides the bundled body; with

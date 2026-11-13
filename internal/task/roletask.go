@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,16 +123,103 @@ type EngineerResponse struct {
 	// Followups proposes out-of-scope work (new services, extra
 	// features) for a separate PR instead of growing this one.
 	Followups []string `json:"followups,omitempty"`
+	// Outcomes optionally records, per review comment, what the
+	// engineer did with it. Read by `spore task review-stats`.
+	Outcomes []CommentOutcome `json:"outcomes,omitempty"`
+	// PR is the engineer's current title and description for the
+	// task's PR. Optional; the draft-PR mirror applies the latest one
+	// when the loop reaches done.
+	PR *PRDescription `json:"pr,omitempty"`
+}
+
+// MaxPRTitleLen caps PRDescription.Title, well under GitHub's limit,
+// so a pasted paragraph is rejected instead of posted.
+const MaxPRTitleLen = 120
+
+// PRDescription is the final PR title and markdown body the engineer
+// proposes, written for a human reviewer who has not seen the spec.
+type PRDescription struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+func (p PRDescription) validate() error {
+	title := strings.TrimSpace(p.Title)
+	switch {
+	case title == "":
+		return errors.New(`missing required field "title"`)
+	case strings.ContainsAny(p.Title, "\r\n"):
+		return errors.New("title must be a single line")
+	case len(title) > MaxPRTitleLen:
+		return fmt.Errorf("title is %d characters, max %d", len(title), MaxPRTitleLen)
+	case strings.TrimSpace(p.Body) == "":
+		return errors.New(`missing required field "body"`)
+	}
+	return nil
+}
+
+// Comment outcome values an engineer response may record.
+const (
+	OutcomeFixed      = "fixed"
+	OutcomePushedBack = "pushed_back"
+	OutcomeDeclined   = "declined"
+	OutcomeAnswered   = "answered"
+)
+
+// CommentOutcomes is the closed set of CommentOutcome.Outcome values.
+var CommentOutcomes = []string{OutcomeFixed, OutcomePushedBack, OutcomeDeclined, OutcomeAnswered}
+
+// CommentOutcome names one review comment (reviewer instance, round,
+// 0-based index into that review's `comments`, so comment ID R1.3 is
+// index 2) and what the engineer did with it. Detail is one line: the
+// fix, the decline or pushback reason, or the answer. SHA optionally
+// names the commit of a fix. Both are optional on disk; files written
+// before they existed still parse.
+type CommentOutcome struct {
+	Reviewer ReviewerInstance `json:"reviewer"`
+	Round    int              `json:"round"`
+	Comment  int              `json:"comment"`
+	Outcome  string           `json:"outcome"`
+	Detail   string           `json:"detail,omitempty"`
+	SHA      string           `json:"sha,omitempty"`
+}
+
+var commitSHARE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+func (o CommentOutcome) validate() error {
+	if err := validateInstance(o.Reviewer); err != nil {
+		return err
+	}
+	if o.Round < 1 || o.Comment < 0 {
+		return fmt.Errorf("round must be >= 1 and comment >= 0, got round %d comment %d", o.Round, o.Comment)
+	}
+	if o.SHA != "" && !commitSHARE.MatchString(o.SHA) {
+		return fmt.Errorf("sha %q is not a 7-40 character lowercase hex commit id", o.SHA)
+	}
+	for _, k := range CommentOutcomes {
+		if o.Outcome == k {
+			return nil
+		}
+	}
+	return fmt.Errorf("outcome %q not one of %s", o.Outcome, strings.Join(CommentOutcomes, ", "))
 }
 
 // Review is a reviewer's verdict for one round. Persisted as
 // `reviews/<instance>/round-N.json`. Author must equal the instance
 // directory the file sits in; see ParseReview.
 type Review struct {
-	Author   string   `json:"author"`
-	Verdict  string   `json:"verdict"`
-	Summary  string   `json:"summary"`
-	Comments []string `json:"comments"`
+	Author  string `json:"author"`
+	Verdict string `json:"verdict"`
+	Summary string `json:"summary"`
+	// Prefix is the slot's comment ID prefix ($SPORE_REVIEWER_PREFIX
+	// at spawn, see ReviewerPrefix). Optional: files without it number
+	// their comments with the instance letter (see IDPrefix).
+	Prefix string `json:"prefix,omitempty"`
+	// Comments holds graded objects or legacy plain strings; see
+	// ReviewComment and checkGrades for the verdict rule. Graded
+	// comments are sorted by severity (see checkSeverityOrder), so
+	// index order is ID order.
+	Comments []ReviewComment `json:"comments"`
 }
 
 // RoleTaskDir returns the absolute path to `<projectRoot>/.spore/<slug>/`.
@@ -284,7 +372,7 @@ func WriteReview(projectRoot, slug string, instance ReviewerInstance, round int,
 	if err != nil {
 		return err
 	}
-	if _, err := ParseReview(path, b, instance, false); err != nil {
+	if _, err := ParseReview(path, b, instance, round, false); err != nil {
 		return fmt.Errorf("roletask: %w", err)
 	}
 	return writeJSON(path, v)
@@ -301,11 +389,12 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 	if err != nil {
 		return Review{}, err
 	}
-	legacy, err := isLegacyFile(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
+	rel := relTo(RoleTaskDir(projectRoot, slug), path)
+	legacy, sorted, err := reviewStrictness(projectRoot, slug, rel)
 	if err != nil {
 		return Review{}, err
 	}
-	return ParseReview(path, b, instance, legacy)
+	return parseReview(path, b, instance, round, legacy, sorted)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

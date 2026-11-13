@@ -28,6 +28,7 @@ for a in "$@"; do
 done
 if [ -e "$FAKE_GH_FAIL.sleep" ]; then sleep 30; fi
 if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; fi
+if [ -e "$FAKE_GH_FAIL.$1-$2" ]; then echo "gh $1 $2 refused" >&2; exit 1; fi
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
@@ -221,7 +222,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("branch not pushed to origin")
 	}
 	log := f.log(t)
-	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`Review #1` / `Review #2`"} {
+	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`R1.2` is requirements review, round 1, item 2"} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
 		}
@@ -233,13 +234,13 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("state = %+v", s)
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Comments: []string{"add a test"}})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	writeEng(2)(t, f.root, f.slug)
 	head2 := f.commit(t, "two")
 	f.tick(t)
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "good"})
-	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "good", Prefix: "R"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it", Prefix: "C"})
 	if snap := f.tick(t); snap.Phase != PhaseDone {
 		t.Fatalf("phase = %s", snap.Phase)
 	}
@@ -261,10 +262,10 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 	}
 	log = f.log(t)
 	for _, s := range []string{
-		"**Review #1 (round 1): request changes**\n\nneeds tests\n\n- add a test\n",
+		"**Requirements review (round 1): request changes**\n\nneeds tests\n\n- **R1.1** add a test\n",
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",
-		"**Review #1 (round 2): approve**",
-		"**Review #2 (round 1): approve**\n\nship it",
+		"**Requirements review (round 2): approve**",
+		"**Code review (round 1): approve**\n\nship it",
 	} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
@@ -378,7 +379,7 @@ func TestGitHubMirrorEscalationCommentsOnce(t *testing.T) {
 		}
 	}
 	// Two engineer revision comments plus one escalation comment.
-	if n != 3 || !strings.Contains(f.log(t), "Review #1 requested changes at round 3, the cap of 3") {
+	if n != 3 || !strings.Contains(f.log(t), "Reviewer A requested changes at round 3, the cap of 3") {
 		t.Fatalf("comments = %d, log:\n%s", n, f.log(t))
 	}
 }
@@ -591,5 +592,109 @@ func TestEngineerCommitIdentityEnv(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(args, "\n"), "GIT_AUTHOR_NAME") {
 		t.Error("pr_flow off engineer got commit identity")
+	}
+}
+
+// runToDone drives a one-round loop to done; eng is the engineer's
+// single response.
+func (f *mirrorFixture) runToDone(t *testing.T, eng task.EngineerResponse) {
+	t.Helper()
+	if err := task.WriteEngineerResponse(f.root, f.slug, 1, eng); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok", Prefix: "R"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok", Prefix: "C"})
+	if snap := f.tick(t); snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s", snap.Phase)
+	}
+	for range 2 {
+		f.tick(t)
+	}
+}
+
+func countCalls(calls []string, prefix string) int {
+	n := 0
+	for _, c := range calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestGitHubMirrorAppliesEngineerPRDescriptionOnce(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	f.runToDone(t, task.EngineerResponse{Addressed: []string{"x"}, PR: &task.PRDescription{
+		Title: "feat(widget): DEMO-1 spin the widget",
+		Body:  "## Problem\nThe widget is still.\n\n## Change\nIt spins.",
+	}})
+	calls := f.calls(t)
+	edit := "pr edit 12 --title feat(widget): DEMO-1 spin the widget --body-file -"
+	if n := countCalls(calls, edit); n != 1 {
+		t.Fatalf("pr edit calls = %d, want 1:\n%q", n, calls)
+	}
+	if calls[len(calls)-2] != edit || calls[len(calls)-1] != "pr ready 12" {
+		t.Errorf("want edit then ready last, calls = %q", calls)
+	}
+	wantBody := "BODY:\n## Problem\nThe widget is still.\n\n## Change\nIt spins.\n\n---\n\n" +
+		"Requirements review: approved at round 1. Code review: approved at round 1.\n\n" +
+		"Dispatched by @octo. Opened by spore's role loop"
+	if !strings.Contains(f.log(t), wantBody) {
+		t.Errorf("gh log missing %q:\n%s", wantBody, f.log(t))
+	}
+	st := f.state(t)
+	if !st.Ready || !strings.HasPrefix(st.PRDescription, "engineer-round-1.json:") {
+		t.Errorf("state = %+v", st)
+	}
+	// Losing the ready record re-runs the ready step; the recorded
+	// description keeps it from editing the PR again.
+	st.Posted = st.Posted[:len(st.Posted)-1]
+	b, _ := json.Marshal(st)
+	if err := os.WriteFile(githubStatePath(f.root, f.slug), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if n := countCalls(f.calls(t), "pr edit 12 --title"); n != 1 {
+		t.Errorf("pr edit re-ran after re-tick: %d", n)
+	}
+}
+
+func TestGitHubMirrorWithoutPRDescriptionLeavesPR(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	f.runToDone(t, task.EngineerResponse{Addressed: []string{"x"}})
+	calls := f.calls(t)
+	if n := countCalls(calls, "pr edit 12 --title"); n != 0 {
+		t.Errorf("pr edit without engineer pr: %q", calls)
+	}
+	if calls[len(calls)-1] != "pr ready 12" || !f.state(t).Ready {
+		t.Errorf("not marked ready: %q", calls)
+	}
+}
+
+func TestGitHubMirrorPRDescriptionFailureStillMarksReady(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	if err := os.WriteFile(f.failFile+".pr-edit", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.runToDone(t, task.EngineerResponse{Addressed: []string{"x"}, PR: &task.PRDescription{Title: "fix: x", Body: "b"}})
+	calls := f.calls(t)
+	if n := countCalls(calls, "pr edit 12 --title fix: x"); n != 1 {
+		t.Errorf("pr edit calls = %d, want 1 (no retry): %q", n, calls)
+	}
+	st := f.state(t)
+	if calls[len(calls)-1] != "pr ready 12" || !st.Ready || st.PRDescription != "" || st.LastError != "" {
+		t.Errorf("calls = %q, state = %+v", calls, st)
+	}
+	inbox, _ := os.ReadDir(f.inbox)
+	found := false
+	for _, e := range inbox {
+		b, _ := os.ReadFile(filepath.Join(f.inbox, e.Name()))
+		if strings.Contains(string(b), "could not apply the engineer's PR title/body") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("coordinator not told about the failed edit")
 	}
 }

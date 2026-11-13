@@ -11,17 +11,31 @@ see `spore recipes show github`.
 
 ```
 engineer round 1 done  -> push branch (app), open DRAFT PR, assign operator
-review verdict         -> COMMENT review "Review #1 (round N): <verdict>" (A) / "Review #2" (B)
-engineer round 2+      -> push, PR comment "Engineer (round N)"
-PhaseDone              -> gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
+review verdict         -> COMMENT review "<label> (round N): <verdict>", items numbered R1.1, C2.3, ...
+engineer round 2+      -> push, PR comment "Engineer (round N)": outcome table by ID, then notes
+PhaseDone              -> gh pr edit (engineer `pr` title/body, if any); gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
 PhaseEscalated         -> one PR comment naming the cap and reviewer; PR stays draft
 ```
+
+`<label>` is the slot's display name from its mode (`Requirements
+review`, `Code review`; see "Comment IDs" in `docs/role-loop.md`).
 
 `DriveRoleLoop` does all of it (`internal/fleet/rolegithub.go`). Agents
 still only write their `.spore/<slug>/` files; GitHub is a mirror,
 never read back for phase. The app never submits `APPROVE` or
 `REQUEST_CHANGES`: it is the PR author, and the operator stays the
 only real gate.
+
+The PR opens with the task title and the brief's first paragraph.
+At done, the driver replaces both with the `pr` object of the latest
+engineer response that carries one (`{"title", "body"}`, see
+`bootstrap/roles/engineer.md`): `gh pr edit --title ... --body-file -`
+with the engineer's body, a line with each reviewer's final verdict,
+and the spore footer. Without any `pr` the PR keeps its opening title
+and body. The applied response and a hash of its `pr` are recorded as
+`pr_description` in `github.json`, so a re-tick never edits twice. An
+edit failure is logged and told to the coordinator once, is not
+retried, and never holds back `gh pr ready`.
 
 Mirror state lives in `.spore/<slug>/github.json` (PR number and url,
 last pushed sha, posted file names, ready flag, last error). Each tick

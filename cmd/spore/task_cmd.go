@@ -40,6 +40,9 @@ Subcommands:
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
   status <slug>                Print role-loop phase, round, last verdict.
+  review-stats                 Tally role-loop review comments by reviewer,
+                               severity and category, with the engineer's
+                               recorded outcome.
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
@@ -101,6 +104,8 @@ func runTask(args []string) error {
 		return runTaskDrift(rest)
 	case "status":
 		return runTaskStatus(rest)
+	case "review-stats":
+		return runTaskReviewStats(rest)
 	case "role-drive":
 		return runTaskRoleDrive(rest)
 	default:
@@ -221,18 +226,47 @@ func runTaskStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	printRoleSnapshot(snap)
+	return nil
+}
+
+func runTaskReviewStats(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: spore task review-stats")
+	}
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	st, err := task.CollectReviewStats(projectRoot)
+	if err != nil {
+		return err
+	}
+	return task.WriteReviewStats(os.Stdout, st)
+}
+
+func printRoleSnapshot(snap fleet.Snapshot) {
 	fmt.Printf("slug:     %s\n", snap.Slug)
 	fmt.Printf("phase:    %s\n", snap.Phase)
 	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	if snap.CurrentReviewer == "" {
+		return
 	}
-	return nil
+	verdict := snap.LastVerdict
+	if verdict == "" {
+		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
+		return
+	}
+	n := snap.LastCounts
+	counts := fmt.Sprintf("%d high/medium, %d low, %d question", n.HighMedium, n.Low, n.Question)
+	if n.Ungraded > 0 {
+		counts += fmt.Sprintf(", %d ungraded", n.Ungraded)
+	}
+	fmt.Printf("reviewer: %s round %d, last verdict %s (%s)\n",
+		snap.CurrentReviewer, snap.ReviewerRound, verdict, counts)
+	if snap.EscalationFixPending {
+		fmt.Println("engineer: fix pass pending (escalated; no re-review)")
+	}
 }
 
 func runTaskRoleDrive(args []string) error {
@@ -249,17 +283,7 @@ func runTaskRoleDrive(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("slug:     %s\n", snap.Slug)
-	fmt.Printf("phase:    %s\n", snap.Phase)
-	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
-	}
+	printRoleSnapshot(snap)
 	return nil
 }
 

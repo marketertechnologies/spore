@@ -15,8 +15,8 @@ import (
 // ReviewerModeCodeReview runs reviewer-code-review.md, which drives
 // Claude Code's built-in /code-review skill. See ResolveRoleBody.
 const (
-	ReviewerModeFleet      = "fleet"
-	ReviewerModeCodeReview = "code-review"
+	ReviewerModeFleet      = task.ReviewModeFleet
+	ReviewerModeCodeReview = task.ReviewModeCodeReview
 )
 
 // DefaultReviewEffort is the /code-review level a code-review slot
@@ -46,6 +46,12 @@ type ReviewersConfig struct {
 
 var reviewerInstances = []task.ReviewerInstance{task.ReviewerA, task.ReviewerB}
 
+// defaultReviewerMode is each slot's mode when no config sets one.
+var defaultReviewerMode = map[task.ReviewerInstance]string{
+	task.ReviewerA: ReviewerModeFleet,
+	task.ReviewerB: ReviewerModeCodeReview,
+}
+
 // Slot returns the config for inst.
 func (c ReviewersConfig) Slot(inst task.ReviewerInstance) ReviewerSlot {
 	return *c.slot(inst)
@@ -60,9 +66,9 @@ func (c *ReviewersConfig) slot(inst task.ReviewerInstance) *ReviewerSlot {
 
 // LoadReviewersConfig reads `[fleet.reviewers.A]` and
 // `[fleet.reviewers.B]` from spore.toml, then the host overlay (see
-// WorkersOverlayPath). Without a `mode`, A defaults to code-review
-// and B to fleet: bug hunt first, spec and verification second. The
-// spawn settles the effective mode and effort (see ReviewerSlot).
+// WorkersOverlayPath). Without a `mode`, a slot takes
+// defaultReviewerMode: requirements first, bug hunt last. The spawn
+// settles the effective mode and effort (see ReviewerSlot).
 func LoadReviewersConfig(projectRoot string) (ReviewersConfig, error) {
 	var cfg ReviewersConfig
 	paths := []string{filepath.Join(projectRoot, "spore.toml")}
@@ -119,10 +125,7 @@ func finishReviewerSlot(slot *ReviewerSlot, inst task.ReviewerInstance) error {
 	switch slot.Mode {
 	case "":
 		slot.DefaultMode = true
-		slot.Mode = ReviewerModeFleet
-		if inst == task.ReviewerA {
-			slot.Mode = ReviewerModeCodeReview
-		}
+		slot.Mode = defaultReviewerMode[inst]
 	case ReviewerModeFleet, ReviewerModeCodeReview:
 	default:
 		return fmt.Errorf("reviewers: %s mode %q: want %q or %q", section, slot.Mode, ReviewerModeFleet, ReviewerModeCodeReview)
