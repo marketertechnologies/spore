@@ -140,19 +140,27 @@ Severity is likelihood times impact:
 - `high`: users hit it in normal use, or it loses data, opens a
   security hole, or violates the spec. Example: the new flag is
   ignored on every run; a token is logged in plain text.
-- `medium`: a plausible path with real impact, or a missing test for
-  a rule the spec requires. Example: a retry loop that never stops
-  when the remote returns 500; no test for the spec's "reject empty
-  name" rule.
-- `low`: a rare edge case, a theoretical race, or a code-quality /
-  maintainability note. Example: two ticks racing within the same
-  millisecond; a helper that could be shared; a clearer name.
+- `medium`: a plausible path with real impact, a missing test for
+  a rule the spec requires, or a design defect: the change breaks a
+  documented project convention (`CLAUDE.md`, `AGENTS.md`, or the
+  rules they render) or puts a responsibility in the wrong layer, so
+  later code will copy it and moving it after merge costs more than
+  now. Example: a retry loop that never stops when the remote
+  returns 500; no test for the spec's "reject empty name" rule;
+  knowledge of an external API's error format parsed in a service
+  object instead of the API client.
+- `low`: a rare edge case, a theoretical race, or a local
+  code-quality note that no convention requires. Example: two ticks
+  racing within the same millisecond; a helper that could be shared;
+  a clearer name.
 - `question`: you are unsure, or want the engineer to explain a
   choice. The engineer must answer it.
 
 Do not inflate. A rare edge case is `low` even when its category is
 `correctness`; reserve `medium` for paths a real user or operator
-can plausibly reach. Severity is not confidence: anything you could
+can plausibly reach, or for a design defect. For a design defect the
+`trigger` is the convention it breaks (file and section) or the
+layer the responsibility belongs in; with neither, it is `low`. Severity is not confidence: anything you could
 not verify (no concrete `trigger` you can name) is filed as `low` or
 `question`, never `high` or `medium`.
 

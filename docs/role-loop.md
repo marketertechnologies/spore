@@ -299,9 +299,12 @@ Each review comment is an object (`internal/task/reviewgrade.go`):
 - `severity`: `high`, `medium`, `low`, or `question`, rated as
   likelihood times impact. `high`: users hit it in normal use, or
   data loss, a security hole, a spec violation. `medium`: a
-  plausible path with real impact, or a missing test for a
-  spec-required rule. `low`: a rare edge case, a theoretical race, a
-  code-quality note. `question`: the reviewer is unsure or wants an
+  plausible path with real impact, a missing test for a
+  spec-required rule, or a design defect (a broken documented project
+  convention, or a responsibility in the wrong layer; the trigger
+  names the convention or the layer). `low`: a rare edge case, a
+  theoretical race, a local code-quality note no convention
+  requires. `question`: the reviewer is unsure or wants an
   explanation; the engineer must answer it. Severity is not
   confidence: anything the reviewer could not verify is `low` or
   `question`, never `high` / `medium`.

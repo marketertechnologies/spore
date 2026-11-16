@@ -147,6 +147,11 @@ Valid pushback reasons:
   fix costs more than it saves. Say why in one line.
 - Pre-existing code, or out of scope for this task.
 
+"Moving it is churn" or "it works as is" is not a valid pushback on a
+design-defect `medium` (a broken project convention or a
+responsibility in the wrong layer): the cost of moving it only grows
+after merge. Fix it, or name why the convention does not apply here.
+
 ## Fix rounds
 
 In a revision round, change only what the reviewers raised: every

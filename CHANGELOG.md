@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Role loop (0.33.2): design defects grade as `medium`. Reviewer
+  rubrics (`reviewer.md`, `reviewer-code-review.md`, and
+  `docs/role-loop.md`) now grade a change that breaks a documented
+  project convention (`CLAUDE.md` / `AGENTS.md` rules) or puts a
+  responsibility in the wrong layer as `medium`, with the convention
+  or layer as its `trigger`; `low` keeps local code-quality notes no
+  convention requires. Before, such findings were `low`, so the
+  engineer could decline them and the reviewer could not re-raise
+  them. `engineer.md` adds that "moving it is churn" is not a valid
+  pushback on a design-defect `medium`.
 - Role loop (0.33.1): reviewer order, comment IDs, final PR text.
   Behaviour change: without an explicit `mode`, reviewer slot A now
   runs the requirements review (`fleet`) and slot B the
