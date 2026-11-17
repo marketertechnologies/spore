@@ -16,6 +16,33 @@
   `bootstrap/roles/*.md` files pointing into a spore checkout can be
   removed so the installed release's bodies apply.
 
+- Configurable task loops. A task with `loop: <name>` in its
+  frontmatter is driven through the steps of
+  `bootstrap/loops/<name>.toml` on every fleet reconcile: each `agent`
+  step runs in its own pane with its own role body, `action` steps run
+  kernel actions (`notify-coordinator`, `push-and-open-pr`), and `next`
+  entries route on the step's verdict, including back to an earlier
+  step with `return = true` and a `max_rounds` cap that escalates.
+  Done conditions can be a file, a verdict or a `command` check run in
+  the task worktree. Two loops ship: `dev` (the engineer, reviewer A,
+  reviewer B role loop, now expressed as a loop file; `loop: role`
+  still means it) and a small `example`. A project file of the same
+  name overrides a bundled one. The loop interpreter replaces
+  `derivePhase`. See `docs/role-loop.md` and
+  `docs/todo/configurable-loops.md`.
+  - Each step pane's first prompt starts with a note (`SPORE_STEP_NOTE`)
+    naming its output path, round, keys and author, overriding the
+    role body; wakes name the round to write too.
+  - `spore task status <slug>` prints the task's own loop, step, round
+    and state. `spore task start` refuses a task with any `loop:`
+    value, not only `role`.
+  - A failed command check reruns only when the step output or the
+    task branch changes, never counts toward `max_rounds`, and a newer
+    round replaces a held one. Held steps are reported once.
+  - Reconcile reaps the loop panes of tasks that are done, deleted or
+    in any status but active, paused or blocked, and never drives one
+    slug twice at once.
+
 - Worker network isolation: `[worker] isolate_network = true` in
   `spore.toml` runs each worker and loop role pane in its own `pasta`
   network namespace, so parallel agents can bind the same ports.
