@@ -69,6 +69,11 @@ in
     htop
     tmux
     vim
+    # passt/pasta: userspace NAT for [worker] isolate_network. Puts
+    # `pasta` on the system PATH deterministically so isolated workers
+    # get their own netns with outbound internet, no sudo. unshare is
+    # already provided by the base util-linux install.
+    passt
   ]);
 
   # Symlink the six host shims into /usr/local/bin/ so the kernel's

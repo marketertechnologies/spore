@@ -16,6 +16,14 @@
   `bootstrap/roles/*.md` files pointing into a spore checkout can be
   removed so the installed release's bodies apply.
 
+- Worker network isolation: `[worker] isolate_network = true` in
+  `spore.toml` runs each worker and loop role pane in its own `pasta`
+  network namespace, so parallel agents can bind the same ports.
+  With a `[fleet] pre_start` hook the hook runs inside the namespace
+  with the agent. A missing `pasta` fails the spawn loudly. The spore
+  flake now ships `passt`. Default off. See
+  `docs/worker-network-isolation.md`.
+
 - Role-pane spawn backoff: a loop role pane that dies within ten
   minutes of its spawn waits 1 minute, doubling to 30, before the next
   spawn, instead of respawning on every tick. Kept per pane in

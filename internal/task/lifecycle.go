@@ -494,7 +494,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if hasSession(session) {
 		return session, nil
 	}
-	agent, err := workerAgentCommand(meta)
+	script, err := workerLaunchCommand(projectRoot, slug, meta, briefRelPath(tasksDir, slug))
 	if err != nil {
 		return "", err
 	}
@@ -502,12 +502,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
-	if meta.Agent == "codex" {
-		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
-	} else {
-		args = append(args, workerShellCommand(prelude, agent))
-	}
+	args = append(args, script)
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
