@@ -16,6 +16,11 @@
   `bootstrap/roles/*.md` files pointing into a spore checkout can be
   removed so the installed release's bodies apply.
 
+- Role-pane `agent.env`: loop role panes get the variables in
+  `$XDG_CONFIG_HOME/spore/<project>/agent.env`, so one project's
+  agents can run under another account or endpoint. Reserved
+  `SPORE_*` and `WT_*` keys are dropped; values never reach logs.
+
 - Role loop: a PR adopted from before the loop (an open PR already on
   the task branch) now gets the operator added as assignee
   (`gh pr edit --add-assignee <operator_login>`), matching what
