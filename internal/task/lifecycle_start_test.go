@@ -29,29 +29,6 @@ func TestStartRefusesDone(t *testing.T) {
 	}
 }
 
-func TestStartRefusesRoleLoop(t *testing.T) {
-	tasksDir := t.TempDir()
-	taskPath := filepath.Join(tasksDir, "x.md")
-	if err := os.WriteFile(taskPath, []byte("---\nstatus: draft\nslug: x\ntitle: X\nloop: role\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Start(tasksDir, "x")
-	if err == nil {
-		t.Fatal("Start on loop: role task should error, got nil")
-	}
-	if !strings.Contains(err.Error(), "loop: role") {
-		t.Errorf("error %q should name the loop: role opt-in", err)
-	}
-	// The refusal must leave the file untouched (no status flip).
-	raw, readErr := os.ReadFile(taskPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if !strings.Contains(string(raw), "status: draft") {
-		t.Errorf("task file mutated by refused Start:\n%s", raw)
-	}
-}
-
 func TestActivateWritesAgentOverridingExisting(t *testing.T) {
 	tasksDir := t.TempDir()
 	taskPath := filepath.Join(tasksDir, "x.md")

@@ -74,13 +74,13 @@ func activate(tasksDir, slug string, opts StartOptions) (frontmatter.Meta, error
 	if err != nil {
 		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// A role-looped task must never get the homogeneous worker session
-	// Start spawns: its panes are owned by DriveRoleLoop and share the
+	// A looped task must never get the homogeneous worker session
+	// Start spawns: its panes are owned by DriveLoop and share the
 	// same wt/<slug> branch.
-	if m.Loop == LoopRole {
+	if m.Loop != "" {
 		return frontmatter.Meta{}, fmt.Errorf(
-			"task %s: has loop: role; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
-			slug, slug,
+			"task %s: has loop: %s; edit status to active and let the reconciler drive it, or run `spore task role-drive %s`",
+			slug, m.Loop, slug,
 		)
 	}
 	switch m.Status {

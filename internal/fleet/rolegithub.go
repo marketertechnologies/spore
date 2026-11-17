@@ -137,6 +137,9 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// loop names the loop file whose push-and-open-pr action drives
+	// this mirror; empty for the role-loop mirror.
+	loop string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -146,21 +149,15 @@ type githubMirror struct {
 // the lock makes this tick a no-op.
 func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 	statePath := githubStatePath(projectRoot, slug)
-	unlock, ok := lockGitHubState(statePath)
+	unlock, ok := flockBeside(statePath)
 	if !ok {
 		return
 	}
 	defer unlock()
 
-	m := &githubMirror{
-		projectRoot: projectRoot,
-		tasksDir:    tasksDir,
-		slug:        slug,
-		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
-	}
-	if b, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(b, &m.state)
-	}
+	// An unreadable github.json reads as empty here, as upstream does:
+	// ensurePR adopts the open PR instead of opening a second one.
+	m, _ := newGitHubMirror(projectRoot, tasksDir, slug)
 	err := m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
@@ -184,6 +181,30 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 	}
 }
 
+// newGitHubMirror loads the task's github.json. It always returns a
+// mirror; the error reports a state file that exists but cannot be
+// read or parsed, in which case the mirror starts from empty state.
+func newGitHubMirror(projectRoot, tasksDir, slug string) (*githubMirror, error) {
+	m := &githubMirror{
+		projectRoot: projectRoot,
+		tasksDir:    tasksDir,
+		slug:        slug,
+		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
+	}
+	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	if os.IsNotExist(err) {
+		return m, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(b, &m.state)
+	}
+	if err != nil {
+		m.state = githubState{}
+		return m, fmt.Errorf("github.json: %w", err)
+	}
+	return m, nil
+}
+
 // mirrorErrorKey is err's message with any git/gh stderr cut, so a
 // failure that only varies in stderr detail notifies once.
 func mirrorErrorKey(err error) string {
@@ -195,24 +216,32 @@ func mirrorErrorKey(err error) string {
 	return msg
 }
 
-// lockGitHubState takes a non-blocking flock beside the state file so
-// two drives never post the same event twice.
-func lockGitHubState(statePath string) (func(), bool) {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-		return nil, false
+// flockBeside takes a non-blocking flock on path+".lock". The GitHub
+// mirror holds one beside its state file so two drives never post the
+// same event twice.
+func flockBeside(statePath string) (func(), bool) {
+	unlock, err := tryFlock(statePath + ".lock")
+	return unlock, err == nil
+}
+
+// tryFlock takes a non-blocking exclusive flock on path, creating it.
+// A lock held elsewhere fails with syscall.EWOULDBLOCK.
+func tryFlock(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
 	}
-	f, err := os.OpenFile(statePath+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, false
+		return nil, err
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, true
+	}, nil
 }
 
 func (m *githubMirror) save() {
@@ -246,6 +275,22 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if err := m.cfg.Validate(); err != nil {
 		return err
 	}
+	if err := m.connect(); err != nil {
+		return err
+	}
+	for _, e := range pending {
+		if err := m.apply(e); err != nil {
+			return fmt.Errorf("%s: %w", e.name, err)
+		}
+		m.state.Posted = append(m.state.Posted, e.name)
+		m.save()
+	}
+	return nil
+}
+
+// connect mints the app token and pins git and gh to it and to the
+// origin repo.
+func (m *githubMirror) connect() error {
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
 	defer cancel()
 	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
@@ -262,13 +307,6 @@ func (m *githubMirror) run(snap Snapshot) error {
 		return err
 	}
 	m.env = append(m.env, "GH_REPO="+repo)
-	for _, e := range pending {
-		if err := m.apply(e); err != nil {
-			return fmt.Errorf("%s: %w", e.name, err)
-		}
-		m.state.Posted = append(m.state.Posted, e.name)
-		m.save()
-	}
 	return nil
 }
 
@@ -383,9 +421,15 @@ func (m *githubMirror) branch() (string, error) {
 	return b, nil
 }
 
-// ensurePR finds or opens the task's draft PR. An open PR for the
-// branch is adopted, so a lost github.json never opens a duplicate.
+// ensurePR finds or opens the task's draft PR.
 func (m *githubMirror) ensurePR() error {
+	return m.openPR("", true)
+}
+
+// openPR finds or opens the task's PR, assigned to the operator and
+// carrying label when set. An open PR for the branch is adopted, so a
+// lost github.json or a racing drive never opens a duplicate.
+func (m *githubMirror) openPR(label string, draft bool) error {
 	if m.state.PRNumber != 0 {
 		return nil
 	}
@@ -407,7 +451,11 @@ func (m *githubMirror) ensurePR() error {
 	if len(found) == 1 {
 		// An adopted PR was opened outside the loop, so it lacks the
 		// operator assignee that `pr create` sets below.
-		if _, err := m.gh("", "pr", "edit", strconv.Itoa(found[0].Number), "--add-assignee", m.cfg.OperatorLogin); err != nil {
+		args := []string{"pr", "edit", strconv.Itoa(found[0].Number), "--add-assignee", m.cfg.OperatorLogin}
+		if label != "" {
+			args = append(args, "--add-label", label)
+		}
+		if _, err := m.gh("", args...); err != nil {
 			return err
 		}
 		m.state.PRNumber, m.state.PRURL = found[0].Number, found[0].URL
@@ -430,8 +478,15 @@ func (m *githubMirror) ensurePR() error {
 	if title == "" {
 		title = m.slug
 	}
-	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
-		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	args := []string{"pr", "create"}
+	if draft {
+		args = append(args, "--draft")
+	}
+	args = append(args, "--base", base, "--head", branch, "--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	out, err = m.gh(m.prBody(title), args...)
 	if err != nil {
 		return err
 	}
@@ -454,6 +509,10 @@ func (m *githubMirror) prBody(title string) string {
 	summary := specSummary(string(spec))
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
+	}
+	if m.loop != "" {
+		return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's `%s` loop. @%s gives the only approval and merges.\n",
+			summary, m.cfg.OperatorLogin, m.loop, m.cfg.OperatorLogin)
 	}
 	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
 		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)

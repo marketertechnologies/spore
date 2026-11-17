@@ -23,7 +23,8 @@ type fakePanes struct {
 func stubPanes(t *testing.T) *fakePanes {
 	t.Helper()
 	f := &fakePanes{panes: map[string]*paneProbe{}, now: time.Unix(1_800_000_000, 0)}
-	prevSpawn, prevProbe, prevKill, prevNow := spawnRole, probeRolePane, killRoleSession, nowFunc
+	prevSpawn, prevProbe, prevKill, prevNow, prevGate := spawnRole, probeRolePane, killRoleSession, nowFunc, roleSpawnGate
+	roleSpawnGate = func(string) roleGate { return noRoleGate{} }
 	spawnRole = func(spec RoleSpawnSpec) (string, bool, error) {
 		s, err := spec.SessionName()
 		if err != nil {
@@ -48,7 +49,7 @@ func stubPanes(t *testing.T) *fakePanes {
 	}
 	nowFunc = func() time.Time { return f.now }
 	t.Cleanup(func() {
-		spawnRole, probeRolePane, killRoleSession, nowFunc = prevSpawn, prevProbe, prevKill, prevNow
+		spawnRole, probeRolePane, killRoleSession, nowFunc, roleSpawnGate = prevSpawn, prevProbe, prevKill, prevNow, prevGate
 	})
 	return f
 }
@@ -311,14 +312,19 @@ func TestDriveRoleLoopSpawnsReviewerAfterTransition(t *testing.T) {
 	if f.panes[eng] == nil || f.panes[revB] == nil {
 		t.Errorf("panes after transition = %v, want engineer and reviewer-B", f.spawns)
 	}
+	revA, _ := ReviewerSpec(root, "demo", task.ReviewerA).SessionName()
+	if !equalSlices(f.kills, []string{revA}) {
+		t.Errorf("kills after transition = %v, want reviewer-A reaped", f.kills)
+	}
 
 	// B's pane dies right after spawn: the next tick replaces it.
+	before := len(f.kills)
 	f.panes[revB].Dead = true
 	if _, err := DriveRoleLoop(root, tasksDir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.kills) != 1 || f.kills[0] != revB || f.panes[revB] == nil || f.panes[revB].Dead {
-		t.Errorf("kills=%v, want reviewer-B respawned", f.kills)
+	if kills := f.kills[before:]; len(kills) != 1 || kills[0] != revB || f.panes[revB] == nil || f.panes[revB].Dead {
+		t.Errorf("kills=%v, want reviewer-B respawned", kills)
 	}
 }
 
