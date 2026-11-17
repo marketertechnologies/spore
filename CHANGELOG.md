@@ -16,6 +16,11 @@
   `bootstrap/roles/*.md` files pointing into a spore checkout can be
   removed so the installed release's bodies apply.
 
+- Role-pane spawn backoff: a loop role pane that dies within ten
+  minutes of its spawn waits 1 minute, doubling to 30, before the next
+  spawn, instead of respawning on every tick. Kept per pane in
+  `role-spawns.json` in the project state dir.
+
 - Role-pane `agent.env`: loop role panes get the variables in
   `$XDG_CONFIG_HOME/spore/<project>/agent.env`, so one project's
   agents can run under another account or endpoint. Reserved
