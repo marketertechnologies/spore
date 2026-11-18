@@ -325,6 +325,19 @@ func (d LoopDef) validate() error {
 			return err
 		}
 	}
+	// Two steps on one output would read each other's rounds as their
+	// own.
+	byOutput := map[string]string{}
+	for _, s := range d.Steps {
+		if s.Output == "" {
+			continue
+		}
+		o := path.Clean(s.Output)
+		if prev, ok := byOutput[o]; ok {
+			return fmt.Errorf("steps %q and %q have the same output %q", prev, s.Name, o)
+		}
+		byOutput[o] = s.Name
+	}
 	// One pane runs one role body: a second role in the same session
 	// would run in the pane spawned with the first one's body.
 	roleBySession := map[string]string{}
