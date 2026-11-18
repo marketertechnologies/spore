@@ -47,7 +47,9 @@ decision in one place.
 With a `[fleet] pre_start` hook the whole launch script, hook then
 agent, runs inside one namespace, so services the hook starts on
 loopback are the ones the agent reaches. Only the agent gets
-`IS_SANDBOX=1`.
+`IS_SANDBOX=1`. The namespace is per pane, so each role pane of a slug
+runs the hook in its own; see "Pre-start hook" in `docs/role-loop.md`
+for what that asks of the hook.
 
 No nested `unshare` is needed. `pasta --config-net` alone already maps
 the caller to namespace-root and configures the netns; an extra
