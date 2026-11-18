@@ -644,3 +644,37 @@ func killRoleSessions(projectRoot string) {
 		}
 	}
 }
+
+// TestReconcileDrivesLoopsPastAFailedSpawn: a generic task whose
+// worker cannot start (a typo under [worker]) is recorded and the
+// pass goes on to drive the looped task.
+func TestReconcileDrivesLoopsPastAFailedSpawn(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	shimClaudeOnPath(t)
+	if err := os.WriteFile(filepath.Join(dirs.project, "spore.toml"), []byte("[worker]\nisolate_netwrok = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTask(t, dirs.tasks, "plain", "active")
+	writeRoleLoopTask(t, dirs.tasks, "keyed", "active")
+	t.Cleanup(func() {
+		killSporeSessions(dirs.project)
+		killRoleSessions(dirs.project)
+	})
+
+	r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3})
+	if err == nil || !strings.Contains(err.Error(), "ensure plain") {
+		t.Errorf("Reconcile err = %v, want the failed spawn of plain reported", err)
+	}
+	if !equalSlices(r.Failed, []string{"plain"}) {
+		t.Errorf("Failed = %v, want [plain]", r.Failed)
+	}
+	spec := filepath.Join(task.RoleTaskDir(dirs.project, "keyed"), "spec.md")
+	if _, statErr := os.Stat(spec); statErr != nil {
+		t.Errorf("keyed: loop not driven after plain's spawn failed: %v", statErr)
+	}
+}

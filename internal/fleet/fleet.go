@@ -53,6 +53,8 @@ type Result struct {
 	Reaped  []string
 	Kept    []string
 	Skipped []string
+	// Failed lists the active tasks whose spawn failed this pass.
+	Failed []string
 
 	// Matter is the per-matter sync outcome from the prelude pass.
 	// Empty when no matters are configured. Errors do not abort
@@ -228,6 +230,7 @@ func Reconcile(cfg Config) (Result, error) {
 		res.Warnings = append(res.Warnings, w)
 	}
 
+	var spawnErr error
 	for _, slug := range actives {
 		if looped[slug] || refused[slug] {
 			continue
@@ -239,12 +242,24 @@ func Reconcile(cfg Config) (Result, error) {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
+		// One task's failed spawn is recorded and skipped: returning
+		// here would stop every looped task from being driven below.
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
-			return res, fmt.Errorf("assign agent %s: %w", slug, err)
+			res.Failed = append(res.Failed, slug)
+			fmt.Fprintf(os.Stderr, "fleet: assign agent %s: %v\n", slug, err)
+			if spawnErr == nil {
+				spawnErr = fmt.Errorf("assign agent %s: %w", slug, err)
+			}
+			continue
 		}
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
-			return res, fmt.Errorf("ensure %s: %w", slug, err)
+			res.Failed = append(res.Failed, slug)
+			fmt.Fprintf(os.Stderr, "fleet: spawn %s: %v\n", slug, err)
+			if spawnErr == nil {
+				spawnErr = fmt.Errorf("ensure %s: %w", slug, err)
+			}
+			continue
 		}
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
@@ -279,7 +294,8 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
-	return res, nil
+	sort.Strings(res.Failed)
+	return res, spawnErr
 }
 
 // agentCountsFromMetas tallies the agent name carried in the
