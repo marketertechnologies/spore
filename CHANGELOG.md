@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- `push-and-open-pr` and the role-loop PR mirror work on an ssh
+  origin. A `git@github.com:o/r.git` or `ssh://git@github.com/o/r.git`
+  origin is pushed to `https://github.com/o/r.git` by URL, which the
+  GitHub App token can authenticate, without touching any remote
+  config. `remote.origin.pushurl` is honored before `url` (a fork
+  workflow pushes to the fork, and gh is pinned there). When origin
+  carries several urls, the first https one wins, so an extra ssh url
+  is never tried. The github.com host matches in any case, and
+  `git@github.com:/o/r.git` is accepted. An ssh origin on another host
+  or an ssh config alias fails with an error naming the host and
+  saying to set an https `remote.origin.pushurl`. The app push never
+  leaves over ssh: a `url.<base>.insteadOf` or `pushInsteadOf` rule
+  that rewrites the https URL to ssh is refused.
+- Loop state under `.spore/` is git-excluded. Spore adds `.spore/` to
+  the repo's `info/exclude` (in the common git dir, so a linked
+  worktree updates the main repo's) when it first creates `.spore/`.
+  Loop files no longer show as untracked and trip a
+  `git status --porcelain` done check. The tracked `.gitignore` is not
+  touched. Only a project root that is the top of its own repo is
+  excluded (a plain dir inside a parent repo, or an exported
+  `GIT_DIR`, never writes another repo's exclude), and an exclude
+  spore cannot write is logged without blocking a drive or a spawn.
+- Loop files take `pr_footer = false` to drop the "Dispatched by ...
+  merges." footer from PR bodies opened by `push-and-open-pr` or the
+  draft-PR mirror. Absent, the footer stays.
+- `summary = true` on a custom loop writes `summary.md` from that
+  loop's own agent steps (one section per step, each round's output)
+  instead of an empty dev-loop review summary. Only the loop named
+  `dev` gets the dev review summary. The summary is rewritten when an
+  output's content changes, not only its round count. The dev loop's
+  summary is unchanged.
+
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
   `bootstrap/roles/<name>.md` still overrides the bundled body; with
@@ -15,6 +47,51 @@
   (pin `mode = "fleet"` to keep the old pairing); symlinked
   `bootstrap/roles/*.md` files pointing into a spore checkout can be
   removed so the installed release's bodies apply.
+
+- Configurable task loops. A task with `loop: <name>` in its
+  frontmatter is driven through the steps of
+  `bootstrap/loops/<name>.toml` on every fleet reconcile: each `agent`
+  step runs in its own pane with its own role body, `action` steps run
+  kernel actions (`notify-coordinator`, `push-and-open-pr`), and `next`
+  entries route on the step's verdict, including back to an earlier
+  step with `return = true` and a `max_rounds` cap that escalates.
+  Done conditions can be a file, a verdict or a `command` check run in
+  the task worktree. Two loops ship: `dev` (the engineer, reviewer A,
+  reviewer B role loop, now expressed as a loop file; `loop: role`
+  still means it) and a small `example`. A project file of the same
+  name overrides a bundled one. The loop interpreter replaces
+  `derivePhase`. See `docs/role-loop.md` and
+  `docs/todo/configurable-loops.md`.
+  - Each step pane's first prompt starts with a note (`SPORE_STEP_NOTE`)
+    naming its output path, round, keys and author, overriding the
+    role body; wakes name the round to write too.
+  - `spore task status <slug>` prints the task's own loop, step, round
+    and state. `spore task start` refuses a task with any `loop:`
+    value, not only `role`.
+  - A failed command check reruns only when the step output or the
+    task branch changes, never counts toward `max_rounds`, and a newer
+    round replaces a held one. Held steps are reported once.
+  - Reconcile reaps the loop panes of tasks that are done, deleted or
+    in any status but active, paused or blocked, and never drives one
+    slug twice at once.
+
+- Worker network isolation: `[worker] isolate_network = true` in
+  `spore.toml` runs each worker and loop role pane in its own `pasta`
+  network namespace, so parallel agents can bind the same ports.
+  With a `[fleet] pre_start` hook the hook runs inside the namespace
+  with the agent. A missing `pasta` fails the spawn loudly. The spore
+  flake now ships `passt`. Default off. See
+  `docs/worker-network-isolation.md`.
+
+- Role-pane spawn backoff: a loop role pane that dies within ten
+  minutes of its spawn waits 1 minute, doubling to 30, before the next
+  spawn, instead of respawning on every tick. Kept per pane in
+  `role-spawns.json` in the project state dir.
+
+- Role-pane `agent.env`: loop role panes get the variables in
+  `$XDG_CONFIG_HOME/spore/<project>/agent.env`, so one project's
+  agents can run under another account or endpoint. Reserved
+  `SPORE_*` and `WT_*` keys are dropped; values never reach logs.
 
 - Role loop: a PR adopted from before the loop (an open PR already on
   the task branch) now gets the operator added as assignee

@@ -37,7 +37,8 @@ type githubState struct {
 	Posted    []string `json:"posted,omitempty"`
 	Ready     bool     `json:"ready,omitempty"`
 	// DoneNotified records the plain "<slug>: done" fallback sent while
-	// the mirror was failing at PhaseDone.
+	// the mirror was failing at PhaseDone, or when it had no ready
+	// event to post.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
 }
@@ -58,10 +59,11 @@ func githubStatePath(projectRoot, slug string) string {
 // mirrorEvent is one GitHub action derived from a file on disk. name
 // keys it in githubState.Posted.
 type mirrorEvent struct {
-	name     string
-	kind     string
-	round    int
-	instance task.ReviewerInstance
+	name      string
+	kind      string
+	round     int
+	instance  task.ReviewerInstance
+	maxRounds int // escalated: the step's max_rounds
 }
 
 const (
@@ -122,7 +124,7 @@ reviews:
 	case PhaseEscalated:
 		out = append(out, mirrorEvent{
 			name: fmt.Sprintf("escalated-%s-%d", snap.CurrentReviewer, snap.ReviewerRound),
-			kind: eventEscalated, round: snap.ReviewerRound, instance: snap.CurrentReviewer,
+			kind: eventEscalated, round: snap.ReviewerRound, instance: snap.CurrentReviewer, maxRounds: snap.MaxRounds,
 		})
 	case PhaseDone:
 		out = append(out, mirrorEvent{name: eventReady, kind: eventReady})
@@ -137,6 +139,13 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// footer ends a PR body with who dispatched it and who merges.
+	footer bool
+	// pushURL is origin's https URL; see originPushURL.
+	pushURL string
+	// loop names the loop file whose push-and-open-pr action drives
+	// this mirror; empty for the role-loop mirror.
+	loop string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -144,23 +153,18 @@ type githubMirror struct {
 // logged, retried next tick, and told to the coordinator once per
 // distinct error; it never fails the drive. A concurrent drive holding
 // the lock makes this tick a no-op.
-func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
+func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot, footer bool) {
 	statePath := githubStatePath(projectRoot, slug)
-	unlock, ok := lockGitHubState(statePath)
+	unlock, ok := flockBeside(statePath)
 	if !ok {
 		return
 	}
 	defer unlock()
 
-	m := &githubMirror{
-		projectRoot: projectRoot,
-		tasksDir:    tasksDir,
-		slug:        slug,
-		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
-	}
-	if b, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(b, &m.state)
-	}
+	// An unreadable github.json reads as empty here, as upstream does:
+	// ensurePR adopts the open PR instead of opening a second one.
+	m, _ := newGitHubMirror(projectRoot, tasksDir, slug)
+	m.footer = footer
 	err := m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
@@ -182,6 +186,37 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 		m.state.LastError = ""
 		m.save()
 	}
+	// finishLoop leaves the done notice to the mirror; a done loop that
+	// gave the mirror no ready event to post would otherwise go unheard.
+	if snap.Phase == PhaseDone && !m.state.posted(eventReady) && !m.state.DoneNotified {
+		m.state.DoneNotified = true
+		notifyRoleLoop(projectRoot, fmt.Sprintf("%s: done", slug))
+		m.save()
+	}
+}
+
+// newGitHubMirror loads the task's github.json. It always returns a
+// mirror; the error reports a state file that exists but cannot be
+// read or parsed, in which case the mirror starts from empty state.
+func newGitHubMirror(projectRoot, tasksDir, slug string) (*githubMirror, error) {
+	m := &githubMirror{
+		projectRoot: projectRoot,
+		tasksDir:    tasksDir,
+		slug:        slug,
+		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
+	}
+	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	if os.IsNotExist(err) {
+		return m, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(b, &m.state)
+	}
+	if err != nil {
+		m.state = githubState{}
+		return m, fmt.Errorf("github.json: %w", err)
+	}
+	return m, nil
 }
 
 // mirrorErrorKey is err's message with any git/gh stderr cut, so a
@@ -195,24 +230,32 @@ func mirrorErrorKey(err error) string {
 	return msg
 }
 
-// lockGitHubState takes a non-blocking flock beside the state file so
-// two drives never post the same event twice.
-func lockGitHubState(statePath string) (func(), bool) {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-		return nil, false
+// flockBeside takes a non-blocking flock on path+".lock". The GitHub
+// mirror holds one beside its state file so two drives never post the
+// same event twice.
+func flockBeside(statePath string) (func(), bool) {
+	unlock, err := tryFlock(statePath + ".lock")
+	return unlock, err == nil
+}
+
+// tryFlock takes a non-blocking exclusive flock on path, creating it.
+// A lock held elsewhere fails with syscall.EWOULDBLOCK.
+func tryFlock(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
 	}
-	f, err := os.OpenFile(statePath+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, false
+		return nil, err
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, true
+	}, nil
 }
 
 func (m *githubMirror) save() {
@@ -246,22 +289,9 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if err := m.cfg.Validate(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
-	if err != nil {
+	if err := m.connect(); err != nil {
 		return err
 	}
-	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
-	remote, err := m.git("config", "--get", "remote.origin.url")
-	if err != nil {
-		return fmt.Errorf("no origin remote: %w", err)
-	}
-	repo, err := ghapp.GHRepo(remote)
-	if err != nil {
-		return err
-	}
-	m.env = append(m.env, "GH_REPO="+repo)
 	for _, e := range pending {
 		if err := m.apply(e); err != nil {
 			return fmt.Errorf("%s: %w", e.name, err)
@@ -270,6 +300,58 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.save()
 	}
 	return nil
+}
+
+// connect mints the app token and pins git and gh to it and to the
+// origin repo.
+func (m *githubMirror) connect() error {
+	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
+	defer cancel()
+	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
+	if err != nil {
+		return err
+	}
+	// GIT_ALLOW_PROTOCOL keeps a url rewrite (insteadOf, pushInsteadOf)
+	// from carrying the app push over ssh under the operator's own key.
+	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1", "GIT_ALLOW_PROTOCOL=https")
+	urls, _ := m.git("config", "--get-all", "remote.origin.pushurl")
+	if urls == "" {
+		if urls, err = m.git("config", "--get-all", "remote.origin.url"); err != nil {
+			return fmt.Errorf("no origin remote: %w", err)
+		}
+	}
+	pushURL, err := originPushURL(strings.Split(urls, "\n"))
+	if err != nil {
+		return err
+	}
+	effective, err := m.git("ls-remote", "--get-url", pushURL)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(effective, "https://") {
+		return fmt.Errorf("git rewrites %s to %s (a url.<base>.insteadOf rule); the GitHub App pushes over https only", pushURL, effective)
+	}
+	repo, err := ghapp.GHRepo(pushURL)
+	if err != nil {
+		return err
+	}
+	m.env = append(m.env, "GH_REPO="+repo)
+	m.pushURL = pushURL
+	return nil
+}
+
+// originPushURL picks the https URL the app pushes to from origin's
+// pushurls, or its urls when it has none: the first https one, else
+// the https form of the first. The push names this URL, never the
+// remote: git pushes to every url of a remote, and the app token
+// cannot authenticate an ssh one. Remote config is left alone.
+func originPushURL(urls []string) (string, error) {
+	for _, u := range urls {
+		if strings.HasPrefix(u, "https://") {
+			return u, nil
+		}
+	}
+	return ghapp.HTTPSRemote(urls[0])
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -303,7 +385,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		return err
 	case eventEscalated:
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer. The PR stays draft until the operator decides.",
-			reviewLabel(e.instance), e.round, MaxReviewerRounds))
+			reviewLabel(e.instance), e.round, e.maxRounds))
 	case eventReady:
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err
@@ -345,7 +427,7 @@ func (m *githubMirror) prComment(body string) error {
 	return err
 }
 
-// push sends the worktree HEAD to origin as the app. A branch whose
+// push sends the worktree HEAD to origin's https URL as the app. A branch whose
 // last pushed commit is no longer an ancestor of HEAD was rewritten
 // and goes up with --force-with-lease pinned to that commit.
 func (m *githubMirror) push() error {
@@ -361,18 +443,36 @@ func (m *githubMirror) push() error {
 		return err
 	}
 	ref := "refs/heads/" + branch
-	args := []string{"push", "--quiet", "origin", "HEAD:" + ref}
+	args := []string{"push", "--quiet", m.pushURL, "HEAD:" + ref}
 	if prev := m.state.PushedSHA; prev != "" {
 		if _, err := m.git("merge-base", "--is-ancestor", prev, "HEAD"); err != nil {
 			args = append(args, "--force-with-lease="+ref+":"+prev)
 		}
 	}
 	if _, err := m.git(args...); err != nil {
+		if base := m.pushRewrite(); base != "" {
+			return fmt.Errorf("a git url rewrite (url.<base>.pushInsteadOf = %s) moves %s off https; the GitHub App pushes over https only: %w", base, m.pushURL, err)
+		}
 		return err
 	}
 	m.state.PushedSHA = sha
 	m.save()
 	return nil
+}
+
+// pushRewrite returns the pushInsteadOf value that rewrites m.pushURL,
+// or "". connect already refused an insteadOf rewrite, and the push
+// names m.pushURL, never origin, so only such a rule can move it off
+// https; any other push failure is the server's and is reported as is.
+func (m *githubMirror) pushRewrite() string {
+	out, _ := m.git("config", "--get-regexp", `^url\..*\.pushinsteadof$`)
+	for _, line := range strings.Split(out, "\n") {
+		_, base, ok := strings.Cut(line, " ")
+		if ok && base != "" && strings.HasPrefix(m.pushURL, base) {
+			return base
+		}
+	}
+	return ""
 }
 
 func (m *githubMirror) branch() (string, error) {
@@ -383,9 +483,15 @@ func (m *githubMirror) branch() (string, error) {
 	return b, nil
 }
 
-// ensurePR finds or opens the task's draft PR. An open PR for the
-// branch is adopted, so a lost github.json never opens a duplicate.
+// ensurePR finds or opens the task's draft PR.
 func (m *githubMirror) ensurePR() error {
+	return m.openPR("", true)
+}
+
+// openPR finds or opens the task's PR, assigned to the operator and
+// carrying label when set. An open PR for the branch is adopted, so a
+// lost github.json or a racing drive never opens a duplicate.
+func (m *githubMirror) openPR(label string, draft bool) error {
 	if m.state.PRNumber != 0 {
 		return nil
 	}
@@ -407,7 +513,11 @@ func (m *githubMirror) ensurePR() error {
 	if len(found) == 1 {
 		// An adopted PR was opened outside the loop, so it lacks the
 		// operator assignee that `pr create` sets below.
-		if _, err := m.gh("", "pr", "edit", strconv.Itoa(found[0].Number), "--add-assignee", m.cfg.OperatorLogin); err != nil {
+		args := []string{"pr", "edit", strconv.Itoa(found[0].Number), "--add-assignee", m.cfg.OperatorLogin}
+		if label != "" {
+			args = append(args, "--add-label", label)
+		}
+		if _, err := m.gh("", args...); err != nil {
 			return err
 		}
 		m.state.PRNumber, m.state.PRURL = found[0].Number, found[0].URL
@@ -430,8 +540,15 @@ func (m *githubMirror) ensurePR() error {
 	if title == "" {
 		title = m.slug
 	}
-	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
-		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	args := []string{"pr", "create"}
+	if draft {
+		args = append(args, "--draft")
+	}
+	args = append(args, "--base", base, "--head", branch, "--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	out, err = m.gh(m.prBody(title), args...)
 	if err != nil {
 		return err
 	}
@@ -454,6 +571,13 @@ func (m *githubMirror) prBody(title string) string {
 	summary := specSummary(string(spec))
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
+	}
+	if !m.footer {
+		return summary + "\n"
+	}
+	if m.loop != "" {
+		return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's `%s` loop. @%s gives the only approval and merges.\n",
+			summary, m.cfg.OperatorLogin, m.loop, m.cfg.OperatorLogin)
 	}
 	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
 		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)

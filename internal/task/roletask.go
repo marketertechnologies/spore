@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -40,19 +41,40 @@ const LoopRole = "role"
 
 // RequireRoleLoop errors unless tasks/<slug>.md carries `loop: role`.
 func RequireRoleLoop(tasksDir, slug string) error {
-	path := filepath.Join(tasksDir, slug+".md")
-	raw, err := os.ReadFile(path)
+	loop, err := readLoopKey(tasksDir, slug)
 	if err != nil {
 		return err
 	}
-	m, _, err := frontmatter.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("roletask: parse %s: %w", path, err)
-	}
-	if m.Loop != LoopRole {
+	if loop != LoopRole {
 		return fmt.Errorf("task %s: not role-looped (frontmatter lacks loop: %s); add it to opt in", slug, LoopRole)
 	}
 	return nil
+}
+
+// RequireLoop returns the `loop:` value of tasks/<slug>.md and errors
+// when the task has none.
+func RequireLoop(tasksDir, slug string) (string, error) {
+	loop, err := readLoopKey(tasksDir, slug)
+	if err != nil {
+		return "", err
+	}
+	if loop == "" {
+		return "", fmt.Errorf("task %s: no loop (frontmatter lacks loop: <name>, e.g. loop: %s); add it to opt in", slug, LoopRole)
+	}
+	return loop, nil
+}
+
+func readLoopKey(tasksDir, slug string) (string, error) {
+	path := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("roletask: parse %s: %w", path, err)
+	}
+	return m.Loop, nil
 }
 
 // IsEscalated reports whether any `state/escalated-*` marker exists
@@ -145,6 +167,9 @@ func EnsureRoleTaskDir(projectRoot, slug string) (string, error) {
 	if slug == "" {
 		return "", errors.New("roletask: empty slug")
 	}
+	if err := EnsureRoleTaskRoot(projectRoot); err != nil {
+		return "", err
+	}
 	root := RoleTaskDir(projectRoot, slug)
 	for _, sub := range []string{
 		"",
@@ -157,6 +182,92 @@ func EnsureRoleTaskDir(projectRoot, slug string) (string, error) {
 		}
 	}
 	return root, nil
+}
+
+// EnsureRoleTaskRoot creates `<projectRoot>/.spore/` and git-excludes
+// it, only when it creates it, so a drive tick that finds it does no
+// git work. An exclude failure (read-only info/, another owner) is
+// logged, never returned: it must not block a drive or a spawn.
+func EnsureRoleTaskRoot(projectRoot string) error {
+	dir := filepath.Join(projectRoot, RoleTaskRoot)
+	if _, err := os.Stat(dir); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := ExcludeRoleTaskRoot(projectRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "spore: git-exclude %s/ in %s: %v\n", RoleTaskRoot, projectRoot, err)
+	}
+	return nil
+}
+
+// ExcludeRoleTaskRoot adds `.spore/` to the repo's info/exclude so
+// loop state never shows as untracked, which would trip a done check
+// such as `git status --porcelain`. The consumer's tracked .gitignore
+// is left alone. The exclude file lives in the common git dir, so a
+// linked worktree updates the main repo's. Idempotent; a projectRoot
+// that is not the top of its own repo (outside git, or a plain dir
+// inside a parent repo) is a no-op.
+func ExcludeRoleTaskRoot(projectRoot string) error {
+	cmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+	cmd.Env = withoutGitRepoEnv(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	top, gitDir, ok := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if !ok || !samePath(top, projectRoot) {
+		return nil
+	}
+	path := filepath.Join(gitDir, "info", "exclude")
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		switch strings.TrimSpace(line) {
+		case RoleTaskRoot + "/", "/" + RoleTaskRoot + "/", RoleTaskRoot, "/" + RoleTaskRoot:
+			return nil
+		}
+	}
+	add := RoleTaskRoot + "/\n"
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		add = "\n" + add
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(add); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// withoutGitRepoEnv drops the variables that point git at a repo other
+// than the one its -C dir is in.
+func withoutGitRepoEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		switch k {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 // WriteSpec caches body at `<roletaskdir>/spec.md`. The cache is

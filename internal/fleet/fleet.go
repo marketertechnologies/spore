@@ -53,6 +53,8 @@ type Result struct {
 	Reaped  []string
 	Kept    []string
 	Skipped []string
+	// Failed lists the active tasks whose spawn failed this pass.
+	Failed []string
 
 	// Matter is the per-matter sync outcome from the prelude pass.
 	// Empty when no matters are configured. Errors do not abort
@@ -158,6 +160,10 @@ func Reconcile(cfg Config) (Result, error) {
 		delete(runningSet, slug)
 	}
 
+	if _, err := reapFinishedLoopPanes(cfg.ProjectRoot, statusBySlug); err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: reap loop panes: %v\n", err)
+	}
+
 	// Stable iteration: sort by matter_sort_order ascending (lower
 	// spawns first; tasks without a stamp sort after stamped ones), then
 	// by slug. Stamps come from matter adapters such as linear's
@@ -190,45 +196,70 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 	agentCounts := agentCountsFromMetas(metas, runningSet)
 
-	// A task with `loop: role` in its frontmatter is opted into the
-	// role-loop and owned solely by DriveRoleLoop. The homogeneous
+	// A task whose `loop:` key names a loop file (see LoadLoop; `role`
+	// is the dev loop) is owned solely by DriveLoop. The homogeneous
 	// spawn below must skip it: otherwise Reconcile would mint a
 	// generic worker at spore/<project>/<slug> (invisible to
 	// runningSet, which only tracks the spore-role/<project>/ prefix)
-	// on top of the role panes that edit the same wt/<slug> branch.
+	// on top of the loop panes that edit the same wt/<slug> branch.
 	// The key rides in the same file write that flips status to
 	// active, so the watcher-triggered pass already sees it. The key is
 	// the only opt-in: `.spore/<slug>/` presence is not, because
-	// coordinators stage briefs there for generic tasks too.
-	roleLooped := map[string]bool{}
+	// coordinators stage briefs there for generic tasks too. A name no
+	// loop file carries keeps the generic worker; a loop file that does
+	// not load starts nothing until it is fixed.
+	looped := map[string]bool{}
+	refused := map[string]bool{}
 	for _, m := range metas {
-		switch {
-		case m.Loop == task.LoopRole:
-			roleLooped[m.Slug] = true
-		case m.Loop != "" && m.Status == "active":
-			w := fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole)
-			fmt.Fprintln(os.Stderr, w)
-			res.Warnings = append(res.Warnings, w)
-		}
-	}
-
-	for _, slug := range actives {
-		if runningSet[slug] {
+		if m.Loop == "" || m.Status != "active" {
 			continue
 		}
-		if roleLooped[slug] {
+		_, err := classifyLoop(cfg.ProjectRoot, m)
+		var w string
+		switch {
+		case err == nil:
+			looped[m.Slug] = true
+			continue
+		case errors.Is(err, ErrUnknownLoop):
+			w = fmt.Sprintf("task %s: unknown loop: %q (no such loop file in bootstrap/loops/ or bundled); treating as a generic worker task", m.Slug, m.Loop)
+		default:
+			refused[m.Slug] = true
+			w = fmt.Sprintf("task %s: loop %s: %v; not started", m.Slug, m.Loop, err)
+		}
+		fmt.Fprintln(os.Stderr, w)
+		res.Warnings = append(res.Warnings, w)
+	}
+
+	var spawnErr error
+	for _, slug := range actives {
+		if looped[slug] || refused[slug] {
+			continue
+		}
+		if runningSet[slug] {
 			continue
 		}
 		if len(runningSet) >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
+		// One task's failed spawn is recorded and skipped: returning
+		// here would stop every looped task from being driven below.
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
-			return res, fmt.Errorf("assign agent %s: %w", slug, err)
+			res.Failed = append(res.Failed, slug)
+			fmt.Fprintf(os.Stderr, "fleet: assign agent %s: %v\n", slug, err)
+			if spawnErr == nil {
+				spawnErr = fmt.Errorf("assign agent %s: %w", slug, err)
+			}
+			continue
 		}
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
-			return res, fmt.Errorf("ensure %s: %w", slug, err)
+			res.Failed = append(res.Failed, slug)
+			fmt.Fprintf(os.Stderr, "fleet: spawn %s: %v\n", slug, err)
+			if spawnErr == nil {
+				spawnErr = fmt.Errorf("ensure %s: %w", slug, err)
+			}
+			continue
 		}
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
@@ -242,16 +273,16 @@ func Reconcile(cfg Config) (Result, error) {
 		agentCounts[picked]++
 	}
 
-	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
-	// precondition for these slugs (see the homogeneous-spawn skip
-	// above) and creates `.spore/<slug>/` itself on the first tick, so
-	// a task starts moving on the same pass that classified it.
+	// Advance looped tasks. DriveLoop owns the worktree precondition
+	// for these slugs (see the homogeneous-spawn skip above) and
+	// creates `.spore/<slug>/` itself on the first tick, so a task
+	// starts moving on the same pass that classified it.
 	for _, slug := range actives {
-		if !roleLooped[slug] {
+		if !looped[slug] {
 			continue
 		}
-		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
-			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
+		if _, err := DriveLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil && !errors.Is(err, ErrLoopBusy) {
+			fmt.Fprintf(os.Stderr, "loop drive %s: %v\n", slug, err)
 		}
 	}
 
@@ -263,7 +294,8 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
-	return res, nil
+	sort.Strings(res.Failed)
+	return res, spawnErr
 }
 
 // agentCountsFromMetas tallies the agent name carried in the

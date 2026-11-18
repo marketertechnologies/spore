@@ -14,6 +14,9 @@ import (
 // inside the per-process TMUX_TMPDIR.
 const testTmuxSocket = "default"
 
+// testStateHome is the XDG_STATE_HOME TestMain gives the whole package.
+var testStateHome string
+
 func TestMain(m *testing.M) {
 	tmpdir, err := os.MkdirTemp("", "spore-tmux-test-")
 	if err != nil {
@@ -24,12 +27,13 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
-	// Role spawns materialize bundled bodies under the state dir;
-	// keep them off the host's real one.
-	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {
+	testStateHome = filepath.Join(tmpdir, "state")
+	if err := os.Setenv("XDG_STATE_HOME", testStateHome); err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// A coordinator pane exports this, and it beats XDG_STATE_HOME.
+	_ = os.Unsetenv("SPORE_COORDINATOR_STATE_DIR")
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()

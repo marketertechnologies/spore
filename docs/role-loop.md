@@ -175,7 +175,9 @@ mode = "fleet"
   when no `mode` is set, but falls back to `fleet` when its agent
   (slot `agent`, else the task `agent:`, else the `[fleet.workers]`
   default) resolves to non-claude; an `effort` it set is then
-  ignored with a stderr warning, as on any fleet slot. The fallback
+  ignored with a stderr warning, as on any fleet slot. A loop step
+  on slot A whose role is not `reviewer` falls back to `fleet` the
+  same way, since only the reviewer has a code-review body. The fallback
   is re-evaluated at every spawn, like the agent, so changing the
   task agent or `[fleet.workers]` default mid-task can switch A
   between the two protocols across rounds; pin `mode` on A to rule
@@ -205,9 +207,11 @@ test schema, e.g. marketer:
 
 The command runs in the session cwd (the worktree) with the session's
 `SPORE_*` env, via `sh -c`, under `flock .spore/<slug>/state/pre-start.lock`.
-The lock is per slug and shared by the worker, engineer, and both
-reviewers, so make the command idempotent: later sessions wait for
-the first, then should return quickly. The pane shell runs it, not
+The hook runs once per pane: the worker, the engineer and each
+reviewer each run it. The lock is per slug and only serializes those
+runs, so make the command idempotent. Without network isolation the
+panes share the host network, and later runs wait for the first, then
+should return quickly. The pane shell runs it, not
 the reconciler, so spawning never blocks on it. The hook runs under
 `timeout`, default 900s, set by `[fleet] pre_start_timeout_seconds`
 (0 runs it unbounded), so a hung bring-up cannot hold the slug lock
@@ -230,6 +234,27 @@ put it above the role body; a role pane with no role body, and a
 worker (which starts with no prompt), get that line alone as the
 prompt. Unset or empty leaves the spawn argv byte-identical to
 before.
+
+With `[worker] isolate_network = true` the whole launch script, hook
+then agent, runs inside one pasta network namespace, so services the
+hook starts on loopback are the ones the agent reaches (pasta runs
+with port forwarding off, so a hook run on the host would be out of
+the agent's reach). Only the agent gets `IS_SANDBOX=1`.
+
+Each pane gets its own namespace, not one per slug. The engineer's
+hook and reviewer A's hook run in different namespaces: services one
+starts on loopback are invisible to the other, so the second run finds
+nothing listening and starts its own copy, and a reviewer cannot reach
+the engineer's dev server. Two rules follow for a hook under
+isolation. Key pid files and data directories per pane (for example
+by `SPORE_ROLE_SESSION`), since the copies share the worktree. Decide
+"already running" by probing the loopback port, not by a pid file or
+lock another pane wrote. Path-based unix sockets are files, not network
+state, so they are shared across a slug's panes (checked with a socket
+bound outside a pasta namespace and reached from inside one); a service
+that listens on one is shared too, and per-pane copies need per-pane
+socket paths. One namespace shared by all panes of a slug is a
+possible follow-up.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
@@ -328,13 +353,223 @@ and merge with `spore task merge <slug>`. Then run:
 Done flips the status, kills the homogeneous worker session, removes
 the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`,
 and clears the `state/ready` marker. It refuses while the branch has
-unmerged commits (`--force` discards them). It does not kill role
-panes: its session cleanup matches `<project>/<slug>` at a name
-boundary, which `spore-role/...` names never hit. On the normal path
-that is moot (the done tick already reaped all three panes), but when
-you abandon an escalated task, kill the surviving panes yourself with
-`tmux kill-session -t spore-role/<project>/<slug>/<role>`.
+unmerged commits (`--force` discards them).
 
 The rest of `.spore/<slug>/` is preserved: `spec.md`, `responses/`,
 `reviews/`, `summary.md`, and the remaining state markers stay on
 disk as the task's audit trail.
+
+Done does not kill role panes itself: its session cleanup matches
+`<project>/<slug>` at a name boundary, which `spore-role/...` names
+never hit. The next reconcile pass does. It reaps every
+`spore-role/<project>/<slug>/*` pane whose task is done, deleted or in
+an unknown state, the rule generic workers follow; panes of active,
+paused and blocked tasks are kept. On the normal path the
+done tick already reaped them; an abandoned escalated task's panes go
+on the first pass after its status leaves active for done.
+
+## Spawn hardening
+
+Role panes are hardened at spawn. Their tmux session carries the
+project's `agent.env` entries (`$XDG_CONFIG_HOME/spore/<project>/agent.env`)
+after spore's own `-e` flags; reserved `SPORE_*` and `WT_*` keys are
+dropped. With `[worker] isolate_network = true` the agent runs under
+`pasta`, as workers do (see `docs/worker-network-isolation.md`); a
+missing `pasta` refuses the spawn instead of running the pane
+unisolated. A pane that dies within ten minutes of its spawn
+waits out a backoff (1 minute, doubling to 30) before the next spawn.
+The backoff is kept per pane, as `<slug>/<role>` (for example
+`demo/engineer`; a loop step uses its session name), in
+`role-spawns.json` in the project state dir. A pane that stays
+healthy past ten minutes clears its record. The backoff applies
+to both the silent respawn of a missing session and the counted
+respawn of a dead agent; the `MaxRoleRespawns` cap is unchanged.
+
+## Loop files
+
+The role loop is one loop file among others. A task opts into a loop
+with `loop: <name>` in its frontmatter; `loop: role` stays valid and
+means the `dev` loop, which reproduces the engineer and two-reviewer
+flow above. Spore ships two loops in `bootstrap/loops/`: `dev` and
+`example`, a minimal drafter and checker to copy from.
+
+A project file `bootstrap/loops/<name>.toml` overrides the bundled
+loop of the same name, by the same rule as `bootstrap/roles/<role>.md`.
+A broken override (a dangling symlink, a directory) is an error, never
+a silent fallback to the bundled loop.
+
+The reconciler classifies every active task with a `loop:` key:
+
+| `loop:` value | Reconcile does |
+|---|---|
+| empty | spawns the usual single worker |
+| a name with a loop file | drives the loop, no generic worker |
+| a name no loop file carries | warns and spawns a generic worker |
+| a loop file that fails to load | warns with the file and line, starts nothing |
+
+### Schema
+
+Top-level keys: `name` (must match the file name), `summary` (write
+`summary.md` on done: the dev loop's review summary, or for any other
+loop one section per agent step with each round's output), `github_mirror` (run
+the draft-PR mirror when `pr_flow = "draft"`; the mirror reads only the
+dev loop's outputs, so the loop's agent steps must write exactly
+`responses/engineer-round-{round}.json` (shape `engineer-response`) and
+`reviews/A/round-{round}.json`, `reviews/B/round-{round}.json` (shape
+`verdict`)) and `pr_footer` (default
+`true`; `false` drops the "Dispatched by ... merges." footer, so a PR
+body opened by `push-and-open-pr` or the mirror is the spec summary
+only). Then one `[[steps]]`
+table per step, in order:
+
+| Key | Meaning |
+|---|---|
+| `name` | step name; `done` is reserved |
+| `kind` | `agent` (a pane writes an output file) or `action` (spore runs a built-in) |
+| `role` | role body `bootstrap/roles/<role>.md` (agent) |
+| `session` | pane `spore-role/<project>/<slug>/<session>`; defaults to `name`; letters, digits, `-`, `_`; one role per session |
+| `title`, `label` | wake text name; label also names markers and `SPORE_REVIEWER_INSTANCE` |
+| `phase` | phase name when the step is entered forward |
+| `persist` | keep the pane alive after the cursor moves past the step |
+| `output` | file under `.spore/<slug>/`; must contain `{round}`, which is expanded; may not leave that dir |
+| `shape` | `engineer-response`, `verdict` or `json` (with `required = [...]`) |
+| `skills` | skill names appended to wakes and exported as `SPORE_STEP_SKILLS` |
+| `slot`, `mode`, `agent`, `effort` | start from `[fleet.reviewers.<slot>]`, then override |
+| `max_rounds` | escalate instead of jumping back once the step has written this many outputs |
+| `action`, `message`, `label` | action name and its parameters (action) |
+
+`[[steps.done]]` adds conditions on top of the output: `kind = "file"`
+(`path`), `"verdict"` (`equals`; the field is always `verdict`) or
+`"command"` (`run`, `timeout`); only agent steps take them, and a file
+that puts one on an action step fails to load. `[[steps.next]]` picks the next step by
+verdict: `on`, `to` (a step or `done`), and `return = true` to come
+back to this step once the target answers. Without a matching `next`,
+the loop moves to the following step; past the last step it is done.
+A verdict condition and a `next` on a different verdict cannot share a
+step (that verdict could never route); loading such a file fails.
+On a `verdict`-shaped step, `on` must be `approve` or
+`request_changes`, the only verdicts a reviewer file may carry.
+
+A step whose output exists but whose conditions do not hold is held.
+A held round followed by a newer output of the same step is
+superseded: the loop judges the newer round, and superseded rounds do
+not count toward `max_rounds`. A round that has a newer output is
+judged by its cached check results only: its check never reruns, so a
+fix commit cannot pass the old round in place of the newer one. A step held by a file or verdict
+condition is reported to the coordinator once per step and round
+(`state/held-<step>-<round>`).
+
+#### Command checks
+
+A `command` condition runs `run` under `sh -c` in the task worktree
+with `SPORE_TASK_SLUG` and `SPORE_STEP_OUTPUT` (this round's output
+path) added to the environment, bounded by `timeout` (seconds or a Go
+duration such as `"30s"`; default 600s). A result is cached in
+`state/check-<step>-r<round>-<fp>.json`, keyed by a fingerprint of the
+round's output bytes, the worktree HEAD and the command, so a check
+reruns only when the output file or the task branch changes, never on
+every tick. Once a round passes it stays passed. On failure the step
+is held, its pane is woken once per fingerprint with the command
+output and "Write round N+1 now: <path>", and the coordinator is told
+once per fingerprint. A failed check does not count toward
+`max_rounds`: it only means the step's work is not done yet. A
+command condition needs the step to have an `output`. A check that
+cannot run at all (no `sh`, no worktree HEAD) holds the step and is
+reported to the coordinator once per step, round and error.
+
+#### Actions
+
+Actions run once per visit: a visit is recorded as
+`state/action-<step>-v<n>` after the action succeeds, and a failing
+action parks the loop on its step until a later tick succeeds. Action
+parameters sit flat on the step (`message`, `label`) or in a
+`[steps.params]` table, which wins on a clash. The built-in actions:
+
+- `notify-coordinator` (`message`, default "reached <step>") tells the
+  coordinator "<slug>: <message>".
+- `push-and-open-pr` (`label`, `draft = "true"` or `"false"`, default
+  false) pushes the task branch as the project's GitHub App and, on the
+  first visit that finds no PR in `github.json`, opens one (or adopts
+  the PR already open for the branch); later visits only push. It
+  needs `github.toml` with `operator_login` set.
+
+No action and no driver path ever merges a PR.
+
+Two reconcile passes never drive one slug at the same time: the drive
+holds a non-blocking flock on `state/drive.lock`, and a pass that finds
+it held skips the slug.
+
+### Panes and wakes
+
+The current step's pane and every `persist` pane at or before it stay
+alive. When the cursor reaches a step forward, earlier non-persist
+panes are reaped; a step that sent work back keeps its pane for the
+re-check. Done reaps every pane; escalated touches none.
+
+A step that is sent work, with or without `return`, is woken with
+"`<title>` requested changes at round `<n>`" and the verdict path.
+When the sender's turn comes back, it is woken with "`<title>`
+responded to your round `<n>` verdict" and the new output's path.
+Outside the dev loop (whose wake text is upstream's) both wakes end
+with "Write round N now: <path>". Each pane gets each wake once
+(marker `state/woken-...`). A pane the driver reaps on purpose does
+not count as a quick death, so re-entering its step never waits
+behind spawn backoff.
+
+The loop exports `SPORE_LOOP`, `SPORE_STEP`, `SPORE_STEP_OUTPUT` (the
+absolute output path, `{round}` unexpanded) and `SPORE_STEP_SKILLS` to
+its panes, next to the role-loop variables above.
+
+#### The step note
+
+Role bodies are shared between loops and name the role loop's own
+paths, so each agent step with an `output` also gets
+`SPORE_STEP_NOTE`, put ahead of its role body in the first prompt
+(after the pre-start failure line, when there is one). The note names
+the step and loop, the absolute output template, the shape's exact
+keys and the `author` a verdict must carry, and says these replace any
+path or format the role body names. A pane spawned at the cursor is
+told "Write round N now: <path>"; a persisted pane idling behind the
+cursor is told its next round and to wait for its wake. A pane
+spawned at round 2 or later (a re-entered step, a crash or token-wrap
+respawn) has no other way to learn its round. Custom role bodies need
+not know about loops.
+
+### The example loop
+
+    name = "example"
+
+    [[steps]]
+    name = "draft"
+    kind = "agent"
+    role = "engineer"
+    persist = true
+    output = "draft/round-{round}.json"
+    shape = "json"
+    required = ["summary"]
+
+    [[steps]]
+    name = "check"
+    kind = "agent"
+    role = "reviewer"
+    output = "check/round-{round}.json"
+    shape = "verdict"
+    max_rounds = 2
+
+    [[steps.next]]
+    on = "request_changes"
+    to = "draft"
+    return = true
+
+    [[steps.next]]
+    on = "approve"
+    to = "notify"
+
+    [[steps]]
+    name = "notify"
+    kind = "action"
+    action = "notify-coordinator"
+    message = "example loop finished: the draft passed its check"
+
+The drafter writes `draft/round-1.json`; the checker approves it or
+sends it back (at most two rounds); the coordinator is then told.

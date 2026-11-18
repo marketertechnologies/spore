@@ -13,6 +13,7 @@ import (
 
 func TestRoleSpawnSpecEngineerArgs(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	spec := EngineerSpec(root, "feature-x")
 	args, err := spec.TmuxArgs()
 	if err != nil {
@@ -29,6 +30,9 @@ func TestRoleSpawnSpecEngineerArgs(t *testing.T) {
 	if e := envValue(args, "SPORE_ROLE"); e != "engineer" {
 		t.Errorf("SPORE_ROLE = %q, want engineer", e)
 	}
+	if e := envValue(args, "SPORE_ROLE_SESSION"); e != wantSession {
+		t.Errorf("SPORE_ROLE_SESSION = %q, want %q", e, wantSession)
+	}
 	if e := envValue(args, "SPORE_REVIEWER_INSTANCE"); e != "" {
 		t.Errorf("SPORE_REVIEWER_INSTANCE set on engineer pane: %q", e)
 	}
@@ -39,6 +43,7 @@ func TestRoleSpawnSpecEngineerArgs(t *testing.T) {
 
 func TestRoleSpawnSpecReviewerArgs(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	for _, instance := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		spec := ReviewerSpec(root, "feature-x", instance)
 		args, err := spec.TmuxArgs()
@@ -55,6 +60,9 @@ func TestRoleSpawnSpecReviewerArgs(t *testing.T) {
 		if e := envValue(args, "SPORE_ROLE"); e != "reviewer" {
 			t.Errorf("%s SPORE_ROLE = %q, want reviewer", instance, e)
 		}
+		if e := envValue(args, "SPORE_ROLE_SESSION"); e != wantSession {
+			t.Errorf("%s SPORE_ROLE_SESSION = %q, want %q", instance, e, wantSession)
+		}
 		if e := envValue(args, "SPORE_REVIEWER_INSTANCE"); e != string(instance) {
 			t.Errorf("%s SPORE_REVIEWER_INSTANCE = %q, want %q", instance, e, instance)
 		}
@@ -63,6 +71,7 @@ func TestRoleSpawnSpecReviewerArgs(t *testing.T) {
 
 func TestRoleSpawnSpecInjectsAccountTier(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	toml := "[fleet]\naccount_tier = \"max\"\n"
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
@@ -84,6 +93,7 @@ func TestRoleSpawnSpecInjectsAccountTier(t *testing.T) {
 
 func TestRoleSpawnSpecOmitsTierWithoutKnob(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	args, err := EngineerSpec(root, "feature-x").TmuxArgs()
 	if err != nil {
 		t.Fatalf("TmuxArgs: %v", err)
@@ -154,6 +164,7 @@ func newGitRepoFor(t *testing.T, projectName string) string {
 
 func TestRoleSpawnSpecOmitsAutoConnectIDE(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[editor]\nauto_connect_ide = true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +194,7 @@ func hasEnvArg(argv []string, key string) bool {
 
 func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	spec := EngineerSpec(root, "feature-x")
 	args, err := spec.TmuxArgs()
 	if err != nil {
@@ -200,6 +212,7 @@ func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 
 func TestRoleSpawnPreStartWrapsAgent(t *testing.T) {
 	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\npre_start = \"bin/with-services up\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -231,12 +244,16 @@ func TestRoleShellCommandRuns(t *testing.T) {
 	}
 	failNote := "spore: pre-start hook failed (exit 2): exit 2. Services may be down."
 	cases := []struct {
-		name, cmd, body, want string
+		name, cmd, body, note, want string
 	}{
-		{"ok with body", "true", "role body", "role body"},
-		{"fail with body", "exit 2", "role body", failNote + "\n\nrole body"},
-		{"ok bare", "true", "", ""},
-		{"fail bare", "exit 2", "", failNote},
+		{"ok with body", "true", "role body", "", "role body"},
+		{"fail with body", "exit 2", "role body", "", failNote + "\n\nrole body"},
+		{"ok bare", "true", "", "", ""},
+		{"fail bare", "exit 2", "", "", failNote},
+		{"step note with body", "true", "role body", "step note", "step note\n\nrole body"},
+		{"fail and step note with body", "exit 2", "role body", "step note", failNote + "\n\nstep note\n\nrole body"},
+		{"step note bare", "true", "", "step note", "step note"},
+		{"step note without prelude", "", "role body", "step note", "step note\n\nrole body"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -247,8 +264,10 @@ func TestRoleShellCommandRuns(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", "printf %s", rolePath)
-			out, err := exec.Command("sh", "-c", script).CombinedOutput()
+			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", "printf %s", rolePath, StepNoteEnv)
+			cmd := exec.Command("sh", "-c", script)
+			cmd.Env = append(os.Environ(), StepNoteEnv+"="+c.note)
+			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("run: %v: %s", err, out)
 			}
@@ -321,5 +340,78 @@ func TestRoleSpawnIgnoresWorkerRatio(t *testing.T) {
 	}
 	if cmd := args[len(args)-1]; !strings.Contains(cmd, "exec claude ") {
 		t.Errorf("command = %q, want claude (ratio must not drive role panes)", cmd)
+	}
+}
+
+// Given pre_start and isolate_network, when a role pane is specced,
+// then its whole launch, hook included, runs inside the pasta wrapper.
+func TestRoleSpawnPreStartRunsInsideNetns(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "pasta"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[worker]\nisolate_network = true\n[fleet]\npre_start = \"bin/up\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args, err := EngineerSpec(root, "feature-x").TmuxArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := args[len(args)-1]
+	if !strings.HasPrefix(got, "pasta ") || !strings.Contains(got, "flock") {
+		t.Errorf("shell command %q: want the pre-start hook (flock) inside the pasta wrapper", got)
+	}
+	if !strings.Contains(got, "env IS_SANDBOX=1 claude") {
+		t.Errorf("shell command %q: want IS_SANDBOX=1 on the agent", got)
+	}
+}
+
+// Given reviewer slot A configured with agent codex, when a loop step
+// overrides the slot's mode to code-review, then the spawn is refused:
+// the code-review body runs a Claude Code skill codex cannot run.
+func TestRoleSpawnStepCodeReviewOnCodexSlotRefused(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet.reviewers.A]\nagent = \"codex\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := ReviewerSpec(root, "feature-x", task.ReviewerA)
+	spec.Mode = ReviewerModeCodeReview
+	_, err := spec.TmuxArgs()
+	if err == nil || !strings.Contains(err.Error(), "needs agent claude") {
+		t.Fatalf("TmuxArgs err = %v, want a needs-agent-claude refusal", err)
+	}
+}
+
+// TestRoleSpawnNonReviewerOnSlotAUsesItsOwnBody: slot A defaults to
+// code-review mode, which only the reviewer role has a body for; a
+// qa step on slot A spawns from qa.md in fleet mode.
+func TestRoleSpawnNonReviewerOnSlotAUsesItsOwnBody(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	roles := filepath.Join(root, "bootstrap", "roles")
+	if err := os.MkdirAll(roles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "qa.md"), []byte("You are QA.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	def := LoopDef{Name: "qa"}
+	s := Step{Name: "check", Kind: "agent", Role: "qa", Session: "check", Slot: "A", Output: "qa/round-{round}.json", Shape: "json"}
+	args, err := StepSpec(root, "feature-x", def, s).TmuxArgs()
+	if err != nil {
+		t.Fatalf("TmuxArgs: %v", err)
+	}
+	if m := envValue(args, "SPORE_REVIEWER_MODE"); m != ReviewerModeFleet {
+		t.Errorf("SPORE_REVIEWER_MODE = %q, want %q", m, ReviewerModeFleet)
+	}
+	if e := envValue(args, "SPORE_REVIEW_EFFORT"); e != "" {
+		t.Errorf("SPORE_REVIEW_EFFORT = %q on a fleet-mode pane", e)
+	}
+	if script := args[len(args)-1]; !strings.Contains(script, filepath.Join(roles, "qa.md")) {
+		t.Errorf("pane script does not use qa.md:\n%s", script)
 	}
 }
