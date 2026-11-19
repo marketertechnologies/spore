@@ -240,8 +240,17 @@ by writing `responses/engineer-round-N.json`:
       "addressed": ["comment 1 -> commit X"],
       "pushback": ["comment 3 -> disagree because Z"],
       "notes": "free-form context for the reviewer",
-      "followups": ["out-of-scope idea for a separate PR"]
+      "followups": ["out-of-scope idea for a separate PR"],
+      "structure": "```diff\n Widget\n+  spin()   # new entry point\n```"
     }
+
+`structure` is a fenced `diff` sketch of the change's shape, required
+in round 1 and restated only when the shape changes; a round without
+it inherits the last one. The latest block opens `summary.md` and,
+under the draft-PR flow, the PR body: the mirror writes it on
+`pr create` and rewrites the body (`gh pr edit --body-file -`) when a
+later round changes it. Only PRs the mirror opened are rewritten, and
+a block naming an absolute host path is left off the PR.
 
 Reviewer (`spore-role/<project>/<slug>/reviewer-<instance>`): one
 body, two instances, selected by `SPORE_REVIEWER_INSTANCE` (A or B).
@@ -313,10 +322,10 @@ files regardless of frontmatter status. The chip CSS class is the
 highest-priority nonzero bucket: `escalated`, then `blocked`, then
 `ready`, then `active`, else `idle`.
 
-`summary.md` lands in `.spore/<slug>/` when the loop hits done: both
-review threads (verdict, summary, comments per round) plus every
-engineer response. It embeds a fingerprint of the artifact counts and
-regenerates if the tree changes under it.
+`summary.md` lands in `.spore/<slug>/` when the loop hits done: the
+latest `structure` block, both review threads (verdict, summary, comments per round) plus every
+engineer response. It embeds a fingerprint of the artifact counts plus
+a hash of the structure block, and regenerates if either changes.
 
 ## Finishing
 

@@ -40,6 +40,11 @@ type githubState struct {
 	// the mirror was failing at PhaseDone.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
+	// BodyOwned marks a PR the mirror opened. Only those get their body
+	// rewritten when the structure changes; an adopted PR's body is
+	// the operator's.
+	BodyOwned     bool   `json:"body_owned,omitempty"`
+	BodyStructure string `json:"body_structure,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -137,6 +142,8 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// structure is the PR-safe structure block for this tick.
+	structure string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -237,7 +244,11 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
-	if len(pending) == 0 {
+	if m.structure, err = prStructure(m.projectRoot, m.slug); err != nil {
+		return err
+	}
+	staleBody := m.state.BodyOwned && m.state.PRNumber != 0 && m.structure != m.state.BodyStructure
+	if len(pending) == 0 && !staleBody {
 		return nil
 	}
 	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
@@ -269,6 +280,24 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.state.Posted = append(m.state.Posted, e.name)
 		m.save()
 	}
+	return m.syncBody()
+}
+
+// syncBody rewrites the body of a PR the mirror opened when the latest
+// structure block differs from the one it carries.
+func (m *githubMirror) syncBody() error {
+	if !m.state.BodyOwned || m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
+		return nil
+	}
+	meta, err := readRoleTaskMeta(m.tasksDir, m.slug)
+	if err != nil {
+		return err
+	}
+	if _, err := m.gh(m.prBody(prTitle(meta.Title, m.slug)), "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-"); err != nil {
+		return err
+	}
+	m.state.BodyStructure = m.structure
+	m.save()
 	return nil
 }
 
@@ -426,10 +455,7 @@ func (m *githubMirror) ensurePR() error {
 		}
 		base = strings.TrimPrefix(head, "origin/")
 	}
-	title := meta.Title
-	if title == "" {
-		title = m.slug
-	}
+	title := prTitle(meta.Title, m.slug)
 	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
 		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
 	if err != nil {
@@ -441,22 +467,49 @@ func (m *githubMirror) ensurePR() error {
 		return fmt.Errorf("gh pr create: no PR number in %q", url)
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
+	m.state.BodyOwned, m.state.BodyStructure = true, m.structure
 	m.save()
 	return nil
 }
 
-// prBody is the brief's summary paragraph plus a fixed footer. The rest
-// of spec.md stays off the PR: briefs carry host paths and
-// coordinator-only notes. A summary naming an absolute path falls back
-// to the task title.
+func prTitle(title, slug string) string {
+	if title == "" {
+		return slug
+	}
+	return title
+}
+
+// prBody is the brief's summary paragraph, the engineer's structure
+// block, and a fixed footer. The rest of spec.md stays off the PR:
+// briefs carry host paths and coordinator-only notes. A summary naming
+// an absolute path falls back to the task title.
 func (m *githubMirror) prBody(title string) string {
 	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
 	summary := specSummary(string(spec))
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
 	}
+	if m.structure != "" {
+		summary += "\n\n" + m.structure
+	}
 	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
 		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+}
+
+// prStructure is latestStructure with the summary's absolute-path
+// guard applied per line, diff markers stripped: a block naming a host
+// path is dropped.
+func prStructure(projectRoot, slug string) (string, error) {
+	s, err := latestStructure(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if absPathRE.MatchString(strings.TrimLeft(line, "+-")) {
+			return "", nil
+		}
+	}
+	return s, nil
 }
 
 var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")

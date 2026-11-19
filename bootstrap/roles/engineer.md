@@ -38,7 +38,8 @@ files only.
     "addressed": ["comment 1 -> commit X", "comment 2 -> approach Y"],
     "pushback": ["comment 3 -> I disagree because Z"],
     "notes": "free-form context for the reviewer",
-    "followups": ["retry service for X: separate PR, not in scope here"]
+    "followups": ["retry service for X: separate PR, not in scope here"],
+    "structure": "```diff\n Dashboard\n-  oldFilter\n+  useValidSelection   # shared with the filter\n```"
   }
   ```
 
@@ -50,6 +51,14 @@ files only.
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
+  - `structure`: required in round 1. A fenced `diff` block, roughly
+    5-20 lines, showing the shape of the change: the smallest
+    component, call, file, or control-flow tree that explains it.
+    Prefix added nodes with `+`, removed with `-`, context with a
+    space; one short `# annotation` per line at most. It opens the
+    PR body and `summary.md`. In later rounds, set it again only when
+    the shape changed; omitted, the last one stands. No host paths:
+    a block naming one is dropped from the PR.
 
   No other keys. The coordinator validates the file on every tick;
   an invalid file does not count, is moved to `<name>.invalid`, and
