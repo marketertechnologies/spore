@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- diagram skill: new "Pick the smallest view" section (pseudocode,
+  call tree, component tree, shallow file tree, structural +/- diff)
+  saying which forms go inline as fenced ASCII and which use the
+  graph DSL. Adapted from HumanLayer's `show-me` skill (MIT). Consumer
+  impact: the updated skill ships to downstream projects on the next
+  release.
+
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
   `bootstrap/roles/<name>.md` still overrides the bundled body; with
