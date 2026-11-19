@@ -1,6 +1,6 @@
 ---
 name: diagram
-description: Append an entry (diagram + optional note) to a tmux side-pane. Use for architecture, data flow, call graphs, or any structural explanation, including "show me the shape of this change" (trees and +/- structural diffs). Default to this instead of prose whenever a picture communicates faster, and use note-only entries to log checkpoints or decisions worth keeping visible.
+description: Append an entry (diagram + optional note) to a tmux side-pane. Use for architecture, data flow, call graphs, or any structural explanation, including "show me the shape of this change" (smallest view: inline ASCII tree or +/- diff when short, pane entry when long). Default to a visual instead of prose whenever a picture communicates faster, and use note-only entries to log checkpoints or decisions worth keeping visible.
 ---
 
 # diagram
@@ -30,26 +30,29 @@ Show the least structure that makes the point. Forms, smallest first:
 - Call tree: who calls whom, indented.
 - Component tree: state and module boundaries, nested.
 - Shallow file tree: one line of responsibility per entry.
-- Structural diff: `+`/`-` lines against any tree above or a control
-  flow, to show the shape of a change.
+
+To show the shape of a change, overlay any form (or a control flow)
+with a structural diff: leading space unchanged, `+` added, `-`
+removed, `~` changed in place.
 
 ```
-cmd/spore/
-  main.go         CLI entry
-internal/fleet/
-- roles.go        role bodies read from disk
-+ roles.go        role bodies embedded, disk override
-+ roles_test.go   override edge cases
+ src/
+   main.go         entry point
+ store/
+~  cache.go        add TTL eviction
++  cache_test.go   eviction cases
+-  lru.go          folded into cache.go
 ```
 
-Where each goes: plain ASCII trees, pseudocode, and diffs go inline in
-the reply as a fenced block (renders fine in the terminal) or as a
-`--raw` side-pane entry. Graph-shaped things (edges, cycles, fan-in)
-use the DSL below. No Mermaid (renders as raw source in a terminal)
-and no HTML (no browser on a headless host).
+Where it goes: a short block (under ~15 lines) goes inline in the
+reply as a fenced block. Longer views, or ones worth keeping visible,
+go to the pane as a note line, a `---` line, then the block, with
+`--raw` so it lands verbatim. Graph-shaped things (edges, cycles,
+fan-in) use the DSL below. No Mermaid (raw source in a terminal), no
+HTML (no browser on a headless host).
 
-Adapted from HumanLayer's `show-me` skill (MIT,
-https://github.com/humanlayer/skills).
+Idea from HumanLayer's `show-me` skill (MIT,
+https://github.com/humanlayer/skills); wording here is original.
 
 ## Call forms
 
