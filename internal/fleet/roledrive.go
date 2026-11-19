@@ -705,24 +705,35 @@ func latestStructure(projectRoot, slug string) (string, error) {
 	return "", nil
 }
 
-// fenceStructure keeps only the first fenced block's body (or the
-// whole text when unfenced) and wraps it in a fresh diff fence, so a
-// missing closing fence or prose around the block cannot leave an
-// open code block swallowing the rest of the PR body or summary.md.
+// fenceStructure keeps the text between the first and last fence lines
+// (to the end when only one fence opens), drops fence lines inside it,
+// and wraps the result in a fresh diff fence. Unfenced text is kept
+// whole. A missing closing fence or prose around the block thus cannot
+// leave an open code block in the PR body or summary.md, and a second
+// fenced block is merged rather than cut off.
 func fenceStructure(s string) string {
 	lines := strings.Split(s, "\n")
 	isFence := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "```") }
+	first, last := -1, -1
 	for i, l := range lines {
 		if isFence(l) {
-			lines = lines[i+1:]
-			for j, l := range lines {
-				if isFence(l) {
-					lines = lines[:j]
-					break
-				}
+			if first < 0 {
+				first = i
 			}
-			break
+			last = i
 		}
+	}
+	if first >= 0 {
+		if last == first {
+			last = len(lines)
+		}
+		var body []string
+		for _, l := range lines[first+1 : last] {
+			if !isFence(l) {
+				body = append(body, l)
+			}
+		}
+		lines = body
 	}
 	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
 		lines = lines[1:]

@@ -287,18 +287,30 @@ func (m *githubMirror) run(snap Snapshot) error {
 // leaves the body alone when it lacks the mirror's footer (a PR opened
 // outside the loop) or no longer carries the previous block verbatim
 // (the operator edited it); either way the block is recorded so the
-// next tick does not retry.
+// next tick does not retry. A body that changes between the read and
+// the edit is left for the next tick.
 func (m *githubMirror) syncBody() error {
 	if m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
 		return nil
 	}
 	num := strconv.Itoa(m.state.PRNumber)
-	body, err := m.gh("", "pr", "view", num, "--json", "body", "-q", ".body")
+	view := func() (string, error) {
+		out, err := m.runRaw("gh", "", "pr", "view", num, "--json", "body", "-q", ".body")
+		return strings.ReplaceAll(strings.TrimSuffix(out, "\n"), "\r\n", "\n"), err
+	}
+	body, err := view()
 	if err != nil {
 		return err
 	}
 	if next, ok := spliceStructure(body, m.state.BodyStructure, m.structure); ok && next != body {
-		if _, err := m.gh(next+"\n", "pr", "edit", num, "--body-file", "-"); err != nil {
+		again, err := view()
+		if err != nil {
+			return err
+		}
+		if again != body {
+			return nil
+		}
+		if _, err := m.gh(next, "pr", "edit", num, "--body-file", "-"); err != nil {
 			return err
 		}
 	}
@@ -309,27 +321,44 @@ func (m *githubMirror) syncBody() error {
 
 const prFooterMarker = "Opened by spore's role loop"
 
-// spliceStructure swaps prev for next in a mirror-written body. With no
-// prev it inserts next just above the footer; an empty next removes
-// prev.
+// spliceStructure swaps prev for next in an LF-normalized,
+// mirror-written body, working only above the footer line: the last
+// copy of prev there is the mirror's (an operator quote sits higher).
+// With no prev it inserts next just above the footer unless the body
+// already carries it; an empty next removes prev.
 func spliceStructure(body, prev, next string) (string, bool) {
-	if !strings.Contains(body, prFooterMarker) {
+	marker := strings.LastIndex(body, prFooterMarker)
+	if marker < 0 {
 		return "", false
 	}
+	foot := strings.LastIndex(body[:marker], "\n") + 1
+	head, tail := body[:foot], body[foot:]
+	join := func(parts ...string) string {
+		var keep []string
+		for _, p := range parts {
+			if p = strings.Trim(p, "\n"); p != "" {
+				keep = append(keep, p)
+			}
+		}
+		if len(keep) == 0 {
+			return tail
+		}
+		return strings.Join(keep, "\n\n") + "\n\n" + tail
+	}
 	if prev != "" {
-		if !strings.Contains(body, prev) {
+		i := strings.LastIndex(head, prev)
+		if i < 0 {
 			return "", false
 		}
 		if next == "" {
-			return strings.Replace(body, "\n\n"+prev, "", 1), true
+			return join(head[:i], head[i+len(prev):]), true
 		}
-		return strings.Replace(body, prev, next, 1), true
+		return head[:i] + next + head[i+len(prev):] + tail, true
 	}
-	i := strings.Index(body, "\n\nDispatched by @")
-	if i < 0 {
-		return "", false
+	if next == "" || strings.Contains(head, next) {
+		return body, true
 	}
-	return body[:i] + "\n\n" + next + body[i:], true
+	return join(head, next), true
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -587,6 +616,13 @@ func (e *cmdError) Error() string { return e.key + ": " + e.stderr }
 // run1 runs name in the worktree as the app and returns trimmed
 // stdout; a failure carries stderr.
 func (m *githubMirror) run1(name, stdin string, args ...string) (string, error) {
+	out, err := m.runRaw(name, stdin, args...)
+	return strings.TrimSpace(out), err
+}
+
+// runRaw is run1 without trimming stdout, for output whose whitespace
+// is content (a PR body).
+func (m *githubMirror) runRaw(name, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -607,5 +643,5 @@ func (m *githubMirror) run1(name, stdin string, args ...string) (string, error) 
 			stderr: strings.TrimSpace(stderr.String()),
 		}
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }

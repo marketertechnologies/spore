@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Role loop: engineer responses take an optional `structure` field, a
-  fenced `diff` sketch of the change's shape (required in round 1 by
-  the engineer body). The latest block opens `summary.md` and the
+  fenced `diff` sketch of the change's shape (the engineer body asks
+  for it in round 1). The latest block opens `summary.md` and the
   draft PR body; when a later round changes the block, the mirror
   swaps it in place in the live body, keeping operator edits, and
   skips bodies it did not write. Reviewer bodies flag a block that

@@ -51,7 +51,8 @@ files only.
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
-  - `structure`: required in round 1. A fenced `diff` block, roughly
+  - `structure`: send it in round 1. The schema accepts a response
+    without it, but the PR then opens with no block. A fenced `diff` block, roughly
     5-20 lines, showing the shape of the change: the smallest
     component, call, file, or control-flow tree that explains it.
     Prefix added nodes with `+`, removed with `-`, context with a

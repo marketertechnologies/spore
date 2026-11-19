@@ -229,6 +229,7 @@ func TestFenceStructure(t *testing.T) {
 		"```diff\n Widget\n+  spin()\n",
 		"Shape of the change:\n```\n Widget\n+  spin()\n```\nThat is all.",
 		"\n\n```diff\n\n Widget\n+  spin()\n\n```\n",
+		"```diff\n Widget\n```\n```diff\n+  spin()\n```",
 	} {
 		if got := fenceStructure(in); got != want {
 			t.Errorf("fenceStructure(%q) = %q, want %q", in, got, want)
@@ -238,5 +239,72 @@ func TestFenceStructure(t *testing.T) {
 		if got := fenceStructure(in); got != "" {
 			t.Errorf("fenceStructure(%q) = %q, want empty", in, got)
 		}
+	}
+}
+
+func TestSpliceStructure(t *testing.T) {
+	foot := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	reflowed := "Dispatched by\n@octo. " + prFooterMarker + ": reviews ..."
+	for _, tc := range []struct {
+		name, body, prev, next, want string
+		ok                           bool
+	}{
+		{"not ours", "Hand-written.", "", structV1, "", false},
+		{"insert", "Sum.\n\n" + foot, "", structV1, "Sum.\n\n" + structV1 + "\n\n" + foot, true},
+		{"insert reflowed footer", "Sum.\n\n" + reflowed, "", structV1, "Sum.\n\nDispatched by\n\n" + structV1 + "\n\n@octo. " + prFooterMarker + ": reviews ...", true},
+		{"already carried", "Sum.\n\n" + structV1 + "\n\n" + foot, "", structV1, "Sum.\n\n" + structV1 + "\n\n" + foot, true},
+		{"swap last above footer", "Quoting " + structV1 + "\n\n" + structV1 + "\n\n" + foot, structV1, structV2, "Quoting " + structV1 + "\n\n" + structV2 + "\n\n" + foot, true},
+		{"prev gone", "Sum.\n\n" + foot, structV1, structV2, "", false},
+		{"remove", "Sum.\n\n" + structV1 + "\n\n" + foot, structV1, "", "Sum.\n\n" + foot, true},
+		{"remove without blank line", "Sum. " + structV1 + "\n" + foot, structV1, "", "Sum. \n\n" + foot, true},
+	} {
+		got, ok := spliceStructure(tc.body, tc.prev, tc.next)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestGitHubMirrorPRBodyCRLF: a body the web editor saved with CRLF
+// still gets its block swapped.
+func TestGitHubMirrorPRBodyCRLF(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	footer := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	t.Setenv("FAKE_GH_PR_BODY", strings.ReplaceAll("  Indented intro.\n\n"+structV1+"\n\n"+footer, "\n", "\r\n"))
+	f.requestChanges(t, 1, structV2)
+	if log := f.log(t); !strings.Contains(log, "BODY:\n  Indented intro.\n\n"+structV2+"\n\n"+footer+"END") {
+		t.Fatalf("CRLF body not swapped:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorPRBodyRace: an edit landing between the read and the
+// write defers the sync to the next tick, which keeps the edit.
+func TestGitHubMirrorPRBodyRace(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	race := f.ghLog + ".race"
+	if err := os.WriteFile(race, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeEngStructure(t, f.root, f.slug, 1, structV2)
+	n := len(f.calls(t))
+	f.tick(t)
+	for _, c := range f.calls(t)[n:] {
+		if strings.HasPrefix(c, "pr edit") {
+			t.Fatalf("raced body edited: %q", f.calls(t)[n:])
+		}
+	}
+	if s := f.state(t); s.BodyStructure != structV1 {
+		t.Fatalf("raced sync recorded: %+v", s)
+	}
+	if err := os.Remove(race); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if log := f.log(t); !strings.Contains(log, structV2+"\n\nDispatched by @octo. ") || !strings.HasSuffix(strings.TrimSpace(log), "operator editEND") {
+		t.Fatalf("deferred sync lost the edit or the block:\n%s", log)
 	}
 }

@@ -34,7 +34,9 @@ if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; f
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
-  "pr view") if [ -n "$FAKE_GH_PR_BODY" ]; then printf '%s\n' "$FAKE_GH_PR_BODY"; elif [ -e "$log.body" ]; then cat "$log.body"; fi ;;
+  "pr view")
+    if [ -n "$FAKE_GH_PR_BODY" ]; then printf '%s\n' "$FAKE_GH_PR_BODY"; elif [ -e "$log.body" ]; then cat "$log.body"; fi
+    if [ -e "$log.race" ]; then printf '\noperator edit' >> "$log.body"; fi ;;
 esac
 `
 
