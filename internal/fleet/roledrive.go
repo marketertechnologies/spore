@@ -686,8 +686,8 @@ func writeEngineerResponse(b *strings.Builder, resp task.EngineerResponse) {
 }
 
 // latestStructure returns the newest valid engineer round's structure
-// block, trimmed and fenced as a diff when the engineer left the fence
-// off. Rounds that omit the field inherit the previous round's block.
+// block, refenced as a diff. Rounds that omit the field inherit the
+// previous round's block.
 func latestStructure(projectRoot, slug string) (string, error) {
 	rounds, err := validEngineerRounds(projectRoot, slug)
 	if err != nil {
@@ -698,14 +698,40 @@ func latestStructure(projectRoot, slug string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		s := strings.TrimRight(strings.TrimLeft(resp.Structure, "\n"), " \t\n")
-		if strings.TrimSpace(s) == "" {
-			continue
+		if s := fenceStructure(resp.Structure); s != "" {
+			return s, nil
 		}
-		if !strings.HasPrefix(strings.TrimSpace(s), "```") {
-			s = "```diff\n" + s + "\n```"
-		}
-		return s, nil
 	}
 	return "", nil
+}
+
+// fenceStructure keeps only the first fenced block's body (or the
+// whole text when unfenced) and wraps it in a fresh diff fence, so a
+// missing closing fence or prose around the block cannot leave an
+// open code block swallowing the rest of the PR body or summary.md.
+func fenceStructure(s string) string {
+	lines := strings.Split(s, "\n")
+	isFence := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "```") }
+	for i, l := range lines {
+		if isFence(l) {
+			lines = lines[i+1:]
+			for j, l := range lines {
+				if isFence(l) {
+					lines = lines[:j]
+					break
+				}
+			}
+			break
+		}
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "```diff\n" + strings.Join(lines, "\n") + "\n```"
 }

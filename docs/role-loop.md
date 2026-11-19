@@ -246,11 +246,18 @@ by writing `responses/engineer-round-N.json`:
 
 `structure` is a fenced `diff` sketch of the change's shape, required
 in round 1 and restated only when the shape changes; a round without
-it inherits the last one. The latest block opens `summary.md` and,
-under the draft-PR flow, the PR body: the mirror writes it on
-`pr create` and rewrites the body (`gh pr edit --body-file -`) when a
-later round changes it. Only PRs the mirror opened are rewritten, and
-a block naming an absolute host path is left off the PR.
+it inherits the last one. The block is refenced on read: only the
+first fenced body survives, wrapped in a fresh ```` ```diff ```` fence,
+so a missing closing fence or surrounding prose cannot leave an open
+code block. The latest block opens `summary.md` and, under the
+draft-PR flow, the PR body: the mirror writes it on `pr create`; when
+a later round changes it, the mirror reads the live body
+(`gh pr view`) and swaps the old block for the new one in place
+(`gh pr edit --body-file -`), keeping operator edits around it. A
+body without the mirror's footer (a PR opened outside the loop), or
+one where the old block no longer appears verbatim, is left alone. A
+PR an older mirror opened gets the block inserted above the footer.
+A block naming an absolute host path is left off the PR.
 
 Reviewer (`spore-role/<project>/<slug>/reviewer-<instance>`): one
 body, two instances, selected by `SPORE_REVIEWER_INSTANCE` (A or B).

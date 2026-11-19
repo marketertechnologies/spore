@@ -5,8 +5,9 @@
 - Role loop: engineer responses take an optional `structure` field, a
   fenced `diff` sketch of the change's shape (required in round 1 by
   the engineer body). The latest block opens `summary.md` and the
-  draft PR body; the mirror rewrites the body of a PR it opened when
-  a later round changes the block. Reviewer bodies flag a block that
+  draft PR body; when a later round changes the block, the mirror
+  swaps it in place in the live body, keeping operator edits, and
+  skips bodies it did not write. Reviewer bodies flag a block that
   misrepresents the diff. Consumer impact: the updated role bodies
   and fleet ship to consumers on the next release; engineer panes
   start sending `structure`, which older binaries reject as an

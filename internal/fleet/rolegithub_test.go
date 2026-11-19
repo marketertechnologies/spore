@@ -24,13 +24,17 @@ const fakeGH = `#!/bin/sh
 log="$FAKE_GH_LOG"
 { printf 'ARGS:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\nTOKEN: %s\nREPO: %s\n' "$GH_TOKEN" "$GH_REPO"; } >> "$log"
 for a in "$@"; do
-  if [ "$a" = "--body-file" ]; then printf 'BODY:\n' >> "$log"; cat >> "$log"; printf 'END\n' >> "$log"; fi
+  if [ "$a" = "--body-file" ]; then
+    cat > "$log.in"; printf 'BODY:\n' >> "$log"; cat "$log.in" >> "$log"; printf 'END\n' >> "$log"
+    case "$1 $2" in "pr create"|"pr edit") cp "$log.in" "$log.body" ;; esac
+  fi
 done
 if [ -e "$FAKE_GH_FAIL.sleep" ]; then sleep 30; fi
 if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; fi
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
+  "pr view") if [ -n "$FAKE_GH_PR_BODY" ]; then printf '%s\n' "$FAKE_GH_PR_BODY"; elif [ -e "$log.body" ]; then cat "$log.body"; fi ;;
 esac
 `
 

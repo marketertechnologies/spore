@@ -57,7 +57,7 @@ func TestGitHubMirrorPRBodyStructure(t *testing.T) {
 	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin.\n\n"+structV2+"\n\nDispatched by") {
 		t.Fatalf("edited body lacks new structure:\n%s", log)
 	}
-	if s := f.state(t); !s.BodyOwned || s.BodyStructure != structV2 {
+	if s := f.state(t); s.BodyStructure != structV2 {
 		t.Fatalf("state = %+v", s)
 	}
 	n := len(f.calls(t))
@@ -109,13 +109,62 @@ func TestGitHubMirrorPRBodyStructureDropsPaths(t *testing.T) {
 func TestGitHubMirrorAdoptedPRBodyUntouched(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	t.Setenv("FAKE_GH_PR_BODY", "Hand-written description.")
 	writeEngStructure(t, f.root, f.slug, 1, structV1)
 	f.tick(t)
 	f.requestChanges(t, 1, structV2)
+	views := 0
 	for _, c := range f.calls(t) {
 		if strings.Contains(c, "--body-file") && strings.HasPrefix(c, "pr edit") {
 			t.Fatalf("adopted PR body edited: %q", f.calls(t))
 		}
+		if strings.HasPrefix(c, "pr view") {
+			views++
+		}
+	}
+	if views != 2 {
+		t.Fatalf("pr view ran %d times, want once per structure change", views)
+	}
+}
+
+// TestGitHubMirrorLegacyPRGetsStructure: a PR an older mirror opened
+// (footer present, no recorded structure) gets the block inserted
+// above the footer.
+func TestGitHubMirrorLegacyPRGetsStructure(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	t.Setenv("FAKE_GH_PR_BODY", "Make the widget spin.\n\nDispatched by @octo. "+prFooterMarker+": reviews ...")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin.\n\n"+structV1+"\n\nDispatched by @octo. ") {
+		t.Fatalf("legacy body lacks structure:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorPRBodyKeepsOperatorEdits: a structure change swaps
+// only the block; operator text around it survives, and a body whose
+// block the operator rewrote is left alone.
+func TestGitHubMirrorPRBodyKeepsOperatorEdits(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	footer := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	t.Setenv("FAKE_GH_PR_BODY", "Make the widget spin. Closes #42.\n\n"+structV1+"\n\n"+footer)
+	f.requestChanges(t, 1, structV2)
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin. Closes #42.\n\n"+structV2+"\n\n"+footer) {
+		t.Fatalf("operator edit lost:\n%s", log)
+	}
+
+	t.Setenv("FAKE_GH_PR_BODY", "Rewritten by hand.\n\n"+footer)
+	n := len(f.calls(t))
+	f.requestChanges(t, 2, structV1)
+	for _, c := range f.calls(t)[n:] {
+		if strings.HasPrefix(c, "pr edit") && strings.Contains(c, "--body-file") {
+			t.Fatalf("hand-rewritten body edited: %q", f.calls(t)[n:])
+		}
+	}
+	if s := f.state(t); s.BodyStructure != structV1 {
+		t.Fatalf("skipped sync not recorded: %+v", s)
 	}
 }
 
@@ -169,5 +218,25 @@ func TestLatestStructureInheritsAndFences(t *testing.T) {
 	writeEngStructure(t, root, slug, 2, "")
 	if s, want := got(), "```diff\n  Widget\n+  spin()\n```"; !reflect.DeepEqual(s, want) {
 		t.Fatalf("latest = %q, want %q", s, want)
+	}
+}
+
+func TestFenceStructure(t *testing.T) {
+	want := "```diff\n Widget\n+  spin()\n```"
+	for _, in := range []string{
+		" Widget\n+  spin()",
+		"```diff\n Widget\n+  spin()\n```",
+		"```diff\n Widget\n+  spin()\n",
+		"Shape of the change:\n```\n Widget\n+  spin()\n```\nThat is all.",
+		"\n\n```diff\n\n Widget\n+  spin()\n\n```\n",
+	} {
+		if got := fenceStructure(in); got != want {
+			t.Errorf("fenceStructure(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"", "  \n", "```diff\n```"} {
+		if got := fenceStructure(in); got != "" {
+			t.Errorf("fenceStructure(%q) = %q, want empty", in, got)
+		}
 	}
 }

@@ -28,8 +28,9 @@ level is in `SPORE_REVIEW_EFFORT` (low, medium, high, xhigh, max).
   `.spore/<task>/spec.md` only to judge a pushback that cites it.
 - Never read the other instance's reviews.
 - The `structure` field of the latest engineer response that has
-  one. A block that misrepresents the diff is a finding: it opens
-  the PR body.
+  one, even when B's isolation rule above would skip that response:
+  the field is exempt. A block that misrepresents the diff is a
+  finding: it opens the PR body.
 
 ## The base
 

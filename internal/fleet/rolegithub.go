@@ -40,10 +40,9 @@ type githubState struct {
 	// the mirror was failing at PhaseDone.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
-	// BodyOwned marks a PR the mirror opened. Only those get their body
-	// rewritten when the structure changes; an adopted PR's body is
-	// the operator's.
-	BodyOwned     bool   `json:"body_owned,omitempty"`
+	// BodyStructure is the structure block last spliced into (or
+	// skipped for) the PR body; a differing latest block triggers one
+	// sync attempt.
 	BodyStructure string `json:"body_structure,omitempty"`
 }
 
@@ -247,7 +246,7 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if m.structure, err = prStructure(m.projectRoot, m.slug); err != nil {
 		return err
 	}
-	staleBody := m.state.BodyOwned && m.state.PRNumber != 0 && m.structure != m.state.BodyStructure
+	staleBody := m.state.PRNumber != 0 && m.structure != m.state.BodyStructure
 	if len(pending) == 0 && !staleBody {
 		return nil
 	}
@@ -283,22 +282,54 @@ func (m *githubMirror) run(snap Snapshot) error {
 	return m.syncBody()
 }
 
-// syncBody rewrites the body of a PR the mirror opened when the latest
-// structure block differs from the one it carries.
+// syncBody splices the latest structure block into the live PR body,
+// replacing the previous block in place so operator edits survive. It
+// leaves the body alone when it lacks the mirror's footer (a PR opened
+// outside the loop) or no longer carries the previous block verbatim
+// (the operator edited it); either way the block is recorded so the
+// next tick does not retry.
 func (m *githubMirror) syncBody() error {
-	if !m.state.BodyOwned || m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
+	if m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
 		return nil
 	}
-	meta, err := readRoleTaskMeta(m.tasksDir, m.slug)
+	num := strconv.Itoa(m.state.PRNumber)
+	body, err := m.gh("", "pr", "view", num, "--json", "body", "-q", ".body")
 	if err != nil {
 		return err
 	}
-	if _, err := m.gh(m.prBody(prTitle(meta.Title, m.slug)), "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-"); err != nil {
-		return err
+	if next, ok := spliceStructure(body, m.state.BodyStructure, m.structure); ok && next != body {
+		if _, err := m.gh(next+"\n", "pr", "edit", num, "--body-file", "-"); err != nil {
+			return err
+		}
 	}
 	m.state.BodyStructure = m.structure
 	m.save()
 	return nil
+}
+
+const prFooterMarker = "Opened by spore's role loop"
+
+// spliceStructure swaps prev for next in a mirror-written body. With no
+// prev it inserts next just above the footer; an empty next removes
+// prev.
+func spliceStructure(body, prev, next string) (string, bool) {
+	if !strings.Contains(body, prFooterMarker) {
+		return "", false
+	}
+	if prev != "" {
+		if !strings.Contains(body, prev) {
+			return "", false
+		}
+		if next == "" {
+			return strings.Replace(body, "\n\n"+prev, "", 1), true
+		}
+		return strings.Replace(body, prev, next, 1), true
+	}
+	i := strings.Index(body, "\n\nDispatched by @")
+	if i < 0 {
+		return "", false
+	}
+	return body[:i] + "\n\n" + next + body[i:], true
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -467,7 +498,7 @@ func (m *githubMirror) ensurePR() error {
 		return fmt.Errorf("gh pr create: no PR number in %q", url)
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
-	m.state.BodyOwned, m.state.BodyStructure = true, m.structure
+	m.state.BodyStructure = m.structure
 	m.save()
 	return nil
 }
@@ -492,7 +523,7 @@ func (m *githubMirror) prBody(title string) string {
 	if m.structure != "" {
 		summary += "\n\n" + m.structure
 	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
+	return fmt.Sprintf("%s\n\nDispatched by @%s. "+prFooterMarker+": reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
 		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
 }
 
