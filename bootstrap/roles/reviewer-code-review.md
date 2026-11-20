@@ -63,14 +63,16 @@ Tag every finding with exactly one tier, as a prefix on its
   that worked before the branch.
 - `[nice-to-have]`: a real defect that needs unusual or adversarial
   input, a race with a manual human edit, or a theoretical cost.
+  Never a security defect: an exploitable hole is a `[blocker]` even
+  when only crafted input reaches it.
 - `[nit]`: cosmetic (naming, formatting, comment wording).
 
 Then:
 
 - At least one `[blocker]` -> `request_changes`.
 - No blockers (zero findings, or only nice-to-have and nit) ->
-  `approve`. Keep the non-blocking comments in the verdict so they
-  reach the PR.
+  `approve`. Keep the non-blocking comments in the verdict: it is
+  their record, and in the draft-PR flow it reaches the PR.
 - One `comments` entry per finding. Keep each to the defect and its
   failure scenario; no repeat of the inline comment's full body.
 - `summary`: one line that counts per tier, then names the
@@ -86,7 +88,9 @@ When it is wrong, say so explicitly in that finding's comment
 but that the new run still reports is a fresh `[blocker]` comment.
 
 Do not re-raise a `[nice-to-have]` or `[nit]` the engineer skipped;
-skipping those needs no reason. A new finding in code the engineer
+skipping those needs no reason. The one exception is a finding you
+tiered too low: re-raise it as `[blocker]` with `retiered: <why>`
+in its comment. A new finding in code the engineer
 wrote to fix a previous round blocks only if it is a `[blocker]`;
 tier it honestly rather than escalating edge cases in fix code.
 
@@ -100,7 +104,7 @@ tier it honestly rather than escalating edge cases in fix code.
   {
     "author": "A",
     "verdict": "approve" | "request_changes",
-    "summary": "one-line overall take",
+    "summary": "1 blocker, 1 nit: nil deref in X",
     "comments": ["[blocker] path:line: ...", "[nit] path:line: ..."]
   }
   ```

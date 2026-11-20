@@ -57,8 +57,8 @@ responses to read.
   {
     "author": "A",
     "verdict": "approve" | "request_changes",
-    "summary": "one-line overall take",
-    "comments": ["...", "..."]
+    "summary": "1 blocker, 1 nit: spec step 3 missing",
+    "comments": ["[blocker] ...", "[nit] ..."]
   }
   ```
 
@@ -88,15 +88,20 @@ code-review slot uses:
   project's size cap.
 - `[nice-to-have]`: a real defect that needs unusual or adversarial
   input, a race with a manual human edit, or a theoretical cost.
+  Never a security defect: an exploitable hole is a `[blocker]` even
+  when only crafted input reaches it.
 - `[nit]`: cosmetic (naming, formatting, comment wording).
 
 `request_changes` only when at least one `[blocker]` exists.
 Otherwise `approve`, keeping the non-blocking comments in the
-verdict so they reach the PR.
+verdict: it is their record, and in the draft-PR flow it reaches the
+PR.
 
 On rounds 2+, do not re-raise a `[nice-to-have]` or `[nit]` the
-engineer skipped. A new finding in code the engineer wrote to fix a
-previous round blocks only if it is a `[blocker]`.
+engineer skipped, unless you tiered it too low: then re-raise it as
+`[blocker]` with `retiered: <why>` in its comment. A new finding in
+code the engineer wrote to fix a previous round blocks only if it is
+a `[blocker]`.
 
 ## Writing JSON files
 
