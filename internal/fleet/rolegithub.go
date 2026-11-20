@@ -40,6 +40,10 @@ type githubState struct {
 	// the mirror was failing at PhaseDone.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
+	// BodyStructure is the structure block last spliced into (or
+	// skipped for) the PR body; a differing latest block triggers one
+	// sync attempt.
+	BodyStructure string `json:"body_structure,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -137,6 +141,8 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// structure is the PR-safe structure block for this tick.
+	structure string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -237,7 +243,11 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
-	if len(pending) == 0 {
+	if m.structure, err = prStructure(m.projectRoot, m.slug); err != nil {
+		return err
+	}
+	staleBody := m.state.PRNumber != 0 && m.structure != m.state.BodyStructure
+	if len(pending) == 0 && !staleBody {
 		return nil
 	}
 	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
@@ -269,7 +279,86 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.state.Posted = append(m.state.Posted, e.name)
 		m.save()
 	}
+	return m.syncBody()
+}
+
+// syncBody splices the latest structure block into the live PR body,
+// replacing the previous block in place so operator edits survive. It
+// leaves the body alone when it lacks the mirror's footer (a PR opened
+// outside the loop) or no longer carries the previous block verbatim
+// (the operator edited it); either way the block is recorded so the
+// next tick does not retry. A body that changes between the read and
+// the edit is left for the next tick.
+func (m *githubMirror) syncBody() error {
+	if m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
+		return nil
+	}
+	num := strconv.Itoa(m.state.PRNumber)
+	view := func() (string, error) {
+		out, err := m.runRaw("gh", "", "pr", "view", num, "--json", "body", "-q", ".body")
+		return strings.ReplaceAll(strings.TrimSuffix(out, "\n"), "\r\n", "\n"), err
+	}
+	body, err := view()
+	if err != nil {
+		return err
+	}
+	if next, ok := spliceStructure(body, m.state.BodyStructure, m.structure); ok && next != body {
+		again, err := view()
+		if err != nil {
+			return err
+		}
+		if again != body {
+			return nil
+		}
+		if _, err := m.gh(next, "pr", "edit", num, "--body-file", "-"); err != nil {
+			return err
+		}
+	}
+	m.state.BodyStructure = m.structure
+	m.save()
 	return nil
+}
+
+const prFooterMarker = "Opened by spore's role loop"
+
+// spliceStructure swaps prev for next in an LF-normalized,
+// mirror-written body, working only above the footer line: the last
+// copy of prev there is the mirror's (an operator quote sits higher).
+// With no prev it inserts next just above the footer unless the body
+// already carries it; an empty next removes prev.
+func spliceStructure(body, prev, next string) (string, bool) {
+	marker := strings.LastIndex(body, prFooterMarker)
+	if marker < 0 {
+		return "", false
+	}
+	foot := strings.LastIndex(body[:marker], "\n") + 1
+	head, tail := body[:foot], body[foot:]
+	join := func(parts ...string) string {
+		var keep []string
+		for _, p := range parts {
+			if p = strings.Trim(p, "\n"); p != "" {
+				keep = append(keep, p)
+			}
+		}
+		if len(keep) == 0 {
+			return tail
+		}
+		return strings.Join(keep, "\n\n") + "\n\n" + tail
+	}
+	if prev != "" {
+		i := strings.LastIndex(head, prev)
+		if i < 0 {
+			return "", false
+		}
+		if next == "" {
+			return join(head[:i], head[i+len(prev):]), true
+		}
+		return head[:i] + next + head[i+len(prev):] + tail, true
+	}
+	if next == "" || strings.Contains(head, next) {
+		return body, true
+	}
+	return join(head, next), true
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -426,10 +515,7 @@ func (m *githubMirror) ensurePR() error {
 		}
 		base = strings.TrimPrefix(head, "origin/")
 	}
-	title := meta.Title
-	if title == "" {
-		title = m.slug
-	}
+	title := prTitle(meta.Title, m.slug)
 	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
 		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
 	if err != nil {
@@ -441,22 +527,49 @@ func (m *githubMirror) ensurePR() error {
 		return fmt.Errorf("gh pr create: no PR number in %q", url)
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
+	m.state.BodyStructure = m.structure
 	m.save()
 	return nil
 }
 
-// prBody is the brief's summary paragraph plus a fixed footer. The rest
-// of spec.md stays off the PR: briefs carry host paths and
-// coordinator-only notes. A summary naming an absolute path falls back
-// to the task title.
+func prTitle(title, slug string) string {
+	if title == "" {
+		return slug
+	}
+	return title
+}
+
+// prBody is the brief's summary paragraph, the engineer's structure
+// block, and a fixed footer. The rest of spec.md stays off the PR:
+// briefs carry host paths and coordinator-only notes. A summary naming
+// an absolute path falls back to the task title.
 func (m *githubMirror) prBody(title string) string {
 	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
 	summary := specSummary(string(spec))
 	if summary == "" || absPathRE.MatchString(summary) {
 		summary = title
 	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
+	if m.structure != "" {
+		summary += "\n\n" + m.structure
+	}
+	return fmt.Sprintf("%s\n\nDispatched by @%s. "+prFooterMarker+": reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
 		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
+}
+
+// prStructure is latestStructure with the summary's absolute-path
+// guard applied per line, diff markers stripped: a block naming a host
+// path is dropped.
+func prStructure(projectRoot, slug string) (string, error) {
+	s, err := latestStructure(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if absPathRE.MatchString(strings.TrimLeft(line, "+-")) {
+			return "", nil
+		}
+	}
+	return s, nil
 }
 
 var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")
@@ -503,6 +616,13 @@ func (e *cmdError) Error() string { return e.key + ": " + e.stderr }
 // run1 runs name in the worktree as the app and returns trimmed
 // stdout; a failure carries stderr.
 func (m *githubMirror) run1(name, stdin string, args ...string) (string, error) {
+	out, err := m.runRaw(name, stdin, args...)
+	return strings.TrimSpace(out), err
+}
+
+// runRaw is run1 without trimming stdout, for output whose whitespace
+// is content (a PR body).
+func (m *githubMirror) runRaw(name, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -523,5 +643,5 @@ func (m *githubMirror) run1(name, stdin string, args ...string) (string, error) 
 			stderr: strings.TrimSpace(stderr.String()),
 		}
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }

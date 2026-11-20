@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -552,7 +553,9 @@ func writeSummary(projectRoot, slug string) error {
 
 // computeSummaryFingerprint returns the artifact-count signature the
 // next writeSummary will compare against the file's embedded marker.
-// Shape: "engineer=<E> A=<NA> B=<NB>".
+// Shape: "engineer=<E> A=<NA> B=<NB>", plus " structure=<hash>" when
+// an engineer round carries one, so a structure rewritten in place
+// still regenerates the summary.
 func computeSummaryFingerprint(projectRoot, slug string) (string, error) {
 	eng, err := task.ListEngineerRounds(projectRoot, slug)
 	if err != nil {
@@ -566,7 +569,16 @@ func computeSummaryFingerprint(projectRoot, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("engineer=%d A=%d B=%d", len(eng), len(a), len(b)), nil
+	fp := fmt.Sprintf("engineer=%d A=%d B=%d", len(eng), len(a), len(b))
+	structure, err := latestStructure(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	if structure != "" {
+		sum := sha256.Sum256([]byte(structure))
+		fp += fmt.Sprintf(" structure=%x", sum[:4])
+	}
+	return fp, nil
 }
 
 // extractSummaryFingerprint reads the embedded marker out of an
@@ -590,6 +602,14 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 	fmt.Fprintf(&b, "# %s: review summary\n\n", slug)
 	fmt.Fprintf(&b, "Generated %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "%s %s -->\n\n", summaryFingerprintPrefix, fingerprint)
+
+	structure, err := latestStructure(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	if structure != "" {
+		fmt.Fprintf(&b, "## structure\n\n%s\n\n", structure)
+	}
 
 	for _, instance := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		rounds, err := task.ListReviewRounds(projectRoot, slug, instance)
@@ -663,4 +683,61 @@ func writeEngineerResponse(b *strings.Builder, resp task.EngineerResponse) {
 		fmt.Fprintf(b, "Notes: %s\n\n", resp.Notes)
 	}
 	list("Proposed follow-ups", resp.Followups)
+}
+
+// latestStructure returns the newest valid engineer round's structure
+// block, refenced as a diff. Rounds that omit the field inherit the
+// previous round's block.
+func latestStructure(projectRoot, slug string) (string, error) {
+	rounds, err := validEngineerRounds(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		resp, err := task.ReadEngineerResponse(projectRoot, slug, rounds[i])
+		if err != nil {
+			return "", err
+		}
+		if s := fenceStructure(resp.Structure); s != "" {
+			return s, nil
+		}
+	}
+	return "", nil
+}
+
+// fenceStructure keeps the first complete fenced block's body and wraps
+// it in a fresh diff fence, so a missing closing fence or prose around
+// the block cannot leave an open code block in the PR body or
+// summary.md. Unfenced text is kept whole. A lone fence opens the block
+// when text follows it and closes it otherwise. Only a fence at column
+// 0 counts: " ```" is a diff context line.
+func fenceStructure(s string) string {
+	lines := strings.Split(s, "\n")
+	var fences []int
+	for i, l := range lines {
+		if strings.HasPrefix(l, "```") {
+			fences = append(fences, i)
+		}
+	}
+	switch {
+	case len(fences) >= 2:
+		lines = lines[fences[0]+1 : fences[1]]
+	case len(fences) == 1:
+		after := lines[fences[0]+1:]
+		if strings.TrimSpace(strings.Join(after, "")) != "" {
+			lines = after
+		} else {
+			lines = lines[:fences[0]]
+		}
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "```diff\n" + strings.Join(lines, "\n") + "\n```"
 }
