@@ -191,6 +191,8 @@ func TestDeriveSnapshotEscalateAtRound3A(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   3,
 		LastVerdict:     task.VerdictRequestChanges,
+		// The final request_changes owes one engineer fix pass.
+		EscalationFixPending: true,
 	}
 	if got != want {
 		t.Fatalf("escalation snapshot mismatch\n want: %+v\n got:  %+v", want, got)
@@ -201,8 +203,8 @@ func TestDeriveSnapshotEscalateAtRound3A(t *testing.T) {
 	// fooled into looking like review-A round 4 is pending.
 	writeEng(4)(t, root, slug)
 	got, _ = DeriveSnapshot(root, slug)
-	if got.Phase != PhaseEscalated {
-		t.Errorf("phase after engineer round 4 = %s, want %s", got.Phase, PhaseEscalated)
+	if got.Phase != PhaseEscalated || got.EscalationFixPending {
+		t.Errorf("after engineer round 4: phase %s, fix pending %v; want %s, false", got.Phase, got.EscalationFixPending, PhaseEscalated)
 	}
 }
 
@@ -225,12 +227,13 @@ func TestDeriveSnapshotEscalateAtRound3B(t *testing.T) {
 		t.Fatalf("DeriveSnapshot: %v", err)
 	}
 	want := Snapshot{
-		Slug:            slug,
-		Phase:           PhaseEscalated,
-		EngineerRound:   3,
-		CurrentReviewer: task.ReviewerB,
-		ReviewerRound:   3,
-		LastVerdict:     task.VerdictRequestChanges,
+		Slug:                 slug,
+		Phase:                PhaseEscalated,
+		EngineerRound:        3,
+		CurrentReviewer:      task.ReviewerB,
+		ReviewerRound:        3,
+		LastVerdict:          task.VerdictRequestChanges,
+		EscalationFixPending: true,
 	}
 	if got != want {
 		t.Errorf("B escalation snapshot mismatch\n want: %+v\n got:  %+v", want, got)

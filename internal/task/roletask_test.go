@@ -173,7 +173,7 @@ func TestReviewRoundtrip(t *testing.T) {
 		Author:   string(ReviewerA),
 		Verdict:  VerdictRequestChanges,
 		Summary:  "naming drift in state machine",
-		Comments: []string{"Phase enum should be string", "drop the helper struct"},
+		Comments: []ReviewComment{Ungraded("Phase enum should be string"), Ungraded("drop the helper struct")},
 	}
 	if err := WriteReview(root, "demo", ReviewerA, 1, in); err != nil {
 		t.Fatalf("WriteReview: %v", err)

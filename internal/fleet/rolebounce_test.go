@@ -178,3 +178,54 @@ func TestBounceLeavesGrandfatheredFilesAlone(t *testing.T) {
 		t.Errorf("grandfathered file moved: %v", err)
 	}
 }
+
+// A verdict whose comments are not sorted by severity is bounced to
+// its reviewer with the rule, and does not count toward the phase.
+func TestBounceUnsortedVerdict(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	slug := "demo"
+	for _, ensure := range []func(string, string) error{task.EnsureLegacyMarker, task.EnsureOrderExemptMarker} {
+		if err := ensure(root, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	path := task.ReviewPath(root, slug, task.ReviewerA, 1)
+	writeRaw(t, path, `{"author":"A","verdict":"request_changes","summary":"s","prefix":"R","comments":[`+
+		`{"severity":"low","category":"nit","text":"rename"},`+
+		`{"severity":"high","category":"correctness","text":"nil deref","reason":"r","trigger":"t"}]}`)
+	if snap, err := DeriveSnapshot(root, slug); err != nil || snap.Phase != PhaseReviewA || snap.ReviewerRound != 0 {
+		t.Fatalf("snap = %+v, err %v: unsorted verdict must not count", snap, err)
+	}
+	outcome := wakeDelivered
+	calls := stubWakeRole(t, &outcome)
+	if err := bounceInvalidRoleFiles(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || !strings.Contains((*calls)[0].msg, "sort comments by severity") {
+		t.Fatalf("wakes = %+v", *calls)
+	}
+	if _, err := os.Stat(path + task.InvalidSuffix); err != nil {
+		t.Errorf("unsorted verdict not moved aside: %v", err)
+	}
+}
+
+// The engineer wake names the reviewer by its display label and the
+// IDs it should cite.
+func TestWakeEngineerNamesReviewerAndIDs(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	mustWriteReview(t, root, slug, task.ReviewerB, 2, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s", Prefix: "C",
+		Comments: []task.ReviewComment{{Severity: "high", Category: "correctness", Text: "x", Reason: "r", Trigger: "t"}}})
+	outcome := wakeDelivered
+	calls := stubWakeRole(t, &outcome)
+	snap := Snapshot{Phase: PhaseEngineerReviseB, CurrentReviewer: task.ReviewerB, ReviewerRound: 2}
+	if err := wakeEngineer(root, slug, snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || !strings.HasPrefix((*calls)[0].msg, "Code review (reviewer B, comment IDs C2.N) requested changes at round 2.") {
+		t.Fatalf("wakes = %+v", *calls)
+	}
+}

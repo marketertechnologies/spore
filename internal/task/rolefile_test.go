@@ -25,7 +25,7 @@ func TestParseReviewStrict(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, false)
+			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, 1, false)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want nil", err)
@@ -43,13 +43,13 @@ func TestParseReviewStrict(t *testing.T) {
 }
 
 func TestParseReviewLegacyTolerance(t *testing.T) {
-	if _, err := ParseReview("x", []byte(`{"verdict":"approve","extra":1}`), ReviewerA, true); err != nil {
+	if _, err := ParseReview("x", []byte(`{"verdict":"approve","extra":1}`), ReviewerA, 1, true); err != nil {
 		t.Errorf("legacy file without author / with extra key: %v", err)
 	}
-	if _, err := ParseReview("x", []byte(`{"verdict":"lgtm"}`), ReviewerA, true); !errors.Is(err, ErrInvalidRoleFile) {
+	if _, err := ParseReview("x", []byte(`{"verdict":"lgtm"}`), ReviewerA, 1, true); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Errorf("legacy bad verdict err = %v, want invalid", err)
 	}
-	if _, err := ParseReview("x", []byte(`{"author":"B","verdict":"approve"}`), ReviewerA, true); !errors.Is(err, ErrInvalidRoleFile) {
+	if _, err := ParseReview("x", []byte(`{"author":"B","verdict":"approve"}`), ReviewerA, 1, true); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Errorf("legacy wrong author err = %v, want invalid", err)
 	}
 }
@@ -99,6 +99,95 @@ func TestEnsureLegacyMarkerGrandfathersExistingFilesOnly(t *testing.T) {
 	}
 	if _, err := ReadReview(root, slug, ReviewerA, 2); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Fatalf("post-marker file without author: err = %v, want invalid", err)
+	}
+}
+
+// A strict review written before severity order was enforced must not
+// be bounced on upgrade; one written after it must.
+func TestOrderExemptMarkerGrandfathersUnsortedReviews(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	if err := EnsureLegacyMarker(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	unsorted := `{"author":"A","verdict":"request_changes","summary":"s","comments":[` +
+		`{"severity":"low","category":"nit","text":"rename"},` +
+		`{"severity":"high","category":"correctness","text":"nil deref","reason":"r","trigger":"t"}]}`
+	write := func(round int) RoleFile {
+		t.Helper()
+		p := ReviewPath(root, slug, ReviewerA, round)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(unsorted), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return RoleFile{Path: p, Rel: relTo(RoleTaskDir(root, slug), p), Instance: ReviewerA, Round: round}
+	}
+	old := write(1)
+	if err := ValidateRoleFile(root, slug, old); err != nil {
+		t.Fatalf("pre-marker unsorted file: %v", err)
+	}
+	if err := EnsureOrderExemptMarker(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRoleFile(root, slug, old); err != nil {
+		t.Fatalf("exempt unsorted file rejected: %v", err)
+	}
+	if _, err := ReadReview(root, slug, ReviewerA, 1); err != nil {
+		t.Fatalf("exempt unsorted file unreadable: %v", err)
+	}
+	fresh := write(2)
+	if err := ValidateRoleFile(root, slug, fresh); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), "sort comments by severity") {
+		t.Fatalf("post-marker unsorted file: err = %v, want severity-order invalid", err)
+	}
+	if _, err := ReadReview(root, slug, ReviewerA, 2); !errors.Is(err, ErrInvalidRoleFile) {
+		t.Fatalf("post-marker unsorted ReadReview: err = %v, want invalid", err)
+	}
+}
+
+func TestParseEngineerOutcomeDetailAndSHA(t *testing.T) {
+	ok := `{"author":"engineer","addressed":[],"pushback":[],"outcomes":[` +
+		`{"reviewer":"A","round":1,"comment":0,"outcome":"fixed","detail":"guard nil session","sha":"abc1234"},` +
+		`{"reviewer":"A","round":1,"comment":1,"outcome":"declined"}]}`
+	r, err := ParseEngineerResponse("x", []byte(ok), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := r.Outcomes[0]; o.Detail != "guard nil session" || o.SHA != "abc1234" {
+		t.Errorf("outcome = %+v", o)
+	}
+	bad := `{"author":"engineer","addressed":[],"pushback":[],"outcomes":[{"reviewer":"A","round":1,"comment":0,"outcome":"fixed","sha":"HEAD"}]}`
+	if _, err := ParseEngineerResponse("x", []byte(bad), false); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), `sha "HEAD"`) {
+		t.Errorf("bad sha: err = %v", err)
+	}
+}
+
+func TestParseEngineerResponsePR(t *testing.T) {
+	resp := func(pr string) string {
+		return `{"author":"engineer","addressed":[],"pushback":[],"pr":` + pr + `}`
+	}
+	r, err := ParseEngineerResponse("x", []byte(resp(`{"title":"fix(orders): HK-761 drop the stale error","body":"## Problem\nx"}`)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PR == nil || r.PR.Title != "fix(orders): HK-761 drop the stale error" {
+		t.Errorf("pr = %+v", r.PR)
+	}
+	if r, err := ParseEngineerResponse("x", []byte(`{"author":"engineer","addressed":[],"pushback":[]}`), false); err != nil || r.PR != nil {
+		t.Errorf("absent pr: %+v, %v", r.PR, err)
+	}
+	for name, c := range map[string]struct{ pr, want string }{
+		"empty title": {`{"title":" ","body":"b"}`, `pr: missing required field "title"`},
+		"multi-line":  {`{"title":"a\nb","body":"b"}`, "single line"},
+		"long title":  {`{"title":"` + strings.Repeat("x", MaxPRTitleLen+1) + `","body":"b"}`, "max 120"},
+		"empty body":  {`{"title":"t","body":""}`, `pr: missing required field "body"`},
+		"unknown key": {`{"title":"t","body":"b","labels":[]}`, `unknown field "labels"`},
+		"not object":  {`"fix: x"`, "decode"},
+	} {
+		if _, err := ParseEngineerResponse("x", []byte(resp(c.pr)), false); !errors.Is(err, ErrInvalidRoleFile) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want invalid containing %q", name, err, c.want)
+		}
 	}
 }
 

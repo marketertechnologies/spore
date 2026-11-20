@@ -158,3 +158,33 @@ func TestResolveRoleBodyBootstrapScript(t *testing.T) {
 		t.Errorf("engineer TmuxArgs: %v", err)
 	}
 }
+
+// The bundled bodies carry the comment-ID contract the driver and the
+// validator rely on.
+func TestBundledRoleBodiesCommentIDContract(t *testing.T) {
+	want := map[string][]string{
+		"reviewer.md": {
+			"$SPORE_REVIEWER_PREFIX", "$SPORE_REVIEWER_LABEL", "`<prefix><round>.<n>`",
+			"then `medium`, then `low`,\nthen `question`", "By default slot A is this\nrequirements review",
+			"Check the `pr` title and body",
+		},
+		"reviewer-code-review.md": {
+			"$SPORE_REVIEWER_PREFIX", "`<prefix><round>.<n>`", "authoritative numbered list",
+			"you run last\n(slot B)",
+		},
+		"engineer.md": {
+			"`<prefix><round>.<n>`", "`R1.3` is `\"comment\": 2`", "`detail`", "`sha`", "- `pr`: the PR title and description",
+		},
+	}
+	for name, phrases := range want {
+		b, err := spore.BundledRoles.ReadFile("bootstrap/roles/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range phrases {
+			if !strings.Contains(string(b), p) {
+				t.Errorf("%s lacks %q", name, p)
+			}
+		}
+	}
+}

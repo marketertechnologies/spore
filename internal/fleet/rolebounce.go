@@ -12,13 +12,13 @@ import (
 	"github.com/versality/spore/internal/task"
 )
 
-// wakeRole is the wake seam bounceInvalidRoleFiles delivers through.
-// Tests swap it to observe bounces without tmux.
+// wakeRole is the wake seam bounceInvalidRoleFiles and wakeEngineer
+// deliver through. Tests swap it to observe wakes without tmux.
 var wakeRole = wakeSession
 
 const (
-	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "comments"`
-	engineerKeys = `"author", "addressed", "pushback", "notes", "followups"`
+	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "prefix" ($SPORE_REVIEWER_PREFIX), "comments" (objects {"severity","category","where","text","reason","trigger","suggestion"}, sorted high, medium, low, question)`
+	engineerKeys = `"author", "addressed", "pushback", "notes", "followups", "outcomes", "pr" ({"title","body"})`
 )
 
 // bounceInvalidRoleFiles hands every role file that fails validation

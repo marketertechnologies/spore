@@ -20,7 +20,7 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs splitting",
-		Comments: []string{"split commit X", "drop file Y"},
+		Comments: []task.ReviewComment{task.Ungraded("split commit X"), task.Ungraded("drop file Y")},
 	})
 	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{
 		Verdict: task.VerdictApprove,
@@ -112,7 +112,7 @@ func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
 	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs work",
-		Comments: []string{"fix bug X"},
+		Comments: []task.ReviewComment{task.Ungraded("fix bug X")},
 	})
 	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{
 		Addressed: []string{"bug X -> commit Y"},
@@ -290,6 +290,11 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 		})
 	}
 
+	// Escalation wakes the engineer for its fix pass; keep that off
+	// real tmux.
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop (escalation): %v", err)
@@ -535,6 +540,9 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 		})
 	}
 
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop: %v", err)
@@ -551,7 +559,8 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 	if envs[0].Source != "role-loop" {
 		t.Errorf("source = %q, want %q", envs[0].Source, "role-loop")
 	}
-	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) + ")"
+	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) +
+		"); engineer asked to address the high/medium comments once, operator intervention required"
 	if envs[0].Body != wantBody {
 		t.Errorf("body = %q, want %q", envs[0].Body, wantBody)
 	}
