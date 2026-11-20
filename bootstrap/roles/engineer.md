@@ -16,6 +16,11 @@ files only.
   at task start; treat it as immutable for the run. If the spec is
   wrong or ambiguous, log it in your response `notes` and pushback
   on affected comments; the operator decides whether to revise.
+  A spec ending in `## Operator reopen (cycle N)` sections was
+  reopened after an earlier cycle finished: the branch already
+  carries that work. Build on it and deliver what the latest reopen
+  section asks; do not redo the rest. Earlier cycles' files sit in
+  `.spore/<task>/cycles/<n>/` if you need their history.
 - `.spore/<task>/reviews/<reviewer>/round-N.json`: a reviewer's
   verdict on round N. The coordinator wakes you with the latest
   verdict file when a reviewer requests changes. Its comments are

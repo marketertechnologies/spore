@@ -37,6 +37,9 @@ responses to read.
   treat it as immutable for the run. If the spec is wrong or
   ambiguous, surface that in your verdict `summary` and (where
   relevant) per-comment notes; the operator decides.
+  `## Operator reopen (cycle N)` sections are operator requirements
+  added after an earlier cycle: the latest one is what this cycle
+  must deliver, and it overrides earlier spec text it contradicts.
 - The current task branch (`git diff <base>...HEAD`; see "The base"
   below).
 - Instance A: `.spore/<task>/responses/engineer-round-N.json` for

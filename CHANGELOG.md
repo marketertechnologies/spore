@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Role loop (0.34.0): `spore task reopen <slug> --note <text>`
+  (or `--note-file`) runs a new engineer -> review A -> review B cycle
+  on a done or escalated role task, on the same branch, worktree and
+  PR. The finished cycle's `responses/`, `reviews/`, `summary.md` and
+  `state/` markers move to `.spore/<slug>/cycles/<n>/`, so the derived
+  phase restarts at engineer-initial with fresh round caps; the note
+  is appended to `spec.md` as `## Operator reopen (cycle N)`, which
+  the engineer and reviewer role bodies now treat as this cycle's
+  requirement. With the draft-PR flow, `github.json` keeps the PR and
+  last push, the mirror moves the PR back to draft, posts the note,
+  heads the cycle's posts `(cycle N, round M)`, and marks it ready
+  again at done. Refuses mid-loop, on a non-active task, or without a
+  note.
 - Role loop (0.33.2): design defects grade as `medium`. Reviewer
   rubrics (`reviewer.md`, `reviewer-code-review.md`, and
   `docs/role-loop.md`) now grade a change that breaks a documented

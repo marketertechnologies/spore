@@ -46,6 +46,9 @@ type githubState struct {
 	// the PR twice.
 	PRDescription string `json:"pr_description,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
+	// Reopen is set by `spore task reopen` for the current cycle; the
+	// mirror then re-drafts the PR and labels its posts with the cycle.
+	Reopen *reopenState `json:"reopen,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -75,6 +78,7 @@ const (
 	eventReview    = "review"
 	eventEscalated = "escalated"
 	eventReady     = "ready"
+	eventReopened  = "reopened"
 )
 
 // mirrorEvents lists, in loop order, every GitHub action the files on
@@ -234,8 +238,14 @@ func (m *githubMirror) save() {
 
 func (m *githubMirror) run(snap Snapshot) error {
 	events, err := mirrorEvents(m.projectRoot, m.slug, snap)
-	if err != nil || len(events) == 0 {
+	if err != nil {
 		return err
+	}
+	if r := m.state.Reopen; r != nil {
+		events = append([]mirrorEvent{{name: reopenEventName(r.Cycle), kind: eventReopened, round: r.Cycle}}, events...)
+	}
+	if len(events) == 0 {
+		return nil
 	}
 	pending := events[:0]
 	for _, e := range events {
@@ -297,7 +307,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			return err
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "**Engineer (round %d)**\n\n", e.round)
+		fmt.Fprintf(&b, "**Engineer (%sround %d)**\n\n", m.cyclePrefix(), e.round)
 		writeEngineerResponse(&b, m.projectRoot, m.slug, resp)
 		return m.prComment(b.String())
 	case eventReview:
@@ -305,13 +315,16 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		if err != nil {
 			return err
 		}
-		_, err = m.gh(reviewBody(e.instance, e.round, rev), "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
+		body := strings.Replace(reviewBody(e.instance, e.round, rev), "(round ", "("+m.cyclePrefix()+"round ", 1)
+		_, err = m.gh(body, "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
 		return err
 	case eventEscalated:
 		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
 			"The engineer was asked to address them in one fix pass; no re-review follows. Operator intervention is required: the PR stays draft until the operator decides.",
 			label, e.round, MaxReviewerRounds))
+	case eventReopened:
+		return m.redraft()
 	case eventReady:
 		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
@@ -428,6 +441,32 @@ func indentLines(s, prefix string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// cyclePrefix labels round headings after a reopen ("cycle 2, "), so
+// the restarted round numbers do not read as repeats of cycle 1.
+func (m *githubMirror) cyclePrefix() string {
+	if m.state.Reopen == nil {
+		return ""
+	}
+	return fmt.Sprintf("cycle %d, ", m.state.Reopen.Cycle)
+}
+
+// redraft moves a ready PR back to draft and posts the operator's
+// reopen note. A PR already in draft (reopened from escalation) only
+// gets the comment.
+func (m *githubMirror) redraft() error {
+	pr := strconv.Itoa(m.state.PRNumber)
+	draft, err := m.gh("", "pr", "view", pr, "--json", "isDraft", "--jq", ".isDraft")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(draft) != "true" {
+		if _, err := m.gh("", "pr", "ready", pr, "--undo"); err != nil {
+			return err
+		}
+	}
+	return m.prComment(reopenComment(*m.state.Reopen))
 }
 
 func (m *githubMirror) prComment(body string) error {

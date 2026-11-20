@@ -535,6 +535,36 @@ that is moot (the done tick already reaped all three panes), but when
 you abandon an escalated task, kill the surviving panes yourself with
 `tmux kill-session -t spore-role/<project>/<slug>/<role>`.
 
+### Reopening a finished loop
+
+When the loop is done (or escalated) but the PR needs another pass,
+reopen it instead of starting a new task:
+
+    spore task reopen <slug> --note "drop the new service; keep the fix in the resolver"
+    spore task reopen <slug> --note-file note.md
+
+The task must be `status: active` (a `spore task done` task is gone)
+and its loop done or escalated; mid-loop it refuses. Reopen:
+
+- Kills the role panes.
+- Moves `responses/`, `reviews/`, `summary.md` and the `state/`
+  markers (except pre-start locks) to `cycles/<n>/`. The phase is
+  derived from round files, so the empty tree restarts at
+  engineer-initial with fresh round caps; the next reconciler tick
+  spawns the engineer on the same worktree and branch.
+- Appends the note to `spec.md` as `## Operator reopen (cycle N)`.
+  The engineer builds on the branch and delivers that section; the
+  requirements review checks it like any spec item.
+- With `pr_flow = "draft"`, resets `github.json` to the PR number,
+  URL and last pushed commit plus the pending reopen. The next tick
+  moves the PR back to draft, posts the note as a comment, and the
+  cycle's posts read `(cycle N, round M)`. Round numbers and comment
+  IDs restart at 1 per cycle. At done the PR goes ready again and the
+  engineer's PR description is re-applied.
+
+Reopen fits "the PR is mostly right, change X". When the scope itself
+was wrong, close the PR and mint a new task with the corrected spec.
+
 The rest of `.spore/<slug>/` is preserved: `spec.md`, `responses/`,
 `reviews/`, `summary.md`, and the remaining state markers stay on
 disk as the task's audit trail.
