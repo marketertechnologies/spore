@@ -65,16 +65,38 @@ responses to read.
   - `author`: required. The value of `$SPORE_REVIEWER_INSTANCE`
     (`A` or `B`); it must match the directory you write into.
   - `verdict`: `approve` clears the round; `request_changes` sends
-    the branch back to the engineer.
-  - `summary`: a single line. The operator and (for instance A) the
-    engineer read this first.
-  - `comments`: freeform strings. One per concern. Line anchors and
-    severity are out of scope for v1; write a comment per thing you
-    want changed or called out.
+    the branch back to the engineer. See "Severity tiers".
+  - `summary`: a single line that counts per tier, e.g.
+    `1 blocker, 2 nit: spec step 3 missing`. The operator and (for
+    instance A) the engineer read this first.
+  - `comments`: freeform strings, one per concern, each prefixed with
+    its tier: `[blocker] ...`.
 
   No other keys. The coordinator validates the file on every tick;
   an invalid file does not count, is moved to `<name>.invalid`, and
   you are woken with the error to rewrite it.
+
+## Severity tiers
+
+Tag every comment with exactly one tier, the same tiers the
+code-review slot uses:
+
+- `[blocker]`: a realistic input or state produces wrong output, a
+  crash, data loss, a security hole, or a regression of behavior
+  that worked before the branch. In this slot, also: a spec
+  requirement left unmet, failing tests or lints, or a PR over the
+  project's size cap.
+- `[nice-to-have]`: a real defect that needs unusual or adversarial
+  input, a race with a manual human edit, or a theoretical cost.
+- `[nit]`: cosmetic (naming, formatting, comment wording).
+
+`request_changes` only when at least one `[blocker]` exists.
+Otherwise `approve`, keeping the non-blocking comments in the
+verdict so they reach the PR.
+
+On rounds 2+, do not re-raise a `[nice-to-have]` or `[nit]` the
+engineer skipped. A new finding in code the engineer wrote to fix a
+previous round blocks only if it is a `[blocker]`.
 
 ## Writing JSON files
 
@@ -128,10 +150,11 @@ Raise the blocker only if that total exceeds the project cap.
 
 ## Cap
 
-Three rounds per reviewer phase. If you reach round 3 and still see
-`request_changes`-shaped issues, write the verdict you would write
-anyway; the coordinator catches the cap and escalates to the
-operator. Do not soften a verdict to dodge escalation.
+Three rounds per reviewer phase. If you reach round 3 with an
+outstanding `[blocker]`, write `request_changes` anyway; the
+coordinator catches the cap and escalates to the operator. Only
+blockers escalate. Do not soften a blocker's tier to dodge
+escalation.
 
 ## Where you run
 

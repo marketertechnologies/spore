@@ -69,6 +69,19 @@ spec, so its findings may lack spec context. When a finding
 contradicts the spec, push back with a one-line reason (spec intends
 it / pre-existing code / out of scope) instead of implementing it.
 
+## Severity tiers
+
+Reviewer comments may carry a tier prefix: `[blocker]`,
+`[nice-to-have]`, or `[nit]`. Only blockers hold the loop back; a
+verdict with no blocker is an approve.
+
+- Address every `[blocker]`, or push back on it with a concrete
+  reason.
+- You may skip `[nice-to-have]` and `[nit]` comments without a
+  reason. List each one in `pushback` as `skipped: <comment>` so the
+  reviewer does not re-raise it. Fix one only when it is cheap and
+  sits in code you are already changing.
+
 ## Fix rounds
 
 In a revision round, change only what the reviewers raised. Do not
