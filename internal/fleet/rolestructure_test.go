@@ -229,11 +229,15 @@ func TestFenceStructure(t *testing.T) {
 		"```diff\n Widget\n+  spin()\n",
 		"Shape of the change:\n```\n Widget\n+  spin()\n```\nThat is all.",
 		"\n\n```diff\n\n Widget\n+  spin()\n\n```\n",
-		"```diff\n Widget\n```\n```diff\n+  spin()\n```",
+		" Widget\n+  spin()\n```",
+		"```diff\n Widget\n+  spin()\n```\nAlso see:\n```go\nfunc spin() {}\n```",
 	} {
 		if got := fenceStructure(in); got != want {
 			t.Errorf("fenceStructure(%q) = %q, want %q", in, got, want)
 		}
+	}
+	if got, want := fenceStructure("```diff\n Doc\n ```\n+ code\n```"), "```diff\n Doc\n ```\n+ code\n```"; got != want {
+		t.Errorf("indented context fence: got %q, want %q", got, want)
 	}
 	for _, in := range []string{"", "  \n", "```diff\n```"} {
 		if got := fenceStructure(in); got != "" {

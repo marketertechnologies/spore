@@ -247,11 +247,11 @@ by writing `responses/engineer-round-N.json`:
 `structure` is a fenced `diff` sketch of the change's shape. The
 schema keeps it optional; the engineer body asks for it in round 1
 and again only when the shape changes, and a round without it
-inherits the last one. The block is refenced on read: text between
-the first and last fence lines survives (to the end when the fence
-never closes), inner fence lines are dropped, and the result is
-wrapped in a fresh ```` ```diff ```` fence, so a missing closing fence
-or surrounding prose cannot leave an open code block. The latest block opens `summary.md` and, under the
+inherits the last one. The block is refenced on read: only the first
+complete fenced block survives (a lone fence opens the block when
+text follows it, else closes it; only a column-0 fence counts), and
+it is wrapped in a fresh ```` ```diff ```` fence, so a missing or
+stray fence or surrounding prose cannot leave an open code block. The latest block opens `summary.md` and, under the
 draft-PR flow, the PR body: the mirror writes it on `pr create`; when
 a later round changes it, the mirror reads the live body
 (`gh pr view`, CRLF normalized) and swaps the last copy of the old

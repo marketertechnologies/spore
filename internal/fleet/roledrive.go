@@ -705,35 +705,30 @@ func latestStructure(projectRoot, slug string) (string, error) {
 	return "", nil
 }
 
-// fenceStructure keeps the text between the first and last fence lines
-// (to the end when only one fence opens), drops fence lines inside it,
-// and wraps the result in a fresh diff fence. Unfenced text is kept
-// whole. A missing closing fence or prose around the block thus cannot
-// leave an open code block in the PR body or summary.md, and a second
-// fenced block is merged rather than cut off.
+// fenceStructure keeps the first complete fenced block's body and wraps
+// it in a fresh diff fence, so a missing closing fence or prose around
+// the block cannot leave an open code block in the PR body or
+// summary.md. Unfenced text is kept whole. A lone fence opens the block
+// when text follows it and closes it otherwise. Only a fence at column
+// 0 counts: " ```" is a diff context line.
 func fenceStructure(s string) string {
 	lines := strings.Split(s, "\n")
-	isFence := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "```") }
-	first, last := -1, -1
+	var fences []int
 	for i, l := range lines {
-		if isFence(l) {
-			if first < 0 {
-				first = i
-			}
-			last = i
+		if strings.HasPrefix(l, "```") {
+			fences = append(fences, i)
 		}
 	}
-	if first >= 0 {
-		if last == first {
-			last = len(lines)
+	switch {
+	case len(fences) >= 2:
+		lines = lines[fences[0]+1 : fences[1]]
+	case len(fences) == 1:
+		after := lines[fences[0]+1:]
+		if strings.TrimSpace(strings.Join(after, "")) != "" {
+			lines = after
+		} else {
+			lines = lines[:fences[0]]
 		}
-		var body []string
-		for _, l := range lines[first+1 : last] {
-			if !isFence(l) {
-				body = append(body, l)
-			}
-		}
-		lines = body
 	}
 	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
 		lines = lines[1:]
