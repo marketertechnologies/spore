@@ -349,6 +349,9 @@ func runTaskRoleDrive(args []string) error {
 	if err != nil {
 		return err
 	}
+	if snap.DriveSkipped {
+		fmt.Fprintf(os.Stderr, "%s: another drive, reopen or force-approve holds the loop; this tick only reports\n", slug)
+	}
 	printRoleSnapshot(snap)
 	return nil
 }

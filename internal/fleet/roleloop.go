@@ -57,6 +57,9 @@ const MaxReviewerRounds = task.FinalReviewRound
 // Snapshot is the current view of a task's role-loop state.
 type Snapshot struct {
 	Slug string
+	// DriveSkipped is set by DriveRoleLoop when another drive, reopen
+	// or force-approve held the slug, so the tick only reported.
+	DriveSkipped bool
 	// Phase is the derived loop step.
 	Phase Phase
 	// AFixLanded is escalationFixLanded's answer: the A phase accounts
@@ -198,7 +201,9 @@ func escalationFixLanded(projectRoot, slug string, engRounds []int, aRev []task.
 	if len(engRounds) <= idx {
 		return false, nil
 	}
-	if len(bRounds) == 0 {
+	// A forced verdict needs no mtime check: force-approve refuses
+	// until the fix pass lands, which is before B can exist.
+	if len(bRounds) == 0 || aRev[len(aRev)-1].Forced() {
 		return true, nil
 	}
 	fix, err := os.Stat(task.EngineerResponsePath(projectRoot, slug, engRounds[idx]))

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/versality/spore/internal/task"
 )
@@ -70,8 +71,8 @@ func TestForceApproveKeepsCommentsAndMovesOn(t *testing.T) {
 	if snap.Phase != PhaseReviewB || !snap.AFixLanded {
 		t.Fatalf("snap = %+v, want %s with the fix pass counted", snap, PhaseReviewB)
 	}
-	if _, err := os.Stat(task.ReviewPath(root, slug, task.ReviewerA, 3) + ".tmp"); !os.IsNotExist(err) {
-		t.Fatalf("temp file left behind: %v", err)
+	if tmps, _ := filepath.Glob(filepath.Join(filepath.Dir(task.ReviewPath(root, slug, task.ReviewerA, 3)), "*.tmp")); len(tmps) != 0 {
+		t.Fatalf("temp file left behind: %v", tmps)
 	}
 	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "again"); err == nil {
 		t.Fatal("force-approve of an approve succeeded")
@@ -195,7 +196,7 @@ func TestMirrorEventsForceApproveAfterFixPass(t *testing.T) {
 	}
 
 	writeGraded(task.ReviewerB, 2, task.VerdictApprove)(t, root, slug)
-	if err := clearEscalationMarkers(root, slug); err != nil {
+	if err := clearEscalationMarkers(root, slug, ""); err != nil {
 		t.Fatal(err)
 	}
 	snap, _ = DeriveSnapshot(root, slug)
@@ -209,6 +210,29 @@ func TestMirrorEventsForceApproveAfterFixPass(t *testing.T) {
 	want = append(want, "B/round-2.json", eventReady)
 	if got := eventNames(evs); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after Done cleared the markers:\nevents = %v\nwant     %v", got, want)
+	}
+}
+
+// A forced A's fix pass landed before B existed; a later mtime on that
+// response (a re-save, a copy without mtimes) must not un-count it.
+func TestForcedAFixLandedIgnoresMtime(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	escalateAWithFix(t, root, slug)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	writeGraded(task.ReviewerB, 1, task.VerdictRequestChanges, lowNit)(t, root, slug)
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(task.EngineerResponsePath(root, slug, 4), later, later); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := DeriveSnapshot(root, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.AFixLanded || snap.Phase != PhaseEngineerReviseB {
+		t.Fatalf("snap = %+v, want the fix pass counted and the engineer owing B a revision", snap)
 	}
 }
 
@@ -227,8 +251,8 @@ func TestDriveRoleLoopSkipsWhileLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Phase != PhaseEngineerInitial || len(panes.spawns) != 0 {
-		t.Fatalf("snap = %+v spawns = %v, want a report-only tick", snap, panes.spawns)
+	if snap.Phase != PhaseEngineerInitial || len(panes.spawns) != 0 || !snap.DriveSkipped {
+		t.Fatalf("snap = %+v spawns = %v, want a report-only tick flagged as skipped", snap, panes.spawns)
 	}
 }
 

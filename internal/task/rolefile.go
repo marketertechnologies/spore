@@ -390,8 +390,12 @@ func overrideLine(rel string, b []byte) string {
 
 // overrideRecorded reports whether the override marker lists rel with
 // content b. It fails closed: unlike the other list markers, a missing
-// marker lists nothing.
+// marker lists nothing. Content without the key skips the marker read
+// and hash; a false answer only makes parseReview reject an override.
 func overrideRecorded(projectRoot, slug, rel string, b []byte) (bool, error) {
+	if !bytes.Contains(b, []byte(`"operator_override"`)) {
+		return false, nil
+	}
 	raw, err := os.ReadFile(filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil

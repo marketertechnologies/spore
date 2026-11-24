@@ -401,6 +401,17 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 // file, with that file's legacy, order-exempt and override markers.
 // It lets a caller check a rewrite before it replaces the file.
 func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	return parseReviewAt(projectRoot, slug, instance, round, b, false)
+}
+
+// ParseForcedReviewAt is ParseReviewAt with `operator_override`
+// allowed whether or not it is recorded, so `force-approve` can
+// validate its rewrite before it records anything.
+func ParseForcedReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	return parseReviewAt(projectRoot, slug, instance, round, b, true)
+}
+
+func parseReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte, forced bool) (Review, error) {
 	if err := validateInstance(instance); err != nil {
 		return Review{}, err
 	}
@@ -410,26 +421,13 @@ func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round in
 	if err != nil {
 		return Review{}, err
 	}
-	override, err := overrideRecorded(projectRoot, slug, rel, b)
-	if err != nil {
-		return Review{}, err
+	override := forced
+	if !override {
+		if override, err = overrideRecorded(projectRoot, slug, rel, b); err != nil {
+			return Review{}, err
+		}
 	}
 	return parseReview(path, b, instance, round, legacy, sorted, override)
-}
-
-// ParseForcedReviewAt is ParseReviewAt with `operator_override`
-// allowed whether or not it is recorded, so `force-approve` can
-// validate its rewrite before it records anything.
-func ParseForcedReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
-	if err := validateInstance(instance); err != nil {
-		return Review{}, err
-	}
-	path := ReviewPath(projectRoot, slug, instance, round)
-	legacy, sorted, err := reviewStrictness(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
-	if err != nil {
-		return Review{}, err
-	}
-	return parseReview(path, b, instance, round, legacy, sorted, true)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

@@ -97,18 +97,38 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	}
 	// The loop is no longer escalated; a stale marker would keep the
 	// task flagged (task.IsEscalated) through the whole next phase.
-	marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(inst)+"-*"))
-	if err == nil {
-		for _, m := range marks {
-			if rerr := os.Remove(m); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-				err = rerr
-			}
-		}
-	}
-	if err != nil {
+	if err := clearEscalationMarkers(projectRoot, slug, inst); err != nil {
 		return round, fmt.Errorf("force-approve %s: verdict forced, but clearing the escalation marker failed: %w", slug, err)
 	}
 	return round, nil
+}
+
+// clearEscalationMarkers removes the `escalated-<inst>-*` files under
+// the task's state dir, every reviewer's when inst is empty. Called on
+// PhaseDone, and by force-approve for the forced reviewer. A missing
+// state dir is fine.
+func clearEscalationMarkers(projectRoot, slug string, inst task.ReviewerInstance) error {
+	prefix := "escalated-"
+	if inst != "" {
+		prefix += string(inst) + "-"
+	}
+	dir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // verdictHeading renders a verdict for the review summary, marking a
@@ -120,17 +140,27 @@ func verdictHeading(rev task.Review) string {
 	return fmt.Sprintf("%s (request changes, force-approved by the operator)\n\nOperator override: %s", rev.Verdict, strings.TrimSpace(rev.OperatorOverride))
 }
 
-// writeFileAtomic replaces path via a sibling temp file, so a reader or
-// a crash never sees a truncated file.
+// writeFileAtomic replaces path via a uniquely named sibling temp
+// file, so a reader or a crash never sees a truncated file. The temp
+// name never matches round-N.json, so a leftover is never read.
 func writeFileAtomic(path string, b []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		_ = os.Remove(tmp)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	tmp := f.Name()
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	return nil
+	if err == nil {
+		err = os.Chmod(tmp, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }

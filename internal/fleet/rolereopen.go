@@ -51,6 +51,9 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 		return 0, lockRefusal("reopen", slug, "a drive tick holds the loop", err)
 	}
 	defer unlockDrive()
+	// Every mirror runs inside a drive tick today, so drive.lock already
+	// excludes it. This lock still guards a mirror from a binary without
+	// drive.lock (a watcher not yet restarted after an upgrade).
 	unlockGitHub, err := lockGitHubState(githubStatePath(projectRoot, slug))
 	if err != nil {
 		return 0, lockRefusal("reopen", slug, "github.json is locked by a running mirror", err)
