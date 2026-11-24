@@ -13,14 +13,16 @@
   and `default_deny = false` drops the guardrail set (`SendMessage`
   stays). `bootstrap/handover/settings.json` now also wires
   `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
-  force-push pattern now catches trailing `-f` / `--force`,
-  `git -C dir push`, and wrappers such as `spore gh exec --`, and no
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
   longer blocks `--force-with-lease`. Downstream impact: marketer and
   crm-gateway pick this up on their next settings render; on existing
   hosts reinstall `~/.claude/settings.json` from
   `share/spore/settings.json`. Agents that read `secrets.env` or a
-  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. See
-  `docs/permissions.md`.
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

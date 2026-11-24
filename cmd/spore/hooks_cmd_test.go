@@ -72,6 +72,7 @@ func runHooksSettingsIn(t *testing.T, dir string) (int, string) {
 		t.Fatal(err)
 	}
 	origIn, origOut := os.Stdin, os.Stdout
+	t.Cleanup(func() { os.Stdin, os.Stdout = origIn, origOut })
 	os.Stdin, os.Stdout = in, w
 	code := runHooksSettings()
 	os.Stdin, os.Stdout = origIn, origOut

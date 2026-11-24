@@ -17,6 +17,8 @@ Claude Code evaluates `permissions.deny` in every mode, including `bypassPermiss
 What still works:
 
 - `spore-with-secrets <cmd>`: the shim sources the files in a subprocess. Read rules cover Claude's Read tool and file commands it recognizes on the command line (`cat`, `head`, `sed`, ...), not a process that opens the file itself.
+
+The Read rules are a speed bump, not a fence: `grep . secrets.env`, `base64 key.pem`, `source secrets.env; env`, or a copy followed by `cat` still print the contents. They stop the accidental read, not a determined one.
 - `~/.config/spore/coordinator-role.md` and other non-secret config: only `secrets.env` and `*.pem` are denied, not the whole directory.
 - `git push --force-with-lease`: the trailing ` *` is word-bounded, so `--force` does not prefix-match `--force-with-lease`. The GitHub App mirror (`internal/fleet/rolegithub.go`) pushes from Go anyway, outside the Bash tool.
 - Plain pushes, including `spore gh exec -- git push -u origin <branch>`.
@@ -45,7 +47,7 @@ Claude Code merges `permissions.deny` across user, project and local settings fi
 
 - `sudo` at the start of a line.
 - `rm -rf /`.
-- `git push` with `--force` or `-f` anywhere before the next `|`, `;` or `&`, including behind `git -C dir` and wrappers. `--force-with-lease` passes.
+- `git push` with `--force`, `-f` or a short-flag cluster holding `f` (`-fu`) anywhere before the next `|`, `;` or `&`, including behind git options (`git -C dir`, quoted paths, `--no-pager`) and wrappers. `--force-with-lease` passes. The pattern matches inside quoted text so `bash -c "git push -f"` is caught; a command that only mentions a force push (`rg "git push -f" docs/`) is denied too.
 
 The role loop is unaffected: role panes push through spore commands, which call git from Go, not through the Bash tool.
 
