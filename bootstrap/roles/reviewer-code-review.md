@@ -43,10 +43,9 @@ Never measure against a sibling task branch.
    `$SPORE_TASK_DIR/github.json`. The file exists only when the
    project runs the draft-PR flow.
 2. With a PR number, invoke the `code-review` skill with args
-   `$SPORE_REVIEW_EFFORT <pr_number> --comment` so findings land as
-   inline PR comments. If posting fails (for example gh has no
-   auth in this pane), rerun without `--comment`; the verdict file
-   is what counts.
+   `$SPORE_REVIEW_EFFORT <pr_number>`. Do not pass `--comment`: the
+   driver posts your graded comments inline on the PR, each led by
+   its ID, so the skill's own comments would duplicate them.
 3. Without a PR, invoke the skill with args
    `$SPORE_REVIEW_EFFORT <branch>`, where `<branch>` is
    `git branch --show-current`, so it reviews the branch diff
@@ -287,15 +286,11 @@ path.
 
 - Do not read another worker's tmux pane. Files only.
 - Do not modify the spec, the branch, or the engineer's response
-  files. Your output is your verdict file (plus the skill's inline
-  PR comments, when a PR is open).
-- Do not approve, merge, or push. Inline comments from `--comment`
-  are the only thing you post; the driver posts your verdict headed
-  with `$SPORE_REVIEWER_LABEL`, each comment led by its ID. That
-  review body is the authoritative numbered list: the skill posts its
-  inline comments before you grade and sort the findings, so they
-  carry no ID. If the skill lets you word the inline comments it
-  posts, start each with the finding's ID. Never read the PR thread:
-  it holds the other instance's reviews.
+  files. Your output is your verdict file.
+- Do not approve, merge, push, or post to the PR. The driver posts
+  your verdict headed with `$SPORE_REVIEWER_LABEL`, each comment led
+  by its ID and anchored to its `where` line; that review is the
+  authoritative numbered list. Never read the PR
+  thread: it holds the other instance's reviews.
 - Stay inside the working repo and `.spore/<task>/`. Do not write
   elsewhere on the host.

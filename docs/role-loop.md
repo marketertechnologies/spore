@@ -176,8 +176,8 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   conformance, runs tests and lints. A defaults to it.
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
-  diff (on the draft PR with `--comment` when `github.json` holds a
-  PR number). The skill's findings carry no severity: the reviewer
+  diff (the draft PR when `github.json` holds a PR number; the
+  skill does not post, the mirror anchors the graded comments). The skill's findings carry no severity: the reviewer
   grades each one (see "Graded review comments") and the verdict
   follows from the grades. Rounds 2+ drop new `low` findings on code
   the engineer did not change that round, since the skill re-reviews
