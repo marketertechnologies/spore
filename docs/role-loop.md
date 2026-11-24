@@ -133,6 +133,12 @@ script) means no override. A project with a `bootstrap/roles/` dir
 that lacks one body gets a stderr warning, once per process, when the
 bundled body fills the gap. See "Reviewer slots" for the code-review
 body.
+Project rules, host-side under
+`$XDG_STATE_HOME/spore/<project>/roles/rules/<body>/*.md` (`<body>`
+is the body file name without `.md`), are appended to that body at
+spawn under a `## Project rules` heading, sorted by file name; the
+composed body lands in `roles/composed/<sha>/`. `spore eval` replays
+reviewers with the same composition (see docs/todo/fleet-evals.md).
 When `[fleet] account_tier` is set in spore.toml, panes also get
 `SPORE_ACCOUNT_TIER`, and `spore worker token-monitor` meters them
 with the same three bands as workers (soft warn, finish-unit, force)

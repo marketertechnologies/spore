@@ -27,7 +27,7 @@ type RoleSpawnSpec struct {
 	ReviewerInstance task.ReviewerInstance
 	// RoleBodyPath is the absolute path to the role markdown that
 	// the agent should consume as its first user message.
-	// Defaults to ResolveRoleBody of <Role>.md, or of
+	// Defaults to ResolveRoleBodyWithRules of <Role>.md, or of
 	// reviewer-code-review.md for a reviewer slot in code-review mode.
 	RoleBodyPath string
 	// Cwd is the working directory for the pane. Defaults to the
@@ -88,11 +88,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	rolePath := s.RoleBodyPath
 	if rolePath == "" {
-		body := s.Role + ".md"
-		if slot.Mode == ReviewerModeCodeReview {
-			body = "reviewer-code-review.md"
-		}
-		if rolePath, err = ResolveRoleBody(s.ProjectRoot, body); err != nil {
+		if rolePath, err = ResolveRoleBodyWithRules(s.ProjectRoot, roleBodyName(s.Role, slot)); err != nil {
 			return nil, err
 		}
 	}
@@ -137,6 +133,33 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
 	args = append(args, roleShellCommand(prelude, withBody, bare, rolePath))
 	return args, nil
+}
+
+// roleBodyName is the role body file a pane runs: <role>.md, or
+// reviewer-code-review.md for a reviewer slot in code-review mode.
+func roleBodyName(role string, slot ReviewerSlot) string {
+	if role == "reviewer" && slot.Mode == ReviewerModeCodeReview {
+		return "reviewer-code-review.md"
+	}
+	return role + ".md"
+}
+
+// RolePlan is what a spawn settles for a pane: the reviewer slot
+// (mode and effort final), the agent, and the role body file name.
+type RolePlan struct {
+	Slot  ReviewerSlot
+	Agent string
+	Body  string
+}
+
+// Plan resolves s the way TmuxArgs does, without spawning, so a
+// headless replay (spore eval) runs the production slot config.
+func (s RoleSpawnSpec) Plan() (RolePlan, error) {
+	slot, _, agent, err := s.resolve()
+	if err != nil {
+		return RolePlan{}, err
+	}
+	return RolePlan{Slot: slot, Agent: agent, Body: roleBodyName(s.Role, slot)}, nil
 }
 
 // commitIdentityEnv authors engineer commits as the dispatching
