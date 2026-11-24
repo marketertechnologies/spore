@@ -357,7 +357,9 @@ func TestFetchEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := []string{"PATH=/bin"}
-	if _, err := FetchEnv(context.Background(), root, base); !errors.Is(err, task.ErrNoFetchAuth) {
+	// The test token server is the app's API, so its host is the git host.
+	origin := "https://127.0.0.1/o/r.git"
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
 		t.Fatalf("no github.toml: err = %v, want ErrNoFetchAuth", err)
 	}
 
@@ -375,7 +377,7 @@ func TestFetchEnv(t *testing.T) {
 		}
 	}
 	write("operator_login = \"op\"\n")
-	if _, err := FetchEnv(context.Background(), root, base); !errors.Is(err, task.ErrNoFetchAuth) {
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
 		t.Fatalf("no app credentials: err = %v, want ErrNoFetchAuth", err)
 	}
 
@@ -383,7 +385,7 @@ func TestFetchEnv(t *testing.T) {
 	ts := newTokenServer(t, &key.PublicKey, time.Now().Add(time.Hour))
 	// No pr_flow: a read-only fetch needs only the app credentials.
 	write(fmt.Sprintf("app_id = 1\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, ts.URL))
-	got, err := FetchEnv(context.Background(), root, base)
+	got, err := FetchEnv(context.Background(), root, origin, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,12 +393,38 @@ func TestFetchEnv(t *testing.T) {
 		t.Fatalf("env = %q, want Env(base, token) = %q", got, want)
 	}
 
+	// The credential helper answers any host, so another host must not
+	// even mint a token.
+	for _, other := range []string{"https://gitlab.example.com/o/r.git", "http://127.0.0.1/o/r.git", "ssh://git@127.0.0.1/o/r.git", "https://127.0.0.1.evil.example/o/r.git", "::bad"} {
+		calls := ts.calls.Load()
+		if env, err := FetchEnv(context.Background(), root, other, base); !errors.Is(err, task.ErrNoFetchAuth) || env != nil {
+			t.Errorf("origin %q: env=%v err=%v, want ErrNoFetchAuth and no env", other, env != nil, err)
+		}
+		if ts.calls.Load() != calls {
+			t.Errorf("origin %q: minted a token", other)
+		}
+	}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 	write(fmt.Sprintf("app_id = 2\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, srv.URL))
-	if _, err := FetchEnv(context.Background(), root, base); err == nil || errors.Is(err, task.ErrNoFetchAuth) {
+	if _, err := FetchEnv(context.Background(), root, origin, base); err == nil || errors.Is(err, task.ErrNoFetchAuth) {
 		t.Fatalf("mint failure: err = %v, want a mint error", err)
+	}
+}
+
+func TestGitHost(t *testing.T) {
+	for api, want := range map[string]string{
+		"":                                "github.com",
+		"https://api.github.com/":         "github.com",
+		"https://ghe.corp.example/api/v3": "ghe.corp.example",
+		"https://api.acme.ghe.com":        "acme.ghe.com",
+		"http://127.0.0.1:8080":           "127.0.0.1",
+	} {
+		if got := (Config{APIURL: api}).GitHost(); got != want {
+			t.Errorf("GitHost(%q) = %q, want %q", api, got, want)
+		}
 	}
 }

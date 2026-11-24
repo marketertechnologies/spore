@@ -31,11 +31,11 @@ var (
 	fetchAuthTimeout   = 10 * time.Second
 )
 
-// FetchAuth returns base extended so a git fetch over https
+// FetchAuth returns base extended so a git fetch from originURL
 // authenticates, or ErrNoFetchAuth when the project has nothing to
-// authenticate with. It lives behind a hook because the provider
+// authenticate with for that URL's host. It lives behind a hook because the provider
 // (internal/ghapp) imports this package.
-type FetchAuth func(ctx context.Context, projectRoot string, base []string) ([]string, error)
+type FetchAuth func(ctx context.Context, projectRoot, originURL string, base []string) ([]string, error)
 
 // ErrNoFetchAuth tells fetchBase to fetch plainly without a warning.
 var ErrNoFetchAuth = errors.New("no fetch credentials configured")
@@ -218,11 +218,15 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 	defer cancel()
 	out, err := runFetchCmd(fetchCmd(ctx, projectRoot, b, env))
 	if env != nil && fetchOutcome(err, ctx.Err()) == fetchFailed {
-		// The app may not cover this repo (or origin is not GitHub),
-		// and the token env cleared the operator's own credential
-		// helper: retry plainly inside the same deadline.
+		// The app may not cover this repo, and the token env cleared
+		// the operator's own credential helper: retry plainly, under
+		// its own deadline so a slow token failure cannot turn a
+		// reachable origin into a remembered timeout.
 		authFail := lastLine(out)
 		authNote = fmt.Sprintf(" (with the GitHub App token it failed too: %s)", authFail)
+		retryCtx, cancelRetry := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancelRetry()
+		ctx = retryCtx
 		out, err = runFetchCmd(fetchCmd(ctx, projectRoot, b, nil))
 		if err == nil {
 			fmt.Fprintf(warn, "spore: fetch origin %s failed with the GitHub App token (%s); a plain fetch worked\n", b, authFail)
@@ -257,7 +261,7 @@ func fetchAuthEnv(projectRoot, originURL string) ([]string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fetchAuthTimeout)
 	defer cancel()
-	env, err := fetchAuth(ctx, projectRoot, base)
+	env, err := fetchAuth(ctx, projectRoot, originURL, base)
 	switch {
 	case errors.Is(err, ErrNoFetchAuth):
 		return nil, nil

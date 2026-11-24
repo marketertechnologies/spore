@@ -486,8 +486,11 @@ const fakeFetchToken = "ghs_faketoken123"
 func withFetchAuth(t *testing.T, err error) *int {
 	t.Helper()
 	calls := 0
-	SetFetchAuth(func(ctx context.Context, projectRoot string, base []string) ([]string, error) {
+	SetFetchAuth(func(ctx context.Context, projectRoot, originURL string, base []string) ([]string, error) {
 		calls++
+		if originURL != "https://github.invalid/o/r.git" {
+			t.Errorf("provider got origin %q, want the raw configured URL", originURL)
+		}
 		if _, ok := ctx.Deadline(); !ok {
 			t.Error("provider called without a deadline")
 		}
@@ -678,7 +681,7 @@ func TestBaseFetchRetriesPlainAfterAuthFailure(t *testing.T) {
 		want := r.push("main", "ahead on origin")
 		// The token env refuses the local transport, standing in for an
 		// app that cannot read this repo.
-		SetFetchAuth(func(ctx context.Context, projectRoot string, base []string) ([]string, error) {
+		SetFetchAuth(func(ctx context.Context, projectRoot, originURL string, base []string) ([]string, error) {
 			return append(append([]string{}, base...), "GH_TOKEN="+fakeFetchToken,
 				"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=protocol.file.allow", "GIT_CONFIG_VALUE_0=never"), nil
 		})
@@ -715,5 +718,39 @@ func TestBaseNormalized(t *testing.T) {
 	want := r.push("feat", "stacked parent")
 	if got, warn := r.add("norm", "origin/feat"); got != want || warn != "" {
 		t.Errorf("base: origin/feat forked from %s (warn %q), want origin/feat %s", got, warn, want)
+	}
+}
+
+// TestPlainRetryGetsItsOwnDeadline: a token fetch that fails just
+// before the deadline must not leave the retry to time out and mark
+// a reachable origin as down.
+func TestPlainRetryGetsItsOwnDeadline(t *testing.T) {
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "")
+	old := fetchTimeout
+	fetchTimeout = 2 * time.Second
+	t.Cleanup(func() { fetchTimeout = old })
+	r := newBaseRepo(t)
+	r.setOrigin("https://github.invalid/o/r.git", r.origin)
+	want := r.push("main", "ahead on origin")
+	withFetchAuth(t, nil)
+	runFetchCmd = func(cmd *exec.Cmd) ([]byte, error) {
+		if envHas(cmd, "GH_TOKEN="+fakeFetchToken) {
+			time.Sleep(fetchTimeout - 300*time.Millisecond)
+			return []byte("fatal: Authentication failed\n"), errors.New("exit status 128")
+		}
+		// Starts past the first attempt's deadline: only a fresh
+		// deadline lets it run.
+		time.Sleep(400 * time.Millisecond)
+		return runFetch(cmd)
+	}
+	t.Cleanup(func() { runFetchCmd = runFetch })
+
+	got, warn := r.add("slow", "")
+	if got != want {
+		t.Errorf("forked from %s, want the plainly fetched %s (warn %q)", got, want, warn)
+	}
+	if _, ok := fetchMemo(gitCommonDir(r.root)); ok {
+		t.Error("a reachable origin was remembered as timed out")
 	}
 }

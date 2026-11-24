@@ -226,7 +226,8 @@ func TestIncludeMatch(t *testing.T) {
 }
 
 // TestWorktreeIncludeNegationInsideCopiedDir keeps last-match-wins
-// for entries inside a directory that is copied whole.
+// for entries inside a directory that is copied whole, and skips an
+// excluded subdirectory whole, as gitignore does.
 func TestWorktreeIncludeNegationInsideCopiedDir(t *testing.T) {
 	root := includeRepo(t)
 	writeFile(t, filepath.Join(root, "secrets", "dev.key"), "dev\n")
@@ -243,7 +244,7 @@ func TestWorktreeIncludeNegationInsideCopiedDir(t *testing.T) {
 		"secrets/dev.key":      true,
 		"secrets/prod.key":     false,
 		"secrets/old/a.key":    false,
-		"secrets/old/keep.txt": true,
+		"secrets/old/keep.txt": false, // gitignore: no re-include under an excluded dir
 		"secrets/x.log":        false,
 	} {
 		if got := exists(filepath.Join(wt, filepath.FromSlash(rel))); got != want {

@@ -77,8 +77,8 @@ func includeMatch(pats []includePattern, rel string, isDir bool) bool {
 }
 
 // includeState is includeMatch plus whether any pattern matched rel
-// at all; an entry inside a copied directory no pattern names keeps
-// its parent's state.
+// at all; an entry inside a copied directory no pattern names is
+// copied with it.
 func includeState(pats []includePattern, rel string, isDir bool) (matched, any bool) {
 	for _, p := range pats {
 		if p.dirOnly && !isDir {
@@ -169,9 +169,10 @@ func newIncludeCopier(projectRoot, worktree string, warn io.Writer) (*includeCop
 
 // copyTree copies rel (a file, symlink or directory) without
 // following symlinks while walking. rel itself matched; each entry
-// below it is included unless a pattern naming it says otherwise.
+// below it is included unless a pattern naming it says otherwise. As
+// in gitignore, an excluded directory is skipped whole: nothing
+// below it can be re-included.
 func (c *includeCopier) copyTree(rel string) {
-	included := map[string]bool{rel: true}
 	err := filepath.WalkDir(filepath.Join(c.src, rel), func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -180,18 +181,15 @@ func (c *includeCopier) copyTree(rel string) {
 		if err != nil {
 			return err
 		}
-		inc := true
 		if r != rel {
-			inc = included[filepath.Dir(r)]
-			if m, any := includeState(c.pats, filepath.ToSlash(r), d.IsDir()); any {
-				inc = m
+			if m, any := includeState(c.pats, filepath.ToSlash(r), d.IsDir()); any && !m {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 		}
-		if d.IsDir() {
-			included[r] = inc
-			return nil
-		}
-		if inc {
+		if !d.IsDir() {
 			c.copyEntry(r, d.Type())
 		}
 		return nil

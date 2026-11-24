@@ -62,14 +62,18 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	}
 	// An existing worktree needs no meta: a half-edited frontmatter
 	// must not break the role driver's per-tick call.
-	if wt, ok, err := existingWorktree(projectRoot, slug); err != nil || ok {
-		return wt, err
+	worktree, ok, err := existingWorktree(projectRoot, slug)
+	if err != nil || ok {
+		return worktree, err
 	}
 	meta, err := readTaskMeta(tasksDir, slug)
 	if err != nil {
 		return "", err
 	}
-	return ensureWorktree(tasksDir, projectRoot, slug, meta)
+	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
+		return "", err
+	}
+	return worktree, nil
 }
 
 func existingWorktree(projectRoot, slug string) (string, bool, error) {
