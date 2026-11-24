@@ -61,6 +61,7 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 
 	var issues []Issue
 	expected := map[string]string{}
+	owner := map[string]string{}
 	optedIn := false
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
@@ -92,6 +93,15 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 		}
 		sort.Strings(paths)
 		for _, p := range paths {
+			if prev, dup := owner[p]; dup {
+				issues = append(issues, Issue{
+					Path:    p,
+					Message: fmt.Sprintf("rendered by consumers %q and %q; give each output path one consumer", prev, name),
+				})
+			}
+			owner[p] = name
+		}
+		for _, p := range paths {
 			on, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -121,7 +131,7 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 	for _, p := range stale {
 		issues = append(issues, Issue{
 			Path:    p,
-			Message: "stale generated rule file that no consumer renders; rerun `spore compose --write` or delete it",
+			Message: "stale generated rule file that no consumer renders; rerun `spore compose --consumer <name> --write` or delete it",
 		})
 	}
 	return issues, nil

@@ -16,15 +16,9 @@ const frontmatterFence = "---"
 // meant to be path-scoped.
 func parseFrontmatter(src string) ([]string, string, error) {
 	lines := strings.Split(src, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != frontmatterFence {
+	end, open := frontmatterEnd(lines)
+	if !open {
 		return nil, src, nil
-	}
-	end := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == frontmatterFence {
-			end = i
-			break
-		}
 	}
 	if end < 0 {
 		return nil, "", fmt.Errorf("frontmatter: no closing %q", frontmatterFence)
@@ -35,9 +29,8 @@ func parseFrontmatter(src string) ([]string, string, error) {
 	seenPaths := false
 	inBlock := false
 	for i := 1; i < end; i++ {
-		raw := lines[i]
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
+		line := strings.TrimSpace(stripYAMLComment(lines[i]))
+		if line == "" {
 			continue
 		}
 		if inBlock && strings.HasPrefix(line, "- ") {
@@ -87,6 +80,41 @@ func parseFrontmatter(src string) ([]string, string, error) {
 		return nil, "", fmt.Errorf("frontmatter: paths is empty")
 	}
 	return clean, body, nil
+}
+
+// frontmatterEnd reports whether lines open with a `---` fence and,
+// if so, the index of the closing fence (-1 when it is missing).
+func frontmatterEnd(lines []string) (end int, open bool) {
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != frontmatterFence {
+		return -1, false
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == frontmatterFence {
+			return i, true
+		}
+	}
+	return -1, true
+}
+
+// stripYAMLComment drops a `#` comment that starts the line or follows
+// whitespace, outside quotes, as YAML does.
+func stripYAMLComment(line string) string {
+	var quote rune
+	prevSpace := true
+	for i, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == '#' && prevSpace:
+			return line[:i]
+		}
+		prevSpace = r == ' ' || r == '\t'
+	}
+	return line
 }
 
 // splitGlobList splits on commas that sit outside quotes and outside

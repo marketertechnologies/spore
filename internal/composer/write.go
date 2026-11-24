@@ -1,6 +1,7 @@
 package composer
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,7 +18,10 @@ type WriteResult struct {
 // Write renders r's files under root, skipping files whose content is
 // already current, then deletes stale generated rule files: every
 // marker-bearing `.md` under RuleDir that r no longer produces.
-// Hand-written rule files and symlinks are never removed.
+// Hand-written rule files and symlinks are never removed. An output
+// path that is a symlink fails the whole write before anything is
+// touched: with AGENTS.md linked to CLAUDE.md, import mode would write
+// the body through the link and then overwrite it with the stub.
 func Write(root string, r *Rendered) (WriteResult, error) {
 	var res WriteResult
 	files, err := r.Files()
@@ -29,6 +33,12 @@ func Write(root string, r *Rendered) (WriteResult, error) {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	for _, p := range paths {
+		fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+		if err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			return res, fmt.Errorf("composer: %s is a symlink; replace it with a regular file (or delete it) before writing", p)
+		}
+	}
 	for _, p := range paths {
 		full := filepath.Join(root, filepath.FromSlash(p))
 		if cur, err := os.ReadFile(full); err == nil && string(cur) == files[p] {
@@ -53,9 +63,7 @@ func Write(root string, r *Rendered) (WriteResult, error) {
 		}
 		res.Removed = append(res.Removed, p)
 	}
-	if len(stale) > 0 {
-		pruneEmptyDirs(filepath.Join(root, filepath.FromSlash(RuleDir)))
-	}
+	pruneEmptyParents(filepath.Join(root, filepath.FromSlash(RuleDir)), root, stale)
 	return res, nil
 }
 
@@ -97,15 +105,16 @@ func StaleRuleFiles(root string, keep map[string]string) ([]string, error) {
 	return stale, nil
 }
 
-func pruneEmptyDirs(base string) {
-	var dirs []string
-	_ = filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() && p != base {
-			dirs = append(dirs, p)
+// pruneEmptyParents removes directories under base that the stale
+// removals emptied. Other empty directories are left alone.
+func pruneEmptyParents(base, root string, removed []string) {
+	for _, p := range removed {
+		dir := filepath.Dir(filepath.Join(root, filepath.FromSlash(p)))
+		for dir != base && strings.HasPrefix(dir, base+string(filepath.Separator)) {
+			if os.Remove(dir) != nil {
+				break
+			}
+			dir = filepath.Dir(dir)
 		}
-		return nil
-	})
-	for i := len(dirs) - 1; i >= 0; i-- {
-		_ = os.Remove(dirs[i])
 	}
 }

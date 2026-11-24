@@ -73,3 +73,18 @@ func TestClaudeDrift_ImportMirror(t *testing.T) {
 		t.Fatalf("copy-shaped CLAUDE.md under import mode: issues = %v, want [CLAUDE.md]", got)
 	}
 }
+
+func TestClaudeDrift_TwoConsumersOnePath(t *testing.T) {
+	root := setupDriftRepo(t, map[string]string{
+		"rules/consumers/host.txt":  "# target: HOST.md\ncore/a\n",
+		"rules/consumers/other.txt": "# target: HOST.md\ncore/a\n",
+		"HOST.md":                   "# a body\n",
+	})
+	issues, err := ClaudeDrift{ConsumersDir: "rules/consumers", RulesDir: "rules"}.Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, `"host" and "other"`) {
+		t.Fatalf("issues = %+v, want one collision issue", issues)
+	}
+}

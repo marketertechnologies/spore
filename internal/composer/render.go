@@ -28,10 +28,6 @@ const RuleDir = ".claude/rules"
 // Stale cleanup deletes only rule files that carry it.
 const MarkerPrefix = "<!-- generated from "
 
-// DefaultTargets is the target set when a consumer has no
-// `# target:` directive.
-var DefaultTargets = []string{"CLAUDE.md", "AGENTS.md"}
-
 type fragment struct {
 	ID    string
 	Globs []string
@@ -181,11 +177,12 @@ func (r *Rendered) ImportStub() string {
 // Files maps every repo-relative output path to its expected content:
 // each target (per the mirror mode) plus the rule files. In
 // MirrorImport mode a CLAUDE.md target needs an AGENTS.md target in
-// the same directory.
+// the same directory. A consumer with no `# target:` line has no
+// files: claude-drift skips it, so writing for it would go unchecked.
 func (r *Rendered) Files() (map[string]string, error) {
 	targets := r.Targets
 	if len(targets) == 0 {
-		targets = DefaultTargets
+		return nil, fmt.Errorf("composer: consumer has no `# target:` line; add one per output file")
 	}
 	set := map[string]bool{}
 	for _, t := range targets {
@@ -232,13 +229,11 @@ func checkOutputPath(p string) error {
 func IsGenerated(content string) bool {
 	lines := strings.Split(content, "\n")
 	i := 0
-	if len(lines) > 0 && strings.TrimSpace(lines[0]) == frontmatterFence {
-		for i = 1; i < len(lines); i++ {
-			if strings.TrimSpace(lines[i]) == frontmatterFence {
-				i++
-				break
-			}
+	if end, open := frontmatterEnd(lines); open {
+		if end < 0 {
+			return false
 		}
+		i = end + 1
 	}
 	for ; i < len(lines); i++ {
 		if t := strings.TrimSpace(lines[i]); t != "" {

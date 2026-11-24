@@ -130,6 +130,8 @@ func TestParseFrontmatter(t *testing.T) {
 		{name: "block", src: "---\npaths:\n  - \"a/**\"\n  - b/**\n---\nx", globs: []string{"a/**", "b/**"}, body: "x"},
 		{name: "comma string", src: "---\npaths: \"a/**, src/*.{ts,tsx}\"\n---\nx", globs: []string{"a/**", "src/*.{ts,tsx}"}, body: "x"},
 		{name: "flow braces", src: "---\npaths: [src/*.{ts,tsx}, lib/**]\n---\nx", globs: []string{"src/*.{ts,tsx}", "lib/**"}, body: "x"},
+		{name: "trailing comments", src: "---\npaths: [\"a/**\"] # api\n---\nx", globs: []string{"a/**"}, body: "x"},
+		{name: "block comments", src: "---\n# scope\npaths:\n  - \"a/**\" # api\n  - b/#x/**\n---\nx", globs: []string{"a/**", "b/#x/**"}, body: "x"},
 		{name: "unknown key", src: "---\npath: [a]\n---\nx", wantErr: "unsupported key"},
 		{name: "empty paths", src: "---\npaths: []\n---\nx", wantErr: "empty"},
 		{name: "unclosed", src: "---\npaths: [a]\nx", wantErr: "closing"},

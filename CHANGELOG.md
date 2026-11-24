@@ -19,7 +19,10 @@
     left path-scoped rules out. `--root <dir>` (default `.`) sets
     where `--write` lands and where the `rails` / `align` predicates
     are read, so composing for another checkout matches what its
-    `claude-drift` lint expects. Codex does not read `.claude/rules/`,
+    `claude-drift` lint expects. `--write` refuses an output path
+    that is a symlink (an `AGENTS.md -> CLAUDE.md` link would otherwise
+    lose the body in import mode) and needs `# target:` lines in the
+    consumer file. Codex does not read `.claude/rules/`,
     so those fragments are Claude-only.
   - **Mirror mode.** A consumer file may set `# mirror: copy|import`.
     `copy` (default) is today's behaviour: identical `CLAUDE.md` and

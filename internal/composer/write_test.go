@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +75,63 @@ func TestWrite_RejectsEscapingTarget(t *testing.T) {
 	}
 	if _, err := Write(t.TempDir(), r); err == nil {
 		t.Fatal("Write: want error for a target outside the root")
+	}
+}
+
+func TestWrite_RefusesSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	claude := filepath.Join(root, "CLAUDE.md")
+	writeFile(t, claude, "# real instructions\n")
+	if err := os.Symlink("CLAUDE.md", filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Render(splitPool, filepath.Join(splitPool, "consumers", "import.txt"), Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if _, err := Write(root, r); err == nil || !strings.Contains(err.Error(), "AGENTS.md is a symlink") {
+		t.Fatalf("Write: err = %v, want symlink refusal", err)
+	}
+	if b, _ := os.ReadFile(claude); string(b) != "# real instructions\n" {
+		t.Fatalf("CLAUDE.md changed despite the refusal: %q", b)
+	}
+}
+
+func TestWrite_KeepsUnrelatedEmptyRuleDirs(t *testing.T) {
+	root := t.TempDir()
+	keep := filepath.Join(root, ".claude", "rules", "mine")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, ".claude", "rules", "old", "gone.md"), "<!-- generated from x -->\nold\n")
+	r, err := Render(splitPool, filepath.Join(splitPool, "consumers", "split.txt"), Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if _, err := Write(root, r); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("user-made empty dir pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude", "rules", "old")); !os.IsNotExist(err) {
+		t.Fatalf("emptied stale dir kept: %v", err)
+	}
+}
+
+func TestWrite_NeedsTargets(t *testing.T) {
+	rulesDir, consumersDir := setupPool(t)
+	consumer := filepath.Join(consumersDir, "c.txt")
+	writeFile(t, consumer, "core/a\n")
+	r, err := Render(rulesDir, consumer, Options{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	root := t.TempDir()
+	if _, err := Write(root, r); err == nil || !strings.Contains(err.Error(), "# target:") {
+		t.Fatalf("Write: err = %v, want missing-target error", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("CLAUDE.md written for a target-less consumer: %v", err)
 	}
 }
