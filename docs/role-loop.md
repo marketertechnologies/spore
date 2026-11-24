@@ -70,7 +70,15 @@ the final verdict's high/medium comments; no reviewer is woken and
 no re-review follows. The engineer's fix-pass response keeps the
 phase `escalated` (`EscalationFixPending` clears). The operator can
 then clarify the spec, force-approve, kill the task, or hand it back
-for another loop. If the operator force-approves A's final verdict,
+for another loop. Force-approve with `spore task force-approve <slug>
+<A|B> --reason <text>`: it flips that reviewer's latest verdict to
+`approve` and records the reason as `operator_override`. A forced
+approve is exempt from the grade/round verdict rule, so its high and
+medium comments stay on record instead of being bounced (hand-editing
+the verdict alone is rejected by validation and restarts the
+reviewer). The PR mirror posts the override with its reason. The
+command refuses while a drive tick holds the loop; retry. If the
+operator force-approves A's final verdict,
 the fix-pass response counts toward A's phase only when it exists
 and predates B's first verdict (and an `escalated-A-*` marker shows
 the driver escalated A). So B's revisions count from a fresh

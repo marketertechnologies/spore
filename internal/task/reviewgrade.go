@@ -148,6 +148,12 @@ func (r Review) Graded() bool {
 	return false
 }
 
+// Forced reports whether the operator overrode r to approve. Only an
+// approve can be forced: an override on request_changes is ignored.
+func (r Review) Forced() bool {
+	return r.Verdict == VerdictApprove && strings.TrimSpace(r.OperatorOverride) != ""
+}
+
 // GradeCounts tallies a review's comments by grade.
 type GradeCounts struct {
 	HighMedium, Low, Question, Ungraded int
@@ -190,7 +196,7 @@ func checkGrades(r Review, round int) error {
 			return fmt.Errorf("comments[%d]: %v", i, err)
 		}
 	}
-	if !r.Graded() {
+	if !r.Graded() || r.Forced() {
 		return nil
 	}
 	if round <= 1 {

@@ -220,6 +220,11 @@ type Review struct {
 	// comments are sorted by severity (see checkSeverityOrder), so
 	// index order is ID order.
 	Comments []ReviewComment `json:"comments"`
+	// OperatorOverride is the operator's reason for forcing this
+	// verdict (see `spore task force-approve`). An approve carrying
+	// one skips the grade/round verdict rule, so the comments that
+	// made the reviewer request changes stay on record.
+	OperatorOverride string `json:"operator_override,omitempty"`
 }
 
 // RoleTaskDir returns the absolute path to `<projectRoot>/.spore/<slug>/`.

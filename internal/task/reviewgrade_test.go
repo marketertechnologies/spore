@@ -209,3 +209,22 @@ func TestReviewCounts(t *testing.T) {
 		t.Errorf("Counts = %+v, want %+v", got, want)
 	}
 }
+
+func TestParseReviewOperatorOverride(t *testing.T) {
+	forced := `{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`
+	if _, err := ParseReview("r.json", []byte(forced), ReviewerA, 3, false); err != nil {
+		t.Fatalf("forced approve with a medium: %v", err)
+	}
+	rcOverride := `{"author":"A","verdict":"request_changes","summary":"s","operator_override":"x","comments":[` + lowNit + `]}`
+	if _, err := ParseReview("r.json", []byte(rcOverride), ReviewerA, 2, false); err == nil {
+		t.Fatal("an override on request_changes skipped the round rule")
+	}
+	blank := `{"author":"A","verdict":"approve","summary":"s","operator_override":"  ","comments":[` + medEdge + `]}`
+	if _, err := ParseReview("r.json", []byte(blank), ReviewerA, 3, false); err == nil {
+		t.Fatal("a blank override skipped the round rule")
+	}
+	bad := `{"author":"A","verdict":"approve","summary":"s","operator_override":"ok","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
+	if _, err := ParseReview("r.json", []byte(bad), ReviewerA, 3, false); err == nil {
+		t.Fatal("an override skipped the comment shape check")
+	}
+}

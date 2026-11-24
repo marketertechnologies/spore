@@ -79,6 +79,7 @@ const (
 	eventEscalated = "escalated"
 	eventReady     = "ready"
 	eventReopened  = "reopened"
+	eventOverride  = "override"
 )
 
 // mirrorEvents lists, in loop order, every GitHub action the files on
@@ -105,11 +106,24 @@ func mirrorEvents(projectRoot, slug string, snap Snapshot) ([]mirrorEvent, error
 		return true
 	}
 	addEng()
+	aFixLanded, err := mirrorAFixLanded(projectRoot, slug, eng)
+	if err != nil {
+		return nil, err
+	}
 reviews:
 	for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
 		if err != nil {
 			return nil, err
+		}
+		if inst == task.ReviewerB && aFixLanded {
+			// A's escalation fix pass, answered before the operator
+			// force-approved A: the phase machine counts it as one more
+			// engineer round, so B's revisions start one later.
+			engRound++
+			if !addEng() {
+				break reviews
+			}
 		}
 		for _, r := range rounds {
 			rev, err := task.ReadReview(projectRoot, slug, inst, r)
@@ -120,6 +134,9 @@ reviews:
 				return nil, err
 			}
 			out = append(out, mirrorEvent{name: fmt.Sprintf("%s/round-%d.json", inst, r), kind: eventReview, round: r, instance: inst})
+			if rev.Forced() {
+				out = append(out, mirrorEvent{name: fmt.Sprintf("override-%s-%d", inst, r), kind: eventOverride, round: r, instance: inst})
+			}
 			if rev.Verdict == task.VerdictRequestChanges {
 				engRound++
 				if !addEng() {
@@ -138,6 +155,25 @@ reviews:
 		out = append(out, mirrorEvent{name: eventReady, kind: eventReady})
 	}
 	return out, nil
+}
+
+// mirrorAFixLanded is escalationFixLanded over the files on disk, so
+// the mirror pairs engineer rounds with verdicts the way the phase
+// machine does.
+func mirrorAFixLanded(projectRoot, slug string, eng []int) (bool, error) {
+	aRounds, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerA)
+	if err != nil {
+		return false, err
+	}
+	aRev, err := loadReviews(projectRoot, slug, task.ReviewerA, aRounds)
+	if err != nil {
+		return false, err
+	}
+	bRounds, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerB)
+	if err != nil {
+		return false, err
+	}
+	return escalationFixLanded(projectRoot, slug, eng, aRev, bRounds)
 }
 
 // githubMirror carries one tick's mirror pass for a task.
@@ -208,10 +244,21 @@ func mirrorErrorKey(err error) string {
 // lockGitHubState takes a non-blocking flock beside the state file so
 // two drives never post the same event twice.
 func lockGitHubState(statePath string) (func(), bool) {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+	return flockNB(statePath + ".lock")
+}
+
+// lockRoleDrive serialises drive ticks and `spore task reopen` /
+// `force-approve` on one slug, so none of them acts on a half-moved
+// tree. The lock file sits outside state/, which reopen archives.
+func lockRoleDrive(projectRoot, slug string) (func(), bool) {
+	return flockNB(filepath.Join(task.RoleTaskDir(projectRoot, slug), "drive.lock"))
+}
+
+func flockNB(path string) (func(), bool) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, false
 	}
-	f, err := os.OpenFile(statePath+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, false
 	}
@@ -325,6 +372,14 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			label, e.round, MaxReviewerRounds))
 	case eventReopened:
 		return m.redraft()
+	case eventOverride:
+		rev, err := task.ReadReview(m.projectRoot, m.slug, e.instance, e.round)
+		if err != nil {
+			return err
+		}
+		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
+		return m.prComment(fmt.Sprintf("**Operator force-approved %s (%sround %d).**\n\n%s\n\nIts comments stay on record; the loop moves on.",
+			label, m.cyclePrefix(), e.round, strings.TrimSpace(rev.OperatorOverride)))
 	case eventReady:
 		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {

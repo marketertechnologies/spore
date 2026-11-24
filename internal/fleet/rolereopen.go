@@ -46,6 +46,16 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 	if err := requireActive(tasksDir, slug); err != nil {
 		return 0, err
 	}
+	unlockDrive, ok := lockRoleDrive(projectRoot, slug)
+	if !ok {
+		return 0, fmt.Errorf("reopen %s: a drive tick holds the loop; retry", slug)
+	}
+	defer unlockDrive()
+	unlockGitHub, ok := lockGitHubState(githubStatePath(projectRoot, slug))
+	if !ok {
+		return 0, fmt.Errorf("reopen %s: github.json is locked by a running mirror; retry", slug)
+	}
+	defer unlockGitHub()
 	snap, err := DeriveSnapshot(projectRoot, slug)
 	if err != nil {
 		return 0, fmt.Errorf("reopen %s: snapshot: %w", slug, err)
@@ -168,14 +178,10 @@ func appendReopenNote(projectRoot, slug string, cycle int, note string) error {
 // resetGitHubState keeps the PR identity and last push, drops what the
 // mirror posted for the archived cycle (the new cycle reuses the same
 // round file names) and queues the reopen announcement. No github.json
-// means the PR flow never ran for this task; nothing to reset.
+// means the PR flow never ran for this task; nothing to reset. The
+// caller holds the github.json lock.
 func resetGitHubState(projectRoot, slug string, cycle int, note string) error {
 	path := githubStatePath(projectRoot, slug)
-	unlock, ok := lockGitHubState(path)
-	if !ok {
-		return errors.New("github.json is locked by a running drive; retry")
-	}
-	defer unlock()
 	var old githubState
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
