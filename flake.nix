@@ -445,7 +445,9 @@
                       "cat /etc/claude-code/managed-settings.d/50-spore.json"))["stub"]
                   assert managed.startswith("--managed --spore /nix/store/"), managed
                   assert "-spore-shims-" in managed and "/share/spore/hooks" in managed, managed
-                  market = re.search(r"--marketplace (\S+)", managed).group(1)
+                  market_match = re.search(r"--marketplace (\S+)", managed)
+                  assert market_match is not None, managed
+                  market = market_match.group(1)
                   assert market.endswith("-spore-claude-marketplace"), market
                   machine.succeed(f"test -f {market}/.claude-plugin/plugin.json")
                   machine.succeed(f"test -f {market}/.claude-plugin/marketplace.json")
