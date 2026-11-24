@@ -283,8 +283,9 @@ type ghFeedbackSource struct {
 	m *githubMirror
 }
 
-// prActivityQuery takes the latest 100 of each list; older feedback
-// predates any useful cutoff on a PR the loop already cycled.
+// prActivityQuery takes the latest 100 of each list and the latest 50
+// comments per thread; older feedback predates any useful cutoff on a
+// PR the loop already cycled.
 const prActivityQuery = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -297,7 +298,7 @@ const prActivityQuery = `query($owner: String!, $name: String!, $number: Int!) {
       reviewThreads(last: 100) {
         nodes {
           isResolved path line originalLine
-          comments(first: 50) { nodes { body diffHunk createdAt author { __typename login } } }
+          comments(last: 50) { nodes { body diffHunk createdAt author { __typename login } } }
         }
       }
       comments(last: 100) {

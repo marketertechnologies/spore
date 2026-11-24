@@ -558,7 +558,11 @@ and threads marked resolved. The rendered section, `### PR #N feedback`,
 groups inline comments by file, each with its author, `path:line` and
 the last four lines of the diff hunk, then lists the general comments.
 With nothing new and no `--note`, reopen refuses. It reads the latest
-100 reviews, threads and comments; older ones are ignored.
+100 reviews, threads and comments, and the latest 50 comments in each
+thread; older ones are ignored. Comments left while a cycle runs
+(after its reopen comment, before the loop marks the PR ready again)
+fall before the next cutoff and are never read: post feedback for
+`--from-pr` once the PR is ready.
 
 The task must be `status: active` (a `spore task done` task is gone)
 and its loop done or escalated; mid-loop it refuses. Reopen:
