@@ -47,6 +47,7 @@ Commands:
   show       Open <path>[:<line>[:<col>]] in the connected editor.
   code       Editor helpers (workspace: VS Code multi-root of all worktrees).
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
+  eval       Reviewer regression suite (candidates, confirm, run, promote).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -182,6 +183,8 @@ func main() {
 		os.Exit(runCode(args))
 	case "gh":
 		os.Exit(runGH(args))
+	case "eval":
+		os.Exit(runEval(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)
