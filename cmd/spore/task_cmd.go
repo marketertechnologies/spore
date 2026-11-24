@@ -51,6 +51,11 @@ Subcommands:
                                --from-pr appends the PR's human feedback since
                                the loop last marked it ready or was reopened
                                (alone, or after --note).
+  force-approve <slug> <A|B> --reason <text>
+                               Override a reviewer's escalated final
+                               verdict to approve once the engineer's
+                               fix pass landed; its comments stay on
+                               record and the reason is posted to the PR.
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
@@ -116,6 +121,8 @@ func runTask(args []string) error {
 		return runTaskReviewStats(rest)
 	case "reopen":
 		return runTaskReopen(rest)
+	case "force-approve":
+		return runTaskForceApprove(rest)
 	case "role-drive":
 		return runTaskRoleDrive(rest)
 	default:
@@ -262,6 +269,9 @@ func printRoleSnapshot(snap fleet.Snapshot) {
 	if snap.CurrentReviewer == "" {
 		return
 	}
+	if snap.Check != task.CheckOff {
+		fmt.Printf("check:    %s (engineer round %d, HEAD %.12s)\n", snap.Check, snap.EngineerRound, snap.CheckSHA)
+	}
 	verdict := snap.LastVerdict
 	if verdict == "" {
 		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
@@ -318,6 +328,28 @@ func runTaskReopen(args []string) error {
 	return nil
 }
 
+func runTaskForceApprove(args []string) error {
+	fs := flag.NewFlagSet("task force-approve", flag.ContinueOnError)
+	reason := fs.String("reason", "", "why the operator overrides the verdict")
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 || *reason == "" {
+		return fmt.Errorf("usage: spore task force-approve <slug> <A|B> --reason <text>")
+	}
+	slug, inst := fs.Arg(0), task.ReviewerInstance(strings.ToUpper(fs.Arg(1)))
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	round, err := fleet.ForceApproveReview(projectRoot, resolveTasksDir(), slug, inst, *reason)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: reviewer %s round %d force-approved; the next drive tick moves the loop on\n", slug, inst, round)
+	return nil
+}
+
 func runTaskRoleDrive(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task role-drive <slug>")
@@ -331,6 +363,9 @@ func runTaskRoleDrive(args []string) error {
 	snap, err := fleet.DriveRoleLoop(projectRoot, tasksDir, slug)
 	if err != nil {
 		return err
+	}
+	if snap.DriveSkipped {
+		fmt.Fprintf(os.Stderr, "%s: another drive, reopen or force-approve holds the loop; this tick only reports\n", slug)
 	}
 	printRoleSnapshot(snap)
 	return nil

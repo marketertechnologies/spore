@@ -249,6 +249,18 @@ any graded comment they count like a `medium`. Do not write them.
 - Write only your own verdict file. Never write another instance's
   directory or the engineer's responses.
 
+## The project check
+
+When the project sets `[fleet.roles.engineer] check` in `spore.toml`,
+you are only handed an engineer response once that check passed on
+the current HEAD, or once the engineer gave up after 3 failures. A
+`check-pass-<N>-<sha>` marker in `$SPORE_TASK_DIR/state/` (N the
+latest engineer round, sha `git rev-parse HEAD`) means the project's
+suite and lints passed on this code: do not run them yourself. A
+`check-failed-<N>-<sha>` marker holds the failing output tail; report
+the failure as a finding. The wake that hands you a revision names
+the result too.
+
 ## The loop
 
 1. Rounds 2+: read the engineer's latest response.

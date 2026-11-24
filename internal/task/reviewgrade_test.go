@@ -3,6 +3,8 @@ package task
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -207,5 +209,68 @@ func TestReviewCounts(t *testing.T) {
 	}}
 	if got, want := r.Counts(), (GradeCounts{HighMedium: 2, Low: 2, Question: 1, Ungraded: 1}); got != want {
 		t.Errorf("Counts = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseReviewOperatorOverride(t *testing.T) {
+	forced := `{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`
+	if _, err := ParseReview("r.json", []byte(forced), ReviewerA, 3, false); err == nil {
+		t.Fatal("a reviewer-written operator_override validated")
+	}
+	if _, err := parseReview("r.json", []byte(forced), ReviewerA, 3, false, true, true); err != nil {
+		t.Fatalf("recorded forced approve with a medium: %v", err)
+	}
+	rcOverride := `{"author":"A","verdict":"request_changes","summary":"s","operator_override":"x","comments":[` + lowNit + `]}`
+	if _, err := parseReview("r.json", []byte(rcOverride), ReviewerA, 2, false, true, true); err == nil {
+		t.Fatal("an override on request_changes skipped the round rule")
+	}
+	blank := `{"author":"A","verdict":"approve","summary":"s","operator_override":"  ","comments":[` + medEdge + `]}`
+	if _, err := parseReview("r.json", []byte(blank), ReviewerA, 3, false, true, true); err == nil {
+		t.Fatal("a blank override skipped the round rule")
+	}
+	bad := `{"author":"A","verdict":"approve","summary":"s","operator_override":"ok","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
+	if _, err := parseReview("r.json", []byte(bad), ReviewerA, 3, false, true, true); err == nil {
+		t.Fatal("an override skipped the comment shape check")
+	}
+}
+
+func TestOperatorOverrideNeedsRecord(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	forced := []byte(`{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`)
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated with no record")
+	}
+	for range 2 {
+		if err := RecordOperatorOverride(root, slug, ReviewerA, 3, forced); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err != nil {
+		t.Fatalf("recorded override: %v", err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerB, 3, []byte(strings.Replace(string(forced), `"A"`, `"B"`, 1))); err == nil {
+		t.Fatal("A's record authorised B's override")
+	}
+	// The record binds content: a reviewer rewriting the forced file
+	// with its own override must not validate.
+	rewritten := []byte(strings.Replace(string(forced), `"accepted"`, `"self-approved"`, 1))
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, rewritten); err == nil {
+		t.Fatal("a rewrite of the forced file validated")
+	}
+	// Fail closed when the marker disappears (reopen archives state/).
+	if err := os.Remove(filepath.Join(RoleTaskDir(root, slug), "state", overrideMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated with the marker gone")
+	}
+	if err := RecordOperatorOverride(root, slug, ReviewerA, 3, forced); err != nil {
+		t.Fatal(err)
+	}
+	if err := DropOperatorOverride(root, slug, ReviewerA, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated after the record was dropped")
 	}
 }
