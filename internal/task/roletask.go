@@ -220,6 +220,11 @@ type Review struct {
 	// comments are sorted by severity (see checkSeverityOrder), so
 	// index order is ID order.
 	Comments []ReviewComment `json:"comments"`
+	// OperatorOverride is the operator's reason for forcing this
+	// verdict (see `spore task force-approve`). An approve carrying
+	// one skips the grade/round verdict rule, so the comments that
+	// made the reviewer request changes stay on record.
+	OperatorOverride string `json:"operator_override,omitempty"`
 }
 
 // RoleTaskDir returns the absolute path to `<projectRoot>/.spore/<slug>/`.
@@ -389,12 +394,40 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 	if err != nil {
 		return Review{}, err
 	}
+	return ParseReviewAt(projectRoot, slug, instance, round, b)
+}
+
+// ParseReviewAt validates b as the content of instance's round-N
+// file, with that file's legacy, order-exempt and override markers.
+// It lets a caller check a rewrite before it replaces the file.
+func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	return parseReviewAt(projectRoot, slug, instance, round, b, false)
+}
+
+// ParseForcedReviewAt is ParseReviewAt with `operator_override`
+// allowed whether or not it is recorded, so `force-approve` can
+// validate its rewrite before it records anything.
+func ParseForcedReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	return parseReviewAt(projectRoot, slug, instance, round, b, true)
+}
+
+func parseReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte, forced bool) (Review, error) {
+	if err := validateInstance(instance); err != nil {
+		return Review{}, err
+	}
+	path := ReviewPath(projectRoot, slug, instance, round)
 	rel := relTo(RoleTaskDir(projectRoot, slug), path)
 	legacy, sorted, err := reviewStrictness(projectRoot, slug, rel)
 	if err != nil {
 		return Review{}, err
 	}
-	return parseReview(path, b, instance, round, legacy, sorted)
+	override := forced
+	if !override {
+		if override, err = overrideRecorded(projectRoot, slug, rel, b); err != nil {
+			return Review{}, err
+		}
+	}
+	return parseReview(path, b, instance, round, legacy, sorted, override)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

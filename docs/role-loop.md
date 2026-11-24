@@ -70,13 +70,25 @@ the final verdict's high/medium comments; no reviewer is woken and
 no re-review follows. The engineer's fix-pass response keeps the
 phase `escalated` (`EscalationFixPending` clears). The operator can
 then clarify the spec, force-approve, kill the task, or hand it back
-for another loop. If the operator force-approves A's final verdict,
-the fix-pass response counts toward A's phase only when it exists
-and predates B's first verdict (and an `escalated-A-*` marker shows
-the driver escalated A). So B's revisions count from a fresh
-engineer round whether the operator force-approved after the fix
-pass landed or before it (in which case the next engineer response
-answers B).
+for another loop. Force-approve with `spore task force-approve <slug>
+<A|B> --reason <text>`: it flips that reviewer's escalated final
+verdict to `approve` and records the reason as `operator_override`.
+It refuses outside an escalation of that reviewer and while the fix
+pass is still pending: an earlier verdict already has an engineer
+round paired with it, and a fix pass landing after B's first verdict
+would be read as B's answer. A forced approve is exempt from the
+grade/round verdict rule, so its high and medium comments stay on
+record instead of being bounced (hand-editing the verdict alone is
+rejected by validation and restarts the reviewer). Only the exact
+content the command wrote, recorded by sha256 in
+`state/operator-overrides`, may carry `operator_override`; a reviewer
+that sets it itself, or rewrites a forced file, is bounced. The
+command clears that reviewer's `escalated-*` marker. The PR mirror
+posts the override with its reason, and the summary marks the forced
+verdict. The command refuses
+while a drive tick holds the loop; retry. After a force-approve of
+A's final verdict, the fix-pass response counts toward A's phase, so
+B's revisions count from a fresh engineer round.
 
 Per-phase side effects of a drive tick:
 
@@ -490,11 +502,17 @@ Markers under `.spore/<slug>/state/`:
 - `woken-<reviewer>-<round>-<stamp>`: the engineer was nudged for
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
-- `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve). After a
-  force-approve of A, an `escalated-A-*` marker lets the phase
-  machine count A's fix pass as one extra engineer round, provided
-  that response exists and predates B's first verdict.
+- `escalated-<reviewer>-<round>`: the loop escalated. Cleared by
+  `spore task force-approve` for that reviewer, else when the loop
+  later reaches done. After A's
+  final verdict is approved past an escalation (forced, or an
+  ungraded verdict hand-edited while this marker exists), the phase
+  machine counts A's fix pass as one extra engineer round, provided
+  that response exists and predates B's first verdict. A forced
+  verdict keeps counting it after the marker is cleared.
+- `operator-overrides`: review files `spore task force-approve`
+  rewrote, each with the sha256 of the content it wrote; only that
+  content may carry `operator_override`. A missing marker allows none.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
