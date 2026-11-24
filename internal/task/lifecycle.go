@@ -55,21 +55,26 @@ func Ensure(tasksDir, slug string) (string, error) {
 // driver to own its worktree precondition instead of riding on
 // Ensure (which also spawns the worker session that the role-looped
 // task explicitly does not want).
-// ensureSession creates its worktree through here too, so both paths
-// read `base:` and copy .worktreeinclude the same way.
 func EnsureWorktree(tasksDir, slug string) (string, error) {
 	projectRoot, err := projectRootFromTasksDir(tasksDir)
 	if err != nil {
 		return "", err
 	}
+	meta, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
+		return "", err
+	}
+	return ensureWorktree(tasksDir, projectRoot, slug, meta)
+}
+
+// ensureWorktree is EnsureWorktree for callers that already hold the
+// project root and task meta; ensureSession goes through here too, so
+// both paths read `base:` and copy .worktreeinclude the same way.
+func ensureWorktree(tasksDir, projectRoot, slug string, meta frontmatter.Meta) (string, error) {
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 	if _, err := os.Stat(worktree); err == nil {
 		return worktree, nil
 	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	meta, err := readTaskMeta(tasksDir, slug)
-	if err != nil {
 		return "", err
 	}
 	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
@@ -485,7 +490,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	worktree, err := EnsureWorktree(tasksDir, slug)
+	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
 	if err != nil {
 		return "", err
 	}

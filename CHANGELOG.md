@@ -17,8 +17,10 @@
   `.worktreeinclude` at the project root copies matching ignored
   files (such as `.env`) into each new worktree without overwriting,
   skipping symlinks that could reach the main checkout; the pattern
-  subset is in `docs/worker-dispatch.md`. Consumers can drop
-  `pre_start` scripts that fetch the base branch.
+  subset is in `docs/worker-dispatch.md`. `spore task merge` now
+  refuses a task whose fork base is not `main` (land it through a
+  PR). Consumers can drop `pre_start` scripts that fetch the base
+  branch.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

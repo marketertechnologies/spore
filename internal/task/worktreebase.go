@@ -27,7 +27,6 @@ const (
 // Package vars so tests can shorten them.
 var (
 	fetchTimeout       = 30 * time.Second
-	fetchWaitDelay     = 5 * time.Second
 	fetchTimeoutMemory = 2 * time.Minute
 )
 
@@ -155,7 +154,7 @@ func pickStart(projectRoot, b string, warn io.Writer) string {
 // falls back to the refs already present.
 func fetchBase(projectRoot, b string, warn io.Writer) {
 	if gitCmd(projectRoot, "remote", "get-url", "origin").Run() != nil {
-		fmt.Fprintf(warn, "spore: no origin remote; forking from local %s\n", b)
+		fmt.Fprintf(warn, "spore: no origin remote; forking from last-known %s\n", b)
 		return
 	}
 	key := gitCommonDir(projectRoot)
@@ -177,7 +176,7 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 	// remembered timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
-	out, err := fetchCmd(ctx, projectRoot, b).CombinedOutput()
+	out, err := runFetch(fetchCmd(ctx, projectRoot, b))
 	switch fetchOutcome(err, ctx.Err()) {
 	case fetchOK:
 	case fetchDeadline:
@@ -201,10 +200,24 @@ func fetchCmd(ctx context.Context, projectRoot, b string) *exec.Cmd {
 	if !sshConfigured(projectRoot) {
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	}
-	// An ssh grandchild that outlives the killed git would otherwise
-	// hold the output pipe open past the deadline.
-	cmd.WaitDelay = fetchWaitDelay
 	return cmd
+}
+
+// runFetch sends the command's output to a temp file, not a pipe: an
+// ssh grandchild (a ControlPersist master, or one outliving a killed
+// git) inherits the descriptor, and with a pipe Wait would block on
+// it after git itself has exited.
+func runFetch(cmd *exec.Cmd) ([]byte, error) {
+	f, err := os.CreateTemp("", "spore-fetch-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	cmd.Stdout, cmd.Stderr = f, f
+	runErr := cmd.Run()
+	out, _ := os.ReadFile(f.Name())
+	return out, runErr
 }
 
 type fetchResult int

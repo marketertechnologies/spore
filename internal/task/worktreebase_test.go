@@ -275,9 +275,9 @@ func TestAddWorktreeFetchesDespiteNarrowRefspec(t *testing.T) {
 
 func shortFetchTimeout(t *testing.T) {
 	t.Helper()
-	oldTimeout, oldDelay := fetchTimeout, fetchWaitDelay
-	fetchTimeout, fetchWaitDelay = 300*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { fetchTimeout, fetchWaitDelay = oldTimeout, oldDelay })
+	old := fetchTimeout
+	fetchTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { fetchTimeout = old })
 }
 
 func TestFetchTimeoutIsRememberedPerRepo(t *testing.T) {
@@ -369,9 +369,6 @@ func TestFetchCmd(t *testing.T) {
 	if cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid {
 		t.Error("fetch runs in its own process group")
 	}
-	if cmd.WaitDelay == 0 {
-		t.Error("no WaitDelay")
-	}
 	env := strings.Join(cmd.Env, "\n")
 	if !strings.Contains(env, "GIT_TERMINAL_PROMPT=0") || !strings.Contains(env, "BatchMode=yes") {
 		t.Errorf("unconfigured ssh: env lacks the non-interactive settings")
@@ -424,9 +421,9 @@ func TestEnsureWorktreeReadsBaseAndIncludes(t *testing.T) {
 // fetch's lock still gives its own fetch the full deadline, so a slow
 // but answering origin is not remembered as a timeout.
 func TestLockWaitDoesNotEatFetchDeadline(t *testing.T) {
-	oldTimeout, oldDelay := fetchTimeout, fetchWaitDelay
-	fetchTimeout, fetchWaitDelay = 800*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { fetchTimeout, fetchWaitDelay = oldTimeout, oldDelay })
+	old := fetchTimeout
+	fetchTimeout = 800 * time.Millisecond
+	t.Cleanup(func() { fetchTimeout = old })
 	r := newBaseRepo(t)
 	slow := filepath.Join(t.TempDir(), "slow-ssh")
 	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 0.1\nexit 1\n"), 0o755); err != nil {
@@ -454,5 +451,29 @@ func TestLockWaitDoesNotEatFetchDeadline(t *testing.T) {
 	}
 	if _, ok := fetchMemo(gitCommonDir(r.root)); ok {
 		t.Error("lock wait plus a fast-enough fetch was remembered as a timeout")
+	}
+}
+
+// TestFetchDoesNotWaitOnSSHGrandchild: an ssh helper that leaves a
+// background process holding stderr must not delay the spawn past
+// git's own exit.
+func TestFetchDoesNotWaitOnSSHGrandchild(t *testing.T) {
+	old := fetchTimeout
+	fetchTimeout = 5 * time.Second
+	t.Cleanup(func() { fetchTimeout = old })
+	r := newBaseRepo(t)
+	lingering := filepath.Join(t.TempDir(), "lingering-ssh")
+	if err := os.WriteFile(lingering, []byte("#!/bin/sh\nsleep 3 >/dev/null &\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSH_COMMAND", lingering)
+	runGit(t, r.root, "remote", "set-url", "origin", "ssh://example.invalid/repo.git")
+	start := time.Now()
+	_, warn := r.add("a", "")
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("spawn took %s, want it to return when git exits", d)
+	}
+	if !strings.Contains(warn, "failed") {
+		t.Errorf("warn = %q, want a fetch failure", warn)
 	}
 }

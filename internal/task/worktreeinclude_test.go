@@ -134,6 +134,12 @@ func TestWorktreeIncludeSymlinks(t *testing.T) {
 	symlink(t, "../outside.txt", filepath.Join(real, "rel-out"))
 	symlink(t, "../.env", filepath.Join(real, "cache", "ok"))
 	symlink(t, "../../x", filepath.Join(real, "cache", "up"))
+	// cache/link -> .. is the project root, so cache/via's `link/..`
+	// climbs above it although the lexical path stays inside.
+	writeFile(t, filepath.Join(filepath.Dir(real), "x"), "above\n")
+	symlink(t, "..", filepath.Join(real, "cache", "link"))
+	symlink(t, "link/../x", filepath.Join(real, "cache", "via"))
+	symlink(t, "link/../gone/../x", filepath.Join(real, "cache", "dangling"))
 
 	wt := filepath.Join(t.TempDir(), "wt")
 	warn := runInclude(t, root, wt, "abs-*\nrel-*\ncache/\n")
@@ -147,6 +153,8 @@ func TestWorktreeIncludeSymlinks(t *testing.T) {
 		"rel-out":     false,
 		"cache/ok":    true,
 		"cache/up":    false,
+		"cache/via":   false,
+		"cache/link":  true,
 	} {
 		if got := exists(filepath.Join(wt, rel)); got != want {
 			t.Errorf("%s copied = %v, want %v", rel, got, want)
@@ -155,8 +163,8 @@ func TestWorktreeIncludeSymlinks(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(wt, "rel-in")); err != nil || target != ".env" {
 		t.Errorf("rel-in -> %q (%v), want .env", target, err)
 	}
-	if n := strings.Count(warn, "skip symlink"); n != 5 {
-		t.Errorf("warn has %d skip lines, want 5:\n%s", n, warn)
+	if n := strings.Count(warn, "skip symlink"); n != 7 {
+		t.Errorf("warn has %d skip lines, want 7:\n%s", n, warn)
 	}
 }
 
@@ -171,6 +179,7 @@ func TestWorktreeIncludeRefusesParentOutsideWorktree(t *testing.T) {
 	if err := os.MkdirAll(mainDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(root, "sub", "deeper", "g"), "g\n")
 	symlink(t, mainDir, filepath.Join(wt, "sub"))
 	var warn bytes.Buffer
 	c, err := newIncludeCopier(root, wt, &warn)
@@ -181,10 +190,14 @@ func TestWorktreeIncludeRefusesParentOutsideWorktree(t *testing.T) {
 	if exists(filepath.Join(mainDir, "f")) {
 		t.Error("copy wrote through a symlinked parent into the main checkout")
 	}
+	c.copyEntry(filepath.Join("sub", "deeper", "g"), fs.FileMode(0))
+	if exists(filepath.Join(mainDir, "deeper")) {
+		t.Error("MkdirAll created a directory in the main checkout before the parent check")
+	}
 }
 
 func TestIncludeMatch(t *testing.T) {
-	pats := parseWorktreeInclude(strings.NewReader("*.key\n/top.txt\nconf/*.json\n!conf/skip.json\n\\#hash\n"))
+	pats := parseWorktreeInclude(strings.NewReader("*.key\n/top.txt\nconf/*.json\n!conf/skip.json\n\\#hash\n\\*lit\ntab\t\nspace\\ \ntrail  \n"))
 	cases := []struct {
 		rel   string
 		isDir bool
@@ -198,6 +211,12 @@ func TestIncludeMatch(t *testing.T) {
 		{"deep/conf/app.json", false, false},
 		{"conf/skip.json", false, false},
 		{"#hash", false, true},
+		{"*lit", false, true},
+		{"alit", false, false},
+		{"tab\t", false, true},
+		{"tab", false, false},
+		{"space ", false, true},
+		{"trail", false, true},
 	}
 	for _, c := range cases {
 		if got := includeMatch(pats, c.rel, c.isDir); got != c.want {

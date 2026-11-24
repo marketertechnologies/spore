@@ -77,6 +77,8 @@ legacy `SPORE_AGENT_BINARY` override still wins over frontmatter.
 - The start point is `refs/remotes/origin/<b>` when it is ahead of `refs/heads/<b>`, and `refs/heads/<b>` when the local branch is equal, strictly ahead (unpushed commits), or diverged (with a warning): forking from local never drops local commits. When only one of the two exists, it is used. When neither exists, the branch forks from `HEAD` with a warning.
 - A missing `origin` or a failed fetch prints one warning and the choice above runs on the refs already present. The spawn never fails because of the fetch.
 
+`spore task merge` fast-forwards `main`, so with `"fresh"` it refuses a task whose fork base (`base:`, else `origin/HEAD`'s branch) is not `main`; land such a task through a PR against its base, or set `base: main` when it really forked from `main`.
+
 `[fleet] worktree_base = "head"` in `spore.toml` restores the old behaviour, forking from the main checkout's `HEAD` without fetching. `"fresh"` is the default. Any other value, or a `spore.toml` that does not parse, warns and uses `"fresh"`.
 
 ### .worktreeinclude
@@ -85,7 +87,7 @@ A `.worktreeinclude` file at the main checkout's root lists ignored files to cop
 
 Supported pattern subset:
 
-- One pattern per line. Blank lines and lines starting with `#` are skipped; `\#` starts a literal `#`. Trailing spaces are trimmed.
+- One pattern per line. Blank lines and lines starting with `#` are skipped; `\#` and `\!` start a literal `#` or `!`. Unescaped trailing spaces are trimmed (`\ ` keeps one); tabs are kept. Any other `\x` matches `x` literally, so `\*` matches a `*`.
 - `*`, `?` and `[...]` glob as in Go's `path.Match`; none of them crosses a `/`. `**` is not supported.
 - A pattern without a `/` (other than a trailing one) matches the last path element of a reported entry at any depth: `.env` matches `.env` and `apps/web/.env`.
 - A pattern with a `/` at the start or in the middle is anchored to the root and matches the whole path: `/config/master.key`, `config/*.json`.
@@ -93,7 +95,7 @@ Supported pattern subset:
 - `!pattern` re-excludes; the last matching pattern wins.
 - Spore never descends into a reported directory to match patterns. A directory is copied whole when a pattern matches the directory itself; otherwise nothing inside it is copied. `.env` does not pick up `node_modules/pkg/.env`; listing `node_modules/` copies all of `node_modules`.
 
-Existing files in the worktree are never overwritten. Symlinks are recreated only when they cannot lead a worker into the main checkout: an absolute link that points into the main checkout (checked on both the given and the `EvalSymlinks`-resolved paths of the link target and the project root) and a relative link that climbs out of the checkout are skipped with a warning. A file whose destination directory resolves outside the worktree is skipped too. Copy problems warn and never fail the spawn.
+Existing files in the worktree are never overwritten. Symlinks are recreated only when they cannot lead a worker into the main checkout: an absolute link that points into the main checkout (checked on both the given and the `EvalSymlinks`-resolved paths of the link target and the project root) and a relative link that climbs out of the checkout are skipped with a warning. A relative target is checked both lexically and through `EvalSymlinks` in the main checkout, so `link/../x` with `link` pointing elsewhere is judged by where it really lands; an unresolvable target with a `..` after a named element is skipped. A file whose destination directory resolves outside the worktree is skipped before any directory is created. Copy problems warn and never fail the spawn.
 
 ## Merge Close Path
 
