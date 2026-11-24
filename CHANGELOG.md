@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
+  mode, and a 200-line root target, following Claude Code's current
+  memory guidance (root `CLAUDE.md` under about 200 lines, area rules
+  in `.claude/rules/*.md` with `paths:` frontmatter).
+  - **Path-scoped fragments.** A fragment may open with
+    `paths: ["app/graphql/**", ...]` frontmatter (flow list, block
+    list, or comma-separated string). `spore compose --consumer <name>
+    --write` renders it to `.claude/rules/<fragment-id>.md` (Claude
+    Code's frontmatter format, then the same `<!-- generated from ...
+    -->` marker as the root file) instead of inlining it, so it loads
+    only when Claude touches a matching file. `--write` also deletes
+    stale generated rule files; it removes only files that carry the
+    marker, never hand-written rules or symlinks. Plain `spore compose`
+    still prints the root body to stdout and notes on stderr when it
+    left path-scoped rules out. Codex does not read `.claude/rules/`,
+    so those fragments are Claude-only.
+  - **Mirror mode.** A consumer file may set `# mirror: copy|import`.
+    `copy` (default) is today's behaviour: identical `CLAUDE.md` and
+    `AGENTS.md`. `import` puts the body in `AGENTS.md` (which Codex
+    reads directly) and makes `CLAUDE.md` a stub: the marker plus an
+    `@AGENTS.md` import line.
+  - **Lints.** `claude-drift` now checks the generated
+    `.claude/rules/` files (missing, drifted, stale) and the import
+    stub. `agents-mirror` accepts a `CLAUDE.md` that imports its
+    sibling `AGENTS.md` with `@AGENTS.md`. `claude-totalsize` reads
+    `[lint]` `root_line_limit`, `root_char_limit` and
+    `subdir_line_limit` from `spore.toml`.
+  - **Migration: root line limit 400 -> 200.** With no
+    `root_line_limit` in `spore.toml`, a root `CLAUDE.md` /
+    `AGENTS.md` of 201-400 lines is now a warning (`warn:` on stderr,
+    exit 0, does not block the `validation-green` stage); above 400
+    stays an error, as before. Nothing that was green turns red on
+    upgrade. Setting `root_line_limit` makes that number a strict
+    limit with no warning band: pin `400` to keep the old behaviour
+    and silence the warning, or `200` to enforce the new target.
+    The grace band is expected to go away in a later release, making
+    200 strict by default.
+  - **Downstream.** Consumers need no change to stay green. marketer
+    (429-line root file) can tag its area-specific fragments (for
+    example GraphQL rules with `paths: ["app/graphql/**"]`) with
+    `paths:` and rerun
+    `spore compose --consumer <name> --write` to move them into
+    `.claude/rules/` and shrink the root file toward 200 lines;
+    commit the generated `.claude/rules/` files with the root file.
+    Consumers that want one source file for both agents can add
+    `# mirror: import`.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

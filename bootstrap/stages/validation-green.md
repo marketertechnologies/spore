@@ -12,13 +12,18 @@ issues.
 - `filesize` - source files under 500 lines.
 - `comment-noise` - section labels, restated bindings, undated
   TODOs, change-history comments.
-- `claude-drift` - rendered instruction files consistent with
-  composer output, when `rules/consumers/` is set up.
-- `agents-mirror` - `AGENTS.md` mirrors every tracked `CLAUDE.md`.
+- `claude-drift` - rendered instruction files (targets plus
+  generated `.claude/rules/` files) consistent with composer output,
+  when `rules/consumers/` is set up.
+- `claude-totalsize` - root `CLAUDE.md` / `AGENTS.md` within the
+  line and char caps (`spore.toml` `[lint]`, see `spore lint -h`).
+- `agents-mirror` - `AGENTS.md` mirrors every tracked `CLAUDE.md`,
+  byte for byte or through an `@AGENTS.md` import.
 
 ## Exit criteria
 
-Every lint reports zero issues.
+Every lint reports zero issues. Warnings (a root file in the
+200-400 line grace band) do not block.
 
 ## Blocker shapes
 

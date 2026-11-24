@@ -26,31 +26,22 @@ type Options struct {
 }
 
 // Compose reads a consumer config (line-per-rule plain text, "#"
-// and blank lines ignored) and returns the rendered instruction
-// string built by concatenating the named rule fragments from
-// rulesDir, separated by a single blank line. Returns error on
-// missing rule, missing consumer, or read failure.
+// and blank lines ignored) and returns the root instruction body
+// built by concatenating the named rule fragments from rulesDir,
+// separated by a single blank line. Path-scoped fragments (see
+// Render) are left out. Returns error on missing rule, missing
+// consumer, or read failure.
 //
 // Lines may be prefixed with "?<predicate> <id>". The rule is
 // included only when opts.Predicates[predicate] is true. An unknown
 // predicate (not present in the map) is treated as false, so
 // predicate-gated lines are dropped by default.
 func Compose(rulesDir, consumerPath string, opts Options) (string, error) {
-	ids, err := readConsumer(consumerPath, opts)
+	r, err := Render(rulesDir, consumerPath, opts)
 	if err != nil {
 		return "", err
 	}
-
-	pieces := make([]string, 0, len(ids))
-	for _, id := range ids {
-		frag, err := readRule(rulesDir, id)
-		if err != nil {
-			return "", err
-		}
-		pieces = append(pieces, frag)
-	}
-
-	return strings.Join(pieces, "\n\n") + "\n", nil
+	return r.Root, nil
 }
 
 func readConsumer(path string, opts Options) ([]string, error) {
@@ -103,15 +94,19 @@ func splitPredicate(line string) (pred, rule string, ok bool) {
 	return pred, rule, true
 }
 
-func readRule(rulesDir, id string) (string, error) {
+func readFragment(rulesDir, id string) (fragment, error) {
 	if id == "" {
-		return "", errors.New("composer: empty rule id")
+		return fragment{}, errors.New("composer: empty rule id")
 	}
 	rel := filepath.FromSlash(id) + ".md"
 	full := filepath.Join(rulesDir, rel)
 	b, err := os.ReadFile(full)
 	if err != nil {
-		return "", fmt.Errorf("composer: read rule %q (%s): %w", id, full, err)
+		return fragment{}, fmt.Errorf("composer: read rule %q (%s): %w", id, full, err)
 	}
-	return strings.TrimSpace(string(b)), nil
+	globs, body, err := parseFrontmatter(strings.TrimSpace(string(b)))
+	if err != nil {
+		return fragment{}, fmt.Errorf("composer: rule %q: %w", id, err)
+	}
+	return fragment{ID: id, Globs: globs, Body: strings.TrimSpace(body)}, nil
 }

@@ -1,10 +1,10 @@
 package lints
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/versality/spore/internal/align"
@@ -12,13 +12,18 @@ import (
 	"github.com/versality/spore/internal/lang"
 )
 
-// ClaudeDrift fails when a consumer's on-disk instruction target
-// diverges from what the composer would render. The composer is the
+// ClaudeDrift fails when a consumer's on-disk instruction files
+// diverge from what the composer would render. The composer is the
 // source of truth; rendered files are derived. To opt a consumer in,
 // add one or more "# target: <repo-relative-path>" lines anywhere in
 // <ConsumersDir>/<name>.txt (composer skips comment lines so the
 // directive is inert during rendering). Consumers without a target
 // directive are skipped.
+//
+// The check covers each target (a CLAUDE.md target is the import stub
+// under "# mirror: import"), every path-scoped `.claude/rules/` file
+// the consumer renders, and stale generated rule files that no
+// opted-in consumer renders any more.
 type ClaudeDrift struct {
 	ConsumersDir string
 	RulesDir     string
@@ -55,67 +60,69 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 	}}
 
 	var issues []Issue
+	expected := map[string]string{}
+	optedIn := false
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".txt")
 		consumerPath := filepath.Join(absConsumers, e.Name())
-		targets, err := readTargetDirectives(consumerPath)
+		d, err := composer.ReadDirectives(consumerPath)
 		if err != nil {
 			return nil, err
 		}
-		if len(targets) == 0 {
+		if len(d.Targets) == 0 {
 			continue
 		}
-		rendered, err := composer.Compose(absRules, consumerPath, opts)
+		optedIn = true
+		r, err := composer.Render(absRules, consumerPath, opts)
 		if err != nil {
 			return nil, fmt.Errorf("compose %s: %w", name, err)
 		}
-		for _, target := range targets {
-			targetPath := filepath.Join(root, target)
-			on, err := os.ReadFile(targetPath)
+		files, err := r.Files()
+		if err != nil {
+			return nil, fmt.Errorf("compose %s: %w", name, err)
+		}
+		hint := fmt.Sprintf("rerun `spore compose --consumer %s --write`", name)
+		paths := make([]string, 0, len(files))
+		for p, content := range files {
+			paths = append(paths, p)
+			expected[p] = content
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			on, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
 			if err != nil {
 				if os.IsNotExist(err) {
 					issues = append(issues, Issue{
-						Path:    target,
-						Message: fmt.Sprintf("missing render target for consumer %q", name),
+						Path:    p,
+						Message: fmt.Sprintf("missing render target for consumer %q; %s", name, hint),
 					})
 					continue
 				}
 				return nil, err
 			}
-			if string(on) != rendered {
+			if string(on) != files[p] {
 				issues = append(issues, Issue{
-					Path:    target,
-					Message: fmt.Sprintf("drift vs composer (consumer %q); rerun render", name),
+					Path:    p,
+					Message: fmt.Sprintf("drift vs composer (consumer %q); %s", name, hint),
 				})
 			}
 		}
 	}
-	return issues, nil
-}
-
-func readTargetDirectives(path string) ([]string, error) {
-	f, err := os.Open(path)
+	if !optedIn {
+		return issues, nil
+	}
+	stale, err := composer.StaleRuleFiles(root, expected)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var targets []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "#") {
-			continue
-		}
-		body := strings.TrimSpace(strings.TrimPrefix(line, "#"))
-		if v, ok := strings.CutPrefix(body, "target:"); ok {
-			target := strings.TrimSpace(v)
-			if target != "" {
-				targets = append(targets, target)
-			}
-		}
+	for _, p := range stale {
+		issues = append(issues, Issue{
+			Path:    p,
+			Message: "stale generated rule file that no consumer renders; rerun `spore compose --write` or delete it",
+		})
 	}
-	return targets, scanner.Err()
+	return issues, nil
 }
