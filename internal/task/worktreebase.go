@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/sporetoml"
@@ -81,32 +80,54 @@ func addTaskWorktree(projectRoot, worktree, branch, base string) error {
 // fetchTimeout bounds the base fetch; a var so tests can shorten it.
 var fetchTimeout = 30 * time.Second
 
-// fetchMemoTTL lets spawns in one reconcile pass share a fetch result,
-// success or failure, instead of racing on the remote-tracking ref lock
-// or each waiting out their own timeout against a dead remote.
+// fetchMemoTTL lets spawns in one reconcile pass share a fetch result
+// instead of racing on the remote-tracking ref lock or each waiting out
+// their own timeout against a dead remote.
 const fetchMemoTTL = 30 * time.Second
 
+// fetchRetryDelay spaces the single retry after a ref-lock failure.
+var fetchRetryDelay = 500 * time.Millisecond
+
 type fetchMemo struct {
-	mu  sync.Mutex
 	at  time.Time
 	err error
 }
 
+// fetchProject serializes fetches within one repo (they share
+// FETCH_HEAD, packed-refs and gc locks) while letting different
+// projects fetch independently.
+type fetchProject struct {
+	mu    sync.Mutex
+	memos map[string]fetchMemo
+}
+
 var (
-	fetchMemosMu sync.Mutex
-	fetchMemos   = map[string]*fetchMemo{}
+	fetchProjectsMu sync.Mutex
+	fetchProjects   = map[string]*fetchProject{}
 )
+
+func lockFetchProject(projectRoot string) *fetchProject {
+	fetchProjectsMu.Lock()
+	p := fetchProjects[projectRoot]
+	if p == nil {
+		p = &fetchProject{memos: map[string]fetchMemo{}}
+		fetchProjects[projectRoot] = p
+	}
+	fetchProjectsMu.Unlock()
+	p.mu.Lock()
+	return p
+}
 
 // startPoint picks the fully qualified ref a new task branch forks
 // from. It returns refs/remotes/origin/<b> after fetching it, where <b>
-// is base or origin's default branch. For the default branch only, a
-// local <b> with commits origin lacks (unpushed drift or operator
-// commits a later ff-only merge needs) wins and refs/heads/<b> is
-// returned; a stacked base: always follows origin, since its parent may
-// have been rebased and force-pushed. With the "head" opt-out, no
-// origin remote, or a failed fetch it returns refs/heads/<base> when
-// base exists locally, else "" (HEAD). Never errors: a spawn must not
-// fail on the fetch.
+// is base or origin's default branch. A local <b> strictly ahead of
+// origin (unpushed drift, operator or review-fix commits) wins and
+// refs/heads/<b> is returned. When local and origin have diverged, the
+// default branch keeps local (a later ff-only merge targets it) while
+// any other base follows origin (a stacked parent may have been rebased
+// and force-pushed). With the "head" opt-out, no origin remote, or a
+// failed fetch it returns refs/heads/<base> when base exists locally,
+// else "" (HEAD). Never errors: a spawn must not fail on the fetch.
 func startPoint(projectRoot, base string) string {
 	fallback := ""
 	if base != "" && branchExists(projectRoot, base) {
@@ -123,9 +144,10 @@ func startPoint(projectRoot, base string) string {
 		fmt.Fprintf(os.Stderr, "spore: worktree base: no origin remote, branching from %s\n", fallbackName)
 		return fallback
 	}
+	defaultBranch := remoteDefaultBranch(projectRoot)
 	def := base
 	if def == "" {
-		def = remoteDefaultBranch(projectRoot)
+		def = defaultBranch
 	}
 	if cached, err := fetchBase(projectRoot, def); err != nil {
 		if !cached {
@@ -134,59 +156,82 @@ func startPoint(projectRoot, base string) string {
 		return fallback
 	}
 	local, remote := "refs/heads/"+def, "refs/remotes/origin/"+def
-	if base == "" && branchExists(projectRoot, def) &&
-		gitCmd(projectRoot, "merge-base", "--is-ancestor", local, remote).Run() != nil {
+	if !branchExists(projectRoot, def) {
+		return remote
+	}
+	if isAncestor(projectRoot, remote, local) {
+		return local
+	}
+	if def == defaultBranch && !isAncestor(projectRoot, local, remote) {
 		return local
 	}
 	return remote
 }
 
-// fetchBase updates refs/remotes/origin/<def> with an explicit refspec,
-// so a narrow remote.origin.fetch cannot leave a stale ref behind. It
-// runs under a deadline in its own process group (killed whole on
-// timeout, so ssh does not linger) with no credential prompt and, unless
-// the operator configured ssh, ssh in batch mode. The result is reused
-// for fetchMemoTTL; cached reports a reused failure so the caller warns
-// once per window. Fetches for different projects or branches do not
-// wait on each other.
-func fetchBase(projectRoot, def string) (cached bool, err error) {
-	key := projectRoot + "\x00" + def
-	fetchMemosMu.Lock()
-	m := fetchMemos[key]
-	if m == nil {
-		m = &fetchMemo{}
-		fetchMemos[key] = m
-	}
-	fetchMemosMu.Unlock()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.at.IsZero() && time.Since(m.at) < fetchMemoTTL {
-		return true, m.err
-	}
-	m.err = runFetch(projectRoot, def)
-	m.at = time.Now()
-	return false, m.err
+func isAncestor(projectRoot, a, b string) bool {
+	return gitCmd(projectRoot, "merge-base", "--is-ancestor", a, b).Run() == nil
 }
 
+// fetchBase updates refs/remotes/origin/<def> with an explicit refspec,
+// so a narrow remote.origin.fetch cannot leave a stale ref behind. The
+// result is reused for fetchMemoTTL; cached reports a reused failure so
+// the caller warns once per window. A ref-lock failure (a concurrent
+// manual fetch) is retried once and never memoized, since it is local
+// and transient.
+func fetchBase(projectRoot, def string) (cached bool, err error) {
+	p := lockFetchProject(projectRoot)
+	defer p.mu.Unlock()
+	if m, ok := p.memos[def]; ok && time.Since(m.at) < fetchMemoTTL {
+		return true, m.err
+	}
+	err = runFetch(projectRoot, def)
+	if isLockError(err) {
+		time.Sleep(fetchRetryDelay)
+		err = runFetch(projectRoot, def)
+	}
+	if isLockError(err) {
+		delete(p.memos, def)
+	} else {
+		p.memos[def] = fetchMemo{at: time.Now(), err: err}
+	}
+	return false, err
+}
+
+func isLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "cannot lock ref") || strings.Contains(msg, ".lock")
+}
+
+// runFetch runs the fetch under a deadline. It stays in spore's process
+// group so Ctrl-C and an operator ssh's /dev/tty prompt behave as in a
+// plain shell; on timeout git is killed and WaitDelay closes its pipes,
+// and the injected batch-mode ssh carries its own connect and keepalive
+// timeouts so it cannot outlive the fetch for long. --no-write-fetch-head
+// and --no-auto-gc keep it off locks a concurrent git process may hold.
 func runFetch(projectRoot, def string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	refspec := "+refs/heads/" + def + ":refs/remotes/origin/" + def
-	cmd := gitCmd(projectRoot, "fetch", "--quiet", "--no-tags", "origin", refspec)
+	cmd := gitCmd(projectRoot, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-auto-gc", "origin", refspec)
 	fetch := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-	fetch.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	fetch.Cancel = func() error { return syscall.Kill(-fetch.Process.Pid, syscall.SIGKILL) }
 	fetch.WaitDelay = time.Second
 	fetch.Env = fetchEnv(projectRoot)
 	out, err := fetch.CombinedOutput()
+	if err == nil {
+		return nil
+	}
 	if ctx.Err() != nil {
 		return fmt.Errorf("timed out after %s", fetchTimeout)
 	}
-	if err != nil {
-		return errors.New(firstLine(strings.TrimSpace(string(out)), err))
-	}
-	return nil
+	return errors.New(firstLine(strings.TrimSpace(string(out)), err))
 }
+
+// batchSSH is the ssh command injected when the operator has none:
+// no prompts, and bounded connect and dead-peer detection.
+const batchSSH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
 // fetchEnv disables credential prompts and puts ssh in batch mode,
 // unless the operator routes ssh through GIT_SSH_COMMAND, GIT_SSH or
@@ -195,7 +240,7 @@ func fetchEnv(projectRoot string) []string {
 	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" &&
 		gitCmd(projectRoot, "config", "--get", "core.sshCommand").Run() != nil {
-		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+		env = append(env, "GIT_SSH_COMMAND="+batchSSH)
 	}
 	return env
 }
@@ -495,7 +540,11 @@ func retargetLink(projectRoot, worktree, srcPath, link string) string {
 		return "", false
 	}
 	if !filepath.IsAbs(link) {
-		target := filepath.Clean(filepath.Join(filepath.Dir(srcPath), link))
+		dir := filepath.Dir(srcPath)
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = real
+		}
+		target := filepath.Clean(filepath.Join(dir, link))
 		if abs, err := filepath.Abs(target); err == nil {
 			if _, ok := under(abs); !ok {
 				return abs

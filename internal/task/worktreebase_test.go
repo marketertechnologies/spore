@@ -426,36 +426,29 @@ func TestFetchBaseLocksPerKey(t *testing.T) {
 	<-hungDone
 }
 
-func TestFetchTimeoutKillsProcessGroup(t *testing.T) {
+func TestRunFetchStaysInForegroundGroup(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc")
+	}
 	repo, _, _ := newBaseRepo(t)
 	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
+	pgidFile := filepath.Join(dir, "pgid")
 	script := filepath.Join(dir, "remote.sh")
-	body := "#!/bin/sh\necho $$ > " + pidFile + "\nexec sleep 30\n"
+	body := "#!/bin/sh\nawk '{print $5}' /proc/$$/stat > " + pgidFile + "\nexit 1\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "config", "protocol.ext.allow", "always")
 	runGit(t, repo, "remote", "set-url", "origin", "ext::"+script)
-	shortFetchTimeout(t)
-	if err := runFetch(repo, "main"); err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("runFetch = %v, want timeout", err)
+	if err := runFetch(repo, "main"); err == nil {
+		t.Fatal("runFetch against a failing helper succeeded")
 	}
-	raw, err := os.ReadFile(pidFile)
+	raw, err := os.ReadFile(pgidFile)
 	if err != nil {
 		t.Fatalf("remote helper never ran: %v", err)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("remote helper pid %d outlived the fetch timeout", pid)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if got, want := strings.TrimSpace(string(raw)), strconv.Itoa(syscall.Getpgrp()); got != want {
+		t.Errorf("fetch helper pgid = %s, want spore's %s (Ctrl-C and tty prompts must reach it)", got, want)
 	}
 }
 
@@ -471,7 +464,7 @@ func TestFetchEnvRespectsGitSSH(t *testing.T) {
 	t.Setenv("GIT_SSH", "")
 	found := false
 	for _, e := range fetchEnv(repo) {
-		found = found || e == "GIT_SSH_COMMAND=ssh -o BatchMode=yes"
+		found = found || e == "GIT_SSH_COMMAND="+batchSSH
 	}
 	if !found {
 		t.Error("fetchEnv without operator ssh config: want batch-mode GIT_SSH_COMMAND")
@@ -502,11 +495,14 @@ func TestWorktreeStackedBaseFollowsRebasedOrigin(t *testing.T) {
 
 func TestRetargetLink(t *testing.T) {
 	tmp := t.TempDir()
-	real := filepath.Join(tmp, "real")
+	real := filepath.Join(tmp, "data", "proj")
 	if err := os.MkdirAll(real, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(tmp, "alias")
+	if err := os.MkdirAll(filepath.Join(tmp, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(tmp, "home", "proj")
 	if err := os.Symlink(real, alias); err != nil {
 		t.Fatal(err)
 	}
@@ -517,11 +513,74 @@ func TestRetargetLink(t *testing.T) {
 		{"absolute via resolved root", filepath.Join(real, "real.env"), filepath.Join(wt, "real.env")},
 		{"absolute outside root", "/etc/hosts", "/etc/hosts"},
 		{"relative inside root", "config/real.env", "config/real.env"},
-		{"relative escaping root", "../shared/x", filepath.Join(tmp, "shared", "x")},
+		{"relative escaping symlinked root", "../shared/x", filepath.Join(tmp, "data", "shared", "x")},
 	}
 	for _, c := range cases {
 		if got := retargetLink(alias, wt, src, c.link); got != c.want {
 			t.Errorf("%s: retargetLink(%q) = %q, want %q", c.name, c.link, got, c.want)
 		}
 	}
+}
+
+func TestWorktreeStackedBaseKeepsLocalAhead(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	parent := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "parent")
+	runGit(t, repo, "push", "-q", "origin", parent+":refs/heads/stack")
+	fix := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", parent, "-m", "unpushed review fix")
+	runGit(t, repo, "branch", "stack", fix)
+	writeRepoFile(t, repo, "tasks/demo.md", "---\nstatus: active\nbase: stack\n---\n\nbody\n")
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != fix {
+		t.Errorf("wt/demo = %s, want local stack %s (strictly ahead of origin %s)", got, fix, parent)
+	}
+}
+
+func TestWorktreeExplicitDefaultBaseKeepsDivergedLocal(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "unpushed drift")
+	localHead := gitOutput(t, repo, "rev-parse", "HEAD")
+	writeRepoFile(t, repo, "tasks/demo.md", "---\nstatus: active\nbase: main\n---\n\nbody\n")
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != localHead {
+		t.Errorf("wt/demo = %s, want diverged local main %s, same as an unset base", got, localHead)
+	}
+}
+
+func TestFetchBaseDoesNotMemoizeLockErrors(t *testing.T) {
+	repo, _, originHead := newBaseRepo(t)
+	old := fetchRetryDelay
+	fetchRetryDelay = 10 * time.Millisecond
+	t.Cleanup(func() { fetchRetryDelay = old })
+	lock := filepath.Join(repo, ".git", "refs", "remotes", "origin", "main.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchBase(repo, "main"); err == nil {
+		t.Fatal("fetchBase with a held ref lock succeeded")
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := fetchBase(repo, "main")
+	if cached || err != nil {
+		t.Fatalf("fetchBase after lock released = cached %v, %v; want a fresh successful fetch", cached, err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", "refs/remotes/origin/main"); got != originHead {
+		t.Errorf("origin/main = %s, want %s", got, originHead)
+	}
+}
+
+func TestFetchBaseSerializesWithinProject(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	p := lockFetchProject(repo)
+	done := make(chan struct{})
+	go func() { _, _ = fetchBase(repo, "other"); close(done) }()
+	select {
+	case <-done:
+		p.mu.Unlock()
+		t.Fatal("fetchBase ran while another fetch held the project lock")
+	case <-time.After(300 * time.Millisecond):
+	}
+	p.mu.Unlock()
+	<-done
 }
