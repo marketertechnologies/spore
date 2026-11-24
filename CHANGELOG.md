@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Role loop (0.36.0): engineer check gate. `spore.toml`
+  `[fleet.roles.engineer] check = "<shell cmd>"` (plus
+  `check_timeout_seconds`, default 900) makes the project's checks a
+  hard gate before review. New Stop hook `spore hooks engineer-check`
+  (shipped in `bootstrap/handover/settings.json`, timeout 3600s):
+  in an engineer role pane (`SPORE_ROLE=engineer`) with a new
+  engineer response, it runs `check` in the task worktree; a failure
+  exits 2 with the command, exit code and last 40 lines, blocking the
+  stop; a pass records `state/check-pass-<round>-<sha>`; the third
+  failure on one round and HEAD records `check-failed-*` and lets the
+  stop through. The driver holds reviewers (no wake, no fresh spawn)
+  while the latest response has neither marker at the worktree HEAD,
+  records the state in the snapshot (`spore task status` prints
+  `check:`), wakes the engineer once if the response outlives the
+  check timeout unchecked, and on a give-up hands off with the failure
+  named in the reviewer wake. Role bodies: the engineer runs the
+  check itself first; reviewers skip the full suite on a pass marker.
+  Downstream impact: nothing changes until a project sets `check`.
+  Hosts must pick up the new handover settings (or add the Stop hook
+  to their own settings) for the gate to fire; without the hook every
+  role-loop response waits out the timeout and the engineer is then
+  woken to run `spore hooks engineer-check` by hand. Codex engineer
+  panes have no Stop hook wiring and always take that path. Projects
+  with a hand-rolled gate on `spore task done` (marketer's PreToolUse
+  hook) can move the command into `check` and drop the hook.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

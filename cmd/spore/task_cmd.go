@@ -259,6 +259,9 @@ func printRoleSnapshot(snap fleet.Snapshot) {
 	if snap.CurrentReviewer == "" {
 		return
 	}
+	if snap.Check != task.CheckOff {
+		fmt.Printf("check:    %s (engineer round %d, HEAD %.12s)\n", snap.Check, snap.EngineerRound, snap.CheckSHA)
+	}
 	verdict := snap.LastVerdict
 	if verdict == "" {
 		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/versality/spore/internal/task"
 )
 
 func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
@@ -39,6 +41,20 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore fleet replenish-hook") {
 		t.Fatal("handover settings missing fleet replenish-hook Stop hook")
 	}
+	if !hasTimeout(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore hooks engineer-check", task.EngineerCheckHookTimeout) {
+		t.Fatalf("handover settings missing engineer-check Stop hook with timeout %d", task.EngineerCheckHookTimeout)
+	}
+}
+
+func hasTimeout(groups []handoverHookGroup, command string, timeout int) bool {
+	for _, group := range groups {
+		for _, hook := range group.Hooks {
+			if hook.Command == command && hook.Timeout == timeout {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type handoverHookGroup struct {
@@ -49,6 +65,7 @@ type handoverHook struct {
 	Command     string `json:"command"`
 	Async       bool   `json:"async,omitempty"`
 	AsyncRewake bool   `json:"asyncRewake,omitempty"`
+	Timeout     int    `json:"timeout,omitempty"`
 }
 
 func hasCommand(groups []handoverHookGroup, command string) bool {

@@ -59,6 +59,11 @@
           },
           {
             "type": "command",
+            "command": "/run/current-system/sw/bin/spore hooks engineer-check",
+            "timeout": 3600
+          },
+          {
+            "type": "command",
             "command": "/run/current-system/sw/bin/spore hooks watch-inbox",
             "timeout": 604800,
             "asyncRewake": true

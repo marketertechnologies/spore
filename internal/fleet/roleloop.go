@@ -78,6 +78,13 @@ type Snapshot struct {
 	// EscalationFixPending is true in PhaseEscalated until the
 	// engineer writes its one fix-pass response to the final verdict.
 	EscalationFixPending bool
+	// Check is the engineer check gate state of the latest engineer
+	// response at the worktree HEAD, in review phases with
+	// `[fleet.roles.engineer] check` set; CheckOff otherwise. While it
+	// is CheckPending the driver holds the reviewer.
+	Check task.CheckState
+	// CheckSHA is the worktree HEAD Check was read at.
+	CheckSHA string
 }
 
 // DeriveSnapshot reads `<projectRoot>/.spore/<slug>/` and returns the
@@ -127,6 +134,9 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 		snap.LastCounts = revs[len(revs)-1].Counts()
 	}
 	snap.EscalationFixPending = snap.Phase == PhaseEscalated && len(engRounds) < expected
+	if err := readCheckGate(projectRoot, slug, &snap); err != nil {
+		return Snapshot{}, err
+	}
 	return snap, nil
 }
 
