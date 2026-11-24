@@ -207,3 +207,34 @@ func TestParsePRActivity(t *testing.T) {
 		t.Fatalf("err = %v, want graphql error", err)
 	}
 }
+
+func TestGitHubPRFeedbackSourceQueriesAsApp(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	resp := filepath.Join(t.TempDir(), "graphql.json")
+	if err := os.WriteFile(resp, []byte(`{"data":{"repository":{"pullRequest":{
+	  "comments":{"nodes":[{"body":"Rename Foo.","createdAt":"2026-11-20T10:03:00Z","author":{"__typename":"User","login":"alice"}}]}
+	}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_GH_GRAPHQL", resp)
+
+	act, err := NewGitHubPRFeedbackSource(f.root, f.slug).PRActivity(12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(act.Comments) != 1 || act.Comments[0].Body != "Rename Foo." {
+		t.Fatalf("activity = %+v", act)
+	}
+	if calls := f.calls(t); len(calls) != 1 || !strings.HasPrefix(calls[0], "api graphql --hostname github.com -f query=") {
+		t.Fatalf("want one gh api graphql call, got %q", calls)
+	}
+	log, err := os.ReadFile(f.ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{" -f owner=acme -f name=widget -F number=12\n", "TOKEN: ghs_app\nREPO: github.com/acme/widget\n"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("gh log lacks %q:\n%s", want, log)
+		}
+	}
+}
