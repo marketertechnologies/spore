@@ -35,7 +35,7 @@ func TestSettings_GoldenFile(t *testing.T) {
 }
 
 func TestSettings_EmptyEventsOmitHooks(t *testing.T) {
-	got, err := Settings(nil)
+	got, err := SettingsWith(nil, Permissions{})
 	if err != nil {
 		t.Fatal(err)
 	}

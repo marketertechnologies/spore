@@ -110,3 +110,21 @@ func TestRunTaskStartAgentFlagValidated(t *testing.T) {
 		t.Errorf("err = %v, want usage", err)
 	}
 }
+
+func TestRunTaskReopenNoteFlags(t *testing.T) {
+	usage := [][]string{
+		nil,
+		{"demo"},
+		{"demo", "--note", "a", "--note-file", "b"},
+		{"demo", "--from-pr", "--note", "a", "--note-file", "b"},
+	}
+	for _, args := range usage {
+		if err := runTaskReopen(args); err == nil || !strings.Contains(err.Error(), "usage:") {
+			t.Errorf("runTaskReopen(%q) = %v, want usage error", args, err)
+		}
+	}
+	t.Chdir(t.TempDir())
+	if err := runTaskReopen([]string{"demo", "--from-pr"}); err == nil || strings.Contains(err.Error(), "usage:") {
+		t.Errorf("--from-pr alone = %v, want it accepted past flag checks", err)
+	}
+}

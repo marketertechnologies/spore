@@ -105,9 +105,11 @@ After the rebuild:
 ## What this snippet does NOT cover
 
 - Per-user hooks at `/home/spore/.claude/hooks/` and
-  `/home/spore/.claude/settings.json`: these still come from the
-  one-shot infect install. Not load-bearing for the cap-respawn
-  flow; revisit if it becomes important.
+  `/home/spore/.claude/settings.json`: this snippet leaves them as
+  the one-shot infect install wrote them. Importing
+  `spore.nixosModules.spore-fleet` replaces them with the managed
+  settings drop-in at `/etc/claude-code/managed-settings.d/50-spore.json`
+  and prunes the user copies (see `docs/fleet-module.md`).
 - Per-user systemd units at
   `/home/spore/.config/systemd/user/spore-fleet-reconcile.*`: same
   status as the hooks. The kernel-managed units via

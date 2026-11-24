@@ -43,10 +43,9 @@ Never measure against a sibling task branch.
    `$SPORE_TASK_DIR/github.json`. The file exists only when the
    project runs the draft-PR flow.
 2. With a PR number, invoke the `code-review` skill with args
-   `$SPORE_REVIEW_EFFORT <pr_number> --comment` so findings land as
-   inline PR comments. If posting fails (for example gh has no
-   auth in this pane), rerun without `--comment`; the verdict file
-   is what counts.
+   `$SPORE_REVIEW_EFFORT <pr_number>`. Do not pass `--comment`: the
+   driver posts your graded comments inline on the PR, each led by
+   its ID, so the skill's own comments would duplicate them.
 3. Without a PR, invoke the skill with args
    `$SPORE_REVIEW_EFFORT <branch>`, where `<branch>` is
    `git branch --show-current`, so it reviews the branch diff
@@ -57,14 +56,27 @@ Never measure against a sibling task branch.
 
 ## Verdict mapping
 
-The skill's findings carry no severity. You grade each one when you
-map it to a `comments` entry (see "Grading comments"):
+The skill reports typed findings, usually through its
+`ReportFindings` tool: `file`, `line`, `summary`, `failure_scenario`,
+`category`. Run as a forked skill it may instead return a plain JSON
+array of the same fields, sometimes without `category`. Findings
+carry no severity. Map each finding to one graded `comments` entry,
+transcribing the fields directly:
 
-- One graded comment per finding, sorted by severity (see "Comment
-  IDs"). `where` is the finding's
-  `path:line`; `text` is the defect and its failure scenario, no
-  repeat of the inline comment's full body.
-- Pick `severity` and `category` yourself from the rubric. Judge how
+| Finding field      | Comment key |
+|--------------------|-------------|
+| `file:line`        | `where`     |
+| `summary`          | `text`      |
+| `failure_scenario` | `trigger`   |
+| `category`         | `category`  |
+
+A `category` outside the list in "Grading comments", or a finding
+with no `category`, maps to the closest listed one; pick it yourself
+(`category` is required in the verdict file). The draft-PR mirror anchors each comment at its
+`where` line on the PR diff, so keep `where` exactly `path:line`.
+
+- Sort the comments by severity (see "Comment IDs").
+- Pick `severity` yourself from the rubric. Judge how
   likely the failure scenario is in real use: a bug hunt surfaces
   many rare edge cases, and those are `low`.
 - A finding is `high` / `medium` only with a concrete `trigger`;
@@ -249,6 +261,18 @@ any graded comment they count like a `medium`. Do not write them.
 - Write only your own verdict file. Never write another instance's
   directory or the engineer's responses.
 
+## The project check
+
+When the project sets `[fleet.roles.engineer] check` in `spore.toml`,
+you are only handed an engineer response once that check passed on
+the current HEAD, or once the engineer gave up after 3 failures. A
+`check-pass-<N>-<sha>` marker in `$SPORE_TASK_DIR/state/` (N the
+latest engineer round, sha `git rev-parse HEAD`) means the project's
+suite and lints passed on this code: do not run them yourself. A
+`check-failed-<N>-<sha>` marker holds the failing output tail; report
+the failure as a finding. The wake that hands you a revision names
+the result too.
+
 ## The loop
 
 1. Rounds 2+: read the engineer's latest response.
@@ -277,15 +301,11 @@ path.
 
 - Do not read another worker's tmux pane. Files only.
 - Do not modify the spec, the branch, or the engineer's response
-  files. Your output is your verdict file (plus the skill's inline
-  PR comments, when a PR is open).
-- Do not approve, merge, or push. Inline comments from `--comment`
-  are the only thing you post; the driver posts your verdict headed
-  with `$SPORE_REVIEWER_LABEL`, each comment led by its ID. That
-  review body is the authoritative numbered list: the skill posts its
-  inline comments before you grade and sort the findings, so they
-  carry no ID. If the skill lets you word the inline comments it
-  posts, start each with the finding's ID. Never read the PR thread:
-  it holds the other instance's reviews.
+  files. Your output is your verdict file.
+- Do not approve, merge, push, or post to the PR. The driver posts
+  your verdict headed with `$SPORE_REVIEWER_LABEL`, each comment led
+  by its ID and anchored to its `where` line; that review is the
+  authoritative numbered list. Never read the PR
+  thread: it holds the other instance's reviews.
 - Stay inside the working repo and `.spore/<task>/`. Do not write
   elsewhere on the host.

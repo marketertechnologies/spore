@@ -134,35 +134,8 @@ let
   # Rendered by the spore CLI itself so the binding set has one source
   # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
   codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
-    ${cfg.package}/bin/spore hooks codex-config --spore ${cfg.package}/bin/spore > $out
+    ${cfg.package}/bin/spore hooks codex-config --spore /run/current-system/sw/bin/spore > $out
   '';
-
-  # Skill bodies come from cfg.package (`spore install --dest`), so the
-  # binary stays the single source. The name list comes from this
-  # module's source tree (same flake revision as the default package)
-  # to avoid import-from-derivation; the build fails if the two drift.
-  skillNames = lib.attrNames (lib.filterAttrs (_: type: type == "directory")
-    (builtins.readDir ../bootstrap/skills));
-  sporeSkills = pkgs.runCommand "spore-skills" { } ''
-    ${cfg.package}/bin/spore install --dest $out > /dev/null
-    got="$(cd $out && LC_ALL=C ls -1 | tr '\n' ' ')"
-    want="${lib.concatStringsSep " " skillNames} "
-    if [ "$got" != "$want" ]; then
-      echo "spore-skills: package ships [$got], module expects [$want]" >&2
-      exit 1
-    fi
-  '';
-
-  # One directory link per skill: Codex skips file symlinks during skill
-  # discovery (so home.file `recursive` is out), and per-name links
-  # leave unmanaged siblings such as ~/.claude/skills/synced alone.
-  # ~/.agents/skills is Codex's user scope; it is read from $HOME, not
-  # CODEX_HOME, so per-session coordinator homes see it unchanged.
-  skillFiles = lib.listToAttrs (lib.concatMap
-    (root: map
-      (name: lib.nameValuePair "${root}/${name}" { source = "${sporeSkills}/${name}"; })
-      skillNames)
-    [ ".claude/skills" ".agents/skills" ]);
 
   enabledMatters = lib.filterAttrs (_: m: m.enable) cfg.matters;
 
@@ -237,6 +210,8 @@ let
   };
 in
 {
+  imports = [ ./spore-fleet-claude.nix ];
+
   options.services.spore-fleet = {
     enable = lib.mkEnableOption "spore fleet reconciler (systemd-user)";
 
@@ -684,7 +659,8 @@ in
             done
           '';
           spore-migrate = {
-            deps = [ "users" ];
+            # etc: migration 004 checks the managed settings drop-in.
+            deps = [ "users" "etc" ];
             text = ''
               ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
                 ${pkgs.coreutils}/bin/env PATH=${migratePath} \
@@ -711,8 +687,6 @@ in
       ];
 
       home-manager.users.${cfg.user} = {
-        home.file = skillFiles;
-
         systemd.user.services = lib.mapAttrs'
           (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
             Unit = {
@@ -791,7 +765,9 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.codex.enable) {
-      environment.systemPackages = [ cfg.codex.package ];
+      # hooks.json calls spore through /run/current-system/sw so a
+      # long-lived Codex session survives a rebuild plus GC.
+      environment.systemPackages = [ cfg.codex.package cfg.package ];
       home-manager.users.${cfg.user}.home.file.".codex/hooks.json".source = codexHooks;
     })
   ];
