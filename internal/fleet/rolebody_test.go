@@ -171,6 +171,8 @@ func TestBundledRoleBodiesCommentIDContract(t *testing.T) {
 		"reviewer-code-review.md": {
 			"$SPORE_REVIEWER_PREFIX", "`<prefix><round>.<n>`", "authoritative numbered list",
 			"you run last\n(slot B)",
+			"`$SPORE_REVIEW_EFFORT <pr_number>`. Do not pass `--comment`",
+			"| `file:line`        | `where`     |", "| `failure_scenario` | `trigger`   |",
 		},
 		"engineer.md": {
 			"`<prefix><round>.<n>`", "`R1.3` is `\"comment\": 2`", "`detail`", "`sha`", "- `pr`: the PR title and description",
@@ -186,5 +188,17 @@ func TestBundledRoleBodiesCommentIDContract(t *testing.T) {
 				t.Errorf("%s lacks %q", name, p)
 			}
 		}
+	}
+}
+
+// Reviewer B must not post the skill's unnumbered inline comments: the
+// mirror posts the graded ones, anchored and led by their IDs.
+func TestBundledCodeReviewBodyDoesNotPost(t *testing.T) {
+	b, err := spore.BundledRoles.ReadFile("bootstrap/roles/reviewer-code-review.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "<pr_number> --comment") {
+		t.Error("reviewer-code-review.md still invokes the skill with --comment")
 	}
 }

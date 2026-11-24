@@ -177,7 +177,8 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
   diff (the draft PR when `github.json` holds a PR number; the
-  skill does not post, the mirror anchors the graded comments). The skill's findings carry no severity: the reviewer
+  skill does not post, the mirror anchors the graded comments). The
+  skill's findings carry no severity: the reviewer
   grades each one (see "Graded review comments") and the verdict
   follows from the grades. Rounds 2+ drop new `low` findings on code
   the engineer did not change that round, since the skill re-reviews
@@ -186,9 +187,9 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   transcribes the skill's `ReportFindings` fields directly (`file:line`
   to `where`, `summary` to `text`, `failure_scenario` to `trigger`,
   `category` to `category`), so the mirror can anchor each graded
-  comment on its line. The skill's own inline PR comments carry no ID
-  (it posts them before the reviewer grades and sorts); the review the
-  driver posts is the authoritative numbered list. The
+  comment on its line. The skill runs without `--comment`, so the
+  review the driver posts is the only one on the PR and the
+  authoritative numbered list. The
   run has no spec context, so the engineer pushes back with a
   one-line reason on findings the spec contradicts, and later rounds
   do not re-raise a finding with a sound pushback.
