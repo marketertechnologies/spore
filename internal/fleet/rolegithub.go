@@ -136,7 +136,9 @@ reviews:
 			if rev.Forced() {
 				out = append(out, mirrorEvent{name: fmt.Sprintf("override-%s-%d", inst, r), kind: eventOverride, round: r, instance: inst, note: strings.TrimSpace(rev.OperatorOverride)})
 			}
-			if rev.Verdict == task.VerdictRequestChanges {
+			// A forced B verdict was an escalation whose fix pass landed
+			// (see ForceApproveReview); A's is counted by AFixLanded.
+			if rev.Verdict == task.VerdictRequestChanges || (inst == task.ReviewerB && rev.Forced()) {
 				engRound++
 				if !addEng() {
 					break reviews
@@ -402,7 +404,11 @@ func reviewerName(projectRoot, slug string, inst task.ReviewerInstance, round in
 
 func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 	verdict := "approve"
-	if rev.Verdict == task.VerdictRequestChanges {
+	switch {
+	case rev.Forced():
+		// Only an escalated request_changes can be forced.
+		verdict = "request changes, force-approved by the operator"
+	case rev.Verdict == task.VerdictRequestChanges:
 		verdict = "request changes"
 	}
 	var b strings.Builder
@@ -713,7 +719,10 @@ func reviewOutcomeLine(projectRoot, slug string) string {
 			continue
 		}
 		verdict := "approved"
-		if rev.Verdict == task.VerdictRequestChanges {
+		switch {
+		case rev.Forced():
+			verdict = "force-approved by the operator"
+		case rev.Verdict == task.VerdictRequestChanges:
 			verdict = "requested changes"
 		}
 		parts = append(parts, fmt.Sprintf("%s: %s at round %d.", task.ReviewerLabel(rev.IDPrefix(inst)), verdict, last))

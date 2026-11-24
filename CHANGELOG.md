@@ -17,7 +17,9 @@
   tick. The PR mirror counts A's escalation fix pass like the phase
   machine after a force-approve, so B's engineer rounds are no longer
   skipped or posted one verdict late, and it posts the override with
-  its reason.
+  its reason. B's escalation fix pass stays in the mirror after B is
+  forced, and the verdict comment and ready PR body mark a forced
+  verdict as force-approved by the operator.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

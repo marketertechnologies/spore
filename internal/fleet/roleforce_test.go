@@ -278,3 +278,90 @@ func mustRead(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// escalateBWithFix walks B to an escalation at round 3 and lands the
+// engineer's fix pass (round 4).
+func escalateBWithFix(t *testing.T, root, slug string) {
+	t.Helper()
+	for _, step := range []stepFn{
+		writeEng(1),
+		writeGraded(task.ReviewerA, 1, task.VerdictApprove),
+		writeGraded(task.ReviewerB, 1, task.VerdictRequestChanges, highBug),
+		writeEng(2),
+		writeGraded(task.ReviewerB, 2, task.VerdictRequestChanges, medEdge),
+		writeEng(3),
+		writeGraded(task.ReviewerB, 3, task.VerdictRequestChanges, medEdge),
+		writeEng(4),
+	} {
+		step(t, root, slug)
+	}
+}
+
+// B's fix pass must stay in the mirror after B is forced, and the
+// forced verdict must not read as a plain approve.
+func TestMirrorForceApproveBKeepsFixPass(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	escalateBWithFix(t, root, slug)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerB, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := DeriveSnapshot(root, slug)
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+	evs, err := mirrorEvents(root, slug, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"engineer-round-1.json", "A/round-1.json", "B/round-1.json", "engineer-round-2.json",
+		"B/round-2.json", "engineer-round-3.json", "B/round-3.json", "override-B-3",
+		"engineer-round-4.json", eventReady,
+	}
+	if got := eventNames(evs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v\nwant     %v", got, want)
+	}
+	rev, err := task.ReadReview(root, slug, task.ReviewerB, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := reviewBody(task.ReviewerB, 3, rev); !strings.Contains(body, "force-approved by the operator") {
+		t.Fatalf("forced verdict body hides the override:\n%s", body)
+	}
+	if line := reviewOutcomeLine(root, slug); !strings.Contains(line, "force-approved by the operator at round 3") {
+		t.Fatalf("outcome line = %q, want the override shown", line)
+	}
+}
+
+// A failed write must not leave the override recorded: the live
+// reviewer could then write a self-approval that validates.
+func TestForceApproveFailedWriteDropsRecord(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	escalateAWithFix(t, root, slug)
+	dir := filepath.Dir(task.ReviewPath(root, slug, task.ReviewerA, 3))
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil {
+		t.Fatal("force-approve into a read-only dir succeeded")
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := task.ReviewPath(root, slug, task.ReviewerA, 3)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, path)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["verdict"] != task.VerdictRequestChanges {
+		t.Fatalf("verdict = %v after a failed write", doc["verdict"])
+	}
+	doc["verdict"], doc["operator_override"] = task.VerdictApprove, "self-approved"
+	b, _ := json.Marshal(doc)
+	if _, err := task.ParseReviewAt(root, slug, task.ReviewerA, 3, b); err == nil {
+		t.Fatal("override record survived a failed force-approve")
+	}
+}

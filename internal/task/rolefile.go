@@ -353,6 +353,30 @@ func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance,
 	return f.Close()
 }
 
+// DropOperatorOverride removes instance/round from the override
+// marker; a no-op when it is not listed.
+func DropOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int) error {
+	if err := validateInstance(instance); err != nil {
+		return err
+	}
+	rel := relTo(RoleTaskDir(projectRoot, slug), ReviewPath(projectRoot, slug, instance, round))
+	marker := filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker)
+	b, err := os.ReadFile(marker)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var keep strings.Builder
+	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if l != "" && l != rel {
+			keep.WriteString(l + "\n")
+		}
+	}
+	return os.WriteFile(marker, []byte(keep.String()), 0o644)
+}
+
 // overrideRecorded reports whether rel is in the override marker. Unlike
 // the other list markers, a missing marker lists nothing.
 func overrideRecorded(projectRoot, slug, rel string) (bool, error) {

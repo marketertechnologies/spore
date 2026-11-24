@@ -417,6 +417,21 @@ func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round in
 	return parseReview(path, b, instance, round, legacy, sorted, override)
 }
 
+// ParseForcedReviewAt is ParseReviewAt with `operator_override`
+// allowed whether or not it is recorded, so `force-approve` can
+// validate its rewrite before it records anything.
+func ParseForcedReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	if err := validateInstance(instance); err != nil {
+		return Review{}, err
+	}
+	path := ReviewPath(projectRoot, slug, instance, round)
+	legacy, sorted, err := reviewStrictness(projectRoot, slug, relTo(RoleTaskDir(projectRoot, slug), path))
+	if err != nil {
+		return Review{}, err
+	}
+	return parseReview(path, b, instance, round, legacy, sorted, true)
+}
+
 // ListReviewRounds returns the sorted round numbers under the given
 // reviewer's directory.
 func ListReviewRounds(projectRoot, slug string, instance ReviewerInstance) ([]int, error) {

@@ -77,15 +77,19 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	if err := enc.Encode(doc); err != nil {
 		return 0, err
 	}
-	// The record goes first so the rewrite validates; it only
-	// authorises this round's file, which the reviewer already wrote.
+	if _, err := task.ParseForcedReviewAt(projectRoot, slug, inst, round, out.Bytes()); err != nil {
+		return 0, fmt.Errorf("force-approve %s: override does not validate; verdict left as it was: %w", slug, err)
+	}
+	// Recorded before the write so the file never sits on disk with an
+	// unrecorded override; dropped again if the write fails, or the
+	// still-live reviewer could write a self-approval that validates.
 	if err := task.RecordOperatorOverride(projectRoot, slug, inst, round); err != nil {
 		return 0, fmt.Errorf("force-approve %s: record override: %w", slug, err)
 	}
-	if _, err := task.ParseReviewAt(projectRoot, slug, inst, round, out.Bytes()); err != nil {
-		return 0, fmt.Errorf("force-approve %s: override does not validate; verdict left as it was: %w", slug, err)
-	}
 	if err := writeFileAtomic(path, out.Bytes()); err != nil {
+		if derr := task.DropOperatorOverride(projectRoot, slug, inst, round); derr != nil {
+			return 0, fmt.Errorf("force-approve %s: %v; dropping the override record also failed: %w", slug, err, derr)
+		}
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
 	}
 	return round, nil
