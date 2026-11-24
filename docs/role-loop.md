@@ -191,16 +191,20 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   conformance, runs tests and lints. A defaults to it.
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
-  diff (on the draft PR with `--comment` when `github.json` holds a
-  PR number). The skill's findings carry no severity: the reviewer
+  diff (the draft PR when `github.json` holds a PR number; the
+  skill does not post, the mirror anchors the graded comments). The
+  skill's findings carry no severity: the reviewer
   grades each one (see "Graded review comments") and the verdict
   follows from the grades. Rounds 2+ drop new `low` findings on code
   the engineer did not change that round, since the skill re-reviews
   the whole PR each time. The verdict file schema, comment IDs and
-  the PR mirror are shared with `fleet` mode. The skill's own inline
-  PR comments carry no ID (it posts them before the reviewer grades
-  and sorts); the review body the driver posts is the authoritative
-  numbered list. The
+  the PR mirror are shared with `fleet` mode. The reviewer
+  transcribes the skill's `ReportFindings` fields directly (`file:line`
+  to `where`, `summary` to `text`, `failure_scenario` to `trigger`,
+  `category` to `category`), so the mirror can anchor each graded
+  comment on its line. The skill runs without `--comment`, so the
+  review the driver posts is the only one on the PR and the
+  authoritative numbered list. The
   run has no spec context, so the engineer pushes back with a
   one-line reason on findings the spec contradicts, and later rounds
   do not re-raise a finding with a sound pushback.
@@ -461,7 +465,15 @@ high | correctness | `path:line` - text (reason)`, with the trigger
 on an indented `Trigger:` line and the suggestion as an indented
 fenced block (tagged `diff` when it is a unified diff). An ungraded
 string reads `**R1.2** | ungraded | text`; a fully ungraded review
-lists `**A1.1** text`. The escalation comment names the reviewer by
+lists `**A1.1** text`. A graded comment whose `where` is exactly
+`path:line` is posted instead as an inline comment on that line of
+the PR diff (right side, anchored to the last pushed commit), headed
+`**R1.1** | high | correctness` with the text, the trigger and the
+suggestion; the review body then lists only the other comments. When
+GitHub rejects an anchor outside the diff (HTTP 422), the mirror
+retries once keeping only the anchors the PR's file patches show in
+the diff; when it cannot tell, every comment goes in the body as
+before. The escalation comment names the reviewer by
 label, says the engineer was asked for one fix pass, and that the
 operator decides.
 

@@ -11,7 +11,7 @@ see `spore recipes show github`.
 
 ```
 engineer round 1 done  -> push branch (app), open DRAFT PR, assign operator
-review verdict         -> COMMENT review "<label> (round N): <verdict>", items numbered R1.1, C2.3, ...
+review verdict         -> COMMENT review "<label> (round N): <verdict>", items numbered R1.1, C2.3, ...; `path:line` items inline on the diff
 engineer round 2+      -> push, PR comment "Engineer (round N)": outcome table by ID, then notes
 PhaseDone              -> gh pr edit (engineer `pr` title/body, if any); gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
 PhaseEscalated         -> one PR comment naming the cap and reviewer; PR stays draft
@@ -53,6 +53,18 @@ comment; an open PR for the branch is adopted, not duplicated.
 Every gh call runs with `GH_REPO` set from `origin`'s URL, so gh and
 `git push` always target the same repo; without it gh prefers an
 `upstream` remote in a fork-style clone.
+
+A verdict is posted with `gh api repos/<owner>/<repo>/pulls/<n>/reviews`
+(`event: COMMENT`, `commit_id` = the last pushed sha). Each graded
+comment whose `where` is `path:line` becomes an inline comment
+(`side: RIGHT`) carrying its ID, grade, text, trigger and suggestion;
+the rest stay in the review body. GitHub rejects the whole review
+with HTTP 422 when an anchor is outside the diff and posts nothing,
+so the mirror retries: it reads `pulls/<n>/files` and keeps only the
+anchors on a line the patches show, folding the others into the body.
+When the patches cannot be read, no anchor is left, or that retry is
+rejected too, the review goes out with every comment in the body. A
+verdict is recorded as posted only after GitHub accepts it.
 
 The PR body is the first prose paragraph of `.spore/<slug>/spec.md`
 (the task brief, skipping headings and the `**Status**` line) plus a
@@ -184,7 +196,6 @@ flow was turned on keep their old identity until respawned.
 
 ## Limits (v1)
 
-- Review comments are not line-anchored.
 - Human PR comments are not read back into a running loop. The
   operator pulls them in on demand with `spore task reopen <slug>
   --from-pr`, which reads the feedback left since the loop last

@@ -175,6 +175,8 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
+	repo string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -305,6 +307,7 @@ func (m *githubMirror) connect() (string, error) {
 		return "", err
 	}
 	m.env = append(m.env, "GH_REPO="+repo)
+	m.repo = repo
 	return repo, nil
 }
 
@@ -335,9 +338,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		if err != nil {
 			return err
 		}
-		body := strings.Replace(reviewBody(e.instance, e.round, rev), "(round ", "("+m.cyclePrefix()+"round ", 1)
-		_, err = m.gh(body, "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
-		return err
+		return m.postReview(e.instance, e.round, rev)
 	case eventEscalated:
 		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
@@ -375,6 +376,12 @@ func reviewerName(projectRoot, slug string, inst task.ReviewerInstance, round in
 }
 
 func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return reviewBodyExcept(inst, round, rev, nil)
+}
+
+// reviewBodyExcept is reviewBody without the comments whose index is in
+// skip (those posted inline).
+func reviewBodyExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	verdict := "approve"
 	switch {
 	case rev.Forced():
@@ -388,7 +395,7 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 	if s := strings.TrimSpace(rev.Summary); s != "" {
 		b.WriteString(s + "\n\n")
 	}
-	b.WriteString(renderReviewComments(inst, round, rev))
+	b.WriteString(renderReviewCommentsExcept(inst, round, rev, skip))
 	return b.String()
 }
 
@@ -402,10 +409,17 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 // plain string renders as `ungraded` in a graded review and bare in an
 // ungraded one.
 func renderReviewComments(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return renderReviewCommentsExcept(inst, round, rev, nil)
+}
+
+func renderReviewCommentsExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	graded := rev.Graded()
 	prefix := rev.IDPrefix(inst)
 	var b strings.Builder
 	for i, c := range rev.Comments {
+		if skip[i] {
+			continue
+		}
 		id := task.CommentID(prefix, round, i)
 		switch {
 		case !graded:
@@ -425,15 +439,25 @@ func gradedCommentLine(c task.ReviewComment) string {
 	if w := strings.TrimSpace(c.Where); w != "" {
 		fmt.Fprintf(&b, " | `%s`", w)
 	}
-	fmt.Fprintf(&b, " - %s", strings.TrimSpace(c.Text))
+	b.WriteString(" - " + commentDetail(c, "\n  ", "  "))
+	return b.String()
+}
+
+// commentDetail renders a graded comment's text, reason, trigger and
+// suggestion, shared by the review body list and inline comments so the
+// two stay alike. triggerSep precedes the Trigger line; indent prefixes
+// the suggestion's fenced block.
+func commentDetail(c task.ReviewComment, triggerSep, indent string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(c.Text))
 	if r := strings.TrimSpace(c.Reason); r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
 	if t := strings.TrimSpace(c.Trigger); t != "" {
-		fmt.Fprintf(&b, "\n  Trigger: %s", t)
+		fmt.Fprintf(&b, "%sTrigger: %s", triggerSep, t)
 	}
 	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
-		b.WriteString("\n\n" + indentLines(fencedBlock(sug), "  "))
+		b.WriteString("\n\n" + indentLines(fencedBlock(sug), indent))
 	}
 	return b.String()
 }
