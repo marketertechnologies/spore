@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fleet (0.34.2): new `wt/<slug>` branches fork from a freshly
+  fetched base instead of the main checkout's HEAD. The base is the
+  task's `base:` frontmatter, else `origin/HEAD`'s branch, else
+  `main`, else `master`; spore fetches just that ref with a 30s
+  non-interactive deadline (serialized per repository; a timeout
+  skips further fetches in the same process for two minutes) and
+  forks `--no-track` from the remote ref when it is ahead, else from
+  the local branch (kept on divergence, with a warning, so unpushed
+  commits are never dropped). A missing remote or failed fetch warns
+  and falls back to the base branch's existing refs, then HEAD.
+  Existing branches are reused as they are. `[fleet] worktree_base =
+  "head"` keeps the old behaviour; an unknown value warns. A
+  `.worktreeinclude` at the project root copies matching ignored
+  files (such as `.env`) into each new worktree without overwriting,
+  skipping symlinks that could reach the main checkout; the pattern
+  subset is in `docs/worker-dispatch.md`. Consumers can drop
+  `pre_start` scripts that fetch the base branch.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

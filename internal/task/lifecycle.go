@@ -66,20 +66,42 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	branch := "wt/" + slug
-	args := []string{"worktree", "add", worktree}
-	if branchExists(projectRoot, branch) {
-		args = append(args, branch)
-	} else {
-		args = append(args, "-b", branch)
+	meta, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
+		return "", err
 	}
-	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
-		return "", fmt.Errorf("copy brief: %w", err)
+	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
+		return "", err
 	}
 	return worktree, nil
+}
+
+// addWorktree creates <projectRoot>/.worktrees/<slug> on wt/<slug>.
+// An existing branch is checked out as it is; a new one is created
+// --no-track from forkPoint. Then the brief and the
+// .worktreeinclude files are copied in.
+func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error {
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	branch := "wt/" + slug
+	args := []string{"worktree", "add"}
+	if branchExists(projectRoot, branch) {
+		args = append(args, worktree, branch)
+	} else {
+		args = append(args, "--no-track", "-b", branch, worktree)
+		if start := forkPoint(projectRoot, base, warn); start != "" {
+			args = append(args, start)
+		}
+	}
+	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// The brief may not be committed on the fork point (Start rewrites
+	// it just before this call), so headless workers get a copy.
+	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
+		return fmt.Errorf("copy brief: %w", err)
+	}
+	copyWorktreeInclude(projectRoot, worktree, warn)
+	return nil
 }
 
 // Reap kills every tmux session matching slug for the project (the
@@ -462,28 +484,10 @@ func ensureSession(tasksDir, slug string) (string, error) {
 		return "", err
 	}
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
-	branch := "wt/" + slug
 
 	if _, err := os.Stat(worktree); os.IsNotExist(err) {
-		args := []string{"worktree", "add", worktree}
-		if branchExists(projectRoot, branch) {
-			args = append(args, branch)
-		} else {
-			args = append(args, "-b", branch)
-		}
-		out, err := gitCmd(projectRoot, args...).CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
-		}
-		// Copy the brief into the new worktree so headless workers
-		// can read it. The worktree forks from the source branch's
-		// HEAD which often does not yet include this brief: Start
-		// rewrites it just before this call (status flip), and the
-		// operator may not have committed it on the source branch
-		// either. Soft-fails on a missing source brief; the worker
-		// falls back to interactive mode there.
-		if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
-			return "", fmt.Errorf("copy brief: %w", err)
+		if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
+			return "", err
 		}
 	}
 
