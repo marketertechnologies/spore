@@ -227,6 +227,12 @@ func ReviewPath(projectRoot, slug string, instance ReviewerInstance, round int) 
 	)
 }
 
+// ReviewedSHAPath is where the drive loop records the commit a
+// reviewer's round-N verdict reviewed, for `spore eval confirm`.
+func ReviewedSHAPath(projectRoot, slug string, instance ReviewerInstance, round int) string {
+	return filepath.Join(RoleTaskDir(projectRoot, slug), "state", fmt.Sprintf("reviewed-%s-%d", instance, round))
+}
+
 // WriteEngineerResponse persists r at round N. The parent dir is
 // created on first write so engineers do not need a separate setup
 // step. An empty Author is filled with EngineerAuthor.
