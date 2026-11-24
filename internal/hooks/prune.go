@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,13 +74,17 @@ func pruneHooks(raw json.RawMessage, m ManagedSet) (map[string]json.RawMessage, 
 					return nil, nil, fmt.Errorf("parse %s hooks: %w", event, err)
 				}
 			}
+			var matcher string
+			if raw, ok := group["matcher"]; ok {
+				_ = json.Unmarshal(raw, &matcher)
+			}
 			var kept []map[string]json.RawMessage
 			for _, e := range entries {
 				var cmd string
 				if c, ok := e["command"]; ok {
 					_ = json.Unmarshal(c, &cmd)
 				}
-				if cmd != "" && m.Provides(event, cmd) {
+				if cmd != "" && m.Provides(event, matcher, cmd) {
 					removed = append(removed, "hooks."+event+": "+cmd)
 					continue
 				}
@@ -176,14 +181,29 @@ func encode(v any, indent string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ErrSymlinkSettings is returned by PruneSettingsFile for a settings
+// file that is a symlink. Its owner (typically home-manager's
+// programs.claude-code) would restore the pruned entries on its next
+// switch, and replacing the link with a regular file aborts that
+// switch, so the source has to be pruned instead.
+var ErrSymlinkSettings = errors.New("is a symlink, managed elsewhere; prune its source instead")
+
 // PruneSettingsFile prunes path in place. Before writing it copies the
 // original to <path>.spore-bak-<UTC stamp>. A missing file, or one with
-// nothing to prune, is left alone and reports no backup.
+// nothing to prune, is left alone and reports no backup. A symlink is
+// left alone and reported as ErrSymlinkSettings.
 func PruneSettingsFile(path string, m ManagedSet, now time.Time) (removed []string, backup string, err error) {
-	raw, err := os.ReadFile(path)
+	linfo, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil, "", nil
 	}
+	if err != nil {
+		return nil, "", err
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return nil, "", fmt.Errorf("%s %w", path, ErrSymlinkSettings)
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
 	}
@@ -194,11 +214,7 @@ func PruneSettingsFile(path string, m ManagedSet, now time.Time) (removed []stri
 	if len(removed) == 0 {
 		return nil, "", nil
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, "", err
-	}
-	mode := info.Mode().Perm()
+	mode := linfo.Mode().Perm()
 	backup = path + ".spore-bak-" + now.UTC().Format("20060102T150405Z")
 	if err := os.WriteFile(backup, raw, mode); err != nil {
 		return nil, "", fmt.Errorf("backup: %w", err)

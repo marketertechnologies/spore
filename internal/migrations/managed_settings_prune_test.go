@@ -109,3 +109,29 @@ func TestManagedSettingsPrune_noManagedFile(t *testing.T) {
 		t.Error("settings.json changed without a managed file")
 	}
 }
+
+func TestManagedSettingsPrune_symlinkLeftAlone(t *testing.T) {
+	bin := buildSpore(t)
+	home := t.TempDir()
+	managed := filepath.Join(home, "etc/50-spore.json")
+	writeFile(t, managed, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nix/store/x/bin/spore fleet replenish-hook"}]}]}}`)
+	source := filepath.Join(home, "hm/settings.json")
+	writeFile(t, source, pruneUserSettings)
+	target := filepath.Join(home, ".claude/settings.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, target); err != nil {
+		t.Fatal(err)
+	}
+	out := runPrune(t, home, bin, managed)
+	if !strings.Contains(out, target+" is a symlink, managed elsewhere") {
+		t.Errorf("output = %q", out)
+	}
+	if info, err := os.Lstat(target); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Error("settings.json is no longer a symlink")
+	}
+	if readFile(t, source) != pruneUserSettings {
+		t.Error("symlink source changed")
+	}
+}

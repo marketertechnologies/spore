@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -244,5 +245,63 @@ func TestPruneSettings_BadJSON(t *testing.T) {
 	_, _, err := PruneSettings([]byte(`{"hooks": [`), managedFixture(t))
 	if err == nil || !strings.Contains(err.Error(), "parse settings") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPruneSettings_MatcherMustMatch(t *testing.T) {
+	in := `{"hooks":{"PreToolUse":[` +
+		`{"matcher":"Bash|Edit","hooks":[{"type":"command","command":"/home/u/.claude/hooks/block-bg-bash.pl"}]},` +
+		`{"matcher":"Bash","hooks":[{"type":"command","command":"/home/u/.claude/hooks/block-bg-bash.pl"}]}` +
+		`],"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"spore fleet replenish-hook"}]}]}}`
+	out, removed, err := PruneSettings([]byte(in), managedFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 {
+		t.Errorf("removed = %v, want the Bash-only binding and the match-all Stop hook", removed)
+	}
+	if !strings.Contains(string(out), `"matcher": "Bash|Edit"`) || strings.Contains(string(out), `"matcher": "Bash"`+"\n") {
+		t.Errorf("want only the Bash|Edit group kept:\n%s", out)
+	}
+	if strings.Contains(string(out), "replenish-hook") {
+		t.Errorf("\"*\" matcher should count as match-all:\n%s", out)
+	}
+}
+
+func TestFilterManaged_MatcherMustMatch(t *testing.T) {
+	events := map[string][]HookBin{
+		"PreToolUse": {
+			{BinPath: "/x/block-bg-bash.pl", Matcher: "Bash"},
+			{BinPath: "/x/block-bg-bash.pl", Matcher: "Edit"},
+		},
+	}
+	got, dropped := FilterManaged(events, managedFixture(t))
+	if len(dropped) != 1 || len(got["PreToolUse"]) != 1 || got["PreToolUse"][0].Matcher != "Edit" {
+		t.Errorf("kept %+v, dropped %v", got["PreToolUse"], dropped)
+	}
+}
+
+func TestPruneSettingsFile_SymlinkLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "hm-settings.json")
+	if err := os.WriteFile(target, []byte(userSettingsFixture), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "settings.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	removed, backup, err := PruneSettingsFile(link, managedFixture(t), time.Now())
+	if !errors.Is(err, ErrSymlinkSettings) || removed != nil || backup != "" {
+		t.Fatalf("removed=%v backup=%q err=%v", removed, backup, err)
+	}
+	if info, _ := os.Lstat(link); info.Mode()&os.ModeSymlink == 0 {
+		t.Error("symlink replaced")
+	}
+	if b, _ := os.ReadFile(target); string(b) != userSettingsFixture {
+		t.Error("link target changed")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
+		t.Errorf("unexpected files: %v", entries)
 	}
 }

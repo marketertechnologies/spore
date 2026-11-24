@@ -3,10 +3,12 @@
 # once the spore-fleet module's managed settings drop-in provides them,
 # so each hook runs once, from the Nix store copy.
 #
-# Matching is by command (program base name plus arguments), so stale
-# copies such as ~/.claude/hooks/load-state-md.pl or a bare `spore`
-# match their store counterparts. Everything else in the file stays.
-# The original is backed up to settings.json.spore-bak-<stamp> first.
+# Matching is by event, group matcher and command (program base name
+# plus arguments), so stale copies such as
+# ~/.claude/hooks/load-state-md.pl or a bare `spore` match their store
+# counterparts. Everything else in the file stays. The original is
+# backed up to settings.json.spore-bak-<stamp> first. A symlinked
+# settings.json (home-manager) is left alone: prune its source.
 #
 # Without the drop-in (claudeManagedSettings.enable = false, or a host
 # off the module) the user file is the only source of the hooks, so

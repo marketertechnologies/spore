@@ -76,7 +76,7 @@ type marketplaceSource struct {
 }
 
 // ManagedSet is what a managed settings file provides: hook commands
-// keyed by event and normalised command, plus deny rules.
+// keyed by event, group matcher and normalised command, plus deny rules.
 type ManagedSet struct {
 	commands map[string]bool
 	deny     map[string]bool
@@ -104,7 +104,8 @@ func LoadManagedSet(path string) (set ManagedSet, ok bool, err error) {
 func ParseManagedSet(raw []byte) (ManagedSet, error) {
 	var doc struct {
 		Hooks map[string][]struct {
-			Hooks []struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
 				Command string `json:"command"`
 			} `json:"hooks"`
 		} `json:"hooks"`
@@ -119,7 +120,7 @@ func ParseManagedSet(raw []byte) (ManagedSet, error) {
 	for event, groups := range doc.Hooks {
 		for _, g := range groups {
 			for _, h := range g.Hooks {
-				set.commands[managedKey(event, h.Command)] = true
+				set.commands[managedKey(event, g.Matcher, h.Command)] = true
 			}
 		}
 	}
@@ -130,19 +131,25 @@ func ParseManagedSet(raw []byte) (ManagedSet, error) {
 }
 
 // Provides reports whether the managed set already runs command on
-// event. Commands match on the program's base name plus its arguments,
-// so /run/current-system/sw/bin/spore, a Nix store path and a bare
-// `spore` all count as the same hook.
-func (m ManagedSet) Provides(event, command string) bool {
-	return m.commands[managedKey(event, command)]
+// event under matcher. Commands match on the program's base name plus
+// its arguments, so /run/current-system/sw/bin/spore, a Nix store path
+// and a bare `spore` all count as the same hook. The matcher must match
+// too: a hook bound to `Bash|Edit` is not replaced by one bound to
+// `Bash`, so pruning it would drop the Edit coverage.
+func (m ManagedSet) Provides(event, matcher, command string) bool {
+	return m.commands[managedKey(event, matcher, command)]
 }
 
 func (m ManagedSet) Denies(rule string) bool {
 	return m.deny[rule]
 }
 
-func managedKey(event, command string) string {
-	return event + "\x00" + NormalizeCommand(command)
+// managedKey treats an empty matcher and "*" as the same match-all.
+func managedKey(event, matcher, command string) string {
+	if matcher == "*" {
+		matcher = ""
+	}
+	return event + "\x00" + matcher + "\x00" + NormalizeCommand(command)
 }
 
 // NormalizeCommand reduces a hook command to its program base name and
@@ -163,7 +170,7 @@ func FilterManaged(events map[string][]HookBin, m ManagedSet) (map[string][]Hook
 	var dropped []string
 	for event, bins := range events {
 		for _, b := range bins {
-			if m.Provides(event, b.BinPath) {
+			if m.Provides(event, b.Matcher, b.BinPath) {
 				dropped = append(dropped, event+": "+b.BinPath)
 				continue
 			}

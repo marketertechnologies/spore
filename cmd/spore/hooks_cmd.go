@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -228,6 +229,10 @@ func runHooksPruneSettings(args []string) int {
 		return 1
 	}
 	removed, backup, err := hooks.PruneSettingsFile(*file, set, time.Now())
+	if errors.Is(err, hooks.ErrSymlinkSettings) {
+		fmt.Printf("%v; left as is\n", err)
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks prune-settings:", err)
 		return 1
