@@ -502,8 +502,9 @@ Markers under `.spore/<slug>/state/`:
 - `woken-<reviewer>-<round>-<stamp>`: the engineer was nudged for
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
-- `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve). After A's
+- `escalated-<reviewer>-<round>`: the loop escalated. Cleared by
+  `spore task force-approve` for that reviewer, else when the loop
+  later reaches done. After A's
   final verdict is approved past an escalation (forced, or an
   ungraded verdict hand-edited while this marker exists), the phase
   machine counts A's fix pass as one extra engineer round, provided
