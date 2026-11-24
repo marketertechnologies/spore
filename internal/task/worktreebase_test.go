@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newBaseRepo returns a repo with main pushed to a bare origin, plus
@@ -232,5 +233,137 @@ func TestRemoteDefaultBranchFallsBackToMaster(t *testing.T) {
 	runGit(t, repo, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init")
 	if got := remoteDefaultBranch(repo); got != "master" {
 		t.Errorf("remoteDefaultBranch with only master = %q, want master", got)
+	}
+}
+
+func writeRepoFile(t *testing.T, repo, rel, body string) {
+	t.Helper()
+	p := filepath.Join(repo, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorktreeLocalAheadKeepsLocalCommits(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	runGit(t, repo, "pull", "-q", "--ff-only", "origin", "main")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "unpushed drift")
+	localHead := gitOutput(t, repo, "rev-parse", "HEAD")
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != localHead {
+		t.Errorf("wt/demo = %s, want local main %s (has commits origin lacks)", got, localHead)
+	}
+}
+
+func TestWorktreeTaskBaseFrontmatter(t *testing.T) {
+	repo, _, originHead := newBaseRepo(t)
+	stack := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "stack parent")
+	runGit(t, repo, "push", "-q", "origin", stack+":refs/heads/stack")
+	writeRepoFile(t, repo, "tasks/demo.md", "---\nstatus: active\nbase: stack\n---\n\nbody\n")
+	ensureDemo(t, repo)
+	got := gitOutput(t, repo, "rev-parse", "wt/demo")
+	if got != stack {
+		t.Errorf("wt/demo = %s, want origin/stack %s (origin/main is %s)", got, stack, originHead)
+	}
+}
+
+func TestWorktreeNarrowRefspecStillFresh(t *testing.T) {
+	repo, _, originHead := newBaseRepo(t)
+	runGit(t, repo, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != originHead {
+		t.Errorf("wt/demo = %s, want fresh origin head %s", got, originHead)
+	}
+}
+
+func TestWorktreeFetchTimeout(t *testing.T) {
+	repo, localHead, _ := newBaseRepo(t)
+	runGit(t, repo, "config", "protocol.ext.allow", "always")
+	runGit(t, repo, "remote", "set-url", "origin", "ext::sh -c sleep% 30")
+	old := fetchTimeout
+	fetchTimeout = 300 * time.Millisecond
+	defer func() { fetchTimeout = old }()
+	start := time.Now()
+	stderr := captureStderr(t, func() { ensureDemo(t, repo) })
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("spawn took %s, want bounded by fetch timeout", d)
+	}
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != localHead {
+		t.Errorf("wt/demo = %s, want local HEAD %s", got, localHead)
+	}
+	if !strings.Contains(stderr, "timed out") {
+		t.Errorf("stderr = %q, want timeout warning", stderr)
+	}
+}
+
+func TestWorktreeFetchMemoized(t *testing.T) {
+	repo, _, originHead := newBaseRepo(t)
+	if got := startPoint(repo, ""); got != "origin/main" {
+		t.Fatalf("startPoint = %q, want origin/main", got)
+	}
+	runGit(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	stderr := captureStderr(t, func() { ensureDemo(t, repo) })
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != originHead {
+		t.Errorf("wt/demo = %s, want memoized origin head %s", got, originHead)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want no second fetch", stderr)
+	}
+}
+
+func TestLoadWorktreeBaseWarnsOnUnknownValue(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "spore.toml"), []byte("[fleet]\nworktree_base = \"HEAD\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	stderr := captureStderr(t, func() { got = LoadWorktreeBase(dir) })
+	if got != WorktreeBaseFresh || !strings.Contains(stderr, `unknown [fleet] worktree_base "HEAD"`) {
+		t.Errorf("LoadWorktreeBase = %q, stderr %q; want fresh plus unknown-value warning", got, stderr)
+	}
+}
+
+func TestWorktreeIncludeUnanchoredSkipsWalkedDirs(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	writeRepoFile(t, repo, ".gitignore", "vendor/\n.worktrees/\n")
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore")
+	runGit(t, repo, "push", "-q", "-f", "origin", "main")
+	writeRepoFile(t, repo, ".worktreeinclude", ".env*\n/vendor/config/*.yml\n")
+	writeRepoFile(t, repo, "vendor/config/a.yml", "a\n")
+	writeRepoFile(t, repo, "vendor/config/.env", "nested\n")
+	writeRepoFile(t, repo, "vendor/pkg/.env", "nested\n")
+	wt := ensureDemo(t, repo)
+	if _, err := os.Stat(filepath.Join(wt, "vendor/config/a.yml")); err != nil {
+		t.Errorf("vendor/config/a.yml not copied: %v", err)
+	}
+	for _, rel := range []string{"vendor/pkg/.env", "vendor/config/.env"} {
+		if _, err := os.Stat(filepath.Join(wt, rel)); err == nil {
+			t.Errorf("%s copied by unanchored .env*, want skipped", rel)
+		}
+	}
+}
+
+func TestWorktreeIncludeRetargetsAbsoluteSymlink(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	writeRepoFile(t, repo, ".gitignore", ".env\nreal.env\n.worktrees/\n")
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "ignore")
+	runGit(t, repo, "push", "-q", "-f", "origin", "main")
+	writeRepoFile(t, repo, ".worktreeinclude", ".env\nreal.env\n")
+	writeRepoFile(t, repo, "real.env", "A=1\n")
+	if err := os.Symlink(filepath.Join(repo, "real.env"), filepath.Join(repo, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	wt := ensureDemo(t, repo)
+	link, err := os.Readlink(filepath.Join(wt, ".env"))
+	if err != nil {
+		t.Fatalf(".env not copied as a symlink: %v", err)
+	}
+	if want := filepath.Join(wt, "real.env"); link != want {
+		t.Errorf(".env -> %s, want %s", link, want)
 	}
 }

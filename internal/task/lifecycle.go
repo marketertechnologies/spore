@@ -66,7 +66,7 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := addTaskWorktree(projectRoot, worktree, "wt/"+slug); err != nil {
+	if err := addTaskWorktree(projectRoot, worktree, "wt/"+slug, taskBase(tasksDir, slug)); err != nil {
 		return "", err
 	}
 	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
@@ -458,7 +458,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	branch := "wt/" + slug
 
 	if _, err := os.Stat(worktree); os.IsNotExist(err) {
-		if err := addTaskWorktree(projectRoot, worktree, branch); err != nil {
+		if err := addTaskWorktree(projectRoot, worktree, branch, strings.TrimSpace(meta.Extra["base"])); err != nil {
 			return "", err
 		}
 		// Copy the brief into the new worktree so headless workers

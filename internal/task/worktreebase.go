@@ -3,12 +3,17 @@ package task
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/versality/spore/internal/sporetoml"
 )
@@ -24,33 +29,42 @@ const (
 const WorktreeIncludeFile = ".worktreeinclude"
 
 // LoadWorktreeBase reads `[fleet] worktree_base` from
-// <projectRoot>/spore.toml. Anything other than "head" (missing file,
-// missing key, typo) yields "fresh".
+// <projectRoot>/spore.toml. Missing file or key yields "fresh"; an
+// unreadable file or an unknown value also yields "fresh" but warns on
+// stderr so a mistyped opt-out does not go unnoticed.
 func LoadWorktreeBase(projectRoot string) string {
 	entries, err := sporetoml.ReadSection(projectRoot, "fleet")
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "spore: worktree base: %v, using %q\n", err, WorktreeBaseFresh)
 		return WorktreeBaseFresh
 	}
 	for _, e := range entries {
-		if e.Key == "worktree_base" && strings.TrimSpace(e.Value) == WorktreeBaseHead {
+		if e.Key != "worktree_base" {
+			continue
+		}
+		switch v := strings.TrimSpace(e.Value); v {
+		case WorktreeBaseHead:
 			return WorktreeBaseHead
+		case WorktreeBaseFresh:
+		default:
+			fmt.Fprintf(os.Stderr, "spore: worktree base: unknown [fleet] worktree_base %q (want %q or %q), using %q\n",
+				v, WorktreeBaseFresh, WorktreeBaseHead, WorktreeBaseFresh)
 		}
 	}
 	return WorktreeBaseFresh
 }
 
-// addTaskWorktree runs `git worktree add` for wt/<slug>, reusing an
-// existing branch as is. A new branch starts from a freshly fetched
-// origin/<default> unless spore.toml opts into "head" or the fetch is
-// impossible, in which case it forks from the main checkout's HEAD.
-// Matching .worktreeinclude files are copied in afterwards.
-func addTaskWorktree(projectRoot, worktree, branch string) error {
+// addTaskWorktree runs `git worktree add` for branch, reusing an
+// existing branch as is. A new branch starts from startPoint. Matching
+// .worktreeinclude files are copied in afterwards. base is the task's
+// `base:` frontmatter, "" for the project default.
+func addTaskWorktree(projectRoot, worktree, branch, base string) error {
 	args := []string{"worktree", "add"}
 	if branchExists(projectRoot, branch) {
 		args = append(args, worktree, branch)
 	} else {
 		args = append(args, "--no-track", "-b", branch, worktree)
-		if start := freshStartPoint(projectRoot); start != "" {
+		if start := startPoint(projectRoot, base); start != "" {
 			args = append(args, start)
 		}
 	}
@@ -63,30 +77,87 @@ func addTaskWorktree(projectRoot, worktree, branch string) error {
 	return nil
 }
 
-// freshStartPoint returns "origin/<default>" after fetching it, or ""
-// to fall back to HEAD. Never errors: a spawn must not fail on fetch.
-func freshStartPoint(projectRoot string) string {
+// fetchTimeout bounds the base fetch; a var so tests can shorten it.
+var fetchTimeout = 30 * time.Second
+
+// fetchMemoTTL lets spawns in one reconcile pass share a fetch instead
+// of racing each other on the remote-tracking ref lock.
+const fetchMemoTTL = 30 * time.Second
+
+var (
+	fetchMu   sync.Mutex
+	fetchedAt = map[string]time.Time{}
+)
+
+// startPoint picks the commit a new task branch forks from. It returns
+// "origin/<b>" after fetching it, where <b> is base or origin's default
+// branch, unless the local <b> has commits origin lacks (unpushed
+// drift or operator commits a later ff-only merge needs), in which
+// case it returns <b>. With the "head" opt-out, no origin remote, or a
+// failed fetch it returns base when that branch exists locally, else ""
+// (HEAD). Never errors: a spawn must not fail on the fetch.
+func startPoint(projectRoot, base string) string {
+	fallback := ""
+	if base != "" && branchExists(projectRoot, base) {
+		fallback = base
+	}
+	fallbackName := "HEAD"
+	if fallback != "" {
+		fallbackName = fallback
+	}
 	if LoadWorktreeBase(projectRoot) == WorktreeBaseHead {
-		return ""
+		return fallback
 	}
 	if gitCmd(projectRoot, "remote", "get-url", "origin").Run() != nil {
-		fmt.Fprintln(os.Stderr, "spore: worktree base: no origin remote, branching from HEAD")
-		return ""
+		fmt.Fprintf(os.Stderr, "spore: worktree base: no origin remote, branching from %s\n", fallbackName)
+		return fallback
 	}
-	def := remoteDefaultBranch(projectRoot)
-	fetch := gitCmd(projectRoot, "fetch", "--quiet", "origin", def)
-	fetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if out, err := fetch.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "spore: worktree base: git fetch origin %s failed, branching from HEAD: %s\n",
-			def, firstLine(strings.TrimSpace(string(out)), err))
-		return ""
+	def := base
+	if def == "" {
+		def = remoteDefaultBranch(projectRoot)
 	}
-	ref := "refs/remotes/origin/" + def
-	if gitCmd(projectRoot, "rev-parse", "--verify", "--quiet", ref).Run() != nil {
-		fmt.Fprintf(os.Stderr, "spore: worktree base: %s missing after fetch, branching from HEAD\n", ref)
-		return ""
+	if err := fetchBase(projectRoot, def); err != nil {
+		fmt.Fprintf(os.Stderr, "spore: worktree base: git fetch origin %s failed, branching from %s: %v\n", def, fallbackName, err)
+		return fallback
+	}
+	if branchExists(projectRoot, def) &&
+		gitCmd(projectRoot, "merge-base", "--is-ancestor", "refs/heads/"+def, "refs/remotes/origin/"+def).Run() != nil {
+		return def
 	}
 	return "origin/" + def
+}
+
+// fetchBase updates refs/remotes/origin/<def> with an explicit refspec,
+// so a narrow remote.origin.fetch cannot leave a stale ref behind. It
+// runs under a deadline with ssh in batch mode (unless the operator set
+// their own ssh command) and no credential prompt, so an unreachable or
+// interactive remote cannot hang a spawn.
+func fetchBase(projectRoot, def string) error {
+	fetchMu.Lock()
+	defer fetchMu.Unlock()
+	key := projectRoot + "\x00" + def
+	if t, ok := fetchedAt[key]; ok && time.Since(t) < fetchMemoTTL {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	refspec := "+refs/heads/" + def + ":refs/remotes/origin/" + def
+	cmd := gitCmd(projectRoot, "fetch", "--quiet", "--no-tags", "origin", refspec)
+	fetch := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	fetch.WaitDelay = time.Second
+	fetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if os.Getenv("GIT_SSH_COMMAND") == "" && gitCmd(projectRoot, "config", "--get", "core.sshCommand").Run() != nil {
+		fetch.Env = append(fetch.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+	}
+	out, err := fetch.CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("timed out after %s", fetchTimeout)
+	}
+	if err != nil {
+		return errors.New(firstLine(strings.TrimSpace(string(out)), err))
+	}
+	fetchedAt[key] = time.Now()
+	return nil
 }
 
 // remoteDefaultBranch resolves origin's default branch from
@@ -236,9 +307,14 @@ func copyWorktreeIncludes(projectRoot, worktree string) error {
 	if err != nil {
 		return fmt.Errorf("git ls-files: %w", err)
 	}
-	matchAny := func(rel string, isDir bool) bool {
+	// Inside a collapsed ignored directory only anchored patterns
+	// select; unanchored ones still negate.
+	matchAny := func(rel string, isDir, anchoredOnly bool) bool {
 		hit := false
 		for _, p := range pats {
+			if anchoredOnly && !p.anchored && !p.negate {
+				continue
+			}
 			if p.matches(rel, isDir) {
 				hit = !p.negate
 			}
@@ -261,8 +337,8 @@ func copyWorktreeIncludes(projectRoot, worktree string) error {
 		if rel == ".worktrees" || strings.HasPrefix(rel, ".worktrees/") {
 			continue
 		}
-		if matchAny(rel, isDir) {
-			note(copyPath(filepath.Join(projectRoot, rel), filepath.Join(worktree, rel)))
+		if matchAny(rel, isDir, false) {
+			note(copyPath(projectRoot, worktree, rel))
 			continue
 		}
 		if !isDir {
@@ -290,8 +366,8 @@ func copyWorktreeIncludes(projectRoot, worktree string) error {
 			if sub == rel {
 				return nil
 			}
-			if matchAny(sub, d.IsDir()) {
-				note(copyPath(path, filepath.Join(worktree, sub)))
+			if matchAny(sub, d.IsDir(), true) {
+				note(copyPath(projectRoot, worktree, sub))
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -311,18 +387,23 @@ func copyWorktreeIncludes(projectRoot, worktree string) error {
 	return firstErr
 }
 
-// copyPath copies a file, symlink, or directory tree from src to dst,
-// keeping modes and skipping anything already present at dst.
-func copyPath(src, dst string) error {
+// copyPath copies the file, symlink, or directory tree at rel from
+// projectRoot to worktree, keeping modes and skipping anything already
+// present. An absolute symlink into projectRoot is retargeted at the
+// same path under worktree, so a worker writing through it cannot
+// mutate the main checkout.
+func copyPath(projectRoot, worktree, rel string) error {
+	src := filepath.Join(projectRoot, rel)
+	dst := filepath.Join(worktree, rel)
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
+		sub, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(dst, rel)
+		target := filepath.Join(dst, sub)
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
@@ -341,13 +422,32 @@ func copyPath(src, dst string) error {
 			if err != nil {
 				return err
 			}
-			return os.Symlink(link, target)
+			return os.Symlink(retargetLink(projectRoot, worktree, link), target)
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
 		return copyFile(path, target, info.Mode().Perm())
 	})
+}
+
+func retargetLink(projectRoot, worktree, link string) string {
+	if !filepath.IsAbs(link) {
+		return link
+	}
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return link
+	}
+	rel, err := filepath.Rel(root, filepath.Clean(link))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return link
+	}
+	wt, err := filepath.Abs(worktree)
+	if err != nil {
+		return link
+	}
+	return filepath.Join(wt, rel)
 }
 
 func copyFile(src, dst string, mode fs.FileMode) error {
@@ -365,4 +465,14 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// taskBase returns the task's `base:` frontmatter (its stack parent),
+// "" when unset or unreadable.
+func taskBase(tasksDir, slug string) string {
+	m, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Extra["base"])
 }
