@@ -57,14 +57,24 @@ Never measure against a sibling task branch.
 
 ## Verdict mapping
 
-The skill's findings carry no severity. You grade each one when you
-map it to a `comments` entry (see "Grading comments"):
+The skill reports typed findings through its `ReportFindings` tool:
+`file`, `line`, `summary`, `failure_scenario`, `category`. They carry
+no severity. Map each finding to one graded `comments` entry,
+transcribing the fields directly:
 
-- One graded comment per finding, sorted by severity (see "Comment
-  IDs"). `where` is the finding's
-  `path:line`; `text` is the defect and its failure scenario, no
-  repeat of the inline comment's full body.
-- Pick `severity` and `category` yourself from the rubric. Judge how
+| Finding field      | Comment key |
+|--------------------|-------------|
+| `file:line`        | `where`     |
+| `summary`          | `text`      |
+| `failure_scenario` | `trigger`   |
+| `category`         | `category`  |
+
+A `category` outside the list in "Grading comments" maps to the
+closest listed one. The draft-PR mirror anchors each comment at its
+`where` line on the PR diff, so keep `where` exactly `path:line`.
+
+- Sort the comments by severity (see "Comment IDs").
+- Pick `severity` yourself from the rubric. Judge how
   likely the failure scenario is in real use: a bug hunt surfaces
   many rare edge cases, and those are `low`.
 - A finding is `high` / `medium` only with a concrete `trigger`;

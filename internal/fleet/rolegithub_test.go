@@ -23,13 +23,19 @@ import (
 const fakeGH = `#!/bin/sh
 log="$FAKE_GH_LOG"
 { printf 'ARGS:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\nTOKEN: %s\nREPO: %s\n' "$GH_TOKEN" "$GH_REPO"; } >> "$log"
+in="$log.in"; : > "$in"
 for a in "$@"; do
   if [ "$a" = "--body-file" ]; then printf 'BODY:\n' >> "$log"; cat >> "$log"; printf 'END\n' >> "$log"; fi
+  if [ "$a" = "--input" ]; then cat > "$in"; printf 'INPUT: ' >> "$log"; cat "$in" >> "$log"; fi
 done
 if [ -e "$FAKE_GH_FAIL.sleep" ]; then sleep 30; fi
 if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; fi
 if [ -e "$FAKE_GH_FAIL.$1-$2" ]; then echo "gh $1 $2 refused" >&2; exit 1; fi
+if [ "$1" = api ] && [ -s "$FAKE_GH_422" ] && [ -s "$in" ] && grep -qF -f "$FAKE_GH_422" "$in"; then
+  echo '{"message":"Unprocessable Entity"}'; echo 'gh: Unprocessable Entity (HTTP 422)' >&2; exit 1
+fi
 case "$1 $2" in
+  "api repos/acme/widget/pulls/12/files") if [ -e "$FAKE_GH_FILES" ]; then cat "$FAKE_GH_FILES"; else exit 1; fi ;;
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
 esac
@@ -103,6 +109,8 @@ func newMirrorFixture(t *testing.T, prFlow string) *mirrorFixture {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	f.ghLog = filepath.Join(t.TempDir(), "gh.log")
 	f.failFile = filepath.Join(t.TempDir(), "fail")
+	t.Setenv("FAKE_GH_422", filepath.Join(t.TempDir(), "422"))
+	t.Setenv("FAKE_GH_FILES", filepath.Join(t.TempDir(), "files"))
 	t.Setenv("FAKE_GH_LOG", f.ghLog)
 	t.Setenv("FAKE_GH_FAIL", f.failFile)
 
@@ -248,10 +256,10 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		f.tick(t)
 	}
 	want = append(want,
-		"pr review 12 --comment --body-file -",
+		reviewCall,
 		"pr comment 12 --body-file -",
-		"pr review 12 --comment --body-file -",
-		"pr review 12 --comment --body-file -",
+		reviewCall,
+		reviewCall,
 		"pr ready 12",
 	)
 	if got := f.calls(t); !reflect.DeepEqual(got, want) {
@@ -261,6 +269,9 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("round 2 commit not pushed")
 	}
 	log = f.log(t)
+	for _, r := range f.reviews(t) {
+		log += r.Body
+	}
 	for _, s := range []string{
 		"**Requirements review (round 1): request changes**\n\nneeds tests\n\n- **R1.1** add a test\n",
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",

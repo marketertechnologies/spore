@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Role loop (0.38.0): line-anchored review comments on the draft PR.
+  The mirror posts each verdict through `gh api .../pulls/<n>/reviews`
+  (`event: COMMENT`, `commit_id` = the last pushed sha) instead of
+  `gh pr review --comment`. Every graded comment whose `where` is
+  `path:line` becomes an inline comment on that diff line, headed by
+  its ID, grade and category, with the text, trigger and suggestion;
+  the review body keeps the heading, summary and the remaining
+  comments. On HTTP 422 (an anchor outside the diff) it retries with
+  the anchors the PR's file patches confirm and folds the rest into
+  the body, or posts everything in the body when it cannot tell.
+  `reviewer-code-review.md` now transcribes the skill's
+  `ReportFindings` fields directly: `file:line` to `where`, `summary`
+  to `text`, `failure_scenario` to `trigger`, `category` to
+  `category`.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

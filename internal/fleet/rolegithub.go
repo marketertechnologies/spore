@@ -147,6 +147,8 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
+	repo string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -277,6 +279,7 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if err != nil {
 		return err
 	}
+	m.repo = repo
 	m.env = append(m.env, "GH_REPO="+repo)
 	for _, e := range pending {
 		if err := m.apply(e); err != nil {
@@ -315,9 +318,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		if err != nil {
 			return err
 		}
-		body := strings.Replace(reviewBody(e.instance, e.round, rev), "(round ", "("+m.cyclePrefix()+"round ", 1)
-		_, err = m.gh(body, "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
-		return err
+		return m.postReview(e.instance, e.round, rev)
 	case eventEscalated:
 		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
@@ -351,6 +352,12 @@ func reviewerName(projectRoot, slug string, inst task.ReviewerInstance, round in
 }
 
 func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return reviewBodyExcept(inst, round, rev, nil)
+}
+
+// reviewBodyExcept is reviewBody without the comments whose index is in
+// skip (those posted inline).
+func reviewBodyExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	verdict := "approve"
 	if rev.Verdict == task.VerdictRequestChanges {
 		verdict = "request changes"
@@ -360,7 +367,7 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 	if s := strings.TrimSpace(rev.Summary); s != "" {
 		b.WriteString(s + "\n\n")
 	}
-	b.WriteString(renderReviewComments(inst, round, rev))
+	b.WriteString(renderReviewCommentsExcept(inst, round, rev, skip))
 	return b.String()
 }
 
@@ -374,10 +381,17 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 // plain string renders as `ungraded` in a graded review and bare in an
 // ungraded one.
 func renderReviewComments(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return renderReviewCommentsExcept(inst, round, rev, nil)
+}
+
+func renderReviewCommentsExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	graded := rev.Graded()
 	prefix := rev.IDPrefix(inst)
 	var b strings.Builder
 	for i, c := range rev.Comments {
+		if skip[i] {
+			continue
+		}
 		id := task.CommentID(prefix, round, i)
 		switch {
 		case !graded:
