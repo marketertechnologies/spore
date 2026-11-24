@@ -142,6 +142,56 @@ func TestGitHubMirrorInline422FallsBackToBody(t *testing.T) {
 	}
 }
 
+// Readable patches confirm one.txt:1, but GitHub still rejects the
+// narrowed review: the mirror falls back to body only and posts.
+func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":"one.txt"`)
+	writeFile(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
+	f.postAnchoredReview(t)
+	f.tick(t)
+	calls := f.calls(t)
+	if want := []string{reviewCall, filesCall, reviewCall, reviewCall}; len(calls) < 4 || !reflect.DeepEqual(calls[len(calls)-4:], want) {
+		t.Fatalf("calls = %q", calls)
+	}
+	revs := f.reviews(t)
+	if got := anchorPaths(revs[len(revs)-2]); !reflect.DeepEqual(got, []string{"one.txt"}) {
+		t.Fatalf("narrowed anchors = %v", got)
+	}
+	last := revs[len(revs)-1]
+	if len(last.Comments) != 0 {
+		t.Fatalf("fallback kept anchors: %+v", last.Comments)
+	}
+	for _, id := range []string{"C1.1", "C1.2", "C1.3", "C1.4"} {
+		if !strings.Contains(last.Body, "**"+id+"**") {
+			t.Errorf("fallback body missing %s: %q", id, last.Body)
+		}
+	}
+	if !f.posted(t, "B/round-1.json") {
+		t.Fatalf("state = %+v", f.state(t))
+	}
+}
+
+// Readable patches that confirm no anchor skip the narrowed retry.
+func TestGitHubMirrorInline422NoDiffAnchorsGoesToBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":`)
+	writeFile(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}`+"\n")
+	f.postAnchoredReview(t)
+	f.tick(t)
+	calls := f.calls(t)
+	if want := []string{reviewCall, filesCall, reviewCall}; !reflect.DeepEqual(calls[len(calls)-3:], want) || countCalls(calls, reviewCall) != 2 {
+		t.Fatalf("calls = %q", calls)
+	}
+	revs := f.reviews(t)
+	if last := revs[len(revs)-1]; len(last.Comments) != 0 {
+		t.Fatalf("fallback kept anchors: %+v", last.Comments)
+	}
+	if !f.posted(t, "B/round-1.json") {
+		t.Fatalf("state = %+v", f.state(t))
+	}
+}
+
 // A review that fails even in the body-only form stays unposted and is
 // sent again, once, on the next tick.
 func TestGitHubMirrorInlineReviewPostsOnceAcrossRetries(t *testing.T) {
