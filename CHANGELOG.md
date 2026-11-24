@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Role loop (0.37.0): `spore task reopen <slug> --from-pr` appends the
+  PR's human feedback to the reopen note, alone or after `--note`.
+  It reads the PR from `github.json` with `gh api graphql` as the
+  GitHub App and keeps what arrived since the loop last marked the
+  PR ready or was reopened: review bodies (`COMMENTED`,
+  `CHANGES_REQUESTED`), inline comments with `path:line` and a
+  trimmed diff hunk, and PR comments. Bot and app authors and
+  resolved threads are skipped. The note groups inline comments by
+  file, then general comments. With no new feedback and no `--note`,
+  reopen refuses.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

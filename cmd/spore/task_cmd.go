@@ -48,6 +48,9 @@ Subcommands:
                                Archives the cycle to .spore/<slug>/cycles/<n>/,
                                appends the note to spec.md, re-drafts the PR.
                                --note-file <path> reads the note from a file.
+                               --from-pr appends the PR's human feedback since
+                               the loop last marked it ready or was reopened
+                               (alone, or after --note).
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
@@ -280,11 +283,12 @@ func runTaskReopen(args []string) error {
 	fs := flag.NewFlagSet("task reopen", flag.ContinueOnError)
 	note := fs.String("note", "", "what the new cycle must change")
 	noteFile := fs.String("note-file", "", "read the note from this file")
+	fromPR := fs.Bool("from-pr", false, "append the PR's new human review feedback to the note")
 	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 || (*note == "") == (*noteFile == "") {
-		return fmt.Errorf("usage: spore task reopen <slug> (--note <text> | --note-file <path>)")
+	if fs.NArg() != 1 || (*note != "" && *noteFile != "") || (*note == "" && *noteFile == "" && !*fromPR) {
+		return fmt.Errorf("usage: spore task reopen <slug> [--note <text> | --note-file <path>] [--from-pr]")
 	}
 	if *noteFile != "" {
 		b, err := os.ReadFile(*noteFile)
@@ -297,6 +301,11 @@ func runTaskReopen(args []string) error {
 	projectRoot, err := task.MainRepoRoot("")
 	if err != nil {
 		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	if *fromPR {
+		if *note, err = fleet.ReopenNoteFromPR(projectRoot, slug, *note, fleet.NewGitHubPRFeedbackSource(projectRoot, slug)); err != nil {
+			return err
+		}
 	}
 	cycle, err := fleet.ReopenRoleLoop(projectRoot, resolveTasksDir(), slug, *note)
 	if err != nil {

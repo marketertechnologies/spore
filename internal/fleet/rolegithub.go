@@ -256,28 +256,9 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+	if _, err := m.connect(); err != nil {
 		return err
 	}
-	if err := m.cfg.Validate(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
-	if err != nil {
-		return err
-	}
-	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
-	remote, err := m.git("config", "--get", "remote.origin.url")
-	if err != nil {
-		return fmt.Errorf("no origin remote: %w", err)
-	}
-	repo, err := ghapp.GHRepo(remote)
-	if err != nil {
-		return err
-	}
-	m.env = append(m.env, "GH_REPO="+repo)
 	for _, e := range pending {
 		if err := m.apply(e); err != nil {
 			return fmt.Errorf("%s: %w", e.name, err)
@@ -286,6 +267,36 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.save()
 	}
 	return nil
+}
+
+// connect loads github.toml, mints the app token and pins gh to
+// origin, so later git/gh calls act as the app. Returns the GH_REPO
+// value (HOST/OWNER/REPO).
+func (m *githubMirror) connect() (string, error) {
+	var err error
+	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+		return "", err
+	}
+	if err := m.cfg.Validate(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
+	defer cancel()
+	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
+	remote, err := m.git("config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", fmt.Errorf("no origin remote: %w", err)
+	}
+	repo, err := ghapp.GHRepo(remote)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(m.env, "GH_REPO="+repo)
+	return repo, nil
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
