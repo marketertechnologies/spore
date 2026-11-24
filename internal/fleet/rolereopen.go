@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -40,10 +39,7 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 	if note == "" {
 		return 0, errors.New("reopen: a note is required; it tells the engineer what the new cycle must change")
 	}
-	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
-		return 0, fmt.Errorf("reopen %s: %w", slug, err)
-	}
-	if err := requireActive(tasksDir, slug); err != nil {
+	if err := CheckReopenable(projectRoot, tasksDir, slug); err != nil {
 		return 0, err
 	}
 	unlockDrive, err := lockRoleDrive(projectRoot, slug)
@@ -59,12 +55,9 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 		return 0, lockRefusal("reopen", slug, "github.json is locked by a running mirror", err)
 	}
 	defer unlockGitHub()
-	snap, err := DeriveSnapshot(projectRoot, slug)
-	if err != nil {
-		return 0, fmt.Errorf("reopen %s: snapshot: %w", slug, err)
-	}
-	if snap.Phase != PhaseDone && snap.Phase != PhaseEscalated {
-		return 0, fmt.Errorf("reopen %s: loop is in phase %s; only a done or escalated loop can be reopened", slug, snap.Phase)
+	// Re-check under the locks: a drive tick may have moved the phase.
+	if err := CheckReopenable(projectRoot, tasksDir, slug); err != nil {
+		return 0, err
 	}
 
 	_, _ = ReapRole(EngineerSpec(projectRoot, slug))
@@ -88,6 +81,25 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 		return 0, fmt.Errorf("reopen %s: github state: %w", slug, err)
 	}
 	return cycle, nil
+}
+
+// CheckReopenable refuses a task ReopenRoleLoop would refuse: not a
+// role-loop task, not active, or its loop not done or escalated.
+func CheckReopenable(projectRoot, tasksDir, slug string) error {
+	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
+		return fmt.Errorf("reopen %s: %w", slug, err)
+	}
+	if err := requireActive(tasksDir, slug); err != nil {
+		return err
+	}
+	snap, err := DeriveSnapshot(projectRoot, slug)
+	if err != nil {
+		return fmt.Errorf("reopen %s: snapshot: %w", slug, err)
+	}
+	if snap.Phase != PhaseDone && snap.Phase != PhaseEscalated {
+		return fmt.Errorf("reopen %s: loop is in phase %s; only a done or escalated loop can be reopened", slug, snap.Phase)
+	}
+	return nil
 }
 
 func requireActive(tasksDir, slug string) error {
@@ -184,16 +196,11 @@ func appendReopenNote(projectRoot, slug string, cycle int, note string) error {
 // means the PR flow never ran for this task; nothing to reset. The
 // caller holds the github.json lock.
 func resetGitHubState(projectRoot, slug string, cycle int, note string) error {
-	path := githubStatePath(projectRoot, slug)
-	var old githubState
-	b, err := os.ReadFile(path)
+	old, err := readGitHubState(projectRoot, slug)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(b, &old); err != nil {
 		return err
 	}
 	m := &githubMirror{projectRoot: projectRoot, slug: slug, state: githubState{
@@ -212,5 +219,5 @@ func reopenEventName(cycle int) string {
 
 func reopenComment(r reopenState) string {
 	return fmt.Sprintf("**Reopened by the operator (cycle %d)**\n\n%s\n\nThe role loop runs again on this branch: engineer, then both reviews. Round numbers and comment IDs restart at 1 for this cycle.",
-		r.Cycle, r.Note)
+		r.Cycle, prCommentNote(r.Note))
 }

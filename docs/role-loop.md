@@ -622,6 +622,31 @@ reopen it instead of starting a new task:
 
     spore task reopen <slug> --note "drop the new service; keep the fix in the resolver"
     spore task reopen <slug> --note-file note.md
+    spore task reopen <slug> --from-pr
+    spore task reopen <slug> --from-pr --note "the inline comments win over the old spec"
+
+`--from-pr` (draft-PR flow only) reads the human feedback left on the
+task's PR and appends it to the note, so you do not paste review
+comments by hand. It runs `gh api graphql` as the GitHub App, the
+same way the mirror runs gh, against the PR number in `github.json`.
+It takes what arrived after the cutoff: the newest of the loop's
+`ready` events and its reopen comments (everything, if the loop has
+done neither). It keeps review bodies (`COMMENTED` or
+`CHANGES_REQUESTED`), inline review comments and plain PR comments.
+It drops anything a bot or app wrote (the loop's own posts included)
+and threads marked resolved. The rendered section, `### PR #N feedback`,
+groups inline comments by file, each with its author, `path:line` and
+the last four lines of the diff hunk, then lists the general comments.
+With nothing new and no `--note`, reopen refuses. It reads the latest
+100 reviews, threads and comments, and the latest 50 comments in each
+thread; older ones are ignored. Comments left while a cycle runs
+(after its reopen comment, before the loop marks the PR ready again)
+fall before the next cutoff and are never read: post feedback for
+`--from-pr` once the PR is ready. The PR's reopen comment carries
+only the operator's own note plus a one-line pointer, not the
+feedback: reposting it would duplicate the comments and @-mention
+every author again. The reopen comment is cut at 60000 characters,
+under GitHub's limit.
 
 The task must be `status: active` (a `spore task done` task is gone)
 and its loop done or escalated; mid-loop it refuses. Reopen:

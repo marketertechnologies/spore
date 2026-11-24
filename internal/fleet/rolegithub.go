@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/ghapp"
@@ -62,6 +61,17 @@ func (s *githubState) posted(name string) bool {
 
 func githubStatePath(projectRoot, slug string) string {
 	return filepath.Join(task.RoleTaskDir(projectRoot, slug), "github.json")
+}
+
+// readGitHubState loads github.json. On a decode error it still
+// returns whatever decoded, which the mirror keeps using.
+func readGitHubState(projectRoot, slug string) (githubState, error) {
+	var st githubState
+	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	if err != nil {
+		return st, err
+	}
+	return st, json.Unmarshal(b, &st)
 }
 
 // mirrorEvent is one GitHub action derived from a file on disk. name
@@ -189,9 +199,7 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 		slug:        slug,
 		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
 	}
-	if b, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(b, &m.state)
-	}
+	m.state, _ = readGitHubState(projectRoot, slug)
 	err = m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
@@ -226,53 +234,6 @@ func mirrorErrorKey(err error) string {
 	return msg
 }
 
-// errLockHeld is what a lock helper returns when another process holds
-// the lock. Any other error means the lock could not be taken at all.
-var errLockHeld = errors.New("lock held")
-
-// lockGitHubState takes a non-blocking flock beside the state file so
-// two drives never post the same event twice.
-func lockGitHubState(statePath string) (func(), error) {
-	return flockNB(statePath + ".lock")
-}
-
-// lockRoleDrive serialises drive ticks and `spore task reopen` /
-// `force-approve` on one slug, so none of them acts on a half-moved
-// tree. The lock file sits outside state/, which reopen archives.
-func lockRoleDrive(projectRoot, slug string) (func(), error) {
-	return flockNB(filepath.Join(task.RoleTaskDir(projectRoot, slug), "drive.lock"))
-}
-
-func flockNB(path string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, errLockHeld
-		}
-		return nil, fmt.Errorf("flock %s: %w", path, err)
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
-}
-
-// lockRefusal words a failed lock for the operator: retry when another
-// process holds it, the underlying error otherwise.
-func lockRefusal(op, slug, holder string, err error) error {
-	if errors.Is(err, errLockHeld) {
-		return fmt.Errorf("%s %s: %s; retry", op, slug, holder)
-	}
-	return fmt.Errorf("%s %s: lock: %w", op, slug, err)
-}
-
 func (m *githubMirror) save() {
 	b, err := json.MarshalIndent(m.state, "", "  ")
 	if err != nil {
@@ -304,28 +265,9 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+	if _, err := m.connect(); err != nil {
 		return err
 	}
-	if err := m.cfg.Validate(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
-	if err != nil {
-		return err
-	}
-	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
-	remote, err := m.git("config", "--get", "remote.origin.url")
-	if err != nil {
-		return fmt.Errorf("no origin remote: %w", err)
-	}
-	repo, err := ghapp.GHRepo(remote)
-	if err != nil {
-		return err
-	}
-	m.env = append(m.env, "GH_REPO="+repo)
 	for _, e := range pending {
 		if err := m.apply(e); err != nil {
 			return fmt.Errorf("%s: %w", e.name, err)
@@ -334,6 +276,36 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.save()
 	}
 	return nil
+}
+
+// connect loads github.toml, mints the app token and pins gh to
+// origin, so later git/gh calls act as the app. Returns the GH_REPO
+// value (HOST/OWNER/REPO).
+func (m *githubMirror) connect() (string, error) {
+	var err error
+	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+		return "", err
+	}
+	if err := m.cfg.Validate(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
+	defer cancel()
+	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
+	remote, err := m.git("config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", fmt.Errorf("no origin remote: %w", err)
+	}
+	repo, err := ghapp.GHRepo(remote)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(m.env, "GH_REPO="+repo)
+	return repo, nil
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {

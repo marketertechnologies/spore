@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Role loop (0.37.0): `spore task reopen <slug> --from-pr` appends the
+  PR's human feedback to the reopen note, alone or after `--note`.
+  It reads the PR from `github.json` with `gh api graphql` as the
+  GitHub App and keeps what arrived since the loop last marked the
+  PR ready or was reopened: review bodies (`COMMENTED`,
+  `CHANGES_REQUESTED`), inline comments with `path:line` and a
+  trimmed diff hunk, and PR comments. Bot and app authors and
+  resolved threads are skipped. The note groups inline comments by
+  file, then general comments. With no new feedback and no `--note`,
+  reopen refuses, and it checks the loop can be reopened before it
+  calls GitHub. The PR's reopen comment shows only the operator note
+  and a pointer, not the feedback, and is cut at 60000 characters.
 - Fleet (0.36.1): new `wt/<slug>` branches fork from a freshly
   fetched base instead of the main checkout's HEAD. The base is the
   task's `base:` frontmatter, else `origin/HEAD`'s branch, else

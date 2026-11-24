@@ -32,6 +32,7 @@ if [ -e "$FAKE_GH_FAIL.$1-$2" ]; then echo "gh $1 $2 refused" >&2; exit 1; fi
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
+  "api graphql") if [ -n "$FAKE_GH_GRAPHQL" ]; then cat "$FAKE_GH_GRAPHQL"; fi ;;
 esac
 `
 
