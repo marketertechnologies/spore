@@ -77,13 +77,13 @@ func TestWorktreeFreshBaseFromOrigin(t *testing.T) {
 
 func TestWorktreeFreshBaseUsesOriginHEAD(t *testing.T) {
 	repo, _, _ := newBaseRepo(t)
-	runGit(t, repo, "push", "-q", "origin", "main:trunk")
+	trunk := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "trunk")
+	runGit(t, repo, "push", "-q", "origin", trunk+":refs/heads/trunk")
 	runGit(t, repo, "fetch", "-q", "origin")
 	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
-	localHead := gitOutput(t, repo, "rev-parse", "HEAD")
 	ensureDemo(t, repo)
-	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != localHead {
-		t.Errorf("wt/demo = %s, want origin/trunk %s", got, localHead)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != trunk {
+		t.Errorf("wt/demo = %s, want origin/trunk %s", got, trunk)
 	}
 }
 
@@ -217,5 +217,20 @@ func TestIncludePatternMatches(t *testing.T) {
 		if got := pats[0].matches(c.rel, c.isDir); got != c.want {
 			t.Errorf("%q matches %q (dir=%v) = %v, want %v", c.pat, c.rel, c.isDir, got, c.want)
 		}
+	}
+}
+
+func TestRemoteDefaultBranchFallsBackToMaster(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "master")
+	if got := remoteDefaultBranch(repo); got != "main" {
+		t.Errorf("remoteDefaultBranch on unborn master = %q, want main", got)
+	}
+	runGit(t, repo, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init")
+	if got := remoteDefaultBranch(repo); got != "master" {
+		t.Errorf("remoteDefaultBranch with only master = %q, want master", got)
 	}
 }

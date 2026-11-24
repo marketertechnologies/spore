@@ -74,7 +74,9 @@ func freshStartPoint(projectRoot string) string {
 		return ""
 	}
 	def := remoteDefaultBranch(projectRoot)
-	if out, err := gitCmd(projectRoot, "fetch", "--quiet", "origin", def).CombinedOutput(); err != nil {
+	fetch := gitCmd(projectRoot, "fetch", "--quiet", "origin", def)
+	fetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := fetch.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "spore: worktree base: git fetch origin %s failed, branching from HEAD: %s\n",
 			def, firstLine(strings.TrimSpace(string(out)), err))
 		return ""
