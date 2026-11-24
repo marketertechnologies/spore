@@ -303,6 +303,9 @@ func runTaskReopen(args []string) error {
 		return fmt.Errorf("resolve main repo: %w", err)
 	}
 	if *fromPR {
+		if err := fleet.CheckReopenable(projectRoot, resolveTasksDir(), slug); err != nil {
+			return err
+		}
 		if *note, err = fleet.ReopenNoteFromPR(projectRoot, slug, *note, fleet.NewGitHubPRFeedbackSource(projectRoot, slug)); err != nil {
 			return err
 		}

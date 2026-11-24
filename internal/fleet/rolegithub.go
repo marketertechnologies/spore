@@ -64,6 +64,17 @@ func githubStatePath(projectRoot, slug string) string {
 	return filepath.Join(task.RoleTaskDir(projectRoot, slug), "github.json")
 }
 
+// readGitHubState loads github.json. On a decode error it still
+// returns whatever decoded, which the mirror keeps using.
+func readGitHubState(projectRoot, slug string) (githubState, error) {
+	var st githubState
+	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	if err != nil {
+		return st, err
+	}
+	return st, json.Unmarshal(b, &st)
+}
+
 // mirrorEvent is one GitHub action derived from a file on disk. name
 // keys it in githubState.Posted.
 type mirrorEvent struct {
@@ -168,9 +179,7 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 		slug:        slug,
 		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
 	}
-	if b, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(b, &m.state)
-	}
+	m.state, _ = readGitHubState(projectRoot, slug)
 	err := m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)

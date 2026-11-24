@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type fakeFeedback struct {
@@ -236,5 +237,43 @@ func TestGitHubPRFeedbackSourceQueriesAsApp(t *testing.T) {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("gh log lacks %q:\n%s", want, log)
 		}
+	}
+}
+
+func TestReopenCommentPostsPointerNotFeedback(t *testing.T) {
+	feedback := renderPRFeedback(7, PRActivity{Comments: []PRComment{{Author: alice, Body: "ping @carol about this", At: at(1)}}})
+	for _, tc := range []struct{ note, want string }{
+		{feedback, "\n\nThe human feedback left on this PR since the last cycle went to the engineer with this note.\n\n"},
+		{"keep the fix\n\n" + feedback, "\n\nkeep the fix\n\nThe human feedback left on this PR since the last cycle went to the engineer with this note.\n\n"},
+		{"plain note", "\n\nplain note\n\n"},
+	} {
+		c := reopenComment(reopenState{Cycle: 2, Note: tc.note})
+		if !strings.Contains(c, tc.want) || strings.Contains(c, "@") || strings.Contains(c, "### PR #") {
+			t.Errorf("reopenComment(%q) =\n%s", tc.note, c)
+		}
+	}
+}
+
+func TestReopenCommentCapsLongNote(t *testing.T) {
+	c := reopenComment(reopenState{Cycle: 2, Note: strings.Repeat("é", reopenCommentBudget)})
+	if len(c) > 65536 || !strings.Contains(c, "(truncated; the engineer has the full note)") || !utf8.ValidString(c) {
+		t.Fatalf("len %d, valid %v, tail %q", len(c), utf8.ValidString(c), c[len(c)-200:])
+	}
+}
+
+func TestRenderPRFeedbackKeepsThreadsApart(t *testing.T) {
+	act := PRActivity{Threads: []PRThread{
+		{Path: "a.go", Line: 5, Comments: []PRComment{
+			{Author: alice, Body: "first thread", DiffHunk: "@@ -5 +5 @@\n+x", At: at(1)},
+			{Author: bob, Body: "first thread reply", At: at(5)},
+		}},
+		{Path: "a.go", Line: 0, OriginalLine: 5, Comments: []PRComment{
+			{Author: bob, Body: "second thread", DiffHunk: "@@ -5 +5 @@\n+y", At: at(3)},
+		}},
+	}}
+	got := renderPRFeedback(1, act)
+	i, j, k := strings.Index(got, "first thread\n"), strings.Index(got, "first thread reply"), strings.Index(got, "second thread")
+	if i < 0 || j < i || k < j {
+		t.Fatalf("threads interleaved:\n%s", got)
 	}
 }

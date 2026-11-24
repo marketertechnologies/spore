@@ -128,9 +128,15 @@ func TestReopenRoleLoopRefuses(t *testing.T) {
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, "x"); err == nil || !strings.Contains(err.Error(), "phase review-A") {
 		t.Fatalf("mid-loop reopen err = %v", err)
 	}
+	if err := CheckReopenable(root, tasksDir, slug); err == nil || !strings.Contains(err.Error(), "phase review-A") {
+		t.Fatalf("mid-loop CheckReopenable err = %v", err)
+	}
 	walkToDone(t, root, slug)
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, " \n"); err == nil || !strings.Contains(err.Error(), "note is required") {
 		t.Fatalf("empty note err = %v", err)
+	}
+	if err := CheckReopenable(root, tasksDir, slug); err != nil {
+		t.Fatalf("done loop CheckReopenable err = %v", err)
 	}
 	writeRoleLoopTask(t, tasksDir, slug, "paused")
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, "x"); err == nil || !strings.Contains(err.Error(), "want active") {

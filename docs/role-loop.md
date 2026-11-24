@@ -562,7 +562,11 @@ With nothing new and no `--note`, reopen refuses. It reads the latest
 thread; older ones are ignored. Comments left while a cycle runs
 (after its reopen comment, before the loop marks the PR ready again)
 fall before the next cutoff and are never read: post feedback for
-`--from-pr` once the PR is ready.
+`--from-pr` once the PR is ready. The PR's reopen comment carries
+only the operator's own note plus a one-line pointer, not the
+feedback: reposting it would duplicate the comments and @-mention
+every author again. The reopen comment is cut at 60000 characters,
+under GitHub's limit.
 
 The task must be `status: active` (a `spore task done` task is gone)
 and its loop done or escalated; mid-loop it refuses. Reopen:

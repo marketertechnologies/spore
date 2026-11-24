@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // PRActivity is the slice of a PR's GitHub history that
@@ -70,6 +71,36 @@ type PRFeedbackSource interface {
 // reopenComment); the newest one marks where the last reopen began.
 const reopenCommentLead = "**Reopened by the operator (cycle "
 
+// prFeedbackHeading finds the rendered feedback section in a reopen
+// note; renderPRFeedback always appends it last.
+var prFeedbackHeading = regexp.MustCompile(`(?m)^### PR #[0-9]+ feedback$`)
+
+// reopenCommentBudget keeps the reopen comment under GitHub's 65536
+// character body limit; a rejected post would stall the mirror.
+const reopenCommentBudget = 60000
+
+// prCommentNote is the reopen note as posted on the PR. The feedback
+// section stays in the spec only: on the PR it would duplicate the
+// comments and @-mention every author again.
+func prCommentNote(note string) string {
+	if loc := prFeedbackHeading.FindStringIndex(note); loc != nil {
+		pointer := "The human feedback left on this PR since the last cycle went to the engineer with this note."
+		if head := strings.TrimSpace(note[:loc[0]]); head != "" {
+			note = head + "\n\n" + pointer
+		} else {
+			note = pointer
+		}
+	}
+	if len(note) <= reopenCommentBudget {
+		return note
+	}
+	cut := reopenCommentBudget
+	for cut > 0 && !utf8.RuneStart(note[cut]) {
+		cut--
+	}
+	return note[:cut] + "\n\n(truncated; the engineer has the full note)"
+}
+
 // hunkContextLines is how many trailing diff hunk lines an inline
 // comment keeps; the commented line is the hunk's last.
 const hunkContextLines = 4
@@ -101,15 +132,11 @@ func ReopenNoteFromPR(projectRoot, slug, note string, src PRFeedbackSource) (str
 }
 
 func recordedPR(projectRoot, slug string) (int, error) {
-	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	st, err := readGitHubState(projectRoot, slug)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, fmt.Errorf("reopen %s: --from-pr needs the draft-PR flow; no github.json for this task", slug)
 	}
 	if err != nil {
-		return 0, err
-	}
-	var st githubState
-	if err := json.Unmarshal(b, &st); err != nil {
 		return 0, fmt.Errorf("reopen %s: github.json: %w", slug, err)
 	}
 	if st.PRNumber == 0 {
@@ -148,7 +175,7 @@ func humanAfter(a PRAuthor, at, cutoff time.Time) bool {
 
 type inlineItem struct {
 	path, loc, hunk string
-	line            int
+	line, thread    int
 	c               PRComment
 }
 
@@ -158,7 +185,7 @@ type inlineItem struct {
 func renderPRFeedback(pr int, act PRActivity) string {
 	cutoff := feedbackCutoff(act)
 	var inline []inlineItem
-	for _, t := range act.Threads {
+	for ti, t := range act.Threads {
 		if t.Resolved {
 			continue
 		}
@@ -169,7 +196,7 @@ func renderPRFeedback(pr int, act PRActivity) string {
 		}
 		for _, c := range t.Comments {
 			if humanAfter(c.Author, c.At, cutoff) && strings.TrimSpace(c.Body) != "" {
-				inline = append(inline, inlineItem{path: t.Path, loc: loc, hunk: hunk, line: line, c: c})
+				inline = append(inline, inlineItem{path: t.Path, loc: loc, hunk: hunk, line: line, thread: ti, c: c})
 				hunk = ""
 			}
 		}
@@ -207,7 +234,7 @@ func renderPRFeedback(pr int, act PRActivity) string {
 		if a.line != b.line {
 			return a.line < b.line
 		}
-		return a.c.At.Before(b.c.At)
+		return a.thread < b.thread
 	})
 	sort.SliceStable(gen, func(i, j int) bool { return gen[i].c.At.Before(gen[j].c.At) })
 

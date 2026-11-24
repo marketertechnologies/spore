@@ -11,7 +11,9 @@
   trimmed diff hunk, and PR comments. Bot and app authors and
   resolved threads are skipped. The note groups inline comments by
   file, then general comments. With no new feedback and no `--note`,
-  reopen refuses.
+  reopen refuses, and it checks the loop can be reopened before it
+  calls GitHub. The PR's reopen comment shows only the operator note
+  and a pointer, not the feedback, and is cut at 60000 characters.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and
