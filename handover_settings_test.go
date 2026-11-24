@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/versality/spore/internal/hooks"
+	"github.com/versality/spore/internal/task"
 )
 
 func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
@@ -51,6 +52,25 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore fleet replenish-hook") {
 		t.Fatal("handover settings missing fleet replenish-hook Stop hook")
 	}
+	if !hasTimeout(settings.Hooks["Stop"], handoverEngineerCheck, task.EngineerCheckHookTimeout) {
+		t.Fatalf("handover settings missing engineer-check Stop hook with timeout %d", task.EngineerCheckHookTimeout)
+	}
+}
+
+// handoverEngineerCheck skips the hook outside engineer panes and on a
+// binary without the subcommand: an older spore exits 2 on an unknown
+// subcommand, which Claude Code reads as a blocked stop.
+const handoverEngineerCheck = "[ \"$SPORE_ROLE\" = engineer ] || exit 0; /run/current-system/sw/bin/spore hooks 2>&1 | grep -q engineer-check || exit 0; exec /run/current-system/sw/bin/spore hooks engineer-check"
+
+func hasTimeout(groups []handoverHookGroup, command string, timeout int) bool {
+	for _, group := range groups {
+		for _, hook := range group.Hooks {
+			if hook.Command == command && hook.Timeout == timeout {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type handoverHookGroup struct {
@@ -61,6 +81,7 @@ type handoverHook struct {
 	Command     string `json:"command"`
 	Async       bool   `json:"async,omitempty"`
 	AsyncRewake bool   `json:"asyncRewake,omitempty"`
+	Timeout     int    `json:"timeout,omitempty"`
 }
 
 func hasCommand(groups []handoverHookGroup, command string) bool {

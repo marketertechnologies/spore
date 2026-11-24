@@ -72,6 +72,11 @@ Subcommands:
                          stdin, write the response JSON to stdout.
   stop                   Read a claude-code Stop JSON request from stdin,
                          write the (currently no-op) response JSON.
+  engineer-check         Stop-hook for role-loop engineer panes: run the
+                         [fleet.roles.engineer] check on a new engineer
+                         response, exit 2 with the failure tail.
+                         Reads $SPORE_ROLE / $SPORE_PROJECT_ROOT /
+                         $SPORE_TASK_SLUG; a no-op anywhere else.
   settings               Read a hook binding JSON from stdin, emit a
                          deterministic settings.json to stdout.
                          permissions.deny merges the kernel defaults

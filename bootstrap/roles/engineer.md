@@ -171,13 +171,37 @@ as a `followups` entry proposing a separate PR.
 1. Read the spec. If this is a revision round, also read the latest
    reviewer verdict.
 2. Make changes on the task branch. Commit as you go.
-3. Write `responses/engineer-round-N.json`.
-4. Mark the round done. The coordinator wakes the reviewer.
-5. Wait. If the reviewer requests changes, the coordinator wakes
+3. Run the project check yourself (see "The check gate") and fix
+   what it reports. Commit.
+4. Write `responses/engineer-round-N.json`.
+5. Mark the round done. The coordinator wakes the reviewer once the
+   check gate passes.
+6. Wait. If the reviewer requests changes, the coordinator wakes
    you with the new verdict file. Go back to step 2.
-6. When a reviewer approves, the coordinator either spawns the next
+7. When a reviewer approves, the coordinator either spawns the next
    reviewer or hands the branch to the operator. Your work for this
    round is finished.
+
+## The check gate
+
+When the project sets `[fleet.roles.engineer] check` in `spore.toml`
+(for example `just check` or `bin/ci-local`), spore enforces it.
+After you write a response, your Stop hook (`spore hooks
+engineer-check`) runs that command in the worktree when you end your
+turn. If it fails, your stop is blocked and you get the command, its
+exit code, and the last 40 lines of output: fix the failure, commit,
+and end your turn again. The reviewers are not woken until the check
+passes on your current HEAD; the pass is recorded as
+`$SPORE_TASK_DIR/state/check-pass-<N>-<sha>`, so a commit after it
+re-arms the gate. After 3 failures on one round and HEAD the hook
+lets the stop through and the reviewer is told the check failed;
+expect that as a finding.
+
+Run the check yourself before writing the response: a failure found
+then costs you one fix, a failure found by the hook costs a blocked
+stop. If you are woken with "Reviewers are held", run `spore hooks
+engineer-check` from the worktree; it runs the check, records the
+result, and exits 2 with the failure on stderr.
 
 ## Escalation
 
