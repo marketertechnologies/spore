@@ -1,4 +1,4 @@
-**Status**: approved 2026-11-24, queued as task `fleet-evals`.
+**Status**: implemented in v0.34.0.
 
 # fleet-evals: reviewer regression suite
 
@@ -246,3 +246,29 @@ already pass on today's body; that is fine and expected.
 - Judge model and prompt; keep it cheap and deterministic-leaning.
 - Parallelism across cases.
 - Candidate dedup and the dismiss store format.
+
+## Builder notes (v0.34.0)
+
+- Package `internal/evals/`, CLI `cmd/spore/eval_cmd.go`.
+- Candidate ids: `<slug>.miss.<X><n>.<Y><m>` (X approved round n, Y
+  requested changes at round m), `<slug>.invalid.<X><n>.eng<r>.p<i>`
+  (pushback entry i of engineer round r), and
+  `<slug>.invalid.<X><n>.op.c<i>` (operator flag on comment i).
+  Pushback entries starting `skipped:` are tier skips, not candidates.
+  Human PR reviews are not scanned yet: flag those by hand.
+- Dismissals are empty markers under `<state>/evals/dismissed/<id>`;
+  flags are JSON under `<state>/evals/flags/`.
+- `head_sha`: the drive loop stamps the worktree HEAD into
+  `.spore/<slug>/state/reviewed-<X>-<n>` when HEAD is no newer than
+  the verdict file. Older runs fall back to the last commit on
+  `wt/<slug>` at or before the verdict's mtime; else `--head-sha`.
+  Confirm bundles `base..head` into `head.bundle` (built in a shared
+  scratch clone, so the project repo is never written).
+- Replays run in a `git clone --shared` scratch repo with no remote:
+  the task branch at `head_sha`, the base branch at `base_sha`. The
+  case dir also carries the slot's own earlier verdicts
+  (`reviews/<X>/`) so a round 2+ reviewer numbers its file right.
+- Judge: `claude -p --model haiku`, one call per run, JSON
+  `{"pass", "reason"}`. Codex slots replay via `codex exec`.
+- Project rules dir uses the body file name without `.md`, e.g.
+  `<state>/roles/rules/reviewer-code-review/`.

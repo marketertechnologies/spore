@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `spore eval`: reviewer regression suite. `candidates` detects
+  reviewer misses (a slot approved, a later slot requested changes)
+  and invalid comments (engineer pushback, `spore eval flag`) from
+  `.spore/<slug>/` trees; `confirm` freezes one as a host-side case
+  under `$XDG_STATE_HOME/spore/<project>/evals/cases/`; `run` replays
+  the case's reviewer slot headless with its production mode, agent,
+  effort and body, judges each verdict, and passes a case on a
+  majority of N runs; `promote` places a draft rule only on a green
+  ship gate. The drive loop now stamps the commit each verdict
+  reviewed under `.spore/<slug>/state/reviewed-<X>-<N>`. Consumer
+  impact: project rules placed under
+  `$XDG_STATE_HOME/spore/<project>/roles/rules/<body>/*.md` are
+  appended to that role body for live panes too, so once a project
+  has rules its reviewers (and engineer, for engineer rules) see
+  them on the next spawn. With no rules placed, panes run the same
+  body as before.
+
 - Role loop: reviewer comments carry a severity tier prefix,
   `[blocker]`, `[nice-to-have]`, or `[nit]`, in both reviewer slots.
   Only a blocker yields `request_changes`; a verdict with only
