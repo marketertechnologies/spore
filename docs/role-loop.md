@@ -79,10 +79,13 @@ round paired with it, and a fix pass landing after B's first verdict
 would be read as B's answer. A forced approve is exempt from the
 grade/round verdict rule, so its high and medium comments stay on
 record instead of being bounced (hand-editing the verdict alone is
-rejected by validation and restarts the reviewer). Only files listed
-in `state/operator-overrides` (written by the command) may carry
-`operator_override`; a reviewer that sets it itself is bounced. The
-PR mirror posts the override with its reason. The command refuses
+rejected by validation and restarts the reviewer). Only the exact
+content the command wrote, recorded by sha256 in
+`state/operator-overrides`, may carry `operator_override`; a reviewer
+that sets it itself, or rewrites a forced file, is bounced. The
+command clears that reviewer's `escalated-*` marker. The PR mirror
+posts the override with its reason, and the summary marks the forced
+verdict. The command refuses
 while a drive tick holds the loop; retry. After a force-approve of
 A's final verdict, the fix-pass response counts toward A's phase, so
 B's revisions count from a fresh engineer round.
@@ -507,7 +510,8 @@ Markers under `.spore/<slug>/state/`:
   that response exists and predates B's first verdict. A forced
   verdict keeps counting it after the marker is cleared.
 - `operator-overrides`: review files `spore task force-approve`
-  rewrote; only these may carry `operator_override`.
+  rewrote, each with the sha256 of the content it wrote; only that
+  content may carry `operator_override`. A missing marker allows none.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.

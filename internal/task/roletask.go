@@ -410,7 +410,7 @@ func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round in
 	if err != nil {
 		return Review{}, err
 	}
-	override, err := overrideRecorded(projectRoot, slug, rel)
+	override, err := overrideRecorded(projectRoot, slug, rel, b)
 	if err != nil {
 		return Review{}, err
 	}

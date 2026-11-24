@@ -7,9 +7,10 @@
   `operator_override` on the reviewer's escalated final verdict once
   the engineer's fix pass has landed; a forced approve skips the
   grade/round rule, so the operator's override is no longer bounced
-  and silently undone. Only files the command records in
-  `state/operator-overrides` may carry the field, so a reviewer cannot
-  force its own approve. `spore task reopen` takes the
+  and silently undone. Only the content the command records (by
+  sha256) in `state/operator-overrides` may carry the field, so a
+  reviewer can neither force its own approve nor rewrite a forced
+  file; the command also clears the escalation marker. `spore task reopen` takes the
   drive and `github.json` locks before it moves anything, so a busy
   mirror refuses cleanly instead of leaving a half-reopened loop;
   drive ticks now hold a per-slug `drive.lock` and a busy tick only
@@ -18,8 +19,8 @@
   machine after a force-approve, so B's engineer rounds are no longer
   skipped or posted one verdict late, and it posts the override with
   its reason. B's escalation fix pass stays in the mirror after B is
-  forced, and the verdict comment and ready PR body mark a forced
-  verdict as force-approved by the operator.
+  forced, and the verdict comment, ready PR body and summary.md mark a
+  forced verdict as force-approved by the operator.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

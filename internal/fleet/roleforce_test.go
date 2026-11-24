@@ -365,3 +365,42 @@ func TestForceApproveFailedWriteDropsRecord(t *testing.T) {
 		t.Fatal("override record survived a failed force-approve")
 	}
 }
+
+// After a force-approve the loop is no longer escalated, the summary
+// shows the override, and the still-live reviewer cannot replace the
+// forced file with its own override.
+func TestForceApproveClearsEscalationAndBindsContent(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	escalateAWithFix(t, root, slug)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "edge case accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if esc, err := task.IsEscalated(root, slug); err != nil || esc {
+		t.Fatalf("IsEscalated = %v, %v after force-approve; want false", esc, err)
+	}
+	if snap, _ := DeriveSnapshot(root, slug); snap.Phase != PhaseReviewB || !snap.AFixLanded {
+		t.Fatalf("snap = %+v, want %s with the fix pass counted", snap, PhaseReviewB)
+	}
+	sum, err := buildSummary(root, slug, "fp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sum, "### round 3 -> approve (request changes, force-approved by the operator)\n\nOperator override: edge case accepted") {
+		t.Fatalf("summary hides the override:\n%s", sum)
+	}
+
+	path := task.ReviewPath(root, slug, task.ReviewerA, 3)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, path)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["operator_override"], doc["comments"] = "reviewer rewrite", []any{}
+	b, _ := json.Marshal(doc)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.ReadReview(root, slug, task.ReviewerA, 3); err == nil {
+		t.Fatal("a reviewer rewrite of the forced file validated")
+	}
+}

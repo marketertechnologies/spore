@@ -3,6 +3,8 @@ package task
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,8 +36,10 @@ const legacyMarker = "legacy-files"
 const orderExemptMarker = "order-exempt-files"
 
 // overrideMarker lists the review files `spore task force-approve`
-// rewrote. Only those may carry `operator_override`: a reviewer that
-// sets it itself would approve past its own high/medium comments.
+// rewrote, each with the sha256 of the content it wrote. Only that
+// exact content may carry `operator_override`: a reviewer that sets it
+// itself, or rewrites a forced file, would approve past its own
+// high/medium comments.
 const overrideMarker = "operator-overrides"
 
 // ErrInvalidRoleFile is wrapped by every validation failure so callers
@@ -118,7 +122,7 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 	if err != nil {
 		return err
 	}
-	override, err := overrideRecorded(projectRoot, slug, f.Rel)
+	override, err := overrideRecorded(projectRoot, slug, f.Rel, b)
 	if err != nil {
 		return err
 	}
@@ -329,13 +333,15 @@ func listedInMarker(projectRoot, slug, name, rel string) (bool, error) {
 }
 
 // RecordOperatorOverride lists the review at instance/round in the
-// override marker, so its `operator_override` validates. Idempotent.
-func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int) error {
+// override marker, bound to b (the forced file's exact content), so
+// that content's `operator_override` validates and any rewrite of the
+// file does not. Idempotent.
+func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) error {
 	if err := validateInstance(instance); err != nil {
 		return err
 	}
 	rel := relTo(RoleTaskDir(projectRoot, slug), ReviewPath(projectRoot, slug, instance, round))
-	if ok, err := overrideRecorded(projectRoot, slug, rel); err != nil || ok {
+	if ok, err := overrideRecorded(projectRoot, slug, rel, b); err != nil || ok {
 		return err
 	}
 	stateDir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
@@ -346,15 +352,15 @@ func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance,
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(rel + "\n"); err != nil {
+	if _, err := f.WriteString(overrideLine(rel, b) + "\n"); err != nil {
 		f.Close()
 		return err
 	}
 	return f.Close()
 }
 
-// DropOperatorOverride removes instance/round from the override
-// marker; a no-op when it is not listed.
+// DropOperatorOverride removes every record for instance/round from
+// the override marker; a no-op when none is listed.
 func DropOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int) error {
 	if err := validateInstance(instance); err != nil {
 		return err
@@ -370,20 +376,36 @@ func DropOperatorOverride(projectRoot, slug string, instance ReviewerInstance, r
 	}
 	var keep strings.Builder
 	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-		if l != "" && l != rel {
+		if l != "" && !strings.HasPrefix(l, rel+" ") {
 			keep.WriteString(l + "\n")
 		}
 	}
 	return os.WriteFile(marker, []byte(keep.String()), 0o644)
 }
 
-// overrideRecorded reports whether rel is in the override marker. Unlike
-// the other list markers, a missing marker lists nothing.
-func overrideRecorded(projectRoot, slug, rel string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker)); errors.Is(err, fs.ErrNotExist) {
+func overrideLine(rel string, b []byte) string {
+	sum := sha256.Sum256(b)
+	return rel + " sha256:" + hex.EncodeToString(sum[:])
+}
+
+// overrideRecorded reports whether the override marker lists rel with
+// content b. It fails closed: unlike the other list markers, a missing
+// marker lists nothing.
+func overrideRecorded(projectRoot, slug, rel string, b []byte) (bool, error) {
+	raw, err := os.ReadFile(filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker))
+	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	return listedInMarker(projectRoot, slug, overrideMarker, rel)
+	if err != nil {
+		return false, err
+	}
+	want := overrideLine(rel, b)
+	for _, l := range strings.Split(string(raw), "\n") {
+		if l == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func relTo(root, p string) string {

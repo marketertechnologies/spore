@@ -3,8 +3,11 @@ package fleet
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/versality/spore/internal/task"
@@ -83,7 +86,7 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	// Recorded before the write so the file never sits on disk with an
 	// unrecorded override; dropped again if the write fails, or the
 	// still-live reviewer could write a self-approval that validates.
-	if err := task.RecordOperatorOverride(projectRoot, slug, inst, round); err != nil {
+	if err := task.RecordOperatorOverride(projectRoot, slug, inst, round, out.Bytes()); err != nil {
 		return 0, fmt.Errorf("force-approve %s: record override: %w", slug, err)
 	}
 	if err := writeFileAtomic(path, out.Bytes()); err != nil {
@@ -92,7 +95,29 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 		}
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
 	}
+	// The loop is no longer escalated; a stale marker would keep the
+	// task flagged (task.IsEscalated) through the whole next phase.
+	marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(inst)+"-*"))
+	if err == nil {
+		for _, m := range marks {
+			if rerr := os.Remove(m); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+				err = rerr
+			}
+		}
+	}
+	if err != nil {
+		return round, fmt.Errorf("force-approve %s: verdict forced, but clearing the escalation marker failed: %w", slug, err)
+	}
 	return round, nil
+}
+
+// verdictHeading renders a verdict for the review summary, marking a
+// forced one and carrying the operator's reason.
+func verdictHeading(rev task.Review) string {
+	if !rev.Forced() {
+		return rev.Verdict
+	}
+	return fmt.Sprintf("%s (request changes, force-approved by the operator)\n\nOperator override: %s", rev.Verdict, strings.TrimSpace(rev.OperatorOverride))
 }
 
 // writeFileAtomic replaces path via a sibling temp file, so a reader or

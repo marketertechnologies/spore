@@ -3,6 +3,8 @@ package task
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -238,16 +240,37 @@ func TestOperatorOverrideNeedsRecord(t *testing.T) {
 	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
 		t.Fatal("override validated with no record")
 	}
-	if err := RecordOperatorOverride(root, slug, ReviewerA, 3); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecordOperatorOverride(root, slug, ReviewerA, 3); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := RecordOperatorOverride(root, slug, ReviewerA, 3, forced); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err != nil {
 		t.Fatalf("recorded override: %v", err)
 	}
 	if _, err := ParseReviewAt(root, slug, ReviewerB, 3, []byte(strings.Replace(string(forced), `"A"`, `"B"`, 1))); err == nil {
 		t.Fatal("A's record authorised B's override")
+	}
+	// The record binds content: a reviewer rewriting the forced file
+	// with its own override must not validate.
+	rewritten := []byte(strings.Replace(string(forced), `"accepted"`, `"self-approved"`, 1))
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, rewritten); err == nil {
+		t.Fatal("a rewrite of the forced file validated")
+	}
+	// Fail closed when the marker disappears (reopen archives state/).
+	if err := os.Remove(filepath.Join(RoleTaskDir(root, slug), "state", overrideMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated with the marker gone")
+	}
+	if err := RecordOperatorOverride(root, slug, ReviewerA, 3, forced); err != nil {
+		t.Fatal(err)
+	}
+	if err := DropOperatorOverride(root, slug, ReviewerA, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated after the record was dropped")
 	}
 }
