@@ -128,9 +128,15 @@ func TestReopenRoleLoopRefuses(t *testing.T) {
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, "x"); err == nil || !strings.Contains(err.Error(), "phase review-A") {
 		t.Fatalf("mid-loop reopen err = %v", err)
 	}
+	if err := CheckReopenable(root, tasksDir, slug); err == nil || !strings.Contains(err.Error(), "phase review-A") {
+		t.Fatalf("mid-loop CheckReopenable err = %v", err)
+	}
 	walkToDone(t, root, slug)
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, " \n"); err == nil || !strings.Contains(err.Error(), "note is required") {
 		t.Fatalf("empty note err = %v", err)
+	}
+	if err := CheckReopenable(root, tasksDir, slug); err != nil {
+		t.Fatalf("done loop CheckReopenable err = %v", err)
 	}
 	writeRoleLoopTask(t, tasksDir, slug, "paused")
 	if _, err := ReopenRoleLoop(root, tasksDir, slug, "x"); err == nil || !strings.Contains(err.Error(), "want active") {
@@ -203,5 +209,33 @@ func TestGitHubMirrorReopenRedraftsAndLabelsCycle(t *testing.T) {
 	}
 	if !f.state(t).Ready {
 		t.Fatal("cycle 2 ready flag not set")
+	}
+}
+
+// A mirror holding github.json used to fail reopen only after the
+// cycle was archived, leaving a loop that could neither run the new
+// cycle on the PR nor be reopened again.
+func TestReopenRoleLoopLockedLeavesTreeUntouched(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	walkToDone(t, root, slug)
+	unlock, err := lockGitHubState(githubStatePath(root, slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReopenRoleLoop(root, tasksDir, slug, "note")
+	unlock()
+	if err == nil || !strings.Contains(err.Error(), "retry") {
+		t.Fatalf("err = %v, want a retry refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(task.RoleTaskDir(root, slug), "cycles")); !os.IsNotExist(err) {
+		t.Fatalf("cycles/ exists after a refused reopen: %v", err)
+	}
+	if spec, _ := task.ReadSpec(root, slug); strings.Contains(string(spec), "Operator reopen") {
+		t.Fatal("spec.md changed after a refused reopen")
+	}
+	if cycle, err := ReopenRoleLoop(root, tasksDir, slug, "note"); err != nil || cycle != 2 {
+		t.Fatalf("retry: cycle %d err %v, want cycle 2", cycle, err)
 	}
 }

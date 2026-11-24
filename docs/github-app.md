@@ -196,7 +196,11 @@ flow was turned on keep their old identity until respawned.
 
 ## Limits (v1)
 
-- Human PR comments are not read back into the loop.
+- Human PR comments are not read back into a running loop. The
+  operator pulls them in on demand with `spore task reopen <slug>
+  --from-pr`, which reads the feedback left since the loop last
+  marked the PR ready or was reopened (see "Reopening a finished
+  loop" in `docs/role-loop.md`).
 - Signed commits: if a repo requires them, agent commits fail that
   rule. Not solved.
 - A task already mid-loop when the flow is turned on gets its

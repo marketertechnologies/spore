@@ -57,8 +57,15 @@ const MaxReviewerRounds = task.FinalReviewRound
 // Snapshot is the current view of a task's role-loop state.
 type Snapshot struct {
 	Slug string
+	// DriveSkipped is set by DriveRoleLoop when another drive, reopen
+	// or force-approve held the slug, so the tick only reported.
+	DriveSkipped bool
 	// Phase is the derived loop step.
 	Phase Phase
+	// AFixLanded is escalationFixLanded's answer: the A phase accounts
+	// for one engineer round more than its request_changes count. The
+	// PR mirror pairs engineer rounds with verdicts from it.
+	AFixLanded bool
 	// EngineerRound is the highest engineer-round-N.json present
 	// (== count, since rounds are dense). Zero before the engineer
 	// has shipped anything.
@@ -78,6 +85,13 @@ type Snapshot struct {
 	// EscalationFixPending is true in PhaseEscalated until the
 	// engineer writes its one fix-pass response to the final verdict.
 	EscalationFixPending bool
+	// Check is the engineer check gate state of the latest engineer
+	// response at the worktree HEAD, in review phases with
+	// `[fleet.roles.engineer] check` set; CheckOff otherwise. While it
+	// is CheckPending the driver holds the reviewer.
+	Check task.CheckState
+	// CheckSHA is the worktree HEAD Check was read at.
+	CheckSHA string
 }
 
 // DeriveSnapshot reads `<projectRoot>/.spore/<slug>/` and returns the
@@ -112,13 +126,13 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 	if len(engRounds) > 0 {
 		snap.EngineerRound = engRounds[len(engRounds)-1]
 	}
-	aFixLanded, err := escalationFixLanded(projectRoot, slug, engRounds, aReviews, bRounds)
+	snap.AFixLanded, err = escalationFixLanded(projectRoot, slug, engRounds, aReviews, bRounds)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	var expected int
 	snap.Phase, snap.CurrentReviewer, snap.ReviewerRound, snap.LastVerdict, expected =
-		derivePhase(len(engRounds), aReviews, bReviews, aFixLanded)
+		derivePhase(len(engRounds), aReviews, bReviews, snap.AFixLanded)
 	if snap.LastVerdict != "" {
 		revs := aReviews
 		if snap.CurrentReviewer == task.ReviewerB {
@@ -127,6 +141,9 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 		snap.LastCounts = revs[len(revs)-1].Counts()
 	}
 	snap.EscalationFixPending = snap.Phase == PhaseEscalated && len(engRounds) < expected
+	if err := readCheckGate(projectRoot, slug, &snap); err != nil {
+		return Snapshot{}, err
+	}
 	return snap, nil
 }
 
@@ -169,8 +186,11 @@ func validEngineerRounds(projectRoot, slug string) ([]int, error) {
 // A phase accounts for one more engineer round than its
 // request_changes count. It needs all of:
 //
-//   - A's latest verdict is approve and an `escalated-A-*` marker
-//     exists (the driver escalated A and woke the engineer);
+//   - A's latest verdict is approve, and either it is forced (only an
+//     escalated verdict can be, after its fix pass landed; see
+//     ForceApproveReview) or an `escalated-A-*` marker exists (the
+//     driver escalated A and woke the engineer). The forced check
+//     survives the Done tick clearing the markers;
 //   - the engineer response after A's last request_changes exists;
 //   - that response predates B's first verdict (if any). A response
 //     written after it answers B, not the escalation.
@@ -181,15 +201,19 @@ func escalationFixLanded(projectRoot, slug string, engRounds []int, aRev []task.
 	if len(aRev) == 0 || aRev[len(aRev)-1].Verdict != task.VerdictApprove {
 		return false, nil
 	}
-	marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(task.ReviewerA)+"-*"))
-	if err != nil || len(marks) == 0 {
-		return false, err
+	if !aRev[len(aRev)-1].Forced() {
+		marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(task.ReviewerA)+"-*"))
+		if err != nil || len(marks) == 0 {
+			return false, err
+		}
 	}
 	idx := 1 + countRequestChanges(aRev)
 	if len(engRounds) <= idx {
 		return false, nil
 	}
-	if len(bRounds) == 0 {
+	// A forced verdict needs no mtime check: force-approve refuses
+	// until the fix pass lands, which is before B can exist.
+	if len(bRounds) == 0 || aRev[len(aRev)-1].Forced() {
 		return true, nil
 	}
 	fix, err := os.Stat(task.EngineerResponsePath(projectRoot, slug, engRounds[idx]))

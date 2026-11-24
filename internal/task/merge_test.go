@@ -574,3 +574,60 @@ func setupGateRepo(t *testing.T, slug, justBody string) (repo, taskPath string) 
 	runGit(t, worktree, "commit", "-q", "-m", "feat: demo work")
 	return repo, taskPath
 }
+
+func TestMergeRefusesNonMainForkBase(t *testing.T) {
+	cases := map[string]func(t *testing.T, repo, taskPath string){
+		"base: frontmatter": func(t *testing.T, repo, taskPath string) {
+			raw, err := os.ReadFile(taskPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := strings.Replace(string(raw), "title: Demo\n", "title: Demo\nbase: feat\n", 1)
+			if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"origin/HEAD": func(t *testing.T, repo, _ string) {
+			runGit(t, repo, "update-ref", "refs/remotes/origin/develop", "main")
+			runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			repo, taskPath := setupGateRepo(t, "demo", "")
+			setup(t, repo, taskPath)
+			err := Merge(filepath.Join(repo, "tasks"), "demo")
+			if err == nil || !strings.Contains(err.Error(), "land it through a PR") {
+				t.Fatalf("Merge err = %v, want a non-main base refusal", err)
+			}
+			if !branchExists(repo, "wt/demo") {
+				t.Error("refusal removed wt/demo")
+			}
+		})
+	}
+
+	t.Run("base: origin/main", func(t *testing.T) {
+		repo, taskPath := setupGateRepo(t, "demo", "")
+		raw, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.Replace(string(raw), "title: Demo\n", "title: Demo\nbase: origin/main\n", 1)
+		if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := Merge(filepath.Join(repo, "tasks"), "demo"); err != nil {
+			t.Fatalf("Merge with base: origin/main: %v", err)
+		}
+	})
+
+	t.Run("opt-out", func(t *testing.T) {
+		repo, _ := setupGateRepo(t, "demo", "")
+		runGit(t, repo, "update-ref", "refs/remotes/origin/develop", "main")
+		runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+		writeSporeToml(t, repo, "[fleet]\nworktree_base = \"head\"\n")
+		if err := Merge(filepath.Join(repo, "tasks"), "demo"); err != nil {
+			t.Fatalf("Merge with worktree_base = head: %v", err)
+		}
+	})
+}

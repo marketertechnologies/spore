@@ -70,13 +70,25 @@ the final verdict's high/medium comments; no reviewer is woken and
 no re-review follows. The engineer's fix-pass response keeps the
 phase `escalated` (`EscalationFixPending` clears). The operator can
 then clarify the spec, force-approve, kill the task, or hand it back
-for another loop. If the operator force-approves A's final verdict,
-the fix-pass response counts toward A's phase only when it exists
-and predates B's first verdict (and an `escalated-A-*` marker shows
-the driver escalated A). So B's revisions count from a fresh
-engineer round whether the operator force-approved after the fix
-pass landed or before it (in which case the next engineer response
-answers B).
+for another loop. Force-approve with `spore task force-approve <slug>
+<A|B> --reason <text>`: it flips that reviewer's escalated final
+verdict to `approve` and records the reason as `operator_override`.
+It refuses outside an escalation of that reviewer and while the fix
+pass is still pending: an earlier verdict already has an engineer
+round paired with it, and a fix pass landing after B's first verdict
+would be read as B's answer. A forced approve is exempt from the
+grade/round verdict rule, so its high and medium comments stay on
+record instead of being bounced (hand-editing the verdict alone is
+rejected by validation and restarts the reviewer). Only the exact
+content the command wrote, recorded by sha256 in
+`state/operator-overrides`, may carry `operator_override`; a reviewer
+that sets it itself, or rewrites a forced file, is bounced. The
+command clears that reviewer's `escalated-*` marker. The PR mirror
+posts the override with its reason, and the summary marks the forced
+verdict. The command refuses
+while a drive tick holds the loop; retry. After a force-approve of
+A's final verdict, the fix-pass response counts toward A's phase, so
+B's revisions count from a fresh engineer round.
 
 Per-phase side effects of a drive tick:
 
@@ -86,6 +98,9 @@ Per-phase side effects of a drive tick:
 - `review-A`: keep engineer and reviewer A panes alive
 - `review-B`: reap reviewer A's pane, keep reviewer B alive; the
   engineer pane stays alive across the handover
+- review phases with the engineer check configured: hold the
+  reviewer until the latest response has a pass or give-up marker
+  (see "Engineer check gate")
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
 - `escalated`: write the `escalated-*` marker; until the engineer
@@ -255,6 +270,61 @@ put it above the role body; a role pane with no role body, and a
 worker (which starts with no prompt), get that line alone as the
 prompt. Unset or empty leaves the spawn argv byte-identical to
 before.
+
+### Engineer check gate
+
+`[fleet.roles.engineer] check = "<shell command>"` makes the
+project's checks a hard gate between the engineer and the reviewers,
+instead of a prompt instruction:
+
+```toml
+[fleet.roles.engineer]
+check = "just check"            # or a diff-scoped script such as bin/ci-local; unset = gate off
+check_timeout_seconds = 900     # default 900
+```
+
+The gate is `spore hooks engineer-check`, a Stop hook shipped in
+`bootstrap/handover/settings.json` (timeout 3600s; a larger
+`check_timeout_seconds` is clamped to 3540s so the hook can record the
+result). The shipped command runs it only when `spore hooks` lists
+`engineer-check`, so a host on an older binary skips it. It is a no-op unless
+`SPORE_ROLE=engineer` (set at spawn), `check` is set, and the latest
+`responses/engineer-round-N.json` has no `check-pass-N-<sha>` or
+`check-failed-N-<sha>` marker newer than it, sha being the worktree
+HEAD. Then it runs `check` via `sh -c` in `.worktrees/<slug>/` under
+`check_timeout_seconds` (exit 124 on timeout, the process group is
+killed):
+
+- pass: writes `state/check-pass-N-<sha>` (command, exit, duration,
+  HEAD) and lets the stop through.
+- fail: writes `state/check-attempt-N-<sha>-<k>` and exits 2, which
+  blocks the stop and hands the model its stderr: the command, the
+  exit code, and the last 40 lines of output.
+- the 3rd failure on one round and sha writes
+  `state/check-failed-N-<sha>` (with the output tail) and lets the
+  stop through. Claude Code caps consecutive Stop blocks at 8 anyway;
+  this guard keeps the loop moving well before that.
+
+A newer response re-arms the gate, and so does a commit (new sha).
+The hook reads no stdin, so the engineer can run it by hand.
+
+The driver records the gate in the snapshot (`Check`, `CheckSHA`;
+`spore task status` prints a `check:` line) for the latest engineer
+round at the worktree HEAD, in review phases only:
+
+- `pending`: no reviewer wake, and a reviewer at round 0 is not
+  spawned (a fresh reviewer starts on spawn). A reviewer with a
+  verdict on record keeps its pane. The engineer is the active role
+  for the stall check. Once the response is older than
+  `check_timeout_seconds` plus a minute (the hook never ran: a codex
+  pane, or a loop already in review when `check` was set; or HEAD
+  moved after it ran), the engineer is woken once per round and sha
+  to run `spore hooks engineer-check`.
+- `passed`: hand off as usual; the reviewer wake says the check
+  passed so the reviewer skips the full suite.
+- `failed`: hand off anyway; the reviewer wake (a one-off wake for a
+  fresh reviewer) names the failed check and the marker holding its
+  output, to treat as a finding.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
@@ -502,11 +572,17 @@ Markers under `.spore/<slug>/state/`:
 - `woken-<reviewer>-<round>-<stamp>`: the engineer was nudged for
   this verdict. The stamp is the pane's tmux `session_created`, so a
   respawned engineer pane gets re-nudged on the next tick.
-- `escalated-<reviewer>-<round>`: the loop escalated. Cleared when
-  the loop later reaches done (operator force-approve). After a
-  force-approve of A, an `escalated-A-*` marker lets the phase
-  machine count A's fix pass as one extra engineer round, provided
-  that response exists and predates B's first verdict.
+- `escalated-<reviewer>-<round>`: the loop escalated. Cleared by
+  `spore task force-approve` for that reviewer, else when the loop
+  later reaches done. After A's
+  final verdict is approved past an escalation (forced, or an
+  ungraded verdict hand-edited while this marker exists), the phase
+  machine counts A's fix pass as one extra engineer round, provided
+  that response exists and predates B's first verdict. A forced
+  verdict keeps counting it after the marker is cleared.
+- `operator-overrides`: review files `spore task force-approve`
+  rewrote, each with the sha256 of the content it wrote; only that
+  content may carry `operator_override`. A missing marker allows none.
 - `ready`: the loop reached done; the branch awaits the operator.
   Cleared by `spore task done`.
 - `legacy-files`: role files grandfathered from before validation.
@@ -515,6 +591,10 @@ Markers under `.spore/<slug>/state/`:
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
+- `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
+  `check-failed-<round>-<sha>`: engineer check gate results;
+  `check-held-<round>-<sha>-<stamp>` and
+  `check-failed-reviewer-<instance>-<round>-<stamp>` mark its wakes.
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this
   invalid file; `bounced-<file>-<n>-<hash>-<stamp>` marks the
   delivered wake.
@@ -554,6 +634,31 @@ reopen it instead of starting a new task:
 
     spore task reopen <slug> --note "drop the new service; keep the fix in the resolver"
     spore task reopen <slug> --note-file note.md
+    spore task reopen <slug> --from-pr
+    spore task reopen <slug> --from-pr --note "the inline comments win over the old spec"
+
+`--from-pr` (draft-PR flow only) reads the human feedback left on the
+task's PR and appends it to the note, so you do not paste review
+comments by hand. It runs `gh api graphql` as the GitHub App, the
+same way the mirror runs gh, against the PR number in `github.json`.
+It takes what arrived after the cutoff: the newest of the loop's
+`ready` events and its reopen comments (everything, if the loop has
+done neither). It keeps review bodies (`COMMENTED` or
+`CHANGES_REQUESTED`), inline review comments and plain PR comments.
+It drops anything a bot or app wrote (the loop's own posts included)
+and threads marked resolved. The rendered section, `### PR #N feedback`,
+groups inline comments by file, each with its author, `path:line` and
+the last four lines of the diff hunk, then lists the general comments.
+With nothing new and no `--note`, reopen refuses. It reads the latest
+100 reviews, threads and comments, and the latest 50 comments in each
+thread; older ones are ignored. Comments left while a cycle runs
+(after its reopen comment, before the loop marks the PR ready again)
+fall before the next cutoff and are never read: post feedback for
+`--from-pr` once the PR is ready. The PR's reopen comment carries
+only the operator's own note plus a one-line pointer, not the
+feedback: reposting it would duplicate the comments and @-mention
+every author again. The reopen comment is cut at 60000 characters,
+under GitHub's limit.
 
 The task must be `status: active` (a `spore task done` task is gone)
 and its loop done or escalated; mid-loop it refuses. Reopen:

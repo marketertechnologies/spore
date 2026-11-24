@@ -5,6 +5,7 @@ package ghapp
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,6 +67,18 @@ func (c Config) API() string {
 		return DefaultAPIURL
 	}
 	return strings.TrimRight(c.APIURL, "/")
+}
+
+// GitHost is the host git clones from for this app: github.com for
+// the default API, else the API's host without a leading "api."
+// (GitHub Enterprise Server serves the API under /api/v3 on the git
+// host; GHE.com serves it on api.<subdomain>.ghe.com).
+func (c Config) GitHost() string {
+	u, err := url.Parse(c.API())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "api.")
 }
 
 // Validate checks the keys an enabled flow needs to mint a token and

@@ -38,6 +38,7 @@ case "$1 $2" in
   "api repos/acme/widget/pulls/12/files") if [ -e "$FAKE_GH_FILES" ]; then cat "$FAKE_GH_FILES"; else exit 1; fi ;;
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") echo "https://github.com/acme/widget/pull/12" ;;
+  "api graphql") if [ -n "$FAKE_GH_GRAPHQL" ]; then cat "$FAKE_GH_GRAPHQL"; fi ;;
 esac
 `
 
