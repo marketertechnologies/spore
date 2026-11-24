@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/versality/spore/internal/task"
@@ -201,6 +203,36 @@ func ProjectToken(ctx context.Context, projectRoot string) (Token, error) {
 	if err != nil {
 		return Token{}, err
 	}
+	return projectToken(ctx, projectRoot, cfg)
+}
+
+// FetchEnv is the task.FetchAuth for the base fetch: base plus the
+// app token, applied by Env exactly as `spore gh exec` applies it. A
+// fetch is read-only, so it needs only the app credentials, not
+// pr_flow = "draft". Without them, or when originURL is not an https
+// URL on the app's own GitHub host, it returns task.ErrNoFetchAuth:
+// Env's credential helper answers any host, so the token must never
+// reach a fetch from GitLab, a mirror or another third party.
+func FetchEnv(ctx context.Context, projectRoot, originURL string, base []string) ([]string, error) {
+	cfg, err := LoadConfig(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AppID == 0 || cfg.InstallationID == 0 || cfg.PrivateKey == "" {
+		return nil, task.ErrNoFetchAuth
+	}
+	u, err := url.Parse(originURL)
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), cfg.GitHost()) {
+		return nil, task.ErrNoFetchAuth
+	}
+	tok, err := projectToken(ctx, projectRoot, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return Env(base, tok.Token), nil
+}
+
+func projectToken(ctx context.Context, projectRoot string, cfg Config) (Token, error) {
 	path, err := TokenCachePath(projectRoot)
 	if err != nil {
 		return Token{}, err
