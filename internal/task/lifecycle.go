@@ -55,6 +55,8 @@ func Ensure(tasksDir, slug string) (string, error) {
 // driver to own its worktree precondition instead of riding on
 // Ensure (which also spawns the worker session that the role-looped
 // task explicitly does not want).
+// ensureSession creates its worktree through here too, so both paths
+// read `base:` and copy .worktreeinclude the same way.
 func EnsureWorktree(tasksDir, slug string) (string, error) {
 	projectRoot, err := projectRootFromTasksDir(tasksDir)
 	if err != nil {
@@ -483,12 +485,9 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	worktree := filepath.Join(projectRoot, ".worktrees", slug)
-
-	if _, err := os.Stat(worktree); os.IsNotExist(err) {
-		if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
-			return "", err
-		}
+	worktree, err := EnsureWorktree(tasksDir, slug)
+	if err != nil {
+		return "", err
 	}
 
 	if external := meta.Session; external != "" && hasSession(external) {

@@ -394,3 +394,65 @@ func TestFetchCmd(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureWorktreeReadsBaseAndIncludes drives the entry point the
+// role loop and worker spawn share, so the frontmatter `base:` and
+// the .worktreeinclude copy stay wired to worktree creation.
+func TestEnsureWorktreeReadsBaseAndIncludes(t *testing.T) {
+	r := newBaseRepo(t)
+	want := r.push("feat", "stacked parent")
+	r.push("main", "default ahead")
+	writeFile(t, filepath.Join(r.root, ".gitignore"), ".env\n")
+	writeFile(t, filepath.Join(r.root, ".env"), "SECRET=1\n")
+	writeFile(t, filepath.Join(r.root, WorktreeIncludeFile), ".env\n")
+	tasksDir := filepath.Join(r.root, "tasks")
+	writeFile(t, filepath.Join(tasksDir, "x.md"), "---\nstatus: active\nslug: x\nbase: feat\n---\nbody\n")
+
+	worktree, err := EnsureWorktree(tasksDir, "x")
+	if err != nil {
+		t.Fatalf("EnsureWorktree: %v", err)
+	}
+	if got := r.rev("refs/heads/wt/x"); got != want {
+		t.Errorf("wt/x = %s, want origin/feat %s from the base: frontmatter", got, want)
+	}
+	if b, err := os.ReadFile(filepath.Join(worktree, ".env")); err != nil || string(b) != "SECRET=1\n" {
+		t.Errorf(".env in worktree = %q (%v), want the .worktreeinclude copy", b, err)
+	}
+}
+
+// TestLockWaitDoesNotEatFetchDeadline: a spawn that waited on another
+// fetch's lock still gives its own fetch the full deadline, so a slow
+// but answering origin is not remembered as a timeout.
+func TestLockWaitDoesNotEatFetchDeadline(t *testing.T) {
+	oldTimeout, oldDelay := fetchTimeout, fetchWaitDelay
+	fetchTimeout, fetchWaitDelay = 800*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { fetchTimeout, fetchWaitDelay = oldTimeout, oldDelay })
+	r := newBaseRepo(t)
+	slow := filepath.Join(t.TempDir(), "slow-ssh")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nsleep 0.1\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSH_COMMAND", slow)
+	runGit(t, r.root, "remote", "set-url", "origin", "ssh://example.invalid/repo.git")
+
+	f, err := os.OpenFile(filepath.Join(gitCommonDir(r.root), "spore-fetch.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	}()
+
+	_, warn := r.add("a", "")
+	if !strings.Contains(warn, "failed") {
+		t.Errorf("warn = %q, want the slow fetch's own failure, not a timeout", warn)
+	}
+	if _, ok := fetchMemo(gitCommonDir(r.root)); ok {
+		t.Error("lock wait plus a fast-enough fetch was remembered as a timeout")
+	}
+}

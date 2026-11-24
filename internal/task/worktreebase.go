@@ -163,15 +163,20 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 		fmt.Fprintf(warn, "spore: origin fetch timed out recently (retry after %s); forking from last-known %s\n", until.Format(time.TimeOnly), b)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
-	defer cancel()
-	unlock, err := lockFetch(ctx, key)
+	lockCtx, cancelLock := context.WithTimeout(context.Background(), fetchTimeout)
+	unlock, err := lockFetch(lockCtx, key)
+	cancelLock()
 	if err != nil {
 		fmt.Fprintf(warn, "spore: fetch origin %s: %v; forking from last-known %s\n", b, err, b)
 		return
 	}
 	defer unlock()
 
+	// The fetch gets its own deadline: time spent waiting on another
+	// process's lock must not turn a reachable origin into a
+	// remembered timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
 	out, err := fetchCmd(ctx, projectRoot, b).CombinedOutput()
 	switch fetchOutcome(err, ctx.Err()) {
 	case fetchOK:
