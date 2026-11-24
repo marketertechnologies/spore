@@ -289,7 +289,7 @@ tasks should never see a wrap-up signal.
 
 ## Claude Code Settings and Plugin
 
-The NixOS module writes spore's Claude Code hooks and `permissions.deny` to the managed settings drop-in `/etc/claude-code/managed-settings.d/50-spore.json` (`claudeManagedSettings.enable`, default true), rendered by `spore hooks settings --managed` with Nix-store command paths. Migration 004 then prunes the same entries from `~/.claude/settings.json` after a backup. Projects drop their duplicated Stop hooks with `spore hooks prune-settings --file .claude/settings.json`.
+The NixOS module writes spore's Claude Code hooks and `permissions.deny` to the managed settings drop-in `/etc/claude-code/managed-settings.d/50-spore.json` (`claudeManagedSettings.enable`, default true), rendered by `spore hooks settings --managed` with commands under `/run/current-system/sw`. It applies to every account on the host; the `block-bg-bash` guard and the `SendMessage` deny are not gated to spore sessions. Migration 004 then prunes the same entries from `~/.claude/settings.json` after a backup. Projects drop their duplicated Stop hooks with `spore hooks prune-settings --file .claude/settings.json`.
 
 The repo is also a Claude Code plugin marketplace carrying the spore skills:
 

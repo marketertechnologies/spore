@@ -437,14 +437,19 @@
                   machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
 
                   # Managed settings drop-in: rendered by the package's
-                  # own `hooks settings --managed`, hooks pinned to the
-                  # package and shims store paths, plugin marketplace
-                  # pointing at a store copy with manifests and skills.
+                  # own `hooks settings --managed`, hooks run through the
+                  # system profile (survives rebuild + GC under a live
+                  # session), plugin marketplace pointing at a store copy
+                  # with manifests and skills.
                   import json, re
                   managed = json.loads(machine.succeed(
                       "cat /etc/claude-code/managed-settings.d/50-spore.json"))["stub"]
-                  assert managed.startswith("--managed --spore /nix/store/"), managed
-                  assert "-spore-shims-" in managed and "/share/spore/hooks" in managed, managed
+                  assert managed.startswith(
+                      "--managed --spore /run/current-system/sw/bin/spore"
+                      " --hooks-dir /run/current-system/sw/share/spore/hooks"), managed
+                  machine.succeed("test -x /run/current-system/sw/bin/spore")
+                  for hook in ["block-bg-bash.pl", "load-state-md.pl"]:
+                      machine.succeed(f"test -x /run/current-system/sw/share/spore/hooks/{hook}")
                   market_match = re.search(r"--marketplace (\S+)", managed)
                   assert market_match is not None, managed
                   market = market_match.group(1)

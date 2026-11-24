@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -303,5 +304,48 @@ func TestPruneSettingsFile_SymlinkLeftAlone(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
 		t.Errorf("unexpected files: %v", entries)
+	}
+}
+
+func TestPruneSettingsFile_BackupNeverOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	if err := os.WriteFile(path, []byte(userSettingsFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, first, err := PruneSettingsFile(path, managedFixture(t), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"spore fleet replenish-hook"}]}]}}`
+	if err := os.WriteFile(path, []byte(second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, backup, err := PruneSettingsFile(path, managedFixture(t), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup != first+".1" {
+		t.Errorf("second backup = %q, want %q", backup, first+".1")
+	}
+	if b, _ := os.ReadFile(first); string(b) != userSettingsFixture {
+		t.Error("first backup overwritten")
+	}
+	if b, _ := os.ReadFile(backup); string(b) != second {
+		t.Error("second backup does not hold the second original")
+	}
+}
+
+func TestFilterManaged_DroppedSorted(t *testing.T) {
+	events := map[string][]HookBin{
+		"Stop":         {{BinPath: "spore worker token-monitor"}, {BinPath: "spore coordinator token-monitor"}},
+		"Notification": {{BinPath: "spore hooks notify-coordinator"}},
+	}
+	for i := 0; i < 20; i++ {
+		_, dropped := FilterManaged(events, managedFixture(t))
+		if !sort.StringsAreSorted(dropped) || len(dropped) != 3 {
+			t.Fatalf("dropped = %v", dropped)
+		}
 	}
 }

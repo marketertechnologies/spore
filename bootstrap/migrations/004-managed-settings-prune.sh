@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drop spore's hooks and permissions.deny from ~/.claude/settings.json
 # once the spore-fleet module's managed settings drop-in provides them,
-# so each hook runs once, from the Nix store copy.
+# so each hook runs once, from the system profile copy.
 #
 # Matching is by event, group matcher and command (program base name
 # plus arguments), so stale copies such as

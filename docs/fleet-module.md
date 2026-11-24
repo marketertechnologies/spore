@@ -127,7 +127,9 @@ When a project also ships a skill of the same name:
 - the host hooks: Notification `spore hooks notify-coordinator`, PreToolUse `block-bg-bash.pl`, SessionStart `load-state-md.pl`, and the four Stop hooks (`coordinator token-monitor`, `worker token-monitor`, `fleet replenish-hook`, `hooks watch-inbox`);
 - `permissions.deny: ["SendMessage"]`.
 
-Commands point at `services.spore-fleet.package` and `shimsPackage` in the Nix store, so every rebuild refreshes them. Nothing under `~/.claude/hooks/` is read any more.
+Commands run through the system profile: `/run/current-system/sw/bin/spore` and `/run/current-system/sw/share/spore/hooks/`. The option adds `services.spore-fleet.package` to `environment.systemPackages` and links `/share/spore/hooks` from `shimsPackage`, so every rebuild refreshes them. Store paths are avoided on purpose: Claude Code snapshots hooks at session start, and a coordinator that outlives a rebuild plus `nix-collect-garbage` would call deleted paths. Nothing under `~/.claude/hooks/` is read any more.
+
+Scope: the drop-in applies to every Claude Code session of every account on the host, and user or project settings cannot override it. The watch-inbox, token-monitor, replenish, notify-coordinator and load-state-md hooks no-op outside spore sessions, but the `block-bg-bash.pl` guard (denies `Bash` `run_in_background`) and the `SendMessage` deny hold for everyone. Set `claudeManagedSettings.enable = false` on hosts shared with non-spore Claude Code users who need either.
 
 The JSON comes from `spore hooks settings --managed` (`internal/hooks/hostsettings.go`, `HostEvents`). That is the one source: `bootstrap/handover/settings.json` (the file `spore infect` copies once) is pinned to it by `TestHandoverSettingsMatchHostEvents`, and the Codex Stop set shares the same list.
 

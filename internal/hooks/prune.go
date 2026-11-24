@@ -215,8 +215,8 @@ func PruneSettingsFile(path string, m ManagedSet, now time.Time) (removed []stri
 		return nil, "", nil
 	}
 	mode := linfo.Mode().Perm()
-	backup = path + ".spore-bak-" + now.UTC().Format("20060102T150405Z")
-	if err := os.WriteFile(backup, raw, mode); err != nil {
+	backup, err = writeBackup(path+".spore-bak-"+now.UTC().Format("20060102T150405Z"), raw, mode)
+	if err != nil {
 		return nil, "", fmt.Errorf("backup: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
@@ -239,4 +239,28 @@ func PruneSettingsFile(path string, m ManagedSet, now time.Time) (removed []stri
 		return nil, "", err
 	}
 	return removed, backup, nil
+}
+
+// writeBackup never overwrites: two prunes within one second would
+// otherwise replace the original with an already-pruned copy.
+func writeBackup(base string, raw []byte, mode os.FileMode) (string, error) {
+	for i := 0; i < 100; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s.%d", base, i)
+		}
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err := f.Write(raw); err != nil {
+			f.Close()
+			return "", err
+		}
+		return name, f.Close()
+	}
+	return "", fmt.Errorf("%s: no free backup name", base)
 }

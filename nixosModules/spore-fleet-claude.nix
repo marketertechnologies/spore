@@ -35,12 +35,13 @@ let
 
   # Rendered by the spore CLI (internal/hooks/hostsettings.go), the same
   # source bootstrap/handover/settings.json is tested against. Hook
-  # commands pin cfg.package and the shims package, so they track every
-  # rebuild instead of going stale under ~/.claude/hooks.
+  # commands go through the system profile, not store paths: Claude Code
+  # snapshots hooks at session start, and a coordinator that outlives a
+  # rebuild plus GC would otherwise call deleted store paths.
   managedSettings = pkgs.runCommand "spore-managed-settings.json" { } ''
     ${cfg.package}/bin/spore hooks settings --managed \
-      --spore ${cfg.package}/bin/spore \
-      --hooks-dir ${cfg.shimsPackage}/share/spore/hooks \
+      --spore /run/current-system/sw/bin/spore \
+      --hooks-dir /run/current-system/sw/share/spore/hooks \
       ${lib.optionalString cfg.claudeManagedSettings.plugin.enable "--marketplace ${claudeMarketplace}"} \
       > $out
   '';
@@ -66,10 +67,14 @@ in
         a Claude Code managed settings drop-in rendered by
         `spore hooks settings --managed`. It carries spore's
         Notification, PreToolUse, SessionStart and Stop hooks
-        (pointing at this package and the shims package in the
-        Nix store) and `permissions.deny`. Managed settings apply
-        to every Claude Code session on the host and sit above
-        user and project settings; hooks from all scopes still
+        (run through `/run/current-system/sw`, which also gets
+        this package and the shims' hook scripts) and
+        `permissions.deny`. Managed settings apply to every
+        Claude Code session of every account on the host and sit
+        above user and project settings: the `block-bg-bash.pl`
+        guard (no `Bash` `run_in_background`) and the
+        `SendMessage` deny hold everywhere, while the other hooks
+        no-op outside spore sessions. Hooks from all scopes still
         run, so migration 004 prunes the same entries from
         `~/.claude/settings.json`. Only takes effect with
         `services.spore-fleet.enable`.
@@ -99,6 +104,10 @@ in
 
     (lib.mkIf (cfg.enable && cfg.claudeManagedSettings.enable) {
       environment.etc."claude-code/managed-settings.d/50-spore.json".source = managedSettings;
+      # The drop-in's commands resolve here; shimsPackage is already a
+      # system package (spore-fleet.nix).
+      environment.systemPackages = [ cfg.package ];
+      environment.pathsToLink = [ "/share/spore/hooks" ];
     })
   ];
 }

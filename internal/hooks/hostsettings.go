@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -177,5 +178,6 @@ func FilterManaged(events map[string][]HookBin, m ManagedSet) (map[string][]Hook
 			out[event] = append(out[event], b)
 		}
 	}
+	sort.Strings(dropped)
 	return out, dropped
 }
