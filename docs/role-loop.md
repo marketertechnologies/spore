@@ -275,7 +275,7 @@ instead of a prompt instruction:
 
 ```toml
 [fleet.roles.engineer]
-check = "just check"            # or bin/ci-local-quick; unset = gate off
+check = "just check"            # or a diff-scoped script such as bin/ci-local; unset = gate off
 check_timeout_seconds = 900     # default 900
 ```
 

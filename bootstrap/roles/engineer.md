@@ -185,7 +185,7 @@ as a `followups` entry proposing a separate PR.
 ## The check gate
 
 When the project sets `[fleet.roles.engineer] check` in `spore.toml`
-(for example `just check` or `bin/ci-local-quick`), spore enforces it.
+(for example `just check` or `bin/ci-local`), spore enforces it.
 After you write a response, your Stop hook (`spore hooks
 engineer-check`) runs that command in the worktree when you end your
 turn. If it fails, your stop is blocked and you get the command, its
