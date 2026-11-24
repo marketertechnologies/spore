@@ -91,7 +91,7 @@ func forkPoint(projectRoot, base string, warn io.Writer) string {
 	if LoadWorktreeBase(projectRoot, warn) == WorktreeBaseHead {
 		return ""
 	}
-	b := strings.TrimSpace(base)
+	b := normalizeBase(base)
 	if b == "" {
 		b = defaultBaseBranch(projectRoot)
 	}
@@ -105,6 +105,19 @@ func forkPoint(projectRoot, base string, warn io.Writer) string {
 	}
 	fetchBase(projectRoot, b, warn)
 	return pickStart(projectRoot, b, warn)
+}
+
+// normalizeBase turns the common ways of writing a branch in
+// `base:` (origin/main, refs/heads/main, refs/remotes/origin/main)
+// into the bare branch name the fork and merge logic compare.
+func normalizeBase(base string) string {
+	b := strings.TrimSpace(base)
+	for _, prefix := range []string{"refs/heads/", "refs/remotes/origin/", "origin/"} {
+		if rest, ok := strings.CutPrefix(b, prefix); ok {
+			return rest
+		}
+	}
+	return b
 }
 
 // defaultBaseBranch is origin/HEAD's branch, else main, else master
@@ -172,7 +185,9 @@ func pickStart(projectRoot, b string, warn io.Writer) string {
 // deadline. Every failure warns once and returns; pickStart then
 // falls back to the refs already present.
 func fetchBase(projectRoot, b string, warn io.Writer) {
-	if gitCmd(projectRoot, "remote", "get-url", "origin").Run() != nil {
+	urlOut, err := gitCmd(projectRoot, "config", "--get", "remote.origin.url").Output()
+	originURL := strings.TrimSpace(string(urlOut))
+	if err != nil || originURL == "" {
 		fmt.Fprintf(warn, "spore: no origin remote; forking from last-known %s\n", b)
 		return
 	}
@@ -181,7 +196,7 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 		fmt.Fprintf(warn, "spore: origin fetch timed out recently (retry after %s); forking from last-known %s\n", until.Format(time.TimeOnly), b)
 		return
 	}
-	env, authErr := fetchAuthEnv(projectRoot)
+	env, authErr := fetchAuthEnv(projectRoot, originURL)
 	authNote := ""
 	if authErr != nil {
 		authNote = fmt.Sprintf(" (GitHub App token unavailable: %v; fetched without it)", authErr)
@@ -202,6 +217,18 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	out, err := runFetchCmd(fetchCmd(ctx, projectRoot, b, env))
+	if env != nil && fetchOutcome(err, ctx.Err()) == fetchFailed {
+		// The app may not cover this repo (or origin is not GitHub),
+		// and the token env cleared the operator's own credential
+		// helper: retry plainly inside the same deadline.
+		authFail := lastLine(out)
+		authNote = fmt.Sprintf(" (with the GitHub App token it failed too: %s)", authFail)
+		out, err = runFetchCmd(fetchCmd(ctx, projectRoot, b, nil))
+		if err == nil {
+			fmt.Fprintf(warn, "spore: fetch origin %s failed with the GitHub App token (%s); a plain fetch worked\n", b, authFail)
+			return
+		}
+	}
 	switch fetchOutcome(err, ctx.Err()) {
 	case fetchOK:
 		if authErr != nil {
@@ -217,15 +244,11 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 
 // fetchAuthEnv returns the authenticated fetch env, or nil for a
 // plain fetch: no provider, a non-https origin (the token cannot
-// help an ssh fetch), or no credentials configured. The origin URL
-// is read raw from config, as `spore gh exec` does. A provider error
+// help an ssh fetch), or no credentials configured. originURL is
+// read raw from config, as `spore gh exec` does. A provider error
 // (a failed mint) is returned for the caller's single warning.
-func fetchAuthEnv(projectRoot string) ([]string, error) {
-	if fetchAuth == nil {
-		return nil, nil
-	}
-	out, err := gitCmd(projectRoot, "config", "--get", "remote.origin.url").Output()
-	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "https://") {
+func fetchAuthEnv(projectRoot, originURL string) ([]string, error) {
+	if fetchAuth == nil || !strings.HasPrefix(originURL, "https://") {
 		return nil, nil
 	}
 	base := plainFetchEnv(projectRoot)

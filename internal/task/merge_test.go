@@ -606,6 +606,21 @@ func TestMergeRefusesNonMainForkBase(t *testing.T) {
 		})
 	}
 
+	t.Run("base: origin/main", func(t *testing.T) {
+		repo, taskPath := setupGateRepo(t, "demo", "")
+		raw, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.Replace(string(raw), "title: Demo\n", "title: Demo\nbase: origin/main\n", 1)
+		if err := os.WriteFile(taskPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := Merge(filepath.Join(repo, "tasks"), "demo"); err != nil {
+			t.Fatalf("Merge with base: origin/main: %v", err)
+		}
+	})
+
 	t.Run("opt-out", func(t *testing.T) {
 		repo, _ := setupGateRepo(t, "demo", "")
 		runGit(t, repo, "update-ref", "refs/remotes/origin/develop", "main")

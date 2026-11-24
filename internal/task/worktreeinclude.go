@@ -72,7 +72,14 @@ func trimTrailingSpaces(line string) string {
 // ignored. rel is slash-separated and relative to the project root.
 // The last matching pattern wins.
 func includeMatch(pats []includePattern, rel string, isDir bool) bool {
-	matched := false
+	matched, _ := includeState(pats, rel, isDir)
+	return matched
+}
+
+// includeState is includeMatch plus whether any pattern matched rel
+// at all; an entry inside a copied directory no pattern names keeps
+// its parent's state.
+func includeState(pats []includePattern, rel string, isDir bool) (matched, any bool) {
 	for _, p := range pats {
 		if p.dirOnly && !isDir {
 			continue
@@ -82,10 +89,10 @@ func includeMatch(pats []includePattern, rel string, isDir bool) bool {
 			subject = path.Base(rel)
 		}
 		if ok, _ := path.Match(p.glob, subject); ok {
-			matched = !p.negate
+			matched, any = !p.negate, true
 		}
 	}
-	return matched
+	return matched, any
 }
 
 // copyWorktreeInclude copies the ignored entries of projectRoot that
@@ -113,6 +120,7 @@ func copyWorktreeInclude(projectRoot, worktree string, warn io.Writer) {
 		fmt.Fprintf(warn, "spore: %s: %v\n", WorktreeIncludeFile, err)
 		return
 	}
+	c.pats = pats
 	// git lists entries sorted, so a copied directory precedes the
 	// entries under it, which its walk already covered.
 	var copiedDir string
@@ -142,6 +150,9 @@ type includeCopier struct {
 	src, dst         string
 	srcReal, dstReal string
 	warn             io.Writer
+	// pats re-applies .worktreeinclude inside a copied directory, so
+	// a later `!dir/secret` still excludes that file (last match wins).
+	pats []includePattern
 }
 
 func newIncludeCopier(projectRoot, worktree string, warn io.Writer) (*includeCopier, error) {
@@ -157,8 +168,10 @@ func newIncludeCopier(projectRoot, worktree string, warn io.Writer) (*includeCop
 }
 
 // copyTree copies rel (a file, symlink or directory) without
-// following symlinks while walking.
+// following symlinks while walking. rel itself matched; each entry
+// below it is included unless a pattern naming it says otherwise.
 func (c *includeCopier) copyTree(rel string) {
+	included := map[string]bool{rel: true}
 	err := filepath.WalkDir(filepath.Join(c.src, rel), func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -167,10 +180,20 @@ func (c *includeCopier) copyTree(rel string) {
 		if err != nil {
 			return err
 		}
+		inc := true
+		if r != rel {
+			inc = included[filepath.Dir(r)]
+			if m, any := includeState(c.pats, filepath.ToSlash(r), d.IsDir()); any {
+				inc = m
+			}
+		}
 		if d.IsDir() {
+			included[r] = inc
 			return nil
 		}
-		c.copyEntry(r, d.Type())
+		if inc {
+			c.copyEntry(r, d.Type())
+		}
 		return nil
 	})
 	if err != nil {

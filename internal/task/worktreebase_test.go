@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -623,5 +624,96 @@ func TestBaseFetchFallsBackToPlainFetch(t *testing.T) {
 				t.Errorf("failed-fetch warning drops the mint error: %q", warn)
 			}
 		})
+	}
+}
+
+func TestEnsureWorktreeExistingSkipsMeta(t *testing.T) {
+	r := newBaseRepo(t)
+	tasksDir := filepath.Join(r.root, "tasks")
+	writeFile(t, filepath.Join(tasksDir, "x.md"), "---\nstatus: active\nslug: x\n")
+	if _, err := readTaskMeta(tasksDir, "x"); err == nil {
+		t.Fatal("fixture: frontmatter parses; want a half-written one")
+	}
+	want := filepath.Join(r.root, ".worktrees", "x")
+	if err := os.MkdirAll(want, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := EnsureWorktree(tasksDir, "x")
+	if err != nil || got != want {
+		t.Fatalf("EnsureWorktree = %q, %v; want the existing %q", got, err, want)
+	}
+}
+
+// TestAddWorktreeCopiesIncludesBeforeBrief: a later Ensure skips an
+// existing worktree, so a failed brief copy must not lose the includes.
+func TestAddWorktreeCopiesIncludesBeforeBrief(t *testing.T) {
+	r := newBaseRepo(t)
+	writeFile(t, filepath.Join(r.root, ".gitignore"), ".env\n")
+	writeFile(t, filepath.Join(r.root, ".env"), "SECRET=1\n")
+	writeFile(t, filepath.Join(r.root, WorktreeIncludeFile), ".env\n")
+	tasksDir := filepath.Join(r.root, "tasks")
+	if err := os.MkdirAll(filepath.Join(tasksDir, "x.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := addWorktree(tasksDir, r.root, "x", "", io.Discard); err == nil {
+		t.Fatal("addWorktree: want the brief copy to fail")
+	}
+	if !exists(filepath.Join(r.root, ".worktrees", "x", ".env")) {
+		t.Error(".worktreeinclude files not copied when the brief copy failed")
+	}
+}
+
+// TestBaseFetchRetriesPlainAfterAuthFailure: an app installation that
+// does not cover origin must not cost the operator's own credentials.
+func TestBaseFetchRetriesPlainAfterAuthFailure(t *testing.T) {
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "")
+	for _, plainWorks := range []bool{true, false} {
+		r := newBaseRepo(t)
+		target := r.origin
+		if !plainWorks {
+			target = filepath.Join(t.TempDir(), "missing.git")
+		}
+		r.setOrigin("https://github.invalid/o/r.git", target)
+		want := r.push("main", "ahead on origin")
+		// The token env refuses the local transport, standing in for an
+		// app that cannot read this repo.
+		SetFetchAuth(func(ctx context.Context, projectRoot string, base []string) ([]string, error) {
+			return append(append([]string{}, base...), "GH_TOKEN="+fakeFetchToken,
+				"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=protocol.file.allow", "GIT_CONFIG_VALUE_0=never"), nil
+		})
+		t.Cleanup(func() { SetFetchAuth(nil) })
+		cmds := captureFetch(t)
+
+		got, warn := r.add("retry", "")
+		if len(*cmds) != 2 || !envHas((*cmds)[0], "GH_TOKEN="+fakeFetchToken) || envHas((*cmds)[1], "GH_TOKEN="+fakeFetchToken) {
+			t.Fatalf("plainWorks=%v: want an authenticated fetch then a plain one, got %d fetches", plainWorks, len(*cmds))
+		}
+		if strings.Count(warn, "\n") != 1 || !strings.Contains(warn, "GitHub App token") {
+			t.Errorf("plainWorks=%v: warnings = %q, want one naming the token failure", plainWorks, warn)
+		}
+		if plainWorks && got != want {
+			t.Errorf("forked from %s, want the plainly fetched %s", got, want)
+		}
+	}
+}
+
+func TestBaseNormalized(t *testing.T) {
+	for in, want := range map[string]string{
+		" feat ":                   "feat",
+		"origin/feat":              "feat",
+		"refs/heads/feat":          "feat",
+		"refs/remotes/origin/feat": "feat",
+		"feat/origin/x":            "feat/origin/x",
+		"":                         "",
+	} {
+		if got := normalizeBase(in); got != want {
+			t.Errorf("normalizeBase(%q) = %q, want %q", in, got, want)
+		}
+	}
+	r := newBaseRepo(t)
+	want := r.push("feat", "stacked parent")
+	if got, warn := r.add("norm", "origin/feat"); got != want || warn != "" {
+		t.Errorf("base: origin/feat forked from %s (warn %q), want origin/feat %s", got, warn, want)
 	}
 }

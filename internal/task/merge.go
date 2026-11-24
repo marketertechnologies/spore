@@ -126,7 +126,7 @@ func requireMainBase(tasksDir, projectRoot, slug string) error {
 	if err != nil {
 		return err
 	}
-	base := strings.TrimSpace(meta.Extra["base"])
+	base := normalizeBase(meta.Extra["base"])
 	if base == "" {
 		base = defaultBaseBranch(projectRoot)
 	}

@@ -224,3 +224,30 @@ func TestIncludeMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestWorktreeIncludeNegationInsideCopiedDir keeps last-match-wins
+// for entries inside a directory that is copied whole.
+func TestWorktreeIncludeNegationInsideCopiedDir(t *testing.T) {
+	root := includeRepo(t)
+	writeFile(t, filepath.Join(root, "secrets", "dev.key"), "dev\n")
+	writeFile(t, filepath.Join(root, "secrets", "prod.key"), "prod\n")
+	writeFile(t, filepath.Join(root, "secrets", "old", "a.key"), "a\n")
+	writeFile(t, filepath.Join(root, "secrets", "old", "keep.txt"), "k\n")
+	writeFile(t, filepath.Join(root, "secrets", "x.log"), "log\n")
+	wt := filepath.Join(t.TempDir(), "wt")
+
+	if warn := runInclude(t, root, wt, "secrets/\n!secrets/prod.key\n!secrets/old/\nsecrets/old/keep.txt\n!*.log\n"); warn != "" {
+		t.Errorf("unexpected warning: %q", warn)
+	}
+	for rel, want := range map[string]bool{
+		"secrets/dev.key":      true,
+		"secrets/prod.key":     false,
+		"secrets/old/a.key":    false,
+		"secrets/old/keep.txt": true,
+		"secrets/x.log":        false,
+	} {
+		if got := exists(filepath.Join(wt, filepath.FromSlash(rel))); got != want {
+			t.Errorf("%s copied = %v, want %v", rel, got, want)
+		}
+	}
+}

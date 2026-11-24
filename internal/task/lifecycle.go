@@ -60,6 +60,11 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// An existing worktree needs no meta: a half-edited frontmatter
+	// must not break the role driver's per-tick call.
+	if wt, ok, err := existingWorktree(projectRoot, slug); err != nil || ok {
+		return wt, err
+	}
 	meta, err := readTaskMeta(tasksDir, slug)
 	if err != nil {
 		return "", err
@@ -67,15 +72,23 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	return ensureWorktree(tasksDir, projectRoot, slug, meta)
 }
 
+func existingWorktree(projectRoot, slug string) (string, bool, error) {
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	if _, err := os.Stat(worktree); err == nil {
+		return worktree, true, nil
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	return worktree, false, nil
+}
+
 // ensureWorktree is EnsureWorktree for callers that already hold the
 // project root and task meta; ensureSession goes through here too, so
 // both paths read `base:` and copy .worktreeinclude the same way.
 func ensureWorktree(tasksDir, projectRoot, slug string, meta frontmatter.Meta) (string, error) {
-	worktree := filepath.Join(projectRoot, ".worktrees", slug)
-	if _, err := os.Stat(worktree); err == nil {
-		return worktree, nil
-	} else if !os.IsNotExist(err) {
-		return "", err
+	worktree, ok, err := existingWorktree(projectRoot, slug)
+	if err != nil || ok {
+		return worktree, err
 	}
 	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
 		return "", err
@@ -85,8 +98,8 @@ func ensureWorktree(tasksDir, projectRoot, slug string, meta frontmatter.Meta) (
 
 // addWorktree creates <projectRoot>/.worktrees/<slug> on wt/<slug>.
 // An existing branch is checked out as it is; a new one is created
-// --no-track from forkPoint. Then the brief and the
-// .worktreeinclude files are copied in.
+// --no-track from forkPoint. Then the .worktreeinclude files and the
+// brief are copied in.
 func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error {
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 	branch := "wt/" + slug
@@ -102,12 +115,14 @@ func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error
 	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	// Includes go first: a later Ensure sees the worktree and returns,
+	// so a failed brief copy must not leave them uncopied for good.
+	copyWorktreeInclude(projectRoot, worktree, warn)
 	// The brief may not be committed on the fork point (Start rewrites
 	// it just before this call), so headless workers get a copy.
 	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
 		return fmt.Errorf("copy brief: %w", err)
 	}
-	copyWorktreeInclude(projectRoot, worktree, warn)
 	return nil
 }
 
@@ -717,7 +732,7 @@ func copyBriefToWorktree(tasksDir, worktree, slug string) error {
 }
 
 func branchExists(projectRoot, branch string) bool {
-	return gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+	return refExists(projectRoot, "refs/heads/"+branch)
 }
 
 // slugServicesDir returns the per-slug services state dir:
