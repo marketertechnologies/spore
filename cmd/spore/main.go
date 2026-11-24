@@ -200,7 +200,7 @@ func runCompose(args []string) error {
 	consumer := fs.String("consumer", "", "consumer name (file under <rules>/consumers/<name>.txt)")
 	rulesDir := fs.String("rules", "rules", "rule pool directory")
 	write := fs.Bool("write", false, "write the targets and .claude/rules files under --root and delete stale generated rule files, instead of printing the root body")
-	outRoot := fs.String("root", ".", "project root the --write outputs are relative to")
+	outRoot := fs.String("root", ".", "project root: predicates (rails, align) read it, and --write outputs land under it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func runCompose(args []string) error {
 	}
 
 	consumerPath := filepath.Join(*rulesDir, "consumers", *consumer+".txt")
-	root, err := os.Getwd()
+	root, err := filepath.Abs(*outRoot)
 	if err != nil {
 		return err
 	}

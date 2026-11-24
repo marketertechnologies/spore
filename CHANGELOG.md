@@ -16,7 +16,10 @@
     stale generated rule files; it removes only files that carry the
     marker, never hand-written rules or symlinks. Plain `spore compose`
     still prints the root body to stdout and notes on stderr when it
-    left path-scoped rules out. Codex does not read `.claude/rules/`,
+    left path-scoped rules out. `--root <dir>` (default `.`) sets
+    where `--write` lands and where the `rails` / `align` predicates
+    are read, so composing for another checkout matches what its
+    `claude-drift` lint expects. Codex does not read `.claude/rules/`,
     so those fragments are Claude-only.
   - **Mirror mode.** A consumer file may set `# mirror: copy|import`.
     `copy` (default) is today's behaviour: identical `CLAUDE.md` and
