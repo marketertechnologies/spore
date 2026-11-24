@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/sporetoml"
@@ -80,30 +81,40 @@ func addTaskWorktree(projectRoot, worktree, branch, base string) error {
 // fetchTimeout bounds the base fetch; a var so tests can shorten it.
 var fetchTimeout = 30 * time.Second
 
-// fetchMemoTTL lets spawns in one reconcile pass share a fetch instead
-// of racing each other on the remote-tracking ref lock.
+// fetchMemoTTL lets spawns in one reconcile pass share a fetch result,
+// success or failure, instead of racing on the remote-tracking ref lock
+// or each waiting out their own timeout against a dead remote.
 const fetchMemoTTL = 30 * time.Second
 
+type fetchMemo struct {
+	mu  sync.Mutex
+	at  time.Time
+	err error
+}
+
 var (
-	fetchMu   sync.Mutex
-	fetchedAt = map[string]time.Time{}
+	fetchMemosMu sync.Mutex
+	fetchMemos   = map[string]*fetchMemo{}
 )
 
-// startPoint picks the commit a new task branch forks from. It returns
-// "origin/<b>" after fetching it, where <b> is base or origin's default
-// branch, unless the local <b> has commits origin lacks (unpushed
-// drift or operator commits a later ff-only merge needs), in which
-// case it returns <b>. With the "head" opt-out, no origin remote, or a
-// failed fetch it returns base when that branch exists locally, else ""
-// (HEAD). Never errors: a spawn must not fail on the fetch.
+// startPoint picks the fully qualified ref a new task branch forks
+// from. It returns refs/remotes/origin/<b> after fetching it, where <b>
+// is base or origin's default branch. For the default branch only, a
+// local <b> with commits origin lacks (unpushed drift or operator
+// commits a later ff-only merge needs) wins and refs/heads/<b> is
+// returned; a stacked base: always follows origin, since its parent may
+// have been rebased and force-pushed. With the "head" opt-out, no
+// origin remote, or a failed fetch it returns refs/heads/<base> when
+// base exists locally, else "" (HEAD). Never errors: a spawn must not
+// fail on the fetch.
 func startPoint(projectRoot, base string) string {
 	fallback := ""
 	if base != "" && branchExists(projectRoot, base) {
-		fallback = base
+		fallback = "refs/heads/" + base
 	}
 	fallbackName := "HEAD"
 	if fallback != "" {
-		fallbackName = fallback
+		fallbackName = base
 	}
 	if LoadWorktreeBase(projectRoot) == WorktreeBaseHead {
 		return fallback
@@ -116,39 +127,57 @@ func startPoint(projectRoot, base string) string {
 	if def == "" {
 		def = remoteDefaultBranch(projectRoot)
 	}
-	if err := fetchBase(projectRoot, def); err != nil {
-		fmt.Fprintf(os.Stderr, "spore: worktree base: git fetch origin %s failed, branching from %s: %v\n", def, fallbackName, err)
+	if cached, err := fetchBase(projectRoot, def); err != nil {
+		if !cached {
+			fmt.Fprintf(os.Stderr, "spore: worktree base: git fetch origin %s failed, branching from %s: %v\n", def, fallbackName, err)
+		}
 		return fallback
 	}
-	if branchExists(projectRoot, def) &&
-		gitCmd(projectRoot, "merge-base", "--is-ancestor", "refs/heads/"+def, "refs/remotes/origin/"+def).Run() != nil {
-		return def
+	local, remote := "refs/heads/"+def, "refs/remotes/origin/"+def
+	if base == "" && branchExists(projectRoot, def) &&
+		gitCmd(projectRoot, "merge-base", "--is-ancestor", local, remote).Run() != nil {
+		return local
 	}
-	return "origin/" + def
+	return remote
 }
 
 // fetchBase updates refs/remotes/origin/<def> with an explicit refspec,
 // so a narrow remote.origin.fetch cannot leave a stale ref behind. It
-// runs under a deadline with ssh in batch mode (unless the operator set
-// their own ssh command) and no credential prompt, so an unreachable or
-// interactive remote cannot hang a spawn.
-func fetchBase(projectRoot, def string) error {
-	fetchMu.Lock()
-	defer fetchMu.Unlock()
+// runs under a deadline in its own process group (killed whole on
+// timeout, so ssh does not linger) with no credential prompt and, unless
+// the operator configured ssh, ssh in batch mode. The result is reused
+// for fetchMemoTTL; cached reports a reused failure so the caller warns
+// once per window. Fetches for different projects or branches do not
+// wait on each other.
+func fetchBase(projectRoot, def string) (cached bool, err error) {
 	key := projectRoot + "\x00" + def
-	if t, ok := fetchedAt[key]; ok && time.Since(t) < fetchMemoTTL {
-		return nil
+	fetchMemosMu.Lock()
+	m := fetchMemos[key]
+	if m == nil {
+		m = &fetchMemo{}
+		fetchMemos[key] = m
 	}
+	fetchMemosMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.at.IsZero() && time.Since(m.at) < fetchMemoTTL {
+		return true, m.err
+	}
+	m.err = runFetch(projectRoot, def)
+	m.at = time.Now()
+	return false, m.err
+}
+
+func runFetch(projectRoot, def string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	refspec := "+refs/heads/" + def + ":refs/remotes/origin/" + def
 	cmd := gitCmd(projectRoot, "fetch", "--quiet", "--no-tags", "origin", refspec)
 	fetch := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	fetch.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	fetch.Cancel = func() error { return syscall.Kill(-fetch.Process.Pid, syscall.SIGKILL) }
 	fetch.WaitDelay = time.Second
-	fetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if os.Getenv("GIT_SSH_COMMAND") == "" && gitCmd(projectRoot, "config", "--get", "core.sshCommand").Run() != nil {
-		fetch.Env = append(fetch.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
-	}
+	fetch.Env = fetchEnv(projectRoot)
 	out, err := fetch.CombinedOutput()
 	if ctx.Err() != nil {
 		return fmt.Errorf("timed out after %s", fetchTimeout)
@@ -156,8 +185,19 @@ func fetchBase(projectRoot, def string) error {
 	if err != nil {
 		return errors.New(firstLine(strings.TrimSpace(string(out)), err))
 	}
-	fetchedAt[key] = time.Now()
 	return nil
+}
+
+// fetchEnv disables credential prompts and puts ssh in batch mode,
+// unless the operator routes ssh through GIT_SSH_COMMAND, GIT_SSH or
+// core.sshCommand, which an injected GIT_SSH_COMMAND would override.
+func fetchEnv(projectRoot string) []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" &&
+		gitCmd(projectRoot, "config", "--get", "core.sshCommand").Run() != nil {
+		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+	}
+	return env
 }
 
 // remoteDefaultBranch resolves origin's default branch from
@@ -422,7 +462,7 @@ func copyPath(projectRoot, worktree, rel string) error {
 			if err != nil {
 				return err
 			}
-			return os.Symlink(retargetLink(projectRoot, worktree, link), target)
+			return os.Symlink(retargetLink(projectRoot, worktree, path, link), target)
 		}
 		if !info.Mode().IsRegular() {
 			return nil
@@ -431,16 +471,40 @@ func copyPath(projectRoot, worktree, rel string) error {
 	})
 }
 
-func retargetLink(projectRoot, worktree, link string) string {
+// retargetLink rewrites a symlink copied from srcPath. An absolute
+// target inside the main checkout (matched on both the given and the
+// symlink-resolved root) moves to the same path under worktree. A
+// relative target that escapes the project root is made absolute,
+// since the worktree sits deeper and the relative climb would land
+// elsewhere. Everything else is kept verbatim.
+func retargetLink(projectRoot, worktree, srcPath, link string) string {
+	roots := []string{}
+	if abs, err := filepath.Abs(projectRoot); err == nil {
+		roots = append(roots, abs)
+		if real, err := filepath.EvalSymlinks(abs); err == nil && real != abs {
+			roots = append(roots, real)
+		}
+	}
+	under := func(target string) (string, bool) {
+		for _, r := range roots {
+			rel, err := filepath.Rel(r, target)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+				return rel, true
+			}
+		}
+		return "", false
+	}
 	if !filepath.IsAbs(link) {
+		target := filepath.Clean(filepath.Join(filepath.Dir(srcPath), link))
+		if abs, err := filepath.Abs(target); err == nil {
+			if _, ok := under(abs); !ok {
+				return abs
+			}
+		}
 		return link
 	}
-	root, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return link
-	}
-	rel, err := filepath.Rel(root, filepath.Clean(link))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+	rel, ok := under(filepath.Clean(link))
+	if !ok {
 		return link
 	}
 	wt, err := filepath.Abs(worktree)

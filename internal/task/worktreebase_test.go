@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -301,8 +303,8 @@ func TestWorktreeFetchTimeout(t *testing.T) {
 
 func TestWorktreeFetchMemoized(t *testing.T) {
 	repo, _, originHead := newBaseRepo(t)
-	if got := startPoint(repo, ""); got != "origin/main" {
-		t.Fatalf("startPoint = %q, want origin/main", got)
+	if got := startPoint(repo, ""); got != "refs/remotes/origin/main" {
+		t.Fatalf("startPoint = %q, want refs/remotes/origin/main", got)
 	}
 	runGit(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
 	stderr := captureStderr(t, func() { ensureDemo(t, repo) })
@@ -365,5 +367,161 @@ func TestWorktreeIncludeRetargetsAbsoluteSymlink(t *testing.T) {
 	}
 	if want := filepath.Join(wt, "real.env"); link != want {
 		t.Errorf(".env -> %s, want %s", link, want)
+	}
+}
+
+func shortFetchTimeout(t *testing.T) {
+	t.Helper()
+	old := fetchTimeout
+	fetchTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { fetchTimeout = old })
+}
+
+func TestWorktreeFetchFailureMemoized(t *testing.T) {
+	repo, localHead, _ := newBaseRepo(t)
+	runGit(t, repo, "config", "protocol.ext.allow", "always")
+	runGit(t, repo, "remote", "set-url", "origin", "ext::sh -c sleep% 30")
+	shortFetchTimeout(t)
+	tasks := filepath.Join(repo, "tasks")
+	var second time.Duration
+	stderr := captureStderr(t, func() {
+		if _, err := EnsureWorktree(tasks, "one"); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if _, err := EnsureWorktree(tasks, "two"); err != nil {
+			t.Fatal(err)
+		}
+		second = time.Since(start)
+	})
+	if n := strings.Count(stderr, "failed"); n != 1 {
+		t.Errorf("stderr has %d fetch warnings, want 1: %q", n, stderr)
+	}
+	if second >= fetchTimeout {
+		t.Errorf("second spawn took %s, want the cached failure (< %s)", second, fetchTimeout)
+	}
+	if got := gitOutput(t, repo, "rev-parse", "wt/two"); got != localHead {
+		t.Errorf("wt/two = %s, want local HEAD %s", got, localHead)
+	}
+}
+
+func TestFetchBaseLocksPerKey(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	hung, _, _ := newBaseRepo(t)
+	runGit(t, hung, "config", "protocol.ext.allow", "always")
+	runGit(t, hung, "remote", "set-url", "origin", "ext::sh -c sleep% 30")
+	old := fetchTimeout
+	fetchTimeout = 3 * time.Second
+	t.Cleanup(func() { fetchTimeout = old })
+	hungDone := make(chan struct{})
+	go func() { _, _ = fetchBase(hung, "main"); close(hungDone) }()
+	time.Sleep(300 * time.Millisecond)
+	start := time.Now()
+	if _, err := fetchBase(repo, "main"); err != nil {
+		t.Errorf("fetchBase: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("fetchBase took %s, want it not to wait on another project's hung fetch", d)
+	}
+	<-hungDone
+}
+
+func TestFetchTimeoutKillsProcessGroup(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := filepath.Join(dir, "remote.sh")
+	body := "#!/bin/sh\necho $$ > " + pidFile + "\nexec sleep 30\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "config", "protocol.ext.allow", "always")
+	runGit(t, repo, "remote", "set-url", "origin", "ext::"+script)
+	shortFetchTimeout(t)
+	if err := runFetch(repo, "main"); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("runFetch = %v, want timeout", err)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("remote helper never ran: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("remote helper pid %d outlived the fetch timeout", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestFetchEnvRespectsGitSSH(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "/usr/local/bin/ssh-wrapper")
+	for _, e := range fetchEnv(repo) {
+		if strings.HasPrefix(e, "GIT_SSH_COMMAND=ssh") {
+			t.Errorf("fetchEnv injected %q despite GIT_SSH", e)
+		}
+	}
+	t.Setenv("GIT_SSH", "")
+	found := false
+	for _, e := range fetchEnv(repo) {
+		found = found || e == "GIT_SSH_COMMAND=ssh -o BatchMode=yes"
+	}
+	if !found {
+		t.Error("fetchEnv without operator ssh config: want batch-mode GIT_SSH_COMMAND")
+	}
+}
+
+func TestWorktreeFreshBaseIgnoresShadowingRefs(t *testing.T) {
+	repo, localHead, originHead := newBaseRepo(t)
+	runGit(t, repo, "branch", "origin/main", localHead)
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != originHead {
+		t.Errorf("wt/demo = %s, want refs/remotes/origin/main %s (not local branch origin/main)", got, originHead)
+	}
+}
+
+func TestWorktreeStackedBaseFollowsRebasedOrigin(t *testing.T) {
+	repo, _, _ := newBaseRepo(t)
+	stale := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "pre-rebase")
+	rebased := gitOutput(t, repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "rebased")
+	runGit(t, repo, "branch", "stack", stale)
+	runGit(t, repo, "push", "-q", "origin", rebased+":refs/heads/stack")
+	writeRepoFile(t, repo, "tasks/demo.md", "---\nstatus: active\nbase: stack\n---\n\nbody\n")
+	ensureDemo(t, repo)
+	if got := gitOutput(t, repo, "rev-parse", "wt/demo"); got != rebased {
+		t.Errorf("wt/demo = %s, want rebased origin/stack %s (stale local %s)", got, rebased, stale)
+	}
+}
+
+func TestRetargetLink(t *testing.T) {
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(tmp, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(alias, ".worktrees", "demo")
+	src := filepath.Join(alias, ".env")
+	cases := []struct{ name, link, want string }{
+		{"absolute via given root", filepath.Join(alias, "real.env"), filepath.Join(wt, "real.env")},
+		{"absolute via resolved root", filepath.Join(real, "real.env"), filepath.Join(wt, "real.env")},
+		{"absolute outside root", "/etc/hosts", "/etc/hosts"},
+		{"relative inside root", "config/real.env", "config/real.env"},
+		{"relative escaping root", "../shared/x", filepath.Join(tmp, "shared", "x")},
+	}
+	for _, c := range cases {
+		if got := retargetLink(alias, wt, src, c.link); got != c.want {
+			t.Errorf("%s: retargetLink(%q) = %q, want %q", c.name, c.link, got, c.want)
+		}
 	}
 }

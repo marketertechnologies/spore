@@ -250,7 +250,7 @@ codex on the brief directly.
 
 ## Worktree Base
 
-A new `wt/<slug>` branch starts from a freshly fetched `origin/<b>`, not from whatever the main checkout has checked out. `<b>` is the task's `base:` frontmatter, else origin's default branch (`origin/HEAD`, else `main`, else `master`); a local `<b>` with unpushed commits wins. With no `origin` remote or a failed fetch, spore warns on stderr and branches from the local `base:` branch or `HEAD`; an existing branch is reused as is. Opt out per project:
+A new `wt/<slug>` branch starts from a freshly fetched `origin/<b>`, not from whatever the main checkout has checked out. `<b>` is the task's `base:` frontmatter, else origin's default branch (`origin/HEAD`, else `main`, else `master`); a local default branch with unpushed commits wins. With no `origin` remote or a failed fetch, spore warns on stderr and branches from the local `base:` branch or `HEAD`; an existing branch is reused as is. Opt out per project:
 
 ```toml
 # spore.toml
