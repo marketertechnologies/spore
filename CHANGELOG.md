@@ -10,9 +10,10 @@
   and silently undone. Only the content the command records (by
   sha256) in `state/operator-overrides` may carry the field, so a
   reviewer can neither force its own approve nor rewrite a forced
-  file; the command also clears the escalation marker. `spore task reopen` takes the
-  drive and `github.json` locks before it moves anything, so a busy
-  mirror refuses cleanly instead of leaving a half-reopened loop;
+  file; the command also clears the escalation marker.
+  `spore task reopen` takes the drive and `github.json` locks before
+  it moves anything, so a busy mirror refuses cleanly instead of
+  leaving a half-reopened loop;
   drive ticks now hold a per-slug `drive.lock` and a busy tick only
   reports; a lock that cannot be taken at all is an error, not a busy
   tick. The PR mirror counts A's escalation fix pass like the phase
