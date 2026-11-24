@@ -37,7 +37,7 @@ func DefaultForbidden() []ForbiddenPattern {
 			Reason: "rm -rf /: refusing root-tree wipe",
 		},
 		{
-			Re:     regexp.MustCompile(`\bgit[[:space:]]+push[[:space:]]+(--force|-f)\b`),
+			Re:     regexp.MustCompile(`\bgit(?:[[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push\b[^|;&\n]*[[:space:]](?:--force|-f)(?:[[:space:]]|$)`),
 			Reason: "git push --force: confirm with the operator before force-pushing",
 		},
 	}

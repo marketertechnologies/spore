@@ -24,23 +24,18 @@ type HookBin struct {
 	ContextLimit *int
 }
 
-// deniedTools lists claude-code native tools blocked in every
-// spore-spawned session. SendMessage is denied so inter-pane
-// messaging flows only through the file-inbox convention
-// (notify-coordinator + watch-inbox), never through claude-code's
-// own agent-to-agent channel. The deny ships as permissions.deny,
-// not the top-level disallowedTools key: on claude-code 2.1.299 the
-// latter is inert (the tool stays loadable), while permissions.deny
-// removes the tool even under --dangerously-skip-permissions.
-var deniedTools = []string{"SendMessage"}
+// Settings is SettingsWith under DefaultPermissions.
+func Settings(events map[string][]HookBin) ([]byte, error) {
+	return SettingsWith(events, DefaultPermissions())
+}
 
-// Settings emits a complete, deterministic settings.json blob for
+// SettingsWith emits a complete, deterministic settings.json blob for
 // claude-code. The events map keys are hook event names (Stop,
 // Notification, PostToolUse, UserPromptSubmit, PreToolUse, ...).
 // Empty slices are omitted. Keys are sorted at every level.
 // Hooks with the same Matcher within one event are consolidated
-// into a single group.
-func Settings(events map[string][]HookBin) ([]byte, error) {
+// into a single group. permissions.deny is perms.DenyRules().
+func SettingsWith(events map[string][]HookBin, perms Permissions) ([]byte, error) {
 	hooksMap := make(map[string][]hookGroup)
 
 	names := make([]string, 0, len(events))
@@ -61,7 +56,7 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 
 	top := settingsTop{
 		Schema:      "https://json.schemastore.org/claude-code-settings.json",
-		Permissions: &settingsPermissions{Deny: deniedTools},
+		Permissions: &settingsPermissions{Deny: perms.DenyRules()},
 	}
 	if len(hooksMap) > 0 {
 		top.Hooks = hooksMap

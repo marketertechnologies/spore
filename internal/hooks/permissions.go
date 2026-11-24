@@ -1,0 +1,102 @@
+package hooks
+
+import (
+	"fmt"
+
+	"github.com/versality/spore/internal/sporetoml"
+)
+
+// kernelDeny is always emitted, even with default_deny = false: it is
+// the inbox-messaging contract, not a guardrail. SendMessage ships as
+// permissions.deny, not the top-level disallowedTools key: on
+// claude-code 2.1.299 the latter is inert, while permissions.deny
+// removes the tool even under --dangerously-skip-permissions.
+var kernelDeny = []string{"SendMessage"}
+
+// defaultDeny is the guardrail set. Rule syntax per
+// https://code.claude.com/docs/en/permissions: a trailing " *" is a
+// word-bounded prefix match that also matches the bare command, so
+// --force-with-lease (used by the GitHub App mirror) stays allowed.
+// Read rules also cover cat/head/sed on the same path, but not a
+// subprocess that opens the file itself, which keeps
+// spore-with-secrets working. Rules are matched per subcommand of a
+// compound command and past leading env assignments.
+var defaultDeny = []string{
+	"Read(~/.config/spore/**/secrets.env)",
+	"Read(~/.config/spore/**/*.pem)",
+	"Bash(git push --force *)",
+	"Bash(git push -f *)",
+	"Bash(git push * --force)",
+	"Bash(git push * --force *)",
+	"Bash(git push * -f)",
+	"Bash(git push * -f *)",
+}
+
+// DefaultDeny returns the kernel rules plus the guardrail set, in the
+// order Settings emits them.
+func DefaultDeny() []string {
+	return append(append([]string(nil), kernelDeny...), defaultDeny...)
+}
+
+// Permissions is the [permissions] section of a project's spore.toml.
+type Permissions struct {
+	DefaultDeny bool
+	Deny        []string
+}
+
+// DefaultPermissions is what a project without [permissions] gets.
+func DefaultPermissions() Permissions {
+	return Permissions{DefaultDeny: true}
+}
+
+// LoadPermissions reads [permissions] from <projectRoot>/spore.toml.
+// A missing file or section yields DefaultPermissions.
+func LoadPermissions(projectRoot string) (Permissions, error) {
+	p := DefaultPermissions()
+	entries, err := sporetoml.ReadSection(projectRoot, "permissions")
+	if err != nil {
+		return p, fmt.Errorf("permissions: %w", err)
+	}
+	for _, e := range entries {
+		switch e.Key {
+		case "default_deny":
+			v, err := e.Bool()
+			if err != nil {
+				return p, fmt.Errorf("permissions: %w", err)
+			}
+			p.DefaultDeny = v
+		case "deny":
+			v, err := e.Strings()
+			if err != nil {
+				return p, fmt.Errorf("permissions: %w", err)
+			}
+			p.Deny = v
+		default:
+			return p, fmt.Errorf("permissions: line %d: unknown key %q in [permissions]", e.Line, e.Key)
+		}
+	}
+	return p, nil
+}
+
+// DenyRules merges the kernel rules, the default set (unless opted
+// out) and the project rules, dropping empties and duplicates while
+// keeping first-seen order.
+func (p Permissions) DenyRules() []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(rules []string) {
+		for _, r := range rules {
+			if r == "" || seen[r] {
+				continue
+			}
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	add(kernelDeny)
+	if p.DefaultDeny {
+		add(defaultDeny)
+	}
+	add(p.Deny)
+	return out
+}
