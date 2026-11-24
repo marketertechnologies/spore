@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "enabledPlugins": {
+    "spore@spore": true
+  },
+  "extraKnownMarketplaces": {
+    "spore": {
+      "source": {
+        "path": "/nix/store/0000000000000000000000000000000-spore-claude-marketplace",
+        "source": "directory"
+      }
+    }
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks notify-coordinator",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore-shims/share/spore/hooks/block-bg-bash.pl",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore-shims/share/spore/hooks/load-state-md.pl",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore coordinator token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore worker token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore fleet replenish-hook",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "asyncRewake": true,
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks watch-inbox",
+            "timeout": 604800,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "SendMessage"
+    ]
+  }
+}

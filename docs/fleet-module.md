@@ -120,6 +120,51 @@ When a project also ships a skill of the same name:
   neither (`skills/src/selection.rs`). The bootstrap skip above keeps
   new consumers out of that state.
 
+## Claude Code managed settings
+
+`services.spore-fleet.claudeManagedSettings.enable` (default true, active with `services.spore-fleet.enable`) writes `/etc/claude-code/managed-settings.d/50-spore.json`. Claude Code merges `managed-settings.json` and then every `*.json` in `managed-settings.d/` alphabetically, and managed settings sit above user and project settings (code.claude.com/docs/en/settings). The drop-in carries:
+
+- the host hooks: Notification `spore hooks notify-coordinator`, PreToolUse `block-bg-bash.pl`, SessionStart `load-state-md.pl`, and the four Stop hooks (`coordinator token-monitor`, `worker token-monitor`, `fleet replenish-hook`, `hooks watch-inbox`);
+- `permissions.deny: ["SendMessage"]`.
+
+Commands point at `services.spore-fleet.package` and `shimsPackage` in the Nix store, so every rebuild refreshes them. Nothing under `~/.claude/hooks/` is read any more.
+
+The JSON comes from `spore hooks settings --managed` (`internal/hooks/hostsettings.go`, `HostEvents`). That is the one source: `bootstrap/handover/settings.json` (the file `spore infect` copies once) is pinned to it by `TestHandoverSettingsMatchHostEvents`, and the Codex Stop set shares the same list.
+
+Hooks from every scope run; managed hooks do not replace user or project ones, and only byte-identical handlers are deduplicated (code.claude.com/docs/en/hooks). So the module also prunes the old copies:
+
+- Migration `004-managed-settings-prune.sh` runs on the next `nixos-rebuild switch` (activation now orders `spore-migrate` after `etc`). It backs up `~/.claude/settings.json` to `settings.json.spore-bak-<stamp>`, then removes every hook whose command matches one in the drop-in (program base name plus arguments, so `/home/spore/.claude/hooks/load-state-md.pl` and a bare `spore hooks notify-coordinator` match their store counterparts) and the `SendMessage` deny rule. Everything else stays. Keys are rewritten in sorted order. Without the drop-in it changes nothing; run `spore hooks prune-settings --file ~/.claude/settings.json` by hand if you enable the option later.
+- Project `.claude/settings.json` files are not touched by the migration. Drop their duplicated Stop hooks with `spore hooks prune-settings --file .claude/settings.json` and commit the result; project-specific hooks stay. `spore hooks settings` (stdin mode) also leaves out any binding the drop-in already provides.
+
+Stale `~/.claude/hooks/*.pl` copies become unreferenced; delete them once the pruned file looks right.
+
+Set `claudeManagedSettings.enable = false` to keep managing hooks in `~/.claude/settings.json`.
+
+### spore plugin
+
+The repo root is a Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) holding one plugin, `spore` (`.claude-plugin/plugin.json`), whose skills are `bootstrap/skills/` (no copy). Outside NixOS:
+
+```
+/plugin marketplace add marketertechnologies/spore
+/plugin install spore@spore
+```
+
+Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`.
+
+`claudeManagedSettings.plugin.enable` (default false) builds a store copy of the marketplace (manifests from the repo, skills from `spore install --dest`), registers it in the drop-in under `extraKnownMarketplaces.spore` as a `directory` source and sets `enabledPlugins."spore@spore" = true`. It is off by default because the namespaced names differ from the bare `/select-agent` and `/spore-bootstrap` that roles and docs use, and the home-manager links in `~/.claude/skills` stay regardless (Codex needs `~/.agents/skills`). With both on, each skill is listed twice.
+
+## Deploying
+
+The agent has no sudo. After `nix flake update spore`, the operator runs `sudo nixos-rebuild switch`. Check afterwards:
+
+```
+cat /etc/claude-code/managed-settings.d/50-spore.json
+grep 004-managed-settings-prune ~/.local/state/spore/migrations.applied
+ls ~/.claude/settings.json.spore-bak-*
+```
+
+In a Claude Code session, `/status` lists the managed source as `(file + drop-ins)` or `(drop-ins)`, and `/hooks` shows each spore hook once.
+
 ## tmux baseline
 
 `services.spore-fleet.tmux` prepends a block to `/etc/tmux.conf`:

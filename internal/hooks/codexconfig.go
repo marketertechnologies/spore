@@ -59,10 +59,6 @@ func CodexUserEvents(spore string) map[string][]HookBin {
 		"SessionStart": {
 			{Name: "codex-session-start", BinPath: spore + " hooks codex-session-start", Timeout: 10, ContextLimit: &noSpill},
 		},
-		"Stop": {
-			{Name: "coordinator-token-monitor", BinPath: spore + " coordinator token-monitor", Timeout: 10},
-			{Name: "worker-token-monitor", BinPath: spore + " worker token-monitor", Timeout: 10},
-			{Name: "replenish", BinPath: spore + " fleet replenish-hook", Timeout: 30},
-		},
+		"Stop": hostStopBins(spore),
 	}
 }
