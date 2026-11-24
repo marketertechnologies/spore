@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -15,34 +16,40 @@ import (
 // or `codex exec`, with the composed role body as the prompt.
 type ExecAgent struct{}
 
-func agentBase(agent string) string {
-	f := strings.Fields(agent)
-	if len(f) == 0 {
-		return ""
-	}
-	return filepath.Base(f[0])
-}
-
-// headlessArgv maps an interactive agent command to its one-shot
-// form. Permissions are skipped as in a live pane: the replay runs in
-// a throwaway clone.
-func headlessArgv(agent, prompt string) ([]string, error) {
-	argv := strings.Fields(agent)
-	switch agentBase(agent) {
-	case "":
+// headlessArgv maps a slot's interactive argv (RolePlan.Argv) to its
+// one-shot form, keeping every model, effort and config flag the live
+// pane gets. Permissions are skipped as in a live pane: the replay
+// runs in a throwaway clone.
+func headlessArgv(argv []string, prompt string) ([]string, error) {
+	if len(argv) == 0 || argv[0] == "" {
 		return nil, fmt.Errorf("empty agent command")
-	case "claude", "claude-code":
-		argv = append(argv, "-p", "--dangerously-skip-permissions", "--", prompt)
-	case "codex":
-		argv = append(argv, "exec", "--dangerously-bypass-approvals-and-sandbox", "--", prompt)
-	default:
-		argv = append(argv, prompt)
 	}
-	return argv, nil
+	switch filepath.Base(argv[0]) {
+	case "claude", "claude-code":
+		out := slices.Clone(argv)
+		if !slices.Contains(out, "--dangerously-skip-permissions") {
+			out = append(out, "--dangerously-skip-permissions")
+		}
+		return append(out, "-p", "--", prompt), nil
+	case "codex":
+		out := []string{argv[0], "exec"}
+		for _, a := range argv[1:] {
+			// TUI-only: `codex exec` rejects it.
+			if a != "--no-alt-screen" {
+				out = append(out, a)
+			}
+		}
+		if !slices.Contains(out, "--dangerously-bypass-approvals-and-sandbox") {
+			out = append(out, "--dangerously-bypass-approvals-and-sandbox")
+		}
+		return append(out, "--", prompt), nil
+	default:
+		return append(slices.Clone(argv), prompt), nil
+	}
 }
 
 func (ExecAgent) Run(ctx context.Context, req AgentRequest, log io.Writer) error {
-	argv, err := headlessArgv(req.Agent, req.Prompt)
+	argv, err := headlessArgv(req.Argv, req.Prompt)
 	if err != nil {
 		return err
 	}

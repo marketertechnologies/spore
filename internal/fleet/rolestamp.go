@@ -15,8 +15,8 @@ import (
 // reviewed, for `spore eval confirm`. The worktree HEAD counts only
 // when it is no newer than the verdict file: a newer commit means the
 // engineer moved on and the reviewed commit is unknown, so the round
-// stays unstamped rather than wrong. Best effort: a failure here must
-// not stall the loop.
+// gets an empty stamp rather than a wrong one. Best effort: a failure
+// here must not stall the loop.
 func stampReviewedSHAs(projectRoot, slug string) {
 	var head string
 	var headAt time.Time
@@ -39,7 +39,13 @@ func stampReviewedSHAs(projectRoot, slug string) {
 				head, headAt = worktreeHead(filepath.Join(projectRoot, ".worktrees", slug))
 				loaded = true
 			}
-			if head == "" || headAt.After(fi.ModTime()) {
+			if head == "" {
+				continue
+			}
+			if headAt.After(fi.ModTime()) {
+				// Unknowable from here on: an empty stamp stops the
+				// re-check, and confirm reads it as absent.
+				_ = writePrivateFile(stamp, "")
 				continue
 			}
 			_ = writePrivateFile(stamp, head+"\n")

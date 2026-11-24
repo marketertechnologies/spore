@@ -40,8 +40,8 @@ func TestStampReviewedSHAsSkipsVerdictsOlderThanHead(t *testing.T) {
 
 	stampReviewedSHAs(root, "demo")
 
-	if _, err := os.Stat(task.ReviewedSHAPath(root, "demo", task.ReviewerA, 1)); err == nil {
-		t.Error("stamped a verdict older than the worktree HEAD")
+	if b, err := os.ReadFile(task.ReviewedSHAPath(root, "demo", task.ReviewerA, 1)); err != nil || len(b) != 0 {
+		t.Errorf("verdict older than HEAD: stamp = %q, %v; want an empty marker", b, err)
 	}
 	b, err := os.ReadFile(task.ReviewedSHAPath(root, "demo", task.ReviewerA, 2))
 	if err != nil {

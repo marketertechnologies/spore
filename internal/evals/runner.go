@@ -26,8 +26,10 @@ const (
 
 // AgentRequest is one headless reviewer run.
 type AgentRequest struct {
-	// Agent is the slot's agent command as the spawn resolves it.
+	// Agent is the slot's agent as the spawn resolves it; Argv its
+	// interactive command line (RolePlan.Argv), without a prompt.
 	Agent  string
+	Argv   []string
 	Prompt string
 	Dir    string
 	Env    []string
@@ -326,7 +328,7 @@ func replayOnce(ctx context.Context, p prepared, opt RunOptions) (RunResult, []b
 
 	var log strings.Builder
 	actx, cancel := context.WithTimeout(ctx, opt.Timeout)
-	err = opt.Agent.Run(actx, AgentRequest{Agent: p.plan.Agent, Prompt: p.prompt, Dir: repo, Env: p.env(repo, taskDir)}, &log)
+	err = opt.Agent.Run(actx, AgentRequest{Agent: p.plan.Agent, Argv: p.plan.Argv, Prompt: p.prompt, Dir: repo, Env: p.env(repo, taskDir)}, &log)
 	cancel()
 	verdict, verr := collectVerdict(p.c, taskDir)
 	if verr != nil {

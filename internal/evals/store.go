@@ -277,6 +277,9 @@ func (s Store) Confirm(ctx context.Context, id string, opt ConfirmOptions) (Case
 	}
 	root := s.CasesDir()
 	if opt.Kernel {
+		if err := s.requireKernelRepo(); err != nil {
+			return Case{}, err
+		}
 		root, c.Repo = s.KernelCasesDir(), "."
 	}
 	c.Dir = filepath.Join(root, id)
@@ -296,6 +299,22 @@ func (s Store) Confirm(ctx context.Context, id string, opt ConfirmOptions) (Case
 		return Case{}, err
 	}
 	return c, nil
+}
+
+// kernelModule is the go.mod module line of the spore repo, the only
+// repo whose cases may be checked in.
+const kernelModule = "module github.com/versality/spore"
+
+// requireKernelRepo refuses a kernel case outside the spore repo: a
+// case carries the project's code and spec, and spore never writes a
+// consumer repo.
+func (s Store) requireKernelRepo() error {
+	b, err := os.ReadFile(filepath.Join(s.ProjectRoot, "go.mod"))
+	first, _, _ := strings.Cut(string(b), "\n")
+	if err != nil || strings.TrimSpace(first) != kernelModule {
+		return fmt.Errorf("--kernel: %s is not the spore repo; kernel cases hold only spore's own runs", s.ProjectRoot)
+	}
+	return nil
 }
 
 func (s Store) writeCaseDir(ctx context.Context, c Case, cand Candidate) error {

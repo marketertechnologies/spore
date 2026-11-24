@@ -227,6 +227,13 @@ func TestConfirmRecoversSHAFromBranchByMtime(t *testing.T) {
 
 func TestConfirmKernelUsesRelativeRepo(t *testing.T) {
 	f := newFixture(t)
+	if _, err := f.store.Confirm(context.Background(), "demo.miss.A2.B1", ConfirmOptions{HeadSHA: f.head, Kernel: true}); err == nil || !strings.Contains(err.Error(), "not the spore repo") {
+		t.Fatalf("kernel case in a non-spore repo: err = %v", err)
+	}
+	if _, err := os.Stat(f.store.KernelCasesDir()); err == nil {
+		t.Fatal("refused kernel confirm still wrote into the repo")
+	}
+	writeFile(t, filepath.Join(f.root, "go.mod"), kernelModule+"\n\ngo 1.25\n")
 	c, err := f.store.Confirm(context.Background(), "demo.miss.A2.B1", ConfirmOptions{HeadSHA: f.head, Kernel: true})
 	if err != nil {
 		t.Fatal(err)

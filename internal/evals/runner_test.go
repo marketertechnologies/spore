@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/task"
 )
@@ -87,7 +88,7 @@ func TestRunReplaysFrozenCheckoutWithSlotConfig(t *testing.T) {
 				t.Errorf("env lacks %s:\n%s", want, env)
 			}
 		}
-		if req.Agent != "claude" || !strings.Contains(req.Prompt, "code-review mode") {
+		if req.Agent != "claude" || req.Argv[0] != "claude" || !strings.Contains(req.Prompt, "code-review mode") {
 			t.Errorf("agent %q / prompt is not the code-review body", req.Agent)
 		}
 		taskDir := ""
@@ -205,20 +206,50 @@ func TestRunFallsBackToBundleWhenBranchIsGone(t *testing.T) {
 }
 
 func TestHeadlessArgv(t *testing.T) {
-	for agent, want := range map[string]string{
-		"claude":               "claude -p --dangerously-skip-permissions -- P",
-		"/bin/claude --x":      "/bin/claude --x -p --dangerously-skip-permissions -- P",
-		"codex":                "codex exec --dangerously-bypass-approvals-and-sandbox -- P",
-		"sh -c 'true'":         "sh -c 'true' P",
-		"claude-code --flag 1": "claude-code --flag 1 -p --dangerously-skip-permissions -- P",
+	codex := codexpolicy.InteractiveArgs("gpt-x", "high")
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"claude", "--dangerously-skip-permissions"}, "claude --dangerously-skip-permissions -p -- P"},
+		{[]string{"/bin/claude", "--x"}, "/bin/claude --x --dangerously-skip-permissions -p -- P"},
+		{codex, `codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --disable apps -m gpt-x -c model_reasoning_effort="high" -c project_doc_fallback_filenames=["CLAUDE.md"] -- P`},
+		{[]string{"codex", "-c", "x=1"}, "codex exec -c x=1 --dangerously-bypass-approvals-and-sandbox -- P"},
+		{[]string{"sh", "-c", "true"}, "sh -c true P"},
 	} {
-		got, err := headlessArgv(agent, "P")
-		if err != nil || strings.Join(got, " ") != want {
-			t.Errorf("headlessArgv(%q) = %q, %v; want %q", agent, got, err, want)
+		got, err := headlessArgv(tc.argv, "P")
+		if err != nil || strings.Join(got, " ") != tc.want {
+			t.Errorf("headlessArgv(%q) = %q, %v; want %q", tc.argv, got, err, tc.want)
 		}
 	}
-	if _, err := headlessArgv(" ", "P"); err == nil {
+	if _, err := headlessArgv(nil, "P"); err == nil {
 		t.Error("empty agent accepted")
+	}
+}
+
+func TestRunCodexSlotKeepsProductionFlags(t *testing.T) {
+	_, c := confirmedMiss(t)
+	root := c.RepoRoot()
+	writeFile(t, filepath.Join(root, "spore.toml"), "[fleet.reviewers.A]\nagent = \"codex\"\n")
+	writeFile(t, filepath.Join(root, "tasks", "demo.md"), "---\nstatus: done\nmodel: gpt-x\neffort: low\n---\n# demo\n")
+	t.Setenv(task.CodexModelEnv, "")
+	agent := &stubAgent{marker: "RULE-X", t: t, check: func(t *testing.T, req AgentRequest) {
+		want := strings.Join(codexpolicy.InteractiveArgs("gpt-x", "low"), " ")
+		if got := strings.Join(req.Argv, " "); got != want {
+			t.Errorf("codex slot argv = %q, want the live pane's %q", got, want)
+		}
+		if !strings.Contains(strings.Join(req.Env, "\n"), "SPORE_REVIEWER_MODE=fleet") {
+			t.Errorf("defaulted A on codex should replay in fleet mode: %v", req.Env)
+		}
+		if !strings.Contains(req.Prompt, "# reviewer") || strings.Contains(req.Prompt, "code-review mode") {
+			t.Error("codex slot should run reviewer.md")
+		}
+	}}
+	if _, err := Run(context.Background(), []Case{c}, RunOptions{Agent: agent, Judge: stubJudge{}, Runs: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls.Load() != 1 {
+		t.Fatalf("agent calls = %d", agent.calls.Load())
 	}
 }
 

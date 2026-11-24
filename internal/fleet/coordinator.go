@@ -283,6 +283,19 @@ func agentInvocations(agent string) (withBody, bare string) {
 	return agent, agent
 }
 
+// agentArgv is agentInvocations' bare command as an argv, for
+// callers that exec the agent without a shell.
+func agentArgv(agent string) []string {
+	argv := strings.Fields(agent)
+	switch {
+	case isClaudeAgent(agent):
+		argv = append(argv, "--dangerously-skip-permissions")
+	case isCodexAgent(agent):
+		argv = append(argv, "-c", codexpolicy.ProjectDocFallbackConfig)
+	}
+	return argv
+}
+
 // isClaudeAgent reports whether the agent string resolves to the
 // claude CLI. The agent value can carry trailing args (sleep 30,
 // codex exec --model ...), so we tokenise and check field 0's

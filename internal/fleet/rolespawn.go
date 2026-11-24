@@ -145,21 +145,30 @@ func roleBodyName(role string, slot ReviewerSlot) string {
 }
 
 // RolePlan is what a spawn settles for a pane: the reviewer slot
-// (mode and effort final), the agent, and the role body file name.
+// (mode and effort final), the agent, its interactive argv without a
+// prompt, and the role body file name.
 type RolePlan struct {
 	Slot  ReviewerSlot
 	Agent string
+	Argv  []string
 	Body  string
 }
 
 // Plan resolves s the way TmuxArgs does, without spawning, so a
-// headless replay (spore eval) runs the production slot config.
+// headless replay (spore eval) runs the production slot config:
+// same model, effort and config flags as the live pane.
 func (s RoleSpawnSpec) Plan() (RolePlan, error) {
-	slot, _, agent, err := s.resolve()
+	slot, meta, agent, err := s.resolve()
 	if err != nil {
 		return RolePlan{}, err
 	}
-	return RolePlan{Slot: slot, Agent: agent, Body: roleBodyName(s.Role, slot)}, nil
+	argv := agentArgv(agent)
+	if s.Agent == "" && agent == "codex" {
+		if argv, err = task.CodexAgentArgs(meta); err != nil {
+			return RolePlan{}, err
+		}
+	}
+	return RolePlan{Slot: slot, Agent: agent, Argv: argv, Body: roleBodyName(s.Role, slot)}, nil
 }
 
 // commitIdentityEnv authors engineer commits as the dispatching

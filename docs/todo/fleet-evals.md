@@ -260,7 +260,7 @@ already pass on today's body; that is fine and expected.
   flags are JSON under `<state>/evals/flags/`.
 - `head_sha`: the drive loop stamps the worktree HEAD into
   `.spore/<slug>/state/reviewed-<X>-<n>` when HEAD is no newer than
-  the verdict file. Older runs fall back to the last commit on
+  the verdict file, else an empty stamp (unknown). Older runs fall back to the last commit on
   `wt/<slug>` at or before the verdict's mtime; else `--head-sha`.
   Confirm bundles `base..head` into `head.bundle` (built in a shared
   scratch clone, so the project repo is never written).
@@ -269,6 +269,9 @@ already pass on today's body; that is fine and expected.
   case dir also carries the slot's own earlier verdicts
   (`reviews/<X>/`) so a round 2+ reviewer numbers its file right.
 - Judge: `claude -p --model haiku`, one call per run, JSON
-  `{"pass", "reason"}`. Codex slots replay via `codex exec`.
+  `{"pass", "reason"}`. A codex slot replays via `codex exec` with the
+  live pane's argv (`RolePlan.Argv`: model, reasoning effort, CLAUDE.md
+  fallback), minus the TUI-only `--no-alt-screen`.
+- `confirm --kernel` refuses any repo whose go.mod is not spore's.
 - Project rules dir uses the body file name without `.md`, e.g.
   `<state>/roles/rules/reviewer-code-review/`.
