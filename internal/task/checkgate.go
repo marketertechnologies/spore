@@ -169,16 +169,63 @@ func CountCheckAttempts(projectRoot, slug string, round int, sha string) (int, e
 	return n, nil
 }
 
-// NextCheckAttemptPath returns the first free attempt slot for round
-// and sha, so stale attempts from before a rewritten response are kept
-// for debugging rather than overwritten.
-func NextCheckAttemptPath(projectRoot, slug string, round int, sha string) string {
+// WriteCheckAttempt records a failing run in the first free attempt
+// slot for round and sha. The slot is claimed with O_EXCL, so a manual
+// run racing the Stop hook cannot overwrite the other's attempt; stale
+// attempts from before a rewritten response are kept for debugging.
+func WriteCheckAttempt(projectRoot, slug string, round int, sha, body string) error {
+	if err := os.MkdirAll(filepath.Join(RoleTaskDir(projectRoot, slug), "state"), 0o755); err != nil {
+		return err
+	}
 	for i := 1; ; i++ {
-		p := CheckAttemptPath(projectRoot, slug, round, sha, i)
-		if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
-			return p
+		f, err := os.OpenFile(CheckAttemptPath(projectRoot, slug, round, sha, i), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		_, werr := f.WriteString(body)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return werr
+	}
+}
+
+// RevisionPending reports whether a request_changes verdict is newer
+// than engineer round `round`: the engineer is mid-revision, and a
+// stop then is not a handoff to gate.
+func RevisionPending(projectRoot, slug string, round int) (bool, error) {
+	resp, err := os.Stat(EngineerResponsePath(projectRoot, slug, round))
+	if err != nil {
+		return false, err
+	}
+	for _, inst := range []ReviewerInstance{ReviewerA, ReviewerB} {
+		rounds, err := ListReviewRounds(projectRoot, slug, inst)
+		if err != nil {
+			return false, err
+		}
+		if len(rounds) == 0 {
+			continue
+		}
+		last := rounds[len(rounds)-1]
+		st, err := os.Stat(ReviewPath(projectRoot, slug, inst, last))
+		if err != nil {
+			return false, err
+		}
+		if !st.ModTime().After(resp.ModTime()) {
+			continue
+		}
+		rev, err := ReadReview(projectRoot, slug, inst, last)
+		if err != nil {
+			return false, err
+		}
+		if rev.Verdict == VerdictRequestChanges {
+			return true, nil
 		}
 	}
+	return false, nil
 }
 
 func notOlder(path string, than time.Time) (bool, error) {

@@ -44,8 +44,8 @@ func wakeEngineerForCheck(projectRoot, slug string, snap Snapshot) error {
 		return nil
 	}
 	msg := fmt.Sprintf("Reviewers are held: no passing run of the project check (`%s`) is recorded for %s at HEAD %s. "+
-		"Run `spore hooks engineer-check` from the worktree (it runs the check and records the result), fix any failure and commit, then end your turn.",
-		cfg.Cmd, resp, shortSHA(snap.CheckSHA))
+		"Run `spore hooks engineer-check` from the worktree (it runs the check and records the result). It can take up to %ds: run it with a tool timeout at least that long, or in the background and wait for it, since a killed run records nothing. Fix any failure and commit, then end your turn.",
+		cfg.Cmd, resp, shortSHA(snap.CheckSHA), cfg.TimeoutSeconds)
 	stem := fmt.Sprintf("check-held-%d-%s", snap.EngineerRound, shortSHA(snap.CheckSHA))
 	_, err = wakeRole(EngineerSpec(projectRoot, slug), stem, msg)
 	return err

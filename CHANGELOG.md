@@ -29,7 +29,10 @@
   hook) can move the command into `check` and drop the hook.
   The shipped hook command first checks that `spore hooks` lists
   `engineer-check`, so a host still on an older binary (which exits 2
-  on an unknown subcommand, blocking every stop) skips it.
+  on an unknown subcommand, blocking every stop) skips it, and so
+  does any pane whose `SPORE_ROLE` is not `engineer`. A stop after a
+  `request_changes` verdict and before the next response is
+  mid-revision and is not checked.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

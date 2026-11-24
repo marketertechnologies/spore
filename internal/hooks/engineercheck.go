@@ -48,7 +48,8 @@ type EngineerCheckResult struct {
 // project's `[fleet.roles.engineer] check`. It acts only in an engineer
 // role pane with a check configured, and only when the latest engineer
 // response has no pass or give-up marker for the worktree's HEAD
-// newer than it. It then runs the check in the task worktree: a pass
+// newer than it, and no request_changes verdict is newer than that
+// response (a stop mid-revision is not a handoff). It then runs the check in the task worktree: a pass
 // records check-pass-<round>-<sha>; a failure records an attempt and
 // blocks the stop, until the MaxCheckAttempts-th failure on the same
 // round and sha records check-failed-<round>-<sha> and lets the stop
@@ -68,6 +69,9 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 		return EngineerCheckResult{}, err
 	}
 	round := rounds[len(rounds)-1]
+	if revising, err := task.RevisionPending(in.ProjectRoot, in.Slug, round); err != nil || revising {
+		return EngineerCheckResult{}, err
+	}
 	wt := task.TaskWorktree(in.ProjectRoot, in.Slug)
 	sha, err := task.HeadSHA(wt)
 	if err != nil {
@@ -87,7 +91,7 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 		return EngineerCheckResult{}, writeMarker(task.CheckPassPath(in.ProjectRoot, in.Slug, round, sha), record)
 	}
 	record += "--- last output ---\n" + tail
-	if err := writeMarker(task.NextCheckAttemptPath(in.ProjectRoot, in.Slug, round, sha), record); err != nil {
+	if err := task.WriteCheckAttempt(in.ProjectRoot, in.Slug, round, sha, record); err != nil {
 		return EngineerCheckResult{}, err
 	}
 	n, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)

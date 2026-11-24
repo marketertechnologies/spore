@@ -221,3 +221,64 @@ func TestEngineerCheckRunsInTaskWorktree(t *testing.T) {
 		t.Errorf("check ran in %q, want %q", strings.TrimSpace(string(got)), want)
 	}
 }
+
+// A stop after a request_changes verdict and before the next response
+// is mid-revision: the hook skips it even with HEAD moved; the next
+// response re-arms the gate.
+func TestEngineerCheckSkipsMidRevision(t *testing.T) {
+	in, runs := checkFixture(t, "true")
+	writeResponse(t, in.ProjectRoot, 1)
+	earlier := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(task.EngineerResponsePath(in.ProjectRoot, "demo", 1), earlier, earlier); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteReview(in.ProjectRoot, "demo", task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := mustCheck(t, in); res.Code != 0 {
+		t.Fatalf("mid-revision: code %d", res.Code)
+	}
+	if n := checkRuns(t, runs); n != 0 {
+		t.Fatalf("check ran %d times mid-revision, want 0", n)
+	}
+	writeResponse(t, in.ProjectRoot, 2)
+	mustCheck(t, in)
+	if n := checkRuns(t, runs); n != 1 {
+		t.Errorf("check ran %d times after the next response, want 1", n)
+	}
+}
+
+// An approve newer than the response does not skip: review B may still
+// need a pass at a moved HEAD.
+func TestEngineerCheckRunsAfterApprove(t *testing.T) {
+	in, runs := checkFixture(t, "true")
+	writeResponse(t, in.ProjectRoot, 1)
+	earlier := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(task.EngineerResponsePath(in.ProjectRoot, "demo", 1), earlier, earlier); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteReview(in.ProjectRoot, "demo", task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	mustCheck(t, in)
+	if n := checkRuns(t, runs); n != 1 {
+		t.Errorf("check ran %d times, want 1", n)
+	}
+}
+
+// A slot claimed by a concurrent run is not overwritten.
+func TestEngineerCheckAttemptDoesNotOverwriteSlot(t *testing.T) {
+	in, _ := checkFixture(t, "exit 1")
+	writeResponse(t, in.ProjectRoot, 1)
+	sha := headOf(t, in.ProjectRoot)
+	if err := task.WriteCheckAttempt(in.ProjectRoot, "demo", 1, sha, "other run\n"); err != nil {
+		t.Fatal(err)
+	}
+	if res := mustCheck(t, in); res.Code != 2 || !strings.Contains(res.Stderr, "attempt 2/3") {
+		t.Fatalf("%+v, want attempt 2/3", res)
+	}
+	b, err := os.ReadFile(task.CheckAttemptPath(in.ProjectRoot, "demo", 1, sha, 1))
+	if err != nil || string(b) != "other run\n" {
+		t.Errorf("slot 1 = %q, %v; want the other run kept", b, err)
+	}
+}

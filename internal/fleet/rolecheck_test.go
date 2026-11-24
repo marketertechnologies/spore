@@ -81,7 +81,7 @@ func TestDriveHoldsReviewerUntilCheckPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := sessionWakes(*calls, "/demo/engineer")
-	if len(eng) != 1 || !strings.Contains(eng[0].msg, "Reviewers are held") || !strings.Contains(eng[0].msg, "spore hooks engineer-check") {
+	if len(eng) != 1 || !strings.Contains(eng[0].msg, "Reviewers are held") || !strings.Contains(eng[0].msg, "spore hooks engineer-check") || !strings.Contains(eng[0].msg, "up to 60s") {
 		t.Fatalf("engineer wakes = %+v, want one check-held nudge", eng)
 	}
 	if f.panes[revA] != nil {
