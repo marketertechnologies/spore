@@ -1,4 +1,4 @@
-**Status**: not-started
+**Status**: partly superseded in v0.40.0: path-scoped fragments (`paths:` frontmatter rendered to `.claude/rules/<id>.md`) now carry area-specific rules for Claude Code; rendered subdir `AGENTS.md` files (the Codex side) not started
 
 # composer: sub-directory AGENTS.md rendering
 
@@ -61,3 +61,15 @@ docs).
   `CLAUDE.md`. Render both? Or rely on existing tooling to mirror?
 
 ## Progress
+
+- v0.40.0 (`feat/compose-path-rules`): the area-rule half of this
+  spec landed as path-scoped fragments instead of subdir files. A
+  fragment with `paths:` frontmatter renders to
+  `.claude/rules/<fragment-id>.md`, which Claude Code loads only when
+  it touches a matching file. That answers the "Render both?" open
+  question for Claude: neither, the rule lives under `.claude/rules/`.
+  `spore compose --write` writes them with the same generated-from
+  marker and deletes stale marker-bearing ones; `claude-drift` covers
+  them. Still open: Codex does not read `.claude/rules/`, so a
+  rendered subdir `AGENTS.md` (this spec's original shape) is the
+  remaining way to give Codex area rules.

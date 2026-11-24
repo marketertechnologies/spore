@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
+  mode, and a 200-line root target, following Claude Code's current
+  memory guidance (root `CLAUDE.md` under about 200 lines, area rules
+  in `.claude/rules/*.md` with `paths:` frontmatter).
+  - **Path-scoped fragments.** A fragment may open with
+    `paths: ["app/graphql/**", ...]` frontmatter (flow list, block
+    list, or comma-separated string). `spore compose --consumer <name>
+    --write` renders it to `.claude/rules/<fragment-id>.md` (Claude
+    Code's frontmatter format, then the same `<!-- generated from ...
+    -->` marker as the root file) instead of inlining it, so it loads
+    only when Claude touches a matching file. `--write` also deletes
+    stale generated rule files; it removes only files that carry the
+    marker, never hand-written rules or symlinks. Plain `spore compose`
+    still prints the root body to stdout and notes on stderr when it
+    left path-scoped rules out. `--root <dir>` (default `.`) sets
+    where `--write` lands and where the `rails` / `align` predicates
+    are read, so composing for another checkout matches what its
+    `claude-drift` lint expects. `--write` refuses an output path
+    that is a symlink (an `AGENTS.md -> CLAUDE.md` link would otherwise
+    lose the body in import mode) and needs `# target:` lines in the
+    consumer file. Codex does not read `.claude/rules/`,
+    so those fragments are Claude-only.
+  - **Mirror mode.** A consumer file may set `# mirror: copy|import`.
+    `copy` (default) is today's behaviour: identical `CLAUDE.md` and
+    `AGENTS.md`. `import` puts the body in `AGENTS.md` (which Codex
+    reads directly) and makes `CLAUDE.md` a stub: the marker plus an
+    `@AGENTS.md` import line.
+  - **Lints.** `claude-drift` now checks the generated
+    `.claude/rules/` files (missing, drifted, stale) and the import
+    stub. `agents-mirror` accepts a `CLAUDE.md` that imports its
+    sibling `AGENTS.md` with `@AGENTS.md`. `claude-totalsize` reads
+    `[lint]` `root_line_limit`, `root_char_limit` and
+    `subdir_line_limit` from `spore.toml`.
+  - **Migration: root line limit 400 -> 200.** With no
+    `root_line_limit` in `spore.toml`, a root `CLAUDE.md` /
+    `AGENTS.md` of 201-400 lines is now a warning (`warn:` on stderr,
+    exit 0, does not block the `validation-green` stage); above 400
+    stays an error, as before. Nothing that was green turns red on
+    upgrade. Setting `root_line_limit` makes that number a strict
+    limit with no warning band: pin `400` to keep the old behaviour
+    and silence the warning, or `200` to enforce the new target.
+    The grace band is expected to go away in a later release, making
+    200 strict by default.
+  - **Downstream.** Consumers need no change to stay green. marketer
+    (429-line root file) can tag its area-specific fragments (for
+    example GraphQL rules with `paths: ["app/graphql/**"]`) with
+    `paths:` and rerun
+    `spore compose --consumer <name> --write` to move them into
+    `.claude/rules/` and shrink the root file toward 200 lines;
+    commit the generated `.claude/rules/` files with the root file.
+    Consumers that want one source file for both agents can add
+    `# mirror: import`.
 - Claude Code managed settings and plugin (0.39.0). The spore-fleet module gains `claudeManagedSettings.enable` (default true), which writes `/etc/claude-code/managed-settings.d/50-spore.json` with spore's Notification, PreToolUse, SessionStart and Stop hooks (including the 0.35.0 force-push guard and the 0.36.0 engineer-check) plus the 0.35.0 default `permissions.deny` set, run through `/run/current-system/sw` (the module adds the spore package and links the shims' `share/spore/hooks`), so they no longer go stale in `~/.claude/hooks/` and survive a rebuild plus GC under a live session. The JSON comes from the new `spore hooks settings --managed` (`hooks.HostEvents`), which `bootstrap/handover/settings.json` is now tested against. Migration `004-managed-settings-prune.sh` backs up `~/.claude/settings.json` and removes the entries the drop-in provides (matched by event, matcher and command), keeping everything else and leaving a symlinked file alone; it is a no-op without the drop-in. New `spore hooks prune-settings --file PATH` does the same for any settings file, and `spore hooks settings` (stdin) now leaves out bindings the drop-in provides. The repo root is a plugin marketplace (`.claude-plugin/`) with a `spore` plugin over `bootstrap/skills/`: `/plugin marketplace add marketertechnologies/spore`. `claudeManagedSettings.plugin.enable` (default false) registers a store copy and enables `spore@spore`. Downstream impact: after the operator's `nixos-rebuild switch`, every Claude Code session of every account on the host runs spore's hooks, including sessions outside spore projects: most hooks self-gate, but the `block-bg-bash` guard, the force-push guard and the deny rules apply to all of them, and a project's `[permissions] default_deny = false` cannot lift them; the Codex `hooks.json` now calls spore through `/run/current-system/sw` too; `~/.claude/settings.json` is rewritten with sorted keys (backup kept); consumer repos still carrying the four Stop hooks in `.claude/settings.json` run them twice until they prune them; plugin skills are namespaced (`/spore:select-agent`).
 - Role loop (0.38.0): line-anchored review comments on the draft PR.
   The mirror posts each verdict through `gh api .../pulls/<n>/reviews`

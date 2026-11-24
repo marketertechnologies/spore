@@ -1,0 +1,7 @@
+# Import-mode golden fixture.
+# target: CLAUDE.md
+# target: AGENTS.md
+# mirror: import
+core/header
+core/root
+area/graphql

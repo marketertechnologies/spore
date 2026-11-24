@@ -28,3 +28,18 @@ func TestDetectValidationGreenFlagsEmDash(t *testing.T) {
 		t.Fatalf("err=%v; want emdash blocker", err)
 	}
 }
+
+func TestDetectValidationGreenIgnoresWarnings(t *testing.T) {
+	root := t.TempDir()
+	body := []byte(strings.Repeat("x\n", 250))
+	writeFile(t, filepath.Join(root, "CLAUDE.md"), body)
+	writeFile(t, filepath.Join(root, "AGENTS.md"), body)
+	mustGitInit(t, root)
+	notes, err := detectValidationGreen(root)
+	if err != nil {
+		t.Fatalf("250-line root file blocked the stage: %v", err)
+	}
+	if !strings.Contains(notes, "claude-totalsize: 0") {
+		t.Errorf("notes=%q; want claude-totalsize: 0", notes)
+	}
+}

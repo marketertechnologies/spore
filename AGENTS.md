@@ -39,8 +39,10 @@ spore/
 
 ## Tier policy
 
-Rules tier into root `CLAUDE.md` / `AGENTS.md` (project-wide), subdir
-instruction mirrors (single-area, under 150 lines), `docs/<topic>.md`
+Rules tier into root `CLAUDE.md` / `AGENTS.md` (project-wide, under
+200 lines), path-scoped fragments (a `paths:` frontmatter glob list,
+rendered to `.claude/rules/`), subdir instruction mirrors
+(single-area, under 150 lines), `docs/<topic>.md`
 (rationale and debugging notes), and `docs/todo/<slug>.md`
 (multi-session specs, each starting with a `**Status**:` header). Test
 for an inline comment:

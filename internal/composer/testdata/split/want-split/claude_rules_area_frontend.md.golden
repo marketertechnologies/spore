@@ -1,0 +1,11 @@
+---
+paths:
+  - "src/**/*.{ts,tsx}"
+  - 'photos \[2024/**'
+---
+
+<!-- generated from rules/consumers/split.txt; edit fragments, not this file. -->
+
+# Frontend
+
+Components are typed.

@@ -22,10 +22,16 @@ func detectValidationGreen(root string) (string, error) {
 			blockers = append(blockers, fmt.Sprintf("%s errored: %v", l.Name(), err))
 			continue
 		}
-		summary = append(summary, fmt.Sprintf("%s: %d", l.Name(), len(issues)))
-		if len(issues) > 0 {
-			head := issues[0].String()
-			blockers = append(blockers, fmt.Sprintf("%s: %d issue(s); first: %s", l.Name(), len(issues), head))
+		var errs []lints.Issue
+		for _, i := range issues {
+			if !i.Warn {
+				errs = append(errs, i)
+			}
+		}
+		summary = append(summary, fmt.Sprintf("%s: %d", l.Name(), len(errs)))
+		if len(errs) > 0 {
+			head := errs[0].String()
+			blockers = append(blockers, fmt.Sprintf("%s: %d issue(s); first: %s", l.Name(), len(errs), head))
 		}
 	}
 	if len(blockers) > 0 {

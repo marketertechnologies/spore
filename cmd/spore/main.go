@@ -59,7 +59,14 @@ Usage:
 Flags:
   --root   Repo root to lint. Defaults to the current directory.
 
-Exits non-zero when any lint reports an issue.
+Exits non-zero when any lint reports an issue. Advisory findings
+print to stderr with a "warn:" prefix and do not fail the run.
+
+spore.toml [lint] keys (all optional, integers):
+  root_line_limit    Root CLAUDE.md / AGENTS.md line cap. Unset: warn
+                     above 200 lines, fail above 400.
+  root_char_limit    Root file char cap (default 40000).
+  subdir_line_limit  Subdirectory CLAUDE.md / AGENTS.md cap (default 150).
 `
 
 const hooksUsage = `spore hooks - install or run kernel hooks
@@ -215,6 +222,8 @@ func runCompose(args []string) error {
 	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
 	consumer := fs.String("consumer", "", "consumer name (file under <rules>/consumers/<name>.txt)")
 	rulesDir := fs.String("rules", "rules", "rule pool directory")
+	write := fs.Bool("write", false, "write the targets and .claude/rules files under --root and delete stale generated rule files, instead of printing the root body")
+	outRoot := fs.String("root", ".", "project root: predicates (rails, align) read it, and --write outputs land under it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -223,7 +232,7 @@ func runCompose(args []string) error {
 	}
 
 	consumerPath := filepath.Join(*rulesDir, "consumers", *consumer+".txt")
-	root, err := os.Getwd()
+	root, err := filepath.Abs(*outRoot)
 	if err != nil {
 		return err
 	}
@@ -235,12 +244,28 @@ func runCompose(args []string) error {
 		"align": alignActive,
 		"rails": lang.IsRails(root),
 	}}
-	out, err := composer.Compose(*rulesDir, consumerPath, opts)
+	r, err := composer.Render(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err
 	}
-	_, err = os.Stdout.WriteString(out)
-	return err
+	if !*write {
+		if len(r.Rules) > 0 || r.Mirror == composer.MirrorImport {
+			fmt.Fprintf(os.Stderr, "spore compose: stdout is the root body only (%d path-scoped rule(s), mirror %s); use --write to render every file\n", len(r.Rules), r.Mirror)
+		}
+		_, err = os.Stdout.WriteString(r.Root)
+		return err
+	}
+	res, err := composer.Write(*outRoot, r)
+	if err != nil {
+		return err
+	}
+	for _, p := range res.Written {
+		fmt.Println("wrote", p)
+	}
+	for _, p := range res.Removed {
+		fmt.Println("removed stale", p)
+	}
+	return nil
 }
 
 // boolFlag mirrors the unexported interface stdlib `flag` uses to tell
