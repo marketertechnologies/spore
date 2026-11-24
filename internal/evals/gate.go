@@ -107,8 +107,14 @@ func Gate(ctx context.Context, cases []Case, opt GateOptions) (GateResult, error
 		return res, err
 	}
 	for _, c := range motivating {
-		if r, _ := res.Without.Result(c.ID); r.Pass {
+		r, _ := res.Without.Result(c.ID)
+		switch {
+		case r.Pass:
 			res.Reasons = append(res.Reasons, fmt.Sprintf("%s passes without the rule: the rule is not what fixes it", c.ID))
+		case r.errored():
+			// An errored run is no evidence the case fails without the
+			// rule; counting it as a fail would ship an unproven rule.
+			res.Reasons = append(res.Reasons, fmt.Sprintf("%s: a without-rule run errored, so the baseline is inconclusive", c.ID))
 		}
 	}
 	for _, r := range res.With.Cases {

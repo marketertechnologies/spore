@@ -3,6 +3,8 @@ package evals
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,5 +109,27 @@ func TestKernelSummaryHasBareCountsOnly(t *testing.T) {
 	}
 	if !strings.Contains(out, "project 1: 1 cases, 1 passed, 0 failed") || !strings.Contains(out, "gate: green") {
 		t.Errorf("summary:\n%s", out)
+	}
+}
+
+// erroringAgent writes no verdict unless the prompt carries marker,
+// so every without-rule run errors instead of failing on its merits.
+type erroringAgent struct{ stubAgent }
+
+func (a *erroringAgent) Run(ctx context.Context, req AgentRequest, log io.Writer) error {
+	if !strings.Contains(req.Prompt, a.marker) {
+		return fmt.Errorf("agent timed out")
+	}
+	return a.stubAgent.Run(ctx, req, log)
+}
+
+func TestGateRedWhenWithoutRuleRunErrored(t *testing.T) {
+	f, rule := gateFixture(t)
+	res, dst, err := f.store.Promote(context.Background(), GateOptions{Rule: rule, Motivating: []string{"demo.miss.A2.B1"}, Run: gateRun(&erroringAgent{stubAgent{marker: "RULE-X", t: t}})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || dst != "" || !strings.Contains(strings.Join(res.Reasons, "\n"), "baseline is inconclusive") {
+		t.Fatalf("errored baseline shipped the rule: %+v, dst %q", res, dst)
 	}
 }

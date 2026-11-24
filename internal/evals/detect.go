@@ -130,7 +130,9 @@ func detectSlug(projectRoot, slug string) ([]Candidate, error) {
 			continue
 		}
 		for _, y := range tl {
-			if slotIndex(y.slot) <= slotIndex(x.slot) || y.review.Verdict != task.VerdictRequestChanges {
+			// Only a later verdict on the same engineer round saw the
+			// code x approved; later rounds review fix code.
+			if slotIndex(y.slot) <= slotIndex(x.slot) || y.review.Verdict != task.VerdictRequestChanges || y.trigger != x.trigger {
 				continue
 			}
 			out = append(out, Candidate{

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/versality/spore/internal/task"
 )
+
+// Warnings receives non-fatal notices, such as a stale flag.
+var Warnings io.Writer = os.Stderr
 
 // Store is one project's eval state: host-side cases, flags and
 // dismissals under <state>/evals/, plus the kernel cases a repo may
@@ -192,7 +196,10 @@ func (s Store) flagCandidates() ([]Candidate, error) {
 		slot := task.ReviewerInstance(f.Reviewer)
 		v, err := findVerdict(s.ProjectRoot, f.Slug, slot, f.Round)
 		if err != nil {
-			return nil, fmt.Errorf("flag %s: %w", e.Name(), err)
+			// A flag whose verdict is gone must not brick every
+			// other candidate; it simply stops showing.
+			fmt.Fprintf(Warnings, "spore eval: skipping flag %s: %v\n", e.Name(), err)
+			continue
 		}
 		out = append(out, Candidate{
 			ID:       f.id(),
@@ -276,6 +283,14 @@ func (s Store) Confirm(ctx context.Context, id string, opt ConfirmOptions) (Case
 	if err := c.validate(); err != nil {
 		return Case{}, err
 	}
+	if err := os.MkdirAll(filepath.Dir(c.Dir), 0o755); err != nil {
+		return Case{}, err
+	}
+	// Mkdir, not MkdirAll: a racing confirm of the same id fails here
+	// and must not remove the dir the other one is writing.
+	if err := os.Mkdir(c.Dir, 0o755); err != nil {
+		return Case{}, err
+	}
 	if err := s.writeCaseDir(ctx, c, cand); err != nil {
 		_ = os.RemoveAll(c.Dir)
 		return Case{}, err
@@ -284,12 +299,6 @@ func (s Store) Confirm(ctx context.Context, id string, opt ConfirmOptions) (Case
 }
 
 func (s Store) writeCaseDir(ctx context.Context, c Case, cand Candidate) error {
-	if err := os.MkdirAll(filepath.Dir(c.Dir), 0o755); err != nil {
-		return err
-	}
-	if err := os.Mkdir(c.Dir, 0o755); err != nil {
-		return err
-	}
 	src := task.RoleTaskDir(s.ProjectRoot, cand.Slug)
 	if err := copyFile(filepath.Join(src, "spec.md"), filepath.Join(c.Dir, "spec.md")); err != nil {
 		return err

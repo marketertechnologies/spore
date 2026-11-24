@@ -146,6 +146,20 @@ func checkout(ctx context.Context, c Case, dir string) error {
 	if _, err := git(ctx, dir, "checkout", "--quiet", "-B", branch, c.HeadSHA); err != nil {
 		return err
 	}
+	// The clone's default branch sits at the source repo's live tip;
+	// drop every branch but the checked-out one so no stale base is
+	// left for the reviewer to diff against.
+	others, err := git(ctx, dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	if err != nil {
+		return err
+	}
+	for _, b := range strings.Fields(others) {
+		if b != branch {
+			if _, err := git(ctx, dir, "branch", "-D", b); err != nil {
+				return err
+			}
+		}
+	}
 	if c.BaseBranch != "" && c.BaseBranch != branch {
 		if _, err := git(ctx, dir, "branch", "--force", c.BaseBranch, c.BaseSHA); err != nil {
 			return err

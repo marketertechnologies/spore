@@ -98,11 +98,7 @@ func (f *evalFlags) store() (evals.Store, error) {
 	if p == "" {
 		p = os.Getenv("SPORE_PROJECT_ROOT")
 	}
-	root, err := task.MainRepoRoot(p)
-	if err != nil {
-		return evals.Store{}, err
-	}
-	return evals.OpenStore(root)
+	return evals.OpenStore(p)
 }
 
 func (f *evalFlags) runOptions(out string) evals.RunOptions {

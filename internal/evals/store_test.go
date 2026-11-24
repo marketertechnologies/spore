@@ -68,6 +68,8 @@ func newFixture(t *testing.T) fixture {
 	must(task.WriteReview(root, slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "0 blockers"}))
 	must(task.WriteReview(root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "1 blocker, 1 nit", Comments: []string{"[blocker] spec step 2 unmet", "[nit] typo"}}))
 	must(task.WriteEngineerResponse(root, slug, 3, task.EngineerResponse{Addressed: []string{"step 2"}}))
+	// B round 2 reviews fix code A never saw: not a miss against A.
+	must(task.WriteReview(root, slug, task.ReviewerB, 2, task.Review{Verdict: task.VerdictRequestChanges, Summary: "1 blocker", Comments: []string{"[blocker] fix code breaks z"}}))
 
 	st, err := OpenStore(root)
 	if err != nil {
@@ -255,5 +257,44 @@ func TestCaseRoundtrip(t *testing.T) {
 	}
 	if _, err := ParseCase([]byte("id = \"x\"\nbogus = \"y\"\n")); err == nil {
 		t.Error("unknown key accepted")
+	}
+}
+
+func TestStaleFlagIsSkippedNotFatal(t *testing.T) {
+	f := newFixture(t)
+	id, err := f.store.AddFlag("demo", task.ReviewerB, 1, "typo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(task.ReviewPath(f.root, "demo", task.ReviewerB, 1)); err != nil {
+		t.Fatal(err)
+	}
+	var warn strings.Builder
+	old := Warnings
+	Warnings = &warn
+	defer func() { Warnings = old }()
+	cs, err := f.store.Candidates()
+	if err != nil {
+		t.Fatalf("stale flag bricked candidates: %v", err)
+	}
+	for _, c := range cs {
+		if c.ID == id {
+			t.Errorf("stale flag still listed")
+		}
+	}
+	if !strings.Contains(warn.String(), "skipping flag") {
+		t.Errorf("no warning for the stale flag: %q", warn.String())
+	}
+}
+
+func TestConfirmRaceKeepsTheOtherCase(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.store.CasesDir(), "demo.miss.A2.B1")
+	writeFile(t, filepath.Join(dir, "partial"), "x")
+	if _, err := f.store.Confirm(context.Background(), "demo.miss.A2.B1", ConfirmOptions{HeadSHA: f.head}); err == nil {
+		t.Fatal("confirm over an existing case dir succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "partial")); err != nil {
+		t.Errorf("failed confirm removed a dir it did not create: %v", err)
 	}
 }

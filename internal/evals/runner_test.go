@@ -75,6 +75,9 @@ func TestRunReplaysFrozenCheckoutWithSlotConfig(t *testing.T) {
 		if got := gitT(t, req.Dir, "rev-parse", "main"); got != f.base {
 			t.Errorf("base branch main = %s, want %s", got, f.base)
 		}
+		if got := gitT(t, req.Dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/"); got != "main\nwt/demo" {
+			t.Errorf("scratch branches = %q, want only base and task branch", got)
+		}
 		if got := gitT(t, req.Dir, "remote"); got != "" {
 			t.Errorf("scratch clone keeps remotes: %q", got)
 		}

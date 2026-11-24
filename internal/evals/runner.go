@@ -94,6 +94,15 @@ type CaseResult struct {
 	Runs    []RunResult `json:"runs"`
 }
 
+func (c CaseResult) errored() bool {
+	for _, r := range c.Runs {
+		if r.Error != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Summary is a whole suite run.
 type Summary struct {
 	Cases []CaseResult `json:"cases"`
@@ -326,7 +335,9 @@ func replayOnce(ctx context.Context, p prepared, opt RunOptions) (RunResult, []b
 		}
 		return fail(verr), nil, []byte(log.String())
 	}
-	jr, err := opt.Judge.Judge(ctx, JudgeInput{Kind: p.c.Kind, Expect: p.c.Expect, Verdict: verdict})
+	jctx, jcancel := context.WithTimeout(ctx, opt.Timeout)
+	jr, err := opt.Judge.Judge(jctx, JudgeInput{Kind: p.c.Kind, Expect: p.c.Expect, Verdict: verdict})
+	jcancel()
 	if err != nil {
 		return fail(fmt.Errorf("judge: %w", err)), verdict, []byte(log.String())
 	}
