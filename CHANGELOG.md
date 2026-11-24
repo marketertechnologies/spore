@@ -21,6 +21,26 @@
   refuses a task whose fork base is not `main` (land it through a
   PR). Consumers can drop `pre_start` scripts that fetch the base
   branch.
+- Role loop (0.34.1): fixes from the PR #110 review.
+  `spore task force-approve <slug> <A|B> --reason <text>` records an
+  `operator_override` on the reviewer's escalated final verdict once
+  the engineer's fix pass has landed; a forced approve skips the
+  grade/round rule, so the operator's override is no longer bounced
+  and silently undone. Only the content the command records (by
+  sha256) in `state/operator-overrides` may carry the field, so a
+  reviewer can neither force its own approve nor rewrite a forced
+  file; the command also clears the escalation marker.
+  `spore task reopen` takes the drive and `github.json` locks before
+  it moves anything, so a busy mirror refuses cleanly instead of
+  leaving a half-reopened loop;
+  drive ticks now hold a per-slug `drive.lock` and a busy tick only
+  reports; a lock that cannot be taken at all is an error, not a busy
+  tick. The PR mirror counts A's escalation fix pass like the phase
+  machine after a force-approve, so B's engineer rounds are no longer
+  skipped or posted one verdict late, and it posts the override with
+  its reason. B's escalation fix pass stays in the mirror after B is
+  forced, and the verdict comment, ready PR body and summary.md mark a
+  forced verdict as force-approved by the operator.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and
