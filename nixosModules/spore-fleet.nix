@@ -134,7 +134,7 @@ let
   # Rendered by the spore CLI itself so the binding set has one source
   # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
   codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
-    ${cfg.package}/bin/spore hooks codex-config --spore ${cfg.package}/bin/spore > $out
+    ${cfg.package}/bin/spore hooks codex-config --spore /run/current-system/sw/bin/spore > $out
   '';
 
   enabledMatters = lib.filterAttrs (_: m: m.enable) cfg.matters;
@@ -765,7 +765,9 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.codex.enable) {
-      environment.systemPackages = [ cfg.codex.package ];
+      # hooks.json calls spore through /run/current-system/sw so a
+      # long-lived Codex session survives a rebuild plus GC.
+      environment.systemPackages = [ cfg.codex.package cfg.package ];
       home-manager.users.${cfg.user}.home.file.".codex/hooks.json".source = codexHooks;
     })
   ];

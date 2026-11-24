@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/versality/spore/internal/task"
 )
 
 // DefaultManagedSettingsPath is where the spore-fleet NixOS module
@@ -35,6 +37,7 @@ func hostStopBins(spore string) []HookBin {
 // block-bg-bash.pl and load-state-md.pl.
 func HostEvents(spore, hooksDir string) map[string][]HookBin {
 	stop := append(hostStopBins(spore),
+		HookBin{Name: "engineer-check", BinPath: engineerCheckCommand(spore), Timeout: task.EngineerCheckHookTimeout},
 		HookBin{Name: "watch-inbox", BinPath: spore + " hooks watch-inbox", Timeout: 604800, AsyncRewake: true})
 	return map[string][]HookBin{
 		"Notification": {
@@ -42,6 +45,7 @@ func HostEvents(spore, hooksDir string) map[string][]HookBin {
 		},
 		"PreToolUse": {
 			{Name: "block-bg-bash", BinPath: filepath.Join(hooksDir, "block-bg-bash.pl"), Matcher: "Bash", Timeout: 5},
+			{Name: "pretooluse", BinPath: spore + " hooks pretooluse", Matcher: "Bash", Timeout: 5},
 		},
 		"SessionStart": {
 			{Name: "load-state-md", BinPath: filepath.Join(hooksDir, "load-state-md.pl"), Timeout: 5},
@@ -50,11 +54,19 @@ func HostEvents(spore, hooksDir string) map[string][]HookBin {
 	}
 }
 
+// engineerCheckCommand skips the hook outside engineer panes and on a
+// binary without the subcommand: an older spore exits 2 on an unknown
+// subcommand, which Claude Code reads as a blocked stop.
+func engineerCheckCommand(spore string) string {
+	return `[ "$SPORE_ROLE" = engineer ] || exit 0; ` + spore + ` hooks 2>&1 | grep -q engineer-check || exit 0; exec ` + spore + ` hooks engineer-check`
+}
+
 // ManagedSettings renders the managed settings drop-in: HostEvents plus
-// permissions.deny. A non-empty marketplaceDir also registers that
+// the default permissions.deny set. A project's spore.toml
+// [permissions] cannot lift a managed deny rule. A non-empty marketplaceDir also registers that
 // directory as the "spore" marketplace and force-enables its plugin.
 func ManagedSettings(spore, hooksDir, marketplaceDir string) ([]byte, error) {
-	top, err := buildTop(HostEvents(spore, hooksDir))
+	top, err := buildTop(HostEvents(spore, hooksDir), DefaultPermissions())
 	if err != nil {
 		return nil, err
 	}

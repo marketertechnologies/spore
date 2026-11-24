@@ -2,7 +2,128 @@
 
 ## Unreleased
 
-- Claude Code managed settings and plugin (0.39.0). The spore-fleet module gains `claudeManagedSettings.enable` (default true), which writes `/etc/claude-code/managed-settings.d/50-spore.json` with spore's Notification, PreToolUse, SessionStart and Stop hooks plus `permissions.deny: ["SendMessage"]`, run through `/run/current-system/sw` (the module adds the spore package and links the shims' `share/spore/hooks`), so they no longer go stale in `~/.claude/hooks/` and survive a rebuild plus GC under a live session. The JSON comes from the new `spore hooks settings --managed` (`hooks.HostEvents`), which `bootstrap/handover/settings.json` is now tested against. Migration `004-managed-settings-prune.sh` backs up `~/.claude/settings.json` and removes the entries the drop-in provides (matched by event, matcher and command), keeping everything else and leaving a symlinked file alone; it is a no-op without the drop-in. New `spore hooks prune-settings --file PATH` does the same for any settings file, and `spore hooks settings` (stdin) now leaves out bindings the drop-in provides. The repo root is a plugin marketplace (`.claude-plugin/`) with a `spore` plugin over `bootstrap/skills/`: `/plugin marketplace add marketertechnologies/spore`. `claudeManagedSettings.plugin.enable` (default false) registers a store copy and enables `spore@spore`. Downstream impact: after the operator's `nixos-rebuild switch`, every Claude Code session of every account on the host runs spore's hooks, including sessions outside spore projects: most hooks self-gate, but the `block-bg-bash` guard and the `SendMessage` deny apply to all of them; `~/.claude/settings.json` is rewritten with sorted keys (backup kept); consumer repos still carrying the four Stop hooks in `.claude/settings.json` run them twice until they prune them; plugin skills are namespaced (`/spore:select-agent`).
+- Claude Code managed settings and plugin (0.39.0). The spore-fleet module gains `claudeManagedSettings.enable` (default true), which writes `/etc/claude-code/managed-settings.d/50-spore.json` with spore's Notification, PreToolUse, SessionStart and Stop hooks (including the 0.35.0 force-push guard and the 0.36.0 engineer-check) plus the 0.35.0 default `permissions.deny` set, run through `/run/current-system/sw` (the module adds the spore package and links the shims' `share/spore/hooks`), so they no longer go stale in `~/.claude/hooks/` and survive a rebuild plus GC under a live session. The JSON comes from the new `spore hooks settings --managed` (`hooks.HostEvents`), which `bootstrap/handover/settings.json` is now tested against. Migration `004-managed-settings-prune.sh` backs up `~/.claude/settings.json` and removes the entries the drop-in provides (matched by event, matcher and command), keeping everything else and leaving a symlinked file alone; it is a no-op without the drop-in. New `spore hooks prune-settings --file PATH` does the same for any settings file, and `spore hooks settings` (stdin) now leaves out bindings the drop-in provides. The repo root is a plugin marketplace (`.claude-plugin/`) with a `spore` plugin over `bootstrap/skills/`: `/plugin marketplace add marketertechnologies/spore`. `claudeManagedSettings.plugin.enable` (default false) registers a store copy and enables `spore@spore`. Downstream impact: after the operator's `nixos-rebuild switch`, every Claude Code session of every account on the host runs spore's hooks, including sessions outside spore projects: most hooks self-gate, but the `block-bg-bash` guard, the force-push guard and the deny rules apply to all of them, and a project's `[permissions] default_deny = false` cannot lift them; the Codex `hooks.json` now calls spore through `/run/current-system/sw` too; `~/.claude/settings.json` is rewritten with sorted keys (backup kept); consumer repos still carrying the four Stop hooks in `.claude/settings.json` run them twice until they prune them; plugin skills are namespaced (`/spore:select-agent`).
+- Role loop (0.38.0): line-anchored review comments on the draft PR.
+  The mirror posts each verdict through `gh api .../pulls/<n>/reviews`
+  (`event: COMMENT`, `commit_id` = the last pushed sha) instead of
+  `gh pr review --comment`. Every graded comment whose `where` is
+  `path:line` becomes an inline comment on that diff line, headed by
+  its ID, grade and category, with the text, trigger and suggestion;
+  the review body keeps the heading, summary and the remaining
+  comments. On HTTP 422 (an anchor outside the diff) it retries with
+  the anchors the PR's file patches confirm and folds the rest into
+  the body, or posts everything in the body when it cannot tell.
+  `reviewer-code-review.md` now transcribes the skill's
+  `ReportFindings` fields directly: `file:line` to `where`, `summary`
+  to `text`, `failure_scenario` to `trigger`, `category` to
+  `category`.
+- Role loop (0.37.0): `spore task reopen <slug> --from-pr` appends the
+  PR's human feedback to the reopen note, alone or after `--note`.
+  It reads the PR from `github.json` with `gh api graphql` as the
+  GitHub App and keeps what arrived since the loop last marked the
+  PR ready or was reopened: review bodies (`COMMENTED`,
+  `CHANGES_REQUESTED`), inline comments with `path:line` and a
+  trimmed diff hunk, and PR comments. Bot and app authors and
+  resolved threads are skipped. The note groups inline comments by
+  file, then general comments. With no new feedback and no `--note`,
+  reopen refuses, and it checks the loop can be reopened before it
+  calls GitHub. The PR's reopen comment shows only the operator note
+  and a pointer, not the feedback, and is cut at 60000 characters.
+- Fleet (0.36.1): new `wt/<slug>` branches fork from a freshly
+  fetched base instead of the main checkout's HEAD. The base is the
+  task's `base:` frontmatter, else `origin/HEAD`'s branch, else
+  `main`, else `master`; spore fetches just that ref with a 30s
+  non-interactive deadline (serialized per repository; a timeout
+  skips further fetches in the same process for two minutes) and
+  forks `--no-track` from the remote ref when it is ahead, else from
+  the local branch (kept on divergence, with a warning, so unpushed
+  commits are never dropped). A missing remote or failed fetch warns
+  and falls back to the base branch's existing refs, then HEAD.
+  With an https origin and GitHub App credentials in `github.toml`
+  (no `pr_flow` needed), the fetch authenticates as the app the way
+  `spore gh exec` does; the token stays out of argv, URLs and git
+  config, and a failed mint falls back to a plain fetch.
+  Existing branches are reused as they are. `[fleet] worktree_base =
+  "head"` keeps the old behaviour; an unknown value warns. A
+  `.worktreeinclude` at the project root copies matching ignored
+  files (such as `.env`) into each new worktree without overwriting,
+  skipping symlinks that could reach the main checkout; the pattern
+  subset is in `docs/worker-dispatch.md`. `spore task merge` now
+  refuses a task whose fork base is not `main` (land it through a
+  PR). Consumers can drop `pre_start` scripts that fetch the base
+  branch.
+- Role loop (0.36.0): engineer check gate. `spore.toml`
+  `[fleet.roles.engineer] check = "<shell cmd>"` (plus
+  `check_timeout_seconds`, default 900) makes the project's checks a
+  hard gate before review. New Stop hook `spore hooks engineer-check`
+  (shipped in `bootstrap/handover/settings.json`, timeout 3600s):
+  in an engineer role pane (`SPORE_ROLE=engineer`) with a new
+  engineer response, it runs `check` in the task worktree; a failure
+  exits 2 with the command, exit code and last 40 lines, blocking the
+  stop; a pass records `state/check-pass-<round>-<sha>`; the third
+  failure on one round and HEAD records `check-failed-*` and lets the
+  stop through. The driver holds reviewers (no wake, no fresh spawn)
+  while the latest response has neither marker at the worktree HEAD,
+  records the state in the snapshot (`spore task status` prints
+  `check:`), wakes the engineer once if the response outlives the
+  check timeout unchecked, and on a give-up hands off with the failure
+  named in the reviewer wake. Role bodies: the engineer runs the
+  check itself first; reviewers skip the full suite on a pass marker.
+  Downstream impact: nothing changes until a project sets `check`.
+  Hosts must pick up the new handover settings (or add the Stop hook
+  to their own settings) for the gate to fire; without the hook every
+  role-loop response waits out the timeout and the engineer is then
+  woken to run `spore hooks engineer-check` by hand. Codex engineer
+  panes have no Stop hook wiring and always take that path. Projects
+  with a hand-rolled gate on `spore task done` (marketer's PreToolUse
+  hook) can move the command into `check` and drop the hook.
+  The shipped hook command first checks that `spore hooks` lists
+  `engineer-check`, so a host still on an older binary (which exits 2
+  on an unknown subcommand, blocking every stop) skips it, and so
+  does any pane whose `SPORE_ROLE` is not `engineer`. A stop after a
+  `request_changes` verdict and before the next response is
+  mid-revision and is not checked.
+- Hooks (0.35.0): hard guardrails in settings, not prompts. Generated
+  and shipped settings now carry a default `permissions.deny` set that
+  holds under `--dangerously-skip-permissions`: `SendMessage`,
+  `Read(~/.config/spore/**/secrets.env)`,
+  `Read(~/.config/spore/**/*.pem)`, and six `Bash(git push ...)`
+  force-push rules (`--force` / `-f`, before or after the refspec;
+  `--force-with-lease` stays allowed). `spore hooks settings` merges
+  `spore.toml` `[permissions] deny = [...]` with the defaults (deduped)
+  and `default_deny = false` drops the guardrail set (`SendMessage`
+  stays). `bootstrap/handover/settings.json` now also wires
+  `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
+  longer blocks `--force-with-lease`. Downstream impact: marketer and
+  crm-gateway pick this up on their next settings render; on existing
+  hosts reinstall `~/.claude/settings.json` from
+  `share/spore/settings.json`. Agents that read `secrets.env` or a
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
+- Role loop (0.34.1): fixes from the PR #110 review.
+  `spore task force-approve <slug> <A|B> --reason <text>` records an
+  `operator_override` on the reviewer's escalated final verdict once
+  the engineer's fix pass has landed; a forced approve skips the
+  grade/round rule, so the operator's override is no longer bounced
+  and silently undone. Only the content the command records (by
+  sha256) in `state/operator-overrides` may carry the field, so a
+  reviewer can neither force its own approve nor rewrite a forced
+  file; the command also clears the escalation marker.
+  `spore task reopen` takes the drive and `github.json` locks before
+  it moves anything, so a busy mirror refuses cleanly instead of
+  leaving a half-reopened loop;
+  drive ticks now hold a per-slug `drive.lock` and a busy tick only
+  reports; a lock that cannot be taken at all is an error, not a busy
+  tick. The PR mirror counts A's escalation fix pass like the phase
+  machine after a force-approve, so B's engineer rounds are no longer
+  skipped or posted one verdict late, and it posts the override with
+  its reason. B's escalation fix pass stays in the mirror after B is
+  forced, and the verdict comment, ready PR body and summary.md mark a
+  forced verdict as force-approved by the operator.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

@@ -19,8 +19,10 @@ import (
 	spore "github.com/versality/spore"
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
+	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/infect"
 	"github.com/versality/spore/internal/lang"
+	"github.com/versality/spore/internal/task"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -72,12 +74,19 @@ Subcommands:
                          stdin, write the response JSON to stdout.
   stop                   Read a claude-code Stop JSON request from stdin,
                          write the (currently no-op) response JSON.
+  engineer-check         Stop-hook for role-loop engineer panes: run the
+                         [fleet.roles.engineer] check on a new engineer
+                         response, exit 2 with the failure tail.
+                         Reads $SPORE_ROLE / $SPORE_PROJECT_ROOT /
+                         $SPORE_TASK_SLUG; a no-op anywhere else.
   settings [--managed-file PATH]
                          Read a hook binding JSON from stdin, emit a
                          deterministic settings.json to stdout. Bindings
                          the managed settings file already runs (default
                          /etc/claude-code/managed-settings.d/50-spore.json,
                          when present; "" disables) are left out.
+                         permissions.deny merges the kernel defaults
+                         with spore.toml [permissions] at the repo root.
   settings --managed [--spore PATH] [--hooks-dir DIR] [--marketplace DIR]
                          Emit the host-wide managed settings drop-in:
                          spore's hooks plus permissions.deny. --marketplace
@@ -133,6 +142,7 @@ freshly provisioned VM that has no data worth keeping.
 `
 
 func main() {
+	task.SetFetchAuth(ghapp.FetchEnv)
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)

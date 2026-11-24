@@ -421,11 +421,11 @@
 
                   # codex.enable: codex on the system and reconciler
                   # PATH, ~/.codex/hooks.json rendered by the package's
-                  # own `hooks codex-config` with hooks pinned to it.
+                  # own `hooks codex-config`, hooks through /run/current-system/sw.
                   machine.succeed("test -x /run/current-system/sw/bin/codex")
                   assert "-codex/bin" in env, env
                   hooks = machine.succeed("cat /home/spore-test/.codex/hooks.json")
-                  assert '"stub":"/nix/store/' in hooks and hooks.strip().endswith('/bin/spore"}}'), hooks
+                  assert '"stub":"/run/current-system/sw/bin/spore"' in hooks, hooks
 
                   # Host-wide skills: one directory link per skill under
                   # Claude Code's and Codex's user scopes, so the scope

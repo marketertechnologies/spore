@@ -3,6 +3,7 @@ package task
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,9 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	if err := requireMainCheckout(projectRoot); err != nil {
 		return err
 	}
+	if err := requireMainBase(tasksDir, projectRoot, slug); err != nil {
+		return err
+	}
 
 	if err := runJustCheckGate(projectRoot, slug, branch, opts.ForceMergeRed); err != nil {
 		return err
@@ -105,6 +109,29 @@ func requireMainCheckout(projectRoot string) error {
 			current = "detached HEAD"
 		}
 		return fmt.Errorf("merge must run from the main checkout; current branch is %q", current)
+	}
+	return nil
+}
+
+// requireMainBase refuses to land a task whose worktree forked from a
+// branch other than main: with `[fleet] worktree_base = "fresh"` the
+// fork base is `base:` or origin/HEAD's branch, and fast-forwarding
+// main onto such a branch would fail or pull that branch's commits
+// into main. Such tasks land through a PR against their base.
+func requireMainBase(tasksDir, projectRoot, slug string) error {
+	if LoadWorktreeBase(projectRoot, io.Discard) == WorktreeBaseHead {
+		return nil
+	}
+	meta, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
+		return err
+	}
+	base := normalizeBase(meta.Extra["base"])
+	if base == "" {
+		base = defaultBaseBranch(projectRoot)
+	}
+	if base != "" && base != "main" {
+		return fmt.Errorf("merge lands on main, but wt/%s forks from %q; land it through a PR against %s, or set `base: main` in tasks/%s.md if it really forked from main", slug, base, base, slug)
 	}
 	return nil
 }

@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/ghapp"
@@ -64,6 +63,17 @@ func githubStatePath(projectRoot, slug string) string {
 	return filepath.Join(task.RoleTaskDir(projectRoot, slug), "github.json")
 }
 
+// readGitHubState loads github.json. On a decode error it still
+// returns whatever decoded, which the mirror keeps using.
+func readGitHubState(projectRoot, slug string) (githubState, error) {
+	var st githubState
+	b, err := os.ReadFile(githubStatePath(projectRoot, slug))
+	if err != nil {
+		return st, err
+	}
+	return st, json.Unmarshal(b, &st)
+}
+
 // mirrorEvent is one GitHub action derived from a file on disk. name
 // keys it in githubState.Posted.
 type mirrorEvent struct {
@@ -71,6 +81,9 @@ type mirrorEvent struct {
 	kind     string
 	round    int
 	instance task.ReviewerInstance
+	// note is the operator's reason on an override event, captured
+	// when the event is listed so posting it never re-reads the file.
+	note string
 }
 
 const (
@@ -79,6 +92,7 @@ const (
 	eventEscalated = "escalated"
 	eventReady     = "ready"
 	eventReopened  = "reopened"
+	eventOverride  = "override"
 )
 
 // mirrorEvents lists, in loop order, every GitHub action the files on
@@ -111,6 +125,15 @@ reviews:
 		if err != nil {
 			return nil, err
 		}
+		if inst == task.ReviewerB && snap.AFixLanded {
+			// A's escalation fix pass, answered before the operator
+			// force-approved A: the phase machine counts it as one more
+			// engineer round, so B's revisions start one later.
+			engRound++
+			if !addEng() {
+				break reviews
+			}
+		}
 		for _, r := range rounds {
 			rev, err := task.ReadReview(projectRoot, slug, inst, r)
 			if errors.Is(err, task.ErrInvalidRoleFile) {
@@ -120,7 +143,12 @@ reviews:
 				return nil, err
 			}
 			out = append(out, mirrorEvent{name: fmt.Sprintf("%s/round-%d.json", inst, r), kind: eventReview, round: r, instance: inst})
-			if rev.Verdict == task.VerdictRequestChanges {
+			if rev.Forced() {
+				out = append(out, mirrorEvent{name: fmt.Sprintf("override-%s-%d", inst, r), kind: eventOverride, round: r, instance: inst, note: strings.TrimSpace(rev.OperatorOverride)})
+			}
+			// A forced B verdict was an escalation whose fix pass landed
+			// (see ForceApproveReview); A's is counted by AFixLanded.
+			if rev.Verdict == task.VerdictRequestChanges || (inst == task.ReviewerB && rev.Forced()) {
 				engRound++
 				if !addEng() {
 					break reviews
@@ -147,6 +175,8 @@ type githubMirror struct {
 	cfg                         ghapp.Config
 	state                       githubState
 	env                         []string
+	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
+	repo string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -156,8 +186,11 @@ type githubMirror struct {
 // the lock makes this tick a no-op.
 func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 	statePath := githubStatePath(projectRoot, slug)
-	unlock, ok := lockGitHubState(statePath)
-	if !ok {
+	unlock, err := lockGitHubState(statePath)
+	if err != nil {
+		if !errors.Is(err, errLockHeld) {
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
+		}
 		return
 	}
 	defer unlock()
@@ -168,10 +201,8 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 		slug:        slug,
 		worktree:    filepath.Join(projectRoot, ".worktrees", slug),
 	}
-	if b, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(b, &m.state)
-	}
-	err := m.run(snap)
+	m.state, _ = readGitHubState(projectRoot, slug)
+	err = m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
 		if key := mirrorErrorKey(err); key != m.state.LastError {
@@ -205,26 +236,6 @@ func mirrorErrorKey(err error) string {
 	return msg
 }
 
-// lockGitHubState takes a non-blocking flock beside the state file so
-// two drives never post the same event twice.
-func lockGitHubState(statePath string) (func(), bool) {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
-		return nil, false
-	}
-	f, err := os.OpenFile(statePath+".lock", os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, false
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		return nil, false
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, true
-}
-
 func (m *githubMirror) save() {
 	b, err := json.MarshalIndent(m.state, "", "  ")
 	if err != nil {
@@ -256,28 +267,9 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+	if _, err := m.connect(); err != nil {
 		return err
 	}
-	if err := m.cfg.Validate(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
-	if err != nil {
-		return err
-	}
-	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
-	remote, err := m.git("config", "--get", "remote.origin.url")
-	if err != nil {
-		return fmt.Errorf("no origin remote: %w", err)
-	}
-	repo, err := ghapp.GHRepo(remote)
-	if err != nil {
-		return err
-	}
-	m.env = append(m.env, "GH_REPO="+repo)
 	for _, e := range pending {
 		if err := m.apply(e); err != nil {
 			return fmt.Errorf("%s: %w", e.name, err)
@@ -286,6 +278,37 @@ func (m *githubMirror) run(snap Snapshot) error {
 		m.save()
 	}
 	return nil
+}
+
+// connect loads github.toml, mints the app token and pins gh to
+// origin, so later git/gh calls act as the app. Returns the GH_REPO
+// value (HOST/OWNER/REPO).
+func (m *githubMirror) connect() (string, error) {
+	var err error
+	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
+		return "", err
+	}
+	if err := m.cfg.Validate(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
+	defer cancel()
+	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
+	remote, err := m.git("config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", fmt.Errorf("no origin remote: %w", err)
+	}
+	repo, err := ghapp.GHRepo(remote)
+	if err != nil {
+		return "", err
+	}
+	m.env = append(m.env, "GH_REPO="+repo)
+	m.repo = repo
+	return repo, nil
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -315,9 +338,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		if err != nil {
 			return err
 		}
-		body := strings.Replace(reviewBody(e.instance, e.round, rev), "(round ", "("+m.cyclePrefix()+"round ", 1)
-		_, err = m.gh(body, "pr", "review", strconv.Itoa(m.state.PRNumber), "--comment", "--body-file", "-")
-		return err
+		return m.postReview(e.instance, e.round, rev)
 	case eventEscalated:
 		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer, with high/medium comments. "+
@@ -325,6 +346,10 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			label, e.round, MaxReviewerRounds))
 	case eventReopened:
 		return m.redraft()
+	case eventOverride:
+		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
+		return m.prComment(fmt.Sprintf("**Operator force-approved %s (%sround %d).**\n\n%s\n\nIts comments stay on record; the loop moves on.",
+			label, m.cyclePrefix(), e.round, e.note))
 	case eventReady:
 		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
@@ -351,8 +376,18 @@ func reviewerName(projectRoot, slug string, inst task.ReviewerInstance, round in
 }
 
 func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return reviewBodyExcept(inst, round, rev, nil)
+}
+
+// reviewBodyExcept is reviewBody without the comments whose index is in
+// skip (those posted inline).
+func reviewBodyExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	verdict := "approve"
-	if rev.Verdict == task.VerdictRequestChanges {
+	switch {
+	case rev.Forced():
+		// Only an escalated request_changes can be forced.
+		verdict = "request changes, force-approved by the operator"
+	case rev.Verdict == task.VerdictRequestChanges:
 		verdict = "request changes"
 	}
 	var b strings.Builder
@@ -360,7 +395,7 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 	if s := strings.TrimSpace(rev.Summary); s != "" {
 		b.WriteString(s + "\n\n")
 	}
-	b.WriteString(renderReviewComments(inst, round, rev))
+	b.WriteString(renderReviewCommentsExcept(inst, round, rev, skip))
 	return b.String()
 }
 
@@ -374,10 +409,17 @@ func reviewBody(inst task.ReviewerInstance, round int, rev task.Review) string {
 // plain string renders as `ungraded` in a graded review and bare in an
 // ungraded one.
 func renderReviewComments(inst task.ReviewerInstance, round int, rev task.Review) string {
+	return renderReviewCommentsExcept(inst, round, rev, nil)
+}
+
+func renderReviewCommentsExcept(inst task.ReviewerInstance, round int, rev task.Review, skip map[int]bool) string {
 	graded := rev.Graded()
 	prefix := rev.IDPrefix(inst)
 	var b strings.Builder
 	for i, c := range rev.Comments {
+		if skip[i] {
+			continue
+		}
 		id := task.CommentID(prefix, round, i)
 		switch {
 		case !graded:
@@ -397,15 +439,25 @@ func gradedCommentLine(c task.ReviewComment) string {
 	if w := strings.TrimSpace(c.Where); w != "" {
 		fmt.Fprintf(&b, " | `%s`", w)
 	}
-	fmt.Fprintf(&b, " - %s", strings.TrimSpace(c.Text))
+	b.WriteString(" - " + commentDetail(c, "\n  ", "  "))
+	return b.String()
+}
+
+// commentDetail renders a graded comment's text, reason, trigger and
+// suggestion, shared by the review body list and inline comments so the
+// two stay alike. triggerSep precedes the Trigger line; indent prefixes
+// the suggestion's fenced block.
+func commentDetail(c task.ReviewComment, triggerSep, indent string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(c.Text))
 	if r := strings.TrimSpace(c.Reason); r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
 	if t := strings.TrimSpace(c.Trigger); t != "" {
-		fmt.Fprintf(&b, "\n  Trigger: %s", t)
+		fmt.Fprintf(&b, "%sTrigger: %s", triggerSep, t)
 	}
 	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
-		b.WriteString("\n\n" + indentLines(fencedBlock(sug), "  "))
+		b.WriteString("\n\n" + indentLines(fencedBlock(sug), indent))
 	}
 	return b.String()
 }
@@ -663,7 +715,10 @@ func reviewOutcomeLine(projectRoot, slug string) string {
 			continue
 		}
 		verdict := "approved"
-		if rev.Verdict == task.VerdictRequestChanges {
+		switch {
+		case rev.Forced():
+			verdict = "force-approved by the operator"
+		case rev.Verdict == task.VerdictRequestChanges:
 			verdict = "requested changes"
 		}
 		parts = append(parts, fmt.Sprintf("%s: %s at round %d.", task.ReviewerLabel(rev.IDPrefix(inst)), verdict, last))
