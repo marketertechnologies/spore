@@ -37,7 +37,9 @@ func DefaultForbidden() []ForbiddenPattern {
 			Reason: "rm -rf /: refusing root-tree wipe",
 		},
 		{
-			Re:     regexp.MustCompile(`\bgit(?:[[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push\b[^|;&\n]*[[:space:]](?:--force|-f)(?:[[:space:]]|$)`),
+			// Matches inside quoted text on purpose, so `bash -c "git push -f"`
+			// is caught; a command that only mentions a force push is denied too.
+			Re:     regexp.MustCompile(`\bgit(?:[[:space:]]+(?:-[cC][[:space:]]+(?:"[^"]*"|'[^']*'|[^[:space:]]+)|-[^[:space:]]+))*[[:space:]]+push\b[^|;&\n]*[[:space:]](?:--force|-[a-zA-Z]*f[a-zA-Z]*)(?:[[:space:];|&)]|$)`),
 			Reason: "git push --force: confirm with the operator before force-pushing",
 		},
 	}

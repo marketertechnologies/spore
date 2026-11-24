@@ -44,6 +44,16 @@ func TestPreToolUse_DefaultForbidden(t *testing.T) {
 		{"follow-tags", "git push --follow-tags origin main", false, ""},
 		{"spore-gh-push", "spore gh exec -- git push -u origin feat/x", false, ""},
 		{"force-after-separator", "git push origin x && echo -f", false, ""},
+		{"git-push-uf-cluster", "git push -uf origin x", true, "force"},
+		{"git-push-fu-cluster", "git push -fu origin x", true, "force"},
+		{"git-no-pager-push-f", "git --no-pager push -f origin x", true, "force"},
+		{"git-push-f-semicolon", "git -C /w push origin x -f;echo ok", true, "force"},
+		{"git-push-force-pipe", "git -C /w push origin x --force|tee log", true, "force"},
+		{"git-push-f-subshell", "(git push origin x -f)", true, "force"},
+		{"git-dash-C-quoted-path", `git -C "/home/u/my repo" push --force origin main`, true, "force"},
+		{"git-dash-C-single-quoted", `git -C '/home/u/my repo' push -f`, true, "force"},
+		{"git-push-u-only", "git push -u origin feat/x", false, ""},
+		{"git-push-follow-tags-cluster", "git push --no-verify -u origin x", false, ""},
 	}
 	def := DefaultForbidden()
 	for _, tc := range cases {
