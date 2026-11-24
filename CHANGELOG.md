@@ -12,6 +12,10 @@
   the local branch (kept on divergence, with a warning, so unpushed
   commits are never dropped). A missing remote or failed fetch warns
   and falls back to the base branch's existing refs, then HEAD.
+  With an https origin and GitHub App credentials in `github.toml`
+  (no `pr_flow` needed), the fetch authenticates as the app the way
+  `spore gh exec` does; the token stays out of argv, URLs and git
+  config, and a failed mint falls back to a plain fetch.
   Existing branches are reused as they are. `[fleet] worktree_base =
   "head"` keeps the old behaviour; an unknown value warns. A
   `.worktreeinclude` at the project root copies matching ignored

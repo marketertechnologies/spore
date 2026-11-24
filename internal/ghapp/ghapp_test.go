@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/versality/spore/internal/task"
 )
 
 func genKey(t *testing.T, dir string, pkcs8 bool) (*rsa.PrivateKey, string) {
@@ -343,5 +347,56 @@ func TestGHRepo(t *testing.T) {
 		if _, err := GHRepo(in); err == nil {
 			t.Errorf("GHRepo(%q) accepted", in)
 		}
+	}
+}
+
+func TestFetchEnv(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"PATH=/bin"}
+	if _, err := FetchEnv(context.Background(), root, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no github.toml: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("operator_login = \"op\"\n")
+	if _, err := FetchEnv(context.Background(), root, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no app credentials: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	key, keyPath := genKey(t, t.TempDir(), false)
+	ts := newTokenServer(t, &key.PublicKey, time.Now().Add(time.Hour))
+	// No pr_flow: a read-only fetch needs only the app credentials.
+	write(fmt.Sprintf("app_id = 1\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, ts.URL))
+	got, err := FetchEnv(context.Background(), root, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Env(base, "ghs_test1"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("env = %q, want Env(base, token) = %q", got, want)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	write(fmt.Sprintf("app_id = 2\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, srv.URL))
+	if _, err := FetchEnv(context.Background(), root, base); err == nil || errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("mint failure: err = %v, want a mint error", err)
 	}
 }

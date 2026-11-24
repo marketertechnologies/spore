@@ -362,7 +362,7 @@ func TestFetchCmd(t *testing.T) {
 	r := newBaseRepo(t)
 	t.Setenv("GIT_SSH_COMMAND", "")
 	t.Setenv("GIT_SSH", "")
-	cmd := fetchCmd(context.Background(), r.root, "feat")
+	cmd := fetchCmd(context.Background(), r.root, "feat", nil)
 	if !strings.HasSuffix(strings.Join(cmd.Args, " "), "origin +refs/heads/feat:refs/remotes/origin/feat") {
 		t.Errorf("args = %q, want an explicit refspec", cmd.Args)
 	}
@@ -385,7 +385,7 @@ func TestFetchCmd(t *testing.T) {
 			t.Setenv("GIT_SSH", "")
 			_ = exec.Command("git", "-C", r.root, "config", "--unset", "core.sshCommand").Run()
 			set()
-			if cmd := fetchCmd(context.Background(), r.root, "feat"); cmd.Env != nil {
+			if cmd := fetchCmd(context.Background(), r.root, "feat", nil); cmd.Env != nil {
 				t.Errorf("operator ssh overridden: env set")
 			}
 		})
@@ -475,5 +475,153 @@ func TestFetchDoesNotWaitOnSSHGrandchild(t *testing.T) {
 	}
 	if !strings.Contains(warn, "failed") {
 		t.Errorf("warn = %q, want a fetch failure", warn)
+	}
+}
+
+const fakeFetchToken = "ghs_faketoken123"
+
+// withFetchAuth installs a fake provider that applies the token the
+// way ghapp.Env does (GH_TOKEN in the env) and records its calls.
+func withFetchAuth(t *testing.T, err error) *int {
+	t.Helper()
+	calls := 0
+	SetFetchAuth(func(ctx context.Context, projectRoot string, base []string) ([]string, error) {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("provider called without a deadline")
+		}
+		if err != nil {
+			return nil, err
+		}
+		return append(append([]string{}, base...), "GH_TOKEN="+fakeFetchToken), nil
+	})
+	t.Cleanup(func() { SetFetchAuth(nil) })
+	return &calls
+}
+
+// captureFetch records the env and argv of every fetch spore runs.
+func captureFetch(t *testing.T) *[]*exec.Cmd {
+	t.Helper()
+	var cmds []*exec.Cmd
+	runFetchCmd = func(cmd *exec.Cmd) ([]byte, error) {
+		cmds = append(cmds, cmd)
+		return runFetch(cmd)
+	}
+	t.Cleanup(func() { runFetchCmd = runFetch })
+	return &cmds
+}
+
+// setOrigin points origin at url and rewrites url to target, so an
+// https or ssh origin fetches from a local repo with no network.
+func (r *baseRepo) setOrigin(url, target string) {
+	r.t.Helper()
+	runGit(r.t, r.root, "remote", "set-url", "origin", url)
+	runGit(r.t, r.root, "config", "url."+target+".insteadOf", url)
+}
+
+func envHas(cmd *exec.Cmd, kv string) bool {
+	for _, e := range cmd.Env {
+		if e == kv {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBaseFetchUsesAppTokenForHTTPSOrigin(t *testing.T) {
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "")
+	r := newBaseRepo(t)
+	r.setOrigin("https://github.invalid/o/r.git", r.origin)
+	want := r.push("main", "ahead on origin")
+	calls := withFetchAuth(t, nil)
+	cmds := captureFetch(t)
+
+	got, warn := r.add("tok", "")
+	if got != want {
+		t.Errorf("forked from %s, want the fetched origin/main %s", got, want)
+	}
+	if warn != "" {
+		t.Errorf("warnings = %q, want none", warn)
+	}
+	if *calls != 1 || len(*cmds) != 1 {
+		t.Fatalf("provider calls = %d, fetches = %d, want 1 and 1", *calls, len(*cmds))
+	}
+	cmd := (*cmds)[0]
+	if !envHas(cmd, "GH_TOKEN="+fakeFetchToken) {
+		t.Error("fetch env lacks the app token")
+	}
+	if !envHas(cmd, "GIT_TERMINAL_PROMPT=0") {
+		t.Error("authenticated fetch lost the non-interactive settings")
+	}
+	if strings.Contains(strings.Join(cmd.Args, " "), fakeFetchToken) {
+		t.Errorf("token on the command line: %q", cmd.Args)
+	}
+	for _, dir := range []string{r.root, filepath.Join(r.root, ".worktrees", "tok")} {
+		if cfg := gitOutput(t, dir, "config", "--list", "--show-origin"); strings.Contains(cfg, fakeFetchToken) {
+			t.Errorf("token written to git config in %s", dir)
+		}
+	}
+	if url := gitOutput(t, r.root, "config", "--get", "remote.origin.url"); url != "https://github.invalid/o/r.git" {
+		t.Errorf("origin url changed to %q", url)
+	}
+}
+
+func TestBaseFetchFallsBackToPlainFetch(t *testing.T) {
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "")
+	cases := []struct {
+		name      string
+		url       string
+		authErr   error
+		badOrigin bool
+		calls     int
+		warnLike  string
+	}{
+		{name: "no config", url: "https://github.invalid/o/r.git", authErr: ErrNoFetchAuth, calls: 1},
+		{name: "mint error", url: "https://github.invalid/o/r.git", authErr: errors.New("mint: 401 Bad credentials"), calls: 1, warnLike: "token unavailable: mint: 401"},
+		{name: "ssh origin", url: "ssh://git@github.invalid/o/r.git", calls: 0},
+		{name: "mint error and failed fetch", url: "https://github.invalid/o/r.git", authErr: errors.New("mint: 401 Bad credentials"), badOrigin: true, calls: 1, warnLike: "failed"},
+		{name: "no config and failed fetch", url: "https://github.invalid/o/r.git", authErr: ErrNoFetchAuth, badOrigin: true, calls: 1, warnLike: "failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newBaseRepo(t)
+			target := r.origin
+			if tc.badOrigin {
+				target = filepath.Join(t.TempDir(), "missing.git")
+			}
+			r.setOrigin(tc.url, target)
+			pushed := r.push("main", "ahead on origin")
+			calls := withFetchAuth(t, tc.authErr)
+			cmds := captureFetch(t)
+
+			got, warn := r.add("plain", "")
+			if *calls != tc.calls {
+				t.Errorf("provider calls = %d, want %d", *calls, tc.calls)
+			}
+			if len(*cmds) != 1 {
+				t.Fatalf("fetches = %d, want 1", len(*cmds))
+			}
+			cmd := (*cmds)[0]
+			if envHas(cmd, "GH_TOKEN="+fakeFetchToken) {
+				t.Error("plain fallback carries the token")
+			}
+			if !envHas(cmd, "GIT_TERMINAL_PROMPT=0") {
+				t.Error("plain fetch is not non-interactive")
+			}
+			if !tc.badOrigin && got != pushed {
+				t.Errorf("forked from %s, want the plainly fetched %s", got, pushed)
+			}
+			if n := strings.Count(warn, "\n"); tc.warnLike == "" && n != 0 || tc.warnLike != "" && n != 1 {
+				t.Errorf("warnings = %q, want %s", warn, map[bool]string{true: "none", false: "exactly one"}[tc.warnLike == ""])
+			}
+			if !strings.Contains(warn, tc.warnLike) {
+				t.Errorf("warning %q does not mention %q", warn, tc.warnLike)
+			}
+			if tc.badOrigin && tc.authErr != ErrNoFetchAuth && !strings.Contains(warn, "token unavailable") {
+				t.Errorf("failed-fetch warning drops the mint error: %q", warn)
+			}
+		})
 	}
 }

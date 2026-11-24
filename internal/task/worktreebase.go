@@ -28,7 +28,26 @@ const (
 var (
 	fetchTimeout       = 30 * time.Second
 	fetchTimeoutMemory = 2 * time.Minute
+	fetchAuthTimeout   = 10 * time.Second
 )
+
+// FetchAuth returns base extended so a git fetch over https
+// authenticates, or ErrNoFetchAuth when the project has nothing to
+// authenticate with. It lives behind a hook because the provider
+// (internal/ghapp) imports this package.
+type FetchAuth func(ctx context.Context, projectRoot string, base []string) ([]string, error)
+
+// ErrNoFetchAuth tells fetchBase to fetch plainly without a warning.
+var ErrNoFetchAuth = errors.New("no fetch credentials configured")
+
+var fetchAuth FetchAuth
+
+// SetFetchAuth installs the base-fetch credential provider. Call it
+// once at startup, before any worktree is created.
+func SetFetchAuth(f FetchAuth) { fetchAuth = f }
+
+// runFetchCmd is runFetch; tests swap it to inspect the command.
+var runFetchCmd = runFetch
 
 // fetchTimedOut remembers, per git common dir, until when origin is
 // treated as unreachable after a fetch hit its deadline. Only a
@@ -162,11 +181,17 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 		fmt.Fprintf(warn, "spore: origin fetch timed out recently (retry after %s); forking from last-known %s\n", until.Format(time.TimeOnly), b)
 		return
 	}
+	env, authErr := fetchAuthEnv(projectRoot)
+	authNote := ""
+	if authErr != nil {
+		authNote = fmt.Sprintf(" (GitHub App token unavailable: %v; fetched without it)", authErr)
+	}
+
 	lockCtx, cancelLock := context.WithTimeout(context.Background(), fetchTimeout)
 	unlock, err := lockFetch(lockCtx, key)
 	cancelLock()
 	if err != nil {
-		fmt.Fprintf(warn, "spore: fetch origin %s: %v; forking from last-known %s\n", b, err, b)
+		fmt.Fprintf(warn, "spore: fetch origin %s: %v%s; forking from last-known %s\n", b, err, authNote, b)
 		return
 	}
 	defer unlock()
@@ -176,31 +201,74 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 	// remembered timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
-	out, err := runFetch(fetchCmd(ctx, projectRoot, b))
+	out, err := runFetchCmd(fetchCmd(ctx, projectRoot, b, env))
 	switch fetchOutcome(err, ctx.Err()) {
 	case fetchOK:
+		if authErr != nil {
+			fmt.Fprintf(warn, "spore: fetch origin %s: GitHub App token unavailable: %v; fetched without it\n", b, authErr)
+		}
 	case fetchDeadline:
 		rememberFetchTimeout(key)
-		fmt.Fprintf(warn, "spore: fetch origin %s timed out after %s; forking from last-known %s\n", b, fetchTimeout, b)
+		fmt.Fprintf(warn, "spore: fetch origin %s timed out after %s%s; forking from last-known %s\n", b, fetchTimeout, authNote, b)
 	default:
-		fmt.Fprintf(warn, "spore: fetch origin %s failed: %v: %s; forking from last-known %s\n", b, err, lastLine(out), b)
+		fmt.Fprintf(warn, "spore: fetch origin %s failed: %v: %s%s; forking from last-known %s\n", b, err, lastLine(out), authNote, b)
 	}
+}
+
+// fetchAuthEnv returns the authenticated fetch env, or nil for a
+// plain fetch: no provider, a non-https origin (the token cannot
+// help an ssh fetch), or no credentials configured. The origin URL
+// is read raw from config, as `spore gh exec` does. A provider error
+// (a failed mint) is returned for the caller's single warning.
+func fetchAuthEnv(projectRoot string) ([]string, error) {
+	if fetchAuth == nil {
+		return nil, nil
+	}
+	out, err := gitCmd(projectRoot, "config", "--get", "remote.origin.url").Output()
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "https://") {
+		return nil, nil
+	}
+	base := plainFetchEnv(projectRoot)
+	if base == nil {
+		base = os.Environ()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fetchAuthTimeout)
+	defer cancel()
+	env, err := fetchAuth(ctx, projectRoot, base)
+	switch {
+	case errors.Is(err, ErrNoFetchAuth):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return env, nil
 }
 
 // fetchCmd fetches exactly the ref pickStart reads, whatever the
 // configured refspec. git stays in spore's process group so Ctrl-C
-// reaches it and an operator-configured ssh can still prompt.
-func fetchCmd(ctx context.Context, projectRoot, b string) *exec.Cmd {
+// reaches it and an operator-configured ssh can still prompt. env
+// nil means plainFetchEnv.
+func fetchCmd(ctx context.Context, projectRoot, b string, env []string) *exec.Cmd {
 	abs, err := filepath.Abs(projectRoot)
 	if err != nil {
 		abs = projectRoot
 	}
 	cmd := exec.CommandContext(ctx, "git", "-c", "safe.directory="+abs, "-C", projectRoot,
 		"fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+b+":refs/remotes/origin/"+b)
-	if !sshConfigured(projectRoot) {
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+	if env == nil {
+		env = plainFetchEnv(projectRoot)
 	}
+	cmd.Env = env
 	return cmd
+}
+
+// plainFetchEnv makes the fetch non-interactive unless the operator
+// set their own ssh command; nil inherits spore's environment.
+func plainFetchEnv(projectRoot string) []string {
+	if sshConfigured(projectRoot) {
+		return nil
+	}
+	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 }
 
 // runFetch sends the command's output to a temp file, not a pipe: an
