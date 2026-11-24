@@ -37,7 +37,7 @@ type fixture struct {
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root := filepath.Join(t.TempDir(), "proj")
+	root := filepath.Join(t.TempDir(), "acme-app")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
