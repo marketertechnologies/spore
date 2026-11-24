@@ -3,8 +3,10 @@ package spore
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
+	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -14,7 +16,10 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 		t.Fatalf("read handover settings: %v", err)
 	}
 	var settings struct {
-		Hooks map[string][]handoverHookGroup `json:"hooks"`
+		Hooks       map[string][]handoverHookGroup `json:"hooks"`
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
 	}
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("parse handover settings: %v", err)
@@ -22,6 +27,12 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 
 	if !hasCommand(settings.Hooks["PreToolUse"], "/home/spore/.claude/hooks/block-bg-bash.pl") {
 		t.Fatal("handover settings lost block-bg-bash PreToolUse hook")
+	}
+	if !hasCommand(settings.Hooks["PreToolUse"], "/run/current-system/sw/bin/spore hooks pretooluse") {
+		t.Fatal("handover settings missing spore hooks pretooluse guard")
+	}
+	if !reflect.DeepEqual(settings.Permissions.Deny, hooks.DefaultDeny()) {
+		t.Fatalf("handover permissions.deny drifted from hooks.DefaultDeny():\ngot  %q\nwant %q", settings.Permissions.Deny, hooks.DefaultDeny())
 	}
 	if !hasCommand(settings.Hooks["SessionStart"], "/home/spore/.claude/hooks/load-state-md.pl") {
 		t.Fatal("handover settings lost load-state-md SessionStart hook")

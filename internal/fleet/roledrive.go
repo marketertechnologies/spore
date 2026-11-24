@@ -56,6 +56,17 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
 	}
+	unlock, err := lockRoleDrive(projectRoot, slug)
+	if errors.Is(err, errLockHeld) {
+		// A drive, reopen or force-approve holds the slug: report only.
+		snap, err := DeriveSnapshot(projectRoot, slug)
+		snap.DriveSkipped = err == nil
+		return snap, err
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
+	}
+	defer unlock()
 	if err := task.CacheSpecFromTaskFile(projectRoot, tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: cache spec: %w", slug, err)
 	}
@@ -126,7 +137,7 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if err := writeSummary(projectRoot, slug); err != nil {
 			return snap, fmt.Errorf("drive %s: write summary: %w", slug, err)
 		}
-		if err := clearEscalationMarkers(projectRoot, slug); err != nil {
+		if err := clearEscalationMarkers(projectRoot, slug, ""); err != nil {
 			return snap, fmt.Errorf("drive %s: clear escalation markers: %w", slug, err)
 		}
 		created, err := writeReadyMarker(projectRoot, slug)
@@ -544,29 +555,6 @@ func notifyRoleLoop(projectRoot, body string) {
 	if err := hooks.NotifyCoordinatorEvent(project, "role-loop", body); err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop notify coordinator: %v\n", err)
 	}
-}
-
-// clearEscalationMarkers removes any `escalated-*` files under the
-// task's state dir. Called on PhaseDone so an operator force-approve
-// after an escalation clears the chip. A missing state dir is fine.
-func clearEscalationMarkers(projectRoot, slug string) error {
-	dir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "escalated-") {
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
 }
 
 // sessionCreated returns the `#{session_created}` stamp tmux assigns

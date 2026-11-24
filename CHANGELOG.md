@@ -33,6 +33,47 @@
   does any pane whose `SPORE_ROLE` is not `engineer`. A stop after a
   `request_changes` verdict and before the next response is
   mid-revision and is not checked.
+- Hooks (0.35.0): hard guardrails in settings, not prompts. Generated
+  and shipped settings now carry a default `permissions.deny` set that
+  holds under `--dangerously-skip-permissions`: `SendMessage`,
+  `Read(~/.config/spore/**/secrets.env)`,
+  `Read(~/.config/spore/**/*.pem)`, and six `Bash(git push ...)`
+  force-push rules (`--force` / `-f`, before or after the refspec;
+  `--force-with-lease` stays allowed). `spore hooks settings` merges
+  `spore.toml` `[permissions] deny = [...]` with the defaults (deduped)
+  and `default_deny = false` drops the guardrail set (`SendMessage`
+  stays). `bootstrap/handover/settings.json` now also wires
+  `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
+  longer blocks `--force-with-lease`. Downstream impact: marketer and
+  crm-gateway pick this up on their next settings render; on existing
+  hosts reinstall `~/.claude/settings.json` from
+  `share/spore/settings.json`. Agents that read `secrets.env` or a
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
+- Role loop (0.34.1): fixes from the PR #110 review.
+  `spore task force-approve <slug> <A|B> --reason <text>` records an
+  `operator_override` on the reviewer's escalated final verdict once
+  the engineer's fix pass has landed; a forced approve skips the
+  grade/round rule, so the operator's override is no longer bounced
+  and silently undone. Only the content the command records (by
+  sha256) in `state/operator-overrides` may carry the field, so a
+  reviewer can neither force its own approve nor rewrite a forced
+  file; the command also clears the escalation marker.
+  `spore task reopen` takes the drive and `github.json` locks before
+  it moves anything, so a busy mirror refuses cleanly instead of
+  leaving a half-reopened loop;
+  drive ticks now hold a per-slug `drive.lock` and a busy tick only
+  reports; a lock that cannot be taken at all is an error, not a busy
+  tick. The PR mirror counts A's escalation fix pass like the phase
+  machine after a force-approve, so B's engineer rounds are no longer
+  skipped or posted one verdict late, and it posts the override with
+  its reason. B's escalation fix pass stays in the mirror after B is
+  forced, and the verdict comment, ready PR body and summary.md mark a
+  forced verdict as force-approved by the operator.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and

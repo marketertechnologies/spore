@@ -22,6 +22,11 @@
             "type": "command",
             "command": "/home/spore/.claude/hooks/block-bg-bash.pl",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/run/current-system/sw/bin/spore hooks pretooluse",
+            "timeout": 5
           }
         ]
       }
@@ -74,7 +79,15 @@
   },
   "permissions": {
     "deny": [
-      "SendMessage"
+      "SendMessage",
+      "Read(~/.config/spore/**/secrets.env)",
+      "Read(~/.config/spore/**/*.pem)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)"
     ]
   },
   "skipDangerousModePermissionPrompt": true

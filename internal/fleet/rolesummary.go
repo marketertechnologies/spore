@@ -103,7 +103,7 @@ func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			fmt.Fprintf(&b, "### round %d -> %s\n\n", r, rev.Verdict)
+			fmt.Fprintf(&b, "### round %d -> %s\n\n", r, verdictHeading(rev))
 			if rev.Summary != "" {
 				fmt.Fprintf(&b, "%s\n\n", rev.Summary)
 			}
