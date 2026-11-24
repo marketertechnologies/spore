@@ -19,8 +19,10 @@ import (
 	spore "github.com/versality/spore"
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
+	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/infect"
 	"github.com/versality/spore/internal/lang"
+	"github.com/versality/spore/internal/task"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -127,6 +129,7 @@ freshly provisioned VM that has no data worth keeping.
 `
 
 func main() {
+	task.SetFetchAuth(ghapp.FetchEnv)
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)

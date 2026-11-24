@@ -14,6 +14,29 @@
   reopen refuses, and it checks the loop can be reopened before it
   calls GitHub. The PR's reopen comment shows only the operator note
   and a pointer, not the feedback, and is cut at 60000 characters.
+- Fleet (0.36.1): new `wt/<slug>` branches fork from a freshly
+  fetched base instead of the main checkout's HEAD. The base is the
+  task's `base:` frontmatter, else `origin/HEAD`'s branch, else
+  `main`, else `master`; spore fetches just that ref with a 30s
+  non-interactive deadline (serialized per repository; a timeout
+  skips further fetches in the same process for two minutes) and
+  forks `--no-track` from the remote ref when it is ahead, else from
+  the local branch (kept on divergence, with a warning, so unpushed
+  commits are never dropped). A missing remote or failed fetch warns
+  and falls back to the base branch's existing refs, then HEAD.
+  With an https origin and GitHub App credentials in `github.toml`
+  (no `pr_flow` needed), the fetch authenticates as the app the way
+  `spore gh exec` does; the token stays out of argv, URLs and git
+  config, and a failed mint falls back to a plain fetch.
+  Existing branches are reused as they are. `[fleet] worktree_base =
+  "head"` keeps the old behaviour; an unknown value warns. A
+  `.worktreeinclude` at the project root copies matching ignored
+  files (such as `.env`) into each new worktree without overwriting,
+  skipping symlinks that could reach the main checkout; the pattern
+  subset is in `docs/worker-dispatch.md`. `spore task merge` now
+  refuses a task whose fork base is not `main` (land it through a
+  PR). Consumers can drop `pre_start` scripts that fetch the base
+  branch.
 - Role loop (0.36.0): engineer check gate. `spore.toml`
   `[fleet.roles.engineer] check = "<shell cmd>"` (plus
   `check_timeout_seconds`, default 900) makes the project's checks a

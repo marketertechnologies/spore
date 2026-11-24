@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/versality/spore/internal/task"
 )
 
 func genKey(t *testing.T, dir string, pkcs8 bool) (*rsa.PrivateKey, string) {
@@ -342,6 +346,85 @@ func TestGHRepo(t *testing.T) {
 	for _, in := range []string{"git@github.com:acme/widget.git", "https://github.com/acme", "https://github.com/a/b/c"} {
 		if _, err := GHRepo(in); err == nil {
 			t.Errorf("GHRepo(%q) accepted", in)
+		}
+	}
+}
+
+func TestFetchEnv(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"PATH=/bin"}
+	// The test token server is the app's API, so its host is the git host.
+	origin := "https://127.0.0.1/o/r.git"
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no github.toml: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("operator_login = \"op\"\n")
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no app credentials: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	key, keyPath := genKey(t, t.TempDir(), false)
+	ts := newTokenServer(t, &key.PublicKey, time.Now().Add(time.Hour))
+	// No pr_flow: a read-only fetch needs only the app credentials.
+	write(fmt.Sprintf("app_id = 1\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, ts.URL))
+	got, err := FetchEnv(context.Background(), root, origin, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Env(base, "ghs_test1"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("env = %q, want Env(base, token) = %q", got, want)
+	}
+
+	// The credential helper answers any host, so another host must not
+	// even mint a token.
+	for _, other := range []string{"https://gitlab.example.com/o/r.git", "http://127.0.0.1/o/r.git", "ssh://git@127.0.0.1/o/r.git", "https://127.0.0.1.evil.example/o/r.git", "::bad"} {
+		calls := ts.calls.Load()
+		if env, err := FetchEnv(context.Background(), root, other, base); !errors.Is(err, task.ErrNoFetchAuth) || env != nil {
+			t.Errorf("origin %q: env=%v err=%v, want ErrNoFetchAuth and no env", other, env != nil, err)
+		}
+		if ts.calls.Load() != calls {
+			t.Errorf("origin %q: minted a token", other)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	write(fmt.Sprintf("app_id = 2\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, srv.URL))
+	if _, err := FetchEnv(context.Background(), root, origin, base); err == nil || errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("mint failure: err = %v, want a mint error", err)
+	}
+}
+
+func TestGitHost(t *testing.T) {
+	for api, want := range map[string]string{
+		"":                                "github.com",
+		"https://api.github.com/":         "github.com",
+		"https://ghe.corp.example/api/v3": "ghe.corp.example",
+		"https://api.acme.ghe.com":        "acme.ghe.com",
+		"http://127.0.0.1:8080":           "127.0.0.1",
+	} {
+		if got := (Config{APIURL: api}).GitHost(); got != want {
+			t.Errorf("GitHost(%q) = %q, want %q", api, got, want)
 		}
 	}
 }
