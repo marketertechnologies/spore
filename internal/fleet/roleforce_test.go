@@ -141,3 +141,41 @@ func mustRead(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestForceApproveInvalidResultLeavesFile(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	writeEng(1)(t, root, slug)
+	path := task.ReviewPath(root, slug, task.ReviewerA, 1)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"author":"A","verdict":"request_changes","summary":"s","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || !strings.Contains(err.Error(), "left as it was") {
+		t.Fatalf("err = %v, want a validation refusal", err)
+	}
+	if got := mustRead(t, path); got != raw {
+		t.Fatalf("file changed after a refused override:\n%s", got)
+	}
+}
+
+func TestGitHubMirrorPostsOverrideReason(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	escalateA(t, f.root, f.slug)
+	for range 2 {
+		f.tick(t)
+	}
+	if _, err := ForceApproveReview(f.root, f.tasksDir, f.slug, task.ReviewerA, "edge case accepted for now"); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if !strings.Contains(f.log(t), "round 3).**\n\nedge case accepted for now") || !strings.Contains(f.log(t), "**Operator force-approved") {
+		t.Fatalf("override comment missing:\n%s", f.log(t))
+	}
+	if s := f.state(t); !s.posted("override-A-3") {
+		t.Fatal("override event not recorded as posted")
+	}
+}

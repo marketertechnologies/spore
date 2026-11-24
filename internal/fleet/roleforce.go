@@ -23,6 +23,11 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
 	}
+	unlock, ok := lockRoleDrive(projectRoot, slug)
+	if !ok {
+		return 0, fmt.Errorf("force-approve %s: a drive tick holds the loop; retry", slug)
+	}
+	defer unlock()
 	rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
 	if err != nil {
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
@@ -31,12 +36,6 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 		return 0, fmt.Errorf("force-approve %s: reviewer %s has no verdict yet", slug, inst)
 	}
 	round := rounds[len(rounds)-1]
-	unlock, ok := lockRoleDrive(projectRoot, slug)
-	if !ok {
-		return 0, fmt.Errorf("force-approve %s: a drive tick holds the loop; retry", slug)
-	}
-	defer unlock()
-
 	path := task.ReviewPath(projectRoot, slug, inst, round)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -67,7 +66,12 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 		return 0, err
 	}
 	if _, err := task.ReadReview(projectRoot, slug, inst, round); err != nil {
-		return 0, fmt.Errorf("force-approve %s: override written but the file does not validate: %w", slug, err)
+		// Left in place, the drive would bounce the file and re-run the
+		// reviewer: the very undo this command exists to prevent.
+		if rerr := os.WriteFile(path, b, 0o644); rerr != nil {
+			return 0, fmt.Errorf("force-approve %s: override does not validate (%v) and restoring %s failed: %w", slug, err, path, rerr)
+		}
+		return 0, fmt.Errorf("force-approve %s: override does not validate; verdict left as it was: %w", slug, err)
 	}
 	return round, nil
 }
