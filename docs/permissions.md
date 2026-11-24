@@ -39,7 +39,7 @@ deny = ["Bash(terraform apply *)", "Read(./.env)"]
 default_deny = false
 ```
 
-Claude Code merges `permissions.deny` across user, project and local settings files instead of overriding. `default_deny = false` therefore only removes the defaults from the project-rendered file; on a host whose `~/.claude/settings.json` carries them (every infected host), they still apply. Edit the host file to opt out there.
+Claude Code merges `permissions.deny` across user, project and local settings files instead of overriding. `default_deny = false` therefore only removes the defaults from the project-rendered file; on a host whose `~/.claude/settings.json` carries them (every infected host), they still apply. Edit the host file to opt out there. On a host running the spore-fleet module with `claudeManagedSettings.enable` (the default), the defaults ship in `/etc/claude-code/managed-settings.d/50-spore.json`, which no user or project file can lift; opting out there means `claudeManagedSettings.enable = false` (see `docs/fleet-module.md`).
 
 ## PreToolUse guard
 
