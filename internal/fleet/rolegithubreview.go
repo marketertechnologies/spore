@@ -57,7 +57,12 @@ func (m *githubMirror) sendReview(inst task.ReviewerInstance, round int, rev tas
 		inline[a.idx] = true
 	}
 	body := strings.Replace(reviewBodyExcept(inst, round, rev, inline), "(round ", "("+m.cyclePrefix()+"round ", 1)
-	p := reviewPayload{CommitID: m.state.PushedSHA, Event: "COMMENT", Body: body, Comments: anchors}
+	p := reviewPayload{Event: "COMMENT", Body: body, Comments: anchors}
+	// A body-only review needs no commit, so a 422 caused by the commit
+	// itself (head moved outside the mirror) cannot block the fallback.
+	if len(anchors) > 0 {
+		p.CommitID = m.state.PushedSHA
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -105,12 +110,16 @@ func reviewAnchors(inst task.ReviewerInstance, round int, rev task.Review) []inl
 }
 
 // parseWhere splits `path:line` into a repo-relative path and a
-// positive line. Ranges, bare paths and absolute paths do not parse.
+// positive line; a trailing `:col` is dropped. Ranges, bare paths and
+// absolute paths do not parse.
 func parseWhere(where string) (string, int, bool) {
 	w := strings.Trim(strings.TrimSpace(where), "`")
 	file, num, ok := cutLast(w, ":")
 	if !ok {
 		return "", 0, false
+	}
+	if f, l, ok := cutLast(file, ":"); ok && isDigits(l) {
+		file, num = f, l
 	}
 	line, err := strconv.Atoi(num)
 	file = strings.TrimPrefix(file, "./")
@@ -118,6 +127,10 @@ func parseWhere(where string) (string, int, bool) {
 		return "", 0, false
 	}
 	return file, line, true
+}
+
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 func cutLast(s, sep string) (before, after string, ok bool) {
@@ -129,18 +142,7 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 }
 
 func inlineCommentBody(id string, c task.ReviewComment) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "**%s** | %s | %s\n\n%s", id, c.Severity, c.Category, strings.TrimSpace(c.Text))
-	if r := strings.TrimSpace(c.Reason); r != "" {
-		fmt.Fprintf(&b, " (%s)", r)
-	}
-	if t := strings.TrimSpace(c.Trigger); t != "" {
-		fmt.Fprintf(&b, "\n\nTrigger: %s", t)
-	}
-	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
-		b.WriteString("\n\n" + fencedBlock(sug))
-	}
-	return b.String()
+	return fmt.Sprintf("**%s** | %s | %s\n\n%s", id, c.Severity, c.Category, commentDetail(c, "\n\n", ""))
 }
 
 // anchorsInDiff keeps the anchors whose line is on the right side of the

@@ -33,13 +33,6 @@ func (f *mirrorFixture) reviews(t *testing.T) []reviewPayload {
 	return out
 }
 
-func writeFile(t *testing.T, path, s string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // anchoredReview has one comment on a diff line (one.txt:1), one on a
 // line outside the diff (gone.go:5), and two without a parseable where.
 var anchoredReview = task.Review{
@@ -100,8 +93,8 @@ func TestGitHubMirrorInlineReviewPayload(t *testing.T) {
 
 func TestGitHubMirrorInline422KeepsDiffAnchors(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
-	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":"gone.go"`)
-	writeFile(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":"gone.go"`)
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -123,7 +116,7 @@ func TestGitHubMirrorInline422KeepsDiffAnchors(t *testing.T) {
 
 func TestGitHubMirrorInline422FallsBackToBody(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
-	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":`)
+	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":`)
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -132,8 +125,8 @@ func TestGitHubMirrorInline422FallsBackToBody(t *testing.T) {
 	}
 	revs := f.reviews(t)
 	last := revs[len(revs)-1]
-	if len(last.Comments) != 0 {
-		t.Fatalf("fallback kept anchors: %+v", last.Comments)
+	if len(last.Comments) != 0 || last.CommitID != "" {
+		t.Fatalf("fallback payload: commit %q, anchors %+v", last.CommitID, last.Comments)
 	}
 	for _, id := range []string{"C1.1", "C1.2", "C1.3", "C1.4"} {
 		if !strings.Contains(last.Body, "**"+id+"**") {
@@ -146,8 +139,8 @@ func TestGitHubMirrorInline422FallsBackToBody(t *testing.T) {
 // narrowed review: the mirror falls back to body only and posts.
 func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
-	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":"one.txt"`)
-	writeFile(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":"one.txt"`)
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -155,8 +148,8 @@ func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
 		t.Fatalf("calls = %q", calls)
 	}
 	revs := f.reviews(t)
-	if got := anchorPaths(revs[len(revs)-2]); !reflect.DeepEqual(got, []string{"one.txt"}) {
-		t.Fatalf("narrowed anchors = %v", got)
+	if n := revs[len(revs)-2]; !reflect.DeepEqual(anchorPaths(n), []string{"one.txt"}) || n.CommitID != f.state(t).PushedSHA {
+		t.Fatalf("narrowed payload = %+v", n)
 	}
 	last := revs[len(revs)-1]
 	if len(last.Comments) != 0 {
@@ -175,8 +168,8 @@ func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
 // Readable patches that confirm no anchor skip the narrowed retry.
 func TestGitHubMirrorInline422NoDiffAnchorsGoesToBody(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
-	writeFile(t, os.Getenv("FAKE_GH_422"), `"path":`)
-	writeFile(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":`)
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -196,7 +189,7 @@ func TestGitHubMirrorInline422NoDiffAnchorsGoesToBody(t *testing.T) {
 // sent again, once, on the next tick.
 func TestGitHubMirrorInlineReviewPostsOnceAcrossRetries(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
-	writeFile(t, os.Getenv("FAKE_GH_422"), `"event"`)
+	writeRaw(t, os.Getenv("FAKE_GH_422"), `"event"`)
 	f.postAnchoredReview(t)
 	if f.posted(t, "B/round-1.json") {
 		t.Fatal("rejected review marked posted")
@@ -239,6 +232,7 @@ func TestParseWhere(t *testing.T) {
 		"/abs/a.go:3":    {"", 0, false},
 		":3":             {"", 0, false},
 		"a.go:3 and b:4": {"", 0, false},
+		"a/b.go:42:7":    {"a/b.go", 42, true},
 	} {
 		p, l, ok := parseWhere(in)
 		if p != want.path || l != want.line || ok != want.ok {

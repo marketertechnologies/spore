@@ -56,9 +56,11 @@ Never measure against a sibling task branch.
 
 ## Verdict mapping
 
-The skill reports typed findings through its `ReportFindings` tool:
-`file`, `line`, `summary`, `failure_scenario`, `category`. They carry
-no severity. Map each finding to one graded `comments` entry,
+The skill reports typed findings, usually through its
+`ReportFindings` tool: `file`, `line`, `summary`, `failure_scenario`,
+`category`. Run as a forked skill it may instead return a plain JSON
+array of the same fields, sometimes without `category`. Findings
+carry no severity. Map each finding to one graded `comments` entry,
 transcribing the fields directly:
 
 | Finding field      | Comment key |
@@ -68,8 +70,9 @@ transcribing the fields directly:
 | `failure_scenario` | `trigger`   |
 | `category`         | `category`  |
 
-A `category` outside the list in "Grading comments" maps to the
-closest listed one. The draft-PR mirror anchors each comment at its
+A `category` outside the list in "Grading comments", or a finding
+with no `category`, maps to the closest listed one; pick it yourself
+(`category` is required in the verdict file). The draft-PR mirror anchors each comment at its
 `where` line on the PR diff, so keep `where` exactly `path:line`.
 
 - Sort the comments by severity (see "Comment IDs").

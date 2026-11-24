@@ -411,15 +411,25 @@ func gradedCommentLine(c task.ReviewComment) string {
 	if w := strings.TrimSpace(c.Where); w != "" {
 		fmt.Fprintf(&b, " | `%s`", w)
 	}
-	fmt.Fprintf(&b, " - %s", strings.TrimSpace(c.Text))
+	b.WriteString(" - " + commentDetail(c, "\n  ", "  "))
+	return b.String()
+}
+
+// commentDetail renders a graded comment's text, reason, trigger and
+// suggestion, shared by the review body list and inline comments so the
+// two stay alike. triggerSep precedes the Trigger line; indent prefixes
+// the suggestion's fenced block.
+func commentDetail(c task.ReviewComment, triggerSep, indent string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(c.Text))
 	if r := strings.TrimSpace(c.Reason); r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
 	if t := strings.TrimSpace(c.Trigger); t != "" {
-		fmt.Fprintf(&b, "\n  Trigger: %s", t)
+		fmt.Fprintf(&b, "%sTrigger: %s", triggerSep, t)
 	}
 	if sug := strings.Trim(c.Suggestion, "\n"); strings.TrimSpace(sug) != "" {
-		b.WriteString("\n\n" + indentLines(fencedBlock(sug), "  "))
+		b.WriteString("\n\n" + indentLines(fencedBlock(sug), indent))
 	}
 	return b.String()
 }

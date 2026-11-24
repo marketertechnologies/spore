@@ -172,7 +172,7 @@ func TestBundledRoleBodiesCommentIDContract(t *testing.T) {
 			"$SPORE_REVIEWER_PREFIX", "`<prefix><round>.<n>`", "authoritative numbered list",
 			"you run last\n(slot B)",
 			"`$SPORE_REVIEW_EFFORT <pr_number>`. Do not pass `--comment`",
-			"| `file:line`        | `where`     |", "| `failure_scenario` | `trigger`   |",
+			"| `file:line`        | `where`     |", "| `failure_scenario` | `trigger`   |", "or a finding\nwith no `category`, maps to the closest listed one",
 		},
 		"engineer.md": {
 			"`<prefix><round>.<n>`", "`R1.3` is `\"comment\": 2`", "`detail`", "`sha`", "- `pr`: the PR title and description",
