@@ -41,10 +41,15 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !hasCommand(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore fleet replenish-hook") {
 		t.Fatal("handover settings missing fleet replenish-hook Stop hook")
 	}
-	if !hasTimeout(settings.Hooks["Stop"], "/run/current-system/sw/bin/spore hooks engineer-check", task.EngineerCheckHookTimeout) {
+	if !hasTimeout(settings.Hooks["Stop"], handoverEngineerCheck, task.EngineerCheckHookTimeout) {
 		t.Fatalf("handover settings missing engineer-check Stop hook with timeout %d", task.EngineerCheckHookTimeout)
 	}
 }
+
+// handoverEngineerCheck skips the hook on a binary without the
+// subcommand: an older spore exits 2 on an unknown subcommand, which
+// Claude Code reads as a blocked stop.
+const handoverEngineerCheck = "/run/current-system/sw/bin/spore hooks 2>&1 | grep -q engineer-check || exit 0; exec /run/current-system/sw/bin/spore hooks engineer-check"
 
 func hasTimeout(groups []handoverHookGroup, command string, timeout int) bool {
 	for _, group := range groups {

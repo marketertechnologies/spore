@@ -27,6 +27,9 @@
   panes have no Stop hook wiring and always take that path. Projects
   with a hand-rolled gate on `spore task done` (marketer's PreToolUse
   hook) can move the command into `check` and drop the hook.
+  The shipped hook command first checks that `spore hooks` lists
+  `engineer-check`, so a host still on an older binary (which exits 2
+  on an unknown subcommand, blocking every stop) skips it.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and
