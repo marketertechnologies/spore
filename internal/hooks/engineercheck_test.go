@@ -202,3 +202,22 @@ func TestEngineerCheckTimeout(t *testing.T) {
 		t.Errorf("timeout took %s", took)
 	}
 }
+
+func TestEngineerCheckRunsInTaskWorktree(t *testing.T) {
+	in, _ := checkFixture(t, "pwd -P > ../../cwd")
+	writeResponse(t, in.ProjectRoot, 1)
+	if res := mustCheck(t, in); res.Code != 0 {
+		t.Fatalf("code %d: %s", res.Code, res.Stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(in.ProjectRoot, "cwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(task.TaskWorktree(in.ProjectRoot, "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("check ran in %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}

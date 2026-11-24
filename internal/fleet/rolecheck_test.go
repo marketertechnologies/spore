@@ -164,3 +164,26 @@ func TestDriveWithoutCheckIgnoresGate(t *testing.T) {
 		t.Fatalf("check = %q, reviewer spawned = %v; want off and spawned", snap.Check, f.panes[revA] != nil)
 	}
 }
+
+// A pass marker on the revision releases the live reviewer with a wake
+// telling it the suite already passed.
+func TestDriveReviewerWakeNamesPassedCheck(t *testing.T) {
+	root, tasksDir, sha, _, calls := checkGateFixture(t)
+	walkPhases(t, root, "demo", []phaseRow{
+		{writeEng(1), PhaseReviewA, task.ReviewerA, 0},
+		{writeGraded(task.ReviewerA, 1, task.VerdictRequestChanges, highBug), PhaseEngineerReviseA, task.ReviewerA, 1},
+		{writeEng(2), PhaseReviewA, task.ReviewerA, 1},
+	})
+	touchMarker(t, task.CheckPassPath(root, "demo", 2, sha))
+	snap, err := DriveRoleLoop(root, tasksDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Check != task.CheckPassed {
+		t.Fatalf("check = %q, want passed", snap.Check)
+	}
+	w := sessionWakes(*calls, "/reviewer-A")
+	if len(w) != 1 || !strings.Contains(w[0].msg, "`just check`) passed on HEAD") || !strings.Contains(w[0].msg, "do not re-run the full suite") {
+		t.Fatalf("reviewer wakes = %+v, want one wake naming the passed check", w)
+	}
+}
