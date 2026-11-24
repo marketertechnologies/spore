@@ -25,6 +25,12 @@ const DefaultEngineerCheckTimeoutSeconds = 900
 // before the hook can record a result.
 const EngineerCheckHookTimeout = 3600
 
+// MaxEngineerCheckTimeoutSeconds caps check_timeout_seconds a minute
+// under EngineerCheckHookTimeout, leaving the hook time to record the
+// attempt; a check killed with the hook records nothing and is rerun
+// on every stop, so the give-up never triggers.
+const MaxEngineerCheckTimeoutSeconds = EngineerCheckHookTimeout - 60
+
 // MaxCheckAttempts is how many failing runs of the check on one
 // engineer round and HEAD sha block the stop before the hook gives up,
 // records check-failed, and lets the stop through.
@@ -40,7 +46,8 @@ type EngineerCheck struct {
 // LoadEngineerCheck reads `check` and `check_timeout_seconds` from
 // `[fleet.roles.engineer]` in <projectRoot>/spore.toml. A missing file,
 // section, or key leaves Cmd empty; a missing, bad, or non-positive
-// timeout falls back to DefaultEngineerCheckTimeoutSeconds.
+// timeout falls back to DefaultEngineerCheckTimeoutSeconds, and one
+// past MaxEngineerCheckTimeoutSeconds is clamped to it.
 func LoadEngineerCheck(projectRoot string) EngineerCheck {
 	c := EngineerCheck{TimeoutSeconds: DefaultEngineerCheckTimeoutSeconds}
 	entries, err := sporetoml.ReadSection(projectRoot, "fleet.roles.engineer")
@@ -53,7 +60,7 @@ func LoadEngineerCheck(projectRoot string) EngineerCheck {
 			c.Cmd = strings.TrimSpace(e.Value)
 		case "check_timeout_seconds":
 			if n, err := strconv.Atoi(e.Value); err == nil && n > 0 {
-				c.TimeoutSeconds = n
+				c.TimeoutSeconds = min(n, MaxEngineerCheckTimeoutSeconds)
 			}
 		}
 	}

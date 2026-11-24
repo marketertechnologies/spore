@@ -268,8 +268,10 @@ check_timeout_seconds = 900     # default 900
 ```
 
 The gate is `spore hooks engineer-check`, a Stop hook shipped in
-`bootstrap/handover/settings.json` (timeout 3600s, so keep
-`check_timeout_seconds` below that). It is a no-op unless
+`bootstrap/handover/settings.json` (timeout 3600s; a larger
+`check_timeout_seconds` is clamped to 3540s so the hook can record the
+result). The shipped command runs it only when `spore hooks` lists
+`engineer-check`, so a host on an older binary skips it. It is a no-op unless
 `SPORE_ROLE=engineer` (set at spawn), `check` is set, and the latest
 `responses/engineer-round-N.json` has no `check-pass-N-<sha>` or
 `check-failed-N-<sha>` marker newer than it, sha being the worktree

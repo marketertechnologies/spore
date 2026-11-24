@@ -15,6 +15,10 @@ func TestLoadEngineerCheck(t *testing.T) {
 	if got := LoadEngineerCheck(root).TimeoutSeconds; got != DefaultEngineerCheckTimeoutSeconds {
 		t.Errorf("zero timeout: got %d, want default", got)
 	}
+	writeSporeToml(t, root, "[fleet.roles.engineer]\ncheck = \"x\"\ncheck_timeout_seconds = 7200\n")
+	if got := LoadEngineerCheck(root).TimeoutSeconds; got != MaxEngineerCheckTimeoutSeconds {
+		t.Errorf("timeout past the hook timeout: got %d, want %d", got, MaxEngineerCheckTimeoutSeconds)
+	}
 	if DefaultEngineerCheckTimeoutSeconds >= EngineerCheckHookTimeout {
 		t.Errorf("default check timeout %d must stay under the hook timeout %d", DefaultEngineerCheckTimeoutSeconds, EngineerCheckHookTimeout)
 	}

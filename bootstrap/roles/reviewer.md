@@ -282,7 +282,7 @@ The wake that hands you a revision names the result too.
    (category `spec`): it requests changes only under the round-1
    rule, never blocks a later round on its own. Instance B skips
    this check in round 1, where it reads no engineer response.
-   Verify the tests and lints (see "The project check" below).
+   Verify the tests and lints (see "The project check" above).
 2. Grade each comment; the verdict follows from the grades.
 3. Write `reviews/<instance>/round-N.json`.
 4. Mark the round done. The coordinator wakes the engineer (on
