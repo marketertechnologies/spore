@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Hooks (0.35.0): hard guardrails in settings, not prompts. Generated
+  and shipped settings now carry a default `permissions.deny` set that
+  holds under `--dangerously-skip-permissions`: `SendMessage`,
+  `Read(~/.config/spore/**/secrets.env)`,
+  `Read(~/.config/spore/**/*.pem)`, and six `Bash(git push ...)`
+  force-push rules (`--force` / `-f`, before or after the refspec;
+  `--force-with-lease` stays allowed). `spore hooks settings` merges
+  `spore.toml` `[permissions] deny = [...]` with the defaults (deduped)
+  and `default_deny = false` drops the guardrail set (`SendMessage`
+  stays). `bootstrap/handover/settings.json` now also wires
+  `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
+  longer blocks `--force-with-lease`. Downstream impact: marketer and
+  crm-gateway pick this up on their next settings render; on existing
+  hosts reinstall `~/.claude/settings.json` from
+  `share/spore/settings.json`. Agents that read `secrets.env` or a
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
 - Role loop (0.34.1): fixes from the PR #110 review.
   `spore task force-approve <slug> <A|B> --reason <text>` records an
   `operator_override` on the reviewer's escalated final verdict once

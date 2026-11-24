@@ -74,6 +74,8 @@ Subcommands:
                          write the (currently no-op) response JSON.
   settings               Read a hook binding JSON from stdin, emit a
                          deterministic settings.json to stdout.
+                         permissions.deny merges the kernel defaults
+                         with spore.toml [permissions] at the repo root.
   codex-config [--spore PATH]
                          Emit the user-level Codex hooks.json
                          ($CODEX_HOME/hooks.json) to stdout.

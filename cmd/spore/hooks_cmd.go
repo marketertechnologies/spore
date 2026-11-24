@@ -162,7 +162,14 @@ func runHooksSettings() int {
 			})
 		}
 	}
-	out, err := hooks.Settings(events)
+	perms := hooks.DefaultPermissions()
+	if root, err := repoRoot(); err == nil {
+		if perms, err = hooks.LoadPermissions(root); err != nil {
+			fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+			return 1
+		}
+	}
+	out, err := hooks.SettingsWith(events, perms)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
 		return 1

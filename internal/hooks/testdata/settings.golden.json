@@ -41,7 +41,15 @@
   },
   "permissions": {
     "deny": [
-      "SendMessage"
+      "SendMessage",
+      "Read(~/.config/spore/**/secrets.env)",
+      "Read(~/.config/spore/**/*.pem)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)"
     ]
   }
 }
