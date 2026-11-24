@@ -61,10 +61,11 @@ deny = ["Read(./.env)"]
 
 func TestLoadPermissions_Errors(t *testing.T) {
 	for name, body := range map[string]string{
-		"unknown key":  "[permissions]\nallow = [\"x\"]\n",
-		"bad bool":     "[permissions]\ndefault_deny = no\n",
-		"not an array": "[permissions]\ndeny = \"Bash(x *)\"\n",
-		"multi-line":   "[permissions]\ndeny = [\n\"Bash(x *)\",\n]\n",
+		"unknown key":    "[permissions]\nallow = [\"x\"]\n",
+		"bad bool":       "[permissions]\ndefault_deny = no\n",
+		"not an array":   "[permissions]\ndeny = \"Bash(x *)\"\n",
+		"multi-line":     "[permissions]\ndeny = [\n\"Bash(x *)\",\n]\n",
+		"duplicate deny": "[permissions]\ndeny = [\"a\"]\ndeny = [\"b\"]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := LoadPermissions(writeSporeToml(t, body)); err == nil {

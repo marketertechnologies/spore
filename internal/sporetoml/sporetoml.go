@@ -86,8 +86,9 @@ func (e Entry) Bool() (bool, error) {
 }
 
 // Strings parses e.Value as a single-line TOML array of strings, such
-// as ["a", 'b']. Basic strings honour \" and \\ escapes; literal
-// strings are taken verbatim. A trailing comma is allowed.
+// as ["a", 'b']. Basic strings honour the \" \\ \t \n \r escapes and
+// reject the rest; literal strings are taken verbatim. A trailing comma
+// is allowed.
 func (e Entry) Strings() ([]string, error) {
 	bad := func(why string) error {
 		return fmt.Errorf("line %d: %s: want a one-line array of strings, %s", e.Line, e.Key, why)
@@ -120,8 +121,22 @@ func (e Entry) Strings() ([]string, error) {
 				closed = true
 				break
 			}
-			if q == '"' && ch == '\\' && i < len(body) && (body[i] == '"' || body[i] == '\\') {
-				ch = body[i]
+			if q == '"' && ch == '\\' {
+				if i >= len(body) {
+					return nil, bad("unterminated string")
+				}
+				switch body[i] {
+				case '"', '\\':
+					ch = body[i]
+				case 't':
+					ch = '\t'
+				case 'n':
+					ch = '\n'
+				case 'r':
+					ch = '\r'
+				default:
+					return nil, bad(fmt.Sprintf("unsupported escape \\%c", body[i]))
+				}
 				i++
 			}
 			b.WriteByte(ch)
@@ -148,7 +163,9 @@ func StripComment(line string) string {
 		ch := line[i]
 		switch {
 		case inQuote != 0:
-			if ch == inQuote {
+			if inQuote == '"' && ch == '\\' {
+				i++
+			} else if ch == inQuote {
 				inQuote = 0
 			}
 		case ch == '"' || ch == '\'':

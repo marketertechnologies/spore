@@ -35,7 +35,7 @@ var defaultDeny = []string{
 // DefaultDeny returns the kernel rules plus the guardrail set, in the
 // order Settings emits them.
 func DefaultDeny() []string {
-	return append(append([]string(nil), kernelDeny...), defaultDeny...)
+	return DefaultPermissions().DenyRules()
 }
 
 // Permissions is the [permissions] section of a project's spore.toml.
@@ -57,7 +57,12 @@ func LoadPermissions(projectRoot string) (Permissions, error) {
 	if err != nil {
 		return p, fmt.Errorf("permissions: %w", err)
 	}
+	seen := make(map[string]bool)
 	for _, e := range entries {
+		if seen[e.Key] {
+			return p, fmt.Errorf("permissions: line %d: duplicate key %q in [permissions]", e.Line, e.Key)
+		}
+		seen[e.Key] = true
 		switch e.Key {
 		case "default_deny":
 			v, err := e.Bool()

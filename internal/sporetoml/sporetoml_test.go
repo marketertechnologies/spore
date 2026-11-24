@@ -88,6 +88,7 @@ func TestEntryStrings(t *testing.T) {
 		{`["Bash(rm -rf *)", 'Read(~/x/**)',]`, []string{"Bash(rm -rf *)", "Read(~/x/**)"}},
 		{`["a, b", "c\"d", "e\\f"]`, []string{"a, b", `c"d`, `e\f`}},
 		{`['lit\"']`, []string{`lit\"`}},
+		{`["a\tb"]`, []string{"a\tb"}},
 	}
 	for _, tc := range cases {
 		got, err := Entry{Key: "deny", Value: tc.in}.Strings()
@@ -99,7 +100,7 @@ func TestEntryStrings(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	for _, in := range []string{`"a"`, `[`, `[a]`, `["a" "b"]`, `["a`, `["a",,]`} {
+	for _, in := range []string{`"a"`, `[`, `[a]`, `["a" "b"]`, `["a`, `["a",,]`, `["\u0041"]`, `["a\"]`} {
 		if _, err := (Entry{Key: "deny", Value: in}).Strings(); err == nil {
 			t.Errorf("%s: want error", in)
 		}
@@ -116,6 +117,20 @@ func TestParseSectionStringArray(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(v, []string{"Bash(a # b)", "c"}) {
+		t.Errorf("got %q", v)
+	}
+}
+
+func TestParseSectionEscapedQuoteBeforeHash(t *testing.T) {
+	got, err := ParseSection("[permissions]\ndeny = [\"Bash(echo \\\"#\\\" *)\"] # note\n", "permissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := got[0].Strings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v, []string{`Bash(echo "#" *)`}) {
 		t.Errorf("got %q", v)
 	}
 }
