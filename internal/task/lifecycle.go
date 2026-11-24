@@ -66,15 +66,8 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	branch := "wt/" + slug
-	args := []string{"worktree", "add", worktree}
-	if branchExists(projectRoot, branch) {
-		args = append(args, branch)
-	} else {
-		args = append(args, "-b", branch)
-	}
-	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	if err := addTaskWorktree(projectRoot, worktree, "wt/"+slug); err != nil {
+		return "", err
 	}
 	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
 		return "", fmt.Errorf("copy brief: %w", err)
@@ -465,19 +458,12 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	branch := "wt/" + slug
 
 	if _, err := os.Stat(worktree); os.IsNotExist(err) {
-		args := []string{"worktree", "add", worktree}
-		if branchExists(projectRoot, branch) {
-			args = append(args, branch)
-		} else {
-			args = append(args, "-b", branch)
-		}
-		out, err := gitCmd(projectRoot, args...).CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+		if err := addTaskWorktree(projectRoot, worktree, branch); err != nil {
+			return "", err
 		}
 		// Copy the brief into the new worktree so headless workers
-		// can read it. The worktree forks from the source branch's
-		// HEAD which often does not yet include this brief: Start
+		// can read it. The worktree's base often does not yet include
+		// this brief: Start
 		// rewrites it just before this call (status flip), and the
 		// operator may not have committed it on the source branch
 		// either. Soft-fails on a missing source brief; the worker
