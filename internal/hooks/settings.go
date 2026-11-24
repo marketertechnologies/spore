@@ -36,6 +36,14 @@ func Settings(events map[string][]HookBin) ([]byte, error) {
 // Hooks with the same Matcher within one event are consolidated
 // into a single group. permissions.deny is perms.DenyRules().
 func SettingsWith(events map[string][]HookBin, perms Permissions) ([]byte, error) {
+	top, err := buildTop(events, perms)
+	if err != nil {
+		return nil, err
+	}
+	return marshalTop(top)
+}
+
+func buildTop(events map[string][]HookBin, perms Permissions) (settingsTop, error) {
 	hooksMap := make(map[string][]hookGroup)
 
 	names := make([]string, 0, len(events))
@@ -47,7 +55,7 @@ func SettingsWith(events map[string][]HookBin, perms Permissions) ([]byte, error
 	for _, name := range names {
 		groups, err := consolidate(events[name])
 		if err != nil {
-			return nil, err
+			return settingsTop{}, err
 		}
 		if len(groups) > 0 {
 			hooksMap[name] = groups
@@ -61,20 +69,25 @@ func SettingsWith(events map[string][]HookBin, perms Permissions) ([]byte, error
 	if len(hooksMap) > 0 {
 		top.Hooks = hooksMap
 	}
+	return top, nil
+}
+
+func marshalTop(top settingsTop) ([]byte, error) {
 	b, err := json.MarshalIndent(top, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal settings: %w", err)
 	}
-	b = append(b, '\n')
-	return b, nil
+	return append(b, '\n'), nil
 }
 
 // settingsTop field order is alphabetical by JSON key for
 // deterministic output.
 type settingsTop struct {
-	Schema      string                 `json:"$schema"`
-	Hooks       map[string][]hookGroup `json:"hooks,omitempty"`
-	Permissions *settingsPermissions   `json:"permissions,omitempty"`
+	Schema                 string                      `json:"$schema"`
+	EnabledPlugins         map[string]bool             `json:"enabledPlugins,omitempty"`
+	ExtraKnownMarketplaces map[string]marketplaceEntry `json:"extraKnownMarketplaces,omitempty"`
+	Hooks                  map[string][]hookGroup      `json:"hooks,omitempty"`
+	Permissions            *settingsPermissions        `json:"permissions,omitempty"`
 }
 
 type settingsPermissions struct {

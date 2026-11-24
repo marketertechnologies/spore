@@ -73,6 +73,34 @@ func hasTimeout(groups []handoverHookGroup, command string, timeout int) bool {
 	return false
 }
 
+func TestHandoverSettingsMatchHostEvents(t *testing.T) {
+	raw, err := os.ReadFile("bootstrap/handover/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := hooks.ManagedSettings("/run/current-system/sw/bin/spore", "/home/spore/.claude/hooks", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type doc struct {
+		Hooks map[string][]struct {
+			Matcher string           `json:"matcher"`
+			Hooks   []map[string]any `json:"hooks"`
+		} `json:"hooks"`
+		Permissions map[string]any `json:"permissions"`
+	}
+	var got, gen doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(want, &gen); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, gen) {
+		t.Fatalf("bootstrap/handover/settings.json drifted from hooks.HostEvents; regenerate its hooks and permissions from:\n%s", want)
+	}
+}
+
 type handoverHookGroup struct {
 	Hooks []handoverHook `json:"hooks"`
 }

@@ -143,8 +143,9 @@ The failure is visible in `journalctl -u nixos-activation`.
 
 ## Related specs
 
-This generalises and (once mature) supersedes the open
-`host-settings-via-nix` follow-up (`~/.claude/settings.json` and
-`~/.claude/hooks/` refresh under `nixos-rebuild switch`). When that
-work lands, it will likely be a migration plus a small nix module
-piece, not a bespoke mechanism.
+The `host-settings-via-nix` follow-up landed as exactly that: the
+module's managed settings drop-in plus migration
+`004-managed-settings-prune.sh`, which calls
+`spore hooks prune-settings` (JSON editing needs a real parser, and
+`jq` is not on the activation PATH). See `docs/fleet-module.md`,
+"Claude Code managed settings".

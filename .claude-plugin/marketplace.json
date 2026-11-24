@@ -1,0 +1,13 @@
+{
+  "name": "spore",
+  "owner": {
+    "name": "spore maintainers"
+  },
+  "plugins": [
+    {
+      "name": "spore",
+      "source": "./",
+      "description": "spore harness skills: diagram, select-agent and spore-bootstrap."
+    }
+  ]
+}

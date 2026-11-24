@@ -79,10 +79,23 @@ Subcommands:
                          response, exit 2 with the failure tail.
                          Reads $SPORE_ROLE / $SPORE_PROJECT_ROOT /
                          $SPORE_TASK_SLUG; a no-op anywhere else.
-  settings               Read a hook binding JSON from stdin, emit a
-                         deterministic settings.json to stdout.
+  settings [--managed-file PATH]
+                         Read a hook binding JSON from stdin, emit a
+                         deterministic settings.json to stdout. Bindings
+                         the managed settings file already runs (default
+                         /etc/claude-code/managed-settings.d/50-spore.json,
+                         when present; "" disables) are left out.
                          permissions.deny merges the kernel defaults
                          with spore.toml [permissions] at the repo root.
+  settings --managed [--spore PATH] [--hooks-dir DIR] [--marketplace DIR]
+                         Emit the host-wide managed settings drop-in:
+                         spore's hooks plus permissions.deny. --marketplace
+                         also registers DIR as the spore plugin marketplace
+                         and enables spore@spore.
+  prune-settings --file PATH [--managed-file PATH]
+                         Back up PATH, then drop the hooks and deny rules
+                         the managed settings file provides. No-op when
+                         nothing matches.
   codex-config [--spore PATH]
                          Emit the user-level Codex hooks.json
                          ($CODEX_HOME/hooks.json) to stdout.

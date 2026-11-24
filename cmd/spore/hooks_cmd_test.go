@@ -58,6 +58,40 @@ func TestHooksWatchInboxNoArgsNoEnvSilentNoOp(t *testing.T) {
 	}
 }
 
+func TestHooksSettingsLeavesOutManagedBindings(t *testing.T) {
+	managed := filepath.Join(t.TempDir(), "50-spore.json")
+	body := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/nix/store/x/bin/spore fleet replenish-hook"}]}]}}`
+	if err := os.WriteFile(managed, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := `{"events":{"Stop":[{"command":"spore fleet replenish-hook","timeout":30},{"command":"bin/project-stop"}]}}`
+
+	stdinR, stdinW, _ := os.Pipe()
+	stdoutR, stdoutW, _ := os.Pipe()
+	stderrR, stderrW, _ := os.Pipe()
+	origIn, origOut, origErr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = stdinR, stdoutW, stderrW
+	defer func() { os.Stdin, os.Stdout, os.Stderr = origIn, origOut, origErr }()
+	_, _ = io.WriteString(stdinW, in)
+	stdinW.Close()
+
+	code := runHooksSettings([]string{"--managed-file", managed})
+	stdoutW.Close()
+	stderrW.Close()
+	out, _ := io.ReadAll(stdoutR)
+	errOut, _ := io.ReadAll(stderrR)
+
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %s", code, errOut)
+	}
+	if strings.Contains(string(out), "replenish-hook") || !strings.Contains(string(out), "bin/project-stop") {
+		t.Errorf("settings output:\n%s", out)
+	}
+	if !strings.Contains(string(errOut), "Stop: spore fleet replenish-hook runs from "+managed) {
+		t.Errorf("stderr = %q", errOut)
+	}
+}
+
 func runHooksSettingsIn(t *testing.T, dir string) (int, string) {
 	t.Helper()
 	t.Chdir(dir)
@@ -74,7 +108,7 @@ func runHooksSettingsIn(t *testing.T, dir string) (int, string) {
 	origIn, origOut := os.Stdin, os.Stdout
 	t.Cleanup(func() { os.Stdin, os.Stdout = origIn, origOut })
 	os.Stdin, os.Stdout = in, w
-	code := runHooksSettings()
+	code := runHooksSettings([]string{"--managed-file", ""})
 	os.Stdin, os.Stdout = origIn, origOut
 	w.Close()
 	out, _ := io.ReadAll(r)

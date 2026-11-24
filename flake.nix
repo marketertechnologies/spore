@@ -275,6 +275,7 @@
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
                       "install --dest") cp -r ${./bootstrap/skills}/. "$3" ; exit 0 ;;
                       "hooks codex-config") printf '{"hooks":{"stub":"%s"}}\n' "$4" ; exit 0 ;;
+                      "hooks settings") shift 2; printf '{"stub":"%s"}\n' "$*" ; exit 0 ;;
                       "migrate --auto")
                         for t in bash find grep tail dirname mkdir cat; do
                           command -v "$t" >> "''${HOME}/spore-migrate-path.log" || { echo "missing $t" >> "''${HOME}/spore-migrate-path.log"; exit 1; }
@@ -288,6 +289,7 @@
                     enable = true;
                     package = pkgs.writeShellScriptBin "codex" "exit 0";
                   };
+                  claudeManagedSettings.plugin.enable = true;
                   gracefulDeploy.timeout = 5;
                   tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
@@ -419,11 +421,11 @@
 
                   # codex.enable: codex on the system and reconciler
                   # PATH, ~/.codex/hooks.json rendered by the package's
-                  # own `hooks codex-config` with hooks pinned to it.
+                  # own `hooks codex-config`, hooks through /run/current-system/sw.
                   machine.succeed("test -x /run/current-system/sw/bin/codex")
                   assert "-codex/bin" in env, env
                   hooks = machine.succeed("cat /home/spore-test/.codex/hooks.json")
-                  assert '"stub":"/nix/store/' in hooks and hooks.strip().endswith('/bin/spore"}}'), hooks
+                  assert '"stub":"/run/current-system/sw/bin/spore"' in hooks, hooks
 
                   # Host-wide skills: one directory link per skill under
                   # Claude Code's and Codex's user scopes, so the scope
@@ -433,6 +435,29 @@
                       for skill in ["diagram", "select-agent", "spore-bootstrap"]:
                           machine.succeed(f"test -L {root}/{skill} && test -f {root}/{skill}/SKILL.md")
                   machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
+
+                  # Managed settings drop-in: rendered by the package's
+                  # own `hooks settings --managed`, hooks run through the
+                  # system profile (survives rebuild + GC under a live
+                  # session), plugin marketplace pointing at a store copy
+                  # with manifests and skills.
+                  import json, re
+                  managed = json.loads(machine.succeed(
+                      "cat /etc/claude-code/managed-settings.d/50-spore.json"))["stub"]
+                  assert managed.startswith(
+                      "--managed --spore /run/current-system/sw/bin/spore"
+                      " --hooks-dir /run/current-system/sw/share/spore/hooks"), managed
+                  machine.succeed("test -x /run/current-system/sw/bin/spore")
+                  for hook in ["block-bg-bash.pl", "load-state-md.pl"]:
+                      machine.succeed(f"test -x /run/current-system/sw/share/spore/hooks/{hook}")
+                  market_match = re.search(r"--marketplace (\S+)", managed)
+                  assert market_match is not None, managed
+                  market = market_match.group(1)
+                  assert market.endswith("-spore-claude-marketplace"), market
+                  machine.succeed(f"test -f {market}/.claude-plugin/plugin.json")
+                  machine.succeed(f"test -f {market}/.claude-plugin/marketplace.json")
+                  for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                      machine.succeed(f"test -f {market}/bootstrap/skills/{skill}/SKILL.md")
 
                   # Graceful-deploy: pre-script disables the kill-switch
                   # and tells every active worker to wrap up; post-script
