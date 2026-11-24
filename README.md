@@ -351,7 +351,9 @@ Main extension points:
 - [internal/hooks/](internal/hooks/) emits and runs Claude Code and
   Codex hook bindings; both agents share the same payload shape, wired
   through `.claude/settings.json` and the user-level
-  `~/.codex/hooks.json` (`spore hooks codex-config`).
+  `~/.codex/hooks.json` (`spore hooks codex-config`). The default
+  `permissions.deny` set and the PreToolUse guard are in
+  [docs/permissions.md](docs/permissions.md).
 - [internal/lints/](internal/lints/) holds portable repo lints.
 - [internal/composer/](internal/composer/) renders instruction files
   from rule fragments in [rules/](rules/).

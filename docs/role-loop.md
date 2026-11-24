@@ -98,6 +98,9 @@ Per-phase side effects of a drive tick:
 - `review-A`: keep engineer and reviewer A panes alive
 - `review-B`: reap reviewer A's pane, keep reviewer B alive; the
   engineer pane stays alive across the handover
+- review phases with the engineer check configured: hold the
+  reviewer until the latest response has a pass or give-up marker
+  (see "Engineer check gate")
 - `done`: write `summary.md`, clear `escalated-*` markers, write the
   `ready` marker, reap all three panes
 - `escalated`: write the `escalated-*` marker; until the engineer
@@ -263,6 +266,61 @@ put it above the role body; a role pane with no role body, and a
 worker (which starts with no prompt), get that line alone as the
 prompt. Unset or empty leaves the spawn argv byte-identical to
 before.
+
+### Engineer check gate
+
+`[fleet.roles.engineer] check = "<shell command>"` makes the
+project's checks a hard gate between the engineer and the reviewers,
+instead of a prompt instruction:
+
+```toml
+[fleet.roles.engineer]
+check = "just check"            # or a diff-scoped script such as bin/ci-local; unset = gate off
+check_timeout_seconds = 900     # default 900
+```
+
+The gate is `spore hooks engineer-check`, a Stop hook shipped in
+`bootstrap/handover/settings.json` (timeout 3600s; a larger
+`check_timeout_seconds` is clamped to 3540s so the hook can record the
+result). The shipped command runs it only when `spore hooks` lists
+`engineer-check`, so a host on an older binary skips it. It is a no-op unless
+`SPORE_ROLE=engineer` (set at spawn), `check` is set, and the latest
+`responses/engineer-round-N.json` has no `check-pass-N-<sha>` or
+`check-failed-N-<sha>` marker newer than it, sha being the worktree
+HEAD. Then it runs `check` via `sh -c` in `.worktrees/<slug>/` under
+`check_timeout_seconds` (exit 124 on timeout, the process group is
+killed):
+
+- pass: writes `state/check-pass-N-<sha>` (command, exit, duration,
+  HEAD) and lets the stop through.
+- fail: writes `state/check-attempt-N-<sha>-<k>` and exits 2, which
+  blocks the stop and hands the model its stderr: the command, the
+  exit code, and the last 40 lines of output.
+- the 3rd failure on one round and sha writes
+  `state/check-failed-N-<sha>` (with the output tail) and lets the
+  stop through. Claude Code caps consecutive Stop blocks at 8 anyway;
+  this guard keeps the loop moving well before that.
+
+A newer response re-arms the gate, and so does a commit (new sha).
+The hook reads no stdin, so the engineer can run it by hand.
+
+The driver records the gate in the snapshot (`Check`, `CheckSHA`;
+`spore task status` prints a `check:` line) for the latest engineer
+round at the worktree HEAD, in review phases only:
+
+- `pending`: no reviewer wake, and a reviewer at round 0 is not
+  spawned (a fresh reviewer starts on spawn). A reviewer with a
+  verdict on record keeps its pane. The engineer is the active role
+  for the stall check. Once the response is older than
+  `check_timeout_seconds` plus a minute (the hook never ran: a codex
+  pane, or a loop already in review when `check` was set; or HEAD
+  moved after it ran), the engineer is woken once per round and sha
+  to run `spore hooks engineer-check`.
+- `passed`: hand off as usual; the reviewer wake says the check
+  passed so the reviewer skips the full suite.
+- `failed`: hand off anyway; the reviewer wake (a one-off wake for a
+  fresh reviewer) names the failed check and the marker holding its
+  output, to treat as a finding.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
@@ -521,6 +579,10 @@ Markers under `.spore/<slug>/state/`:
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
+- `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
+  `check-failed-<round>-<sha>`: engineer check gate results;
+  `check-held-<round>-<sha>-<stamp>` and
+  `check-failed-reviewer-<instance>-<round>-<stamp>` mark its wakes.
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this
   invalid file; `bounced-<file>-<n>-<hash>-<stamp>` marks the
   delivered wake.

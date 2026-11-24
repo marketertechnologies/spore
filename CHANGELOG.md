@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fleet (0.34.2): new `wt/<slug>` branches fork from a freshly
+- Fleet (0.36.1): new `wt/<slug>` branches fork from a freshly
   fetched base instead of the main checkout's HEAD. The base is the
   task's `base:` frontmatter, else `origin/HEAD`'s branch, else
   `main`, else `master`; spore fetches just that ref with a 30s
@@ -25,6 +25,58 @@
   refuses a task whose fork base is not `main` (land it through a
   PR). Consumers can drop `pre_start` scripts that fetch the base
   branch.
+- Role loop (0.36.0): engineer check gate. `spore.toml`
+  `[fleet.roles.engineer] check = "<shell cmd>"` (plus
+  `check_timeout_seconds`, default 900) makes the project's checks a
+  hard gate before review. New Stop hook `spore hooks engineer-check`
+  (shipped in `bootstrap/handover/settings.json`, timeout 3600s):
+  in an engineer role pane (`SPORE_ROLE=engineer`) with a new
+  engineer response, it runs `check` in the task worktree; a failure
+  exits 2 with the command, exit code and last 40 lines, blocking the
+  stop; a pass records `state/check-pass-<round>-<sha>`; the third
+  failure on one round and HEAD records `check-failed-*` and lets the
+  stop through. The driver holds reviewers (no wake, no fresh spawn)
+  while the latest response has neither marker at the worktree HEAD,
+  records the state in the snapshot (`spore task status` prints
+  `check:`), wakes the engineer once if the response outlives the
+  check timeout unchecked, and on a give-up hands off with the failure
+  named in the reviewer wake. Role bodies: the engineer runs the
+  check itself first; reviewers skip the full suite on a pass marker.
+  Downstream impact: nothing changes until a project sets `check`.
+  Hosts must pick up the new handover settings (or add the Stop hook
+  to their own settings) for the gate to fire; without the hook every
+  role-loop response waits out the timeout and the engineer is then
+  woken to run `spore hooks engineer-check` by hand. Codex engineer
+  panes have no Stop hook wiring and always take that path. Projects
+  with a hand-rolled gate on `spore task done` (marketer's PreToolUse
+  hook) can move the command into `check` and drop the hook.
+  The shipped hook command first checks that `spore hooks` lists
+  `engineer-check`, so a host still on an older binary (which exits 2
+  on an unknown subcommand, blocking every stop) skips it, and so
+  does any pane whose `SPORE_ROLE` is not `engineer`. A stop after a
+  `request_changes` verdict and before the next response is
+  mid-revision and is not checked.
+- Hooks (0.35.0): hard guardrails in settings, not prompts. Generated
+  and shipped settings now carry a default `permissions.deny` set that
+  holds under `--dangerously-skip-permissions`: `SendMessage`,
+  `Read(~/.config/spore/**/secrets.env)`,
+  `Read(~/.config/spore/**/*.pem)`, and six `Bash(git push ...)`
+  force-push rules (`--force` / `-f`, before or after the refspec;
+  `--force-with-lease` stays allowed). `spore hooks settings` merges
+  `spore.toml` `[permissions] deny = [...]` with the defaults (deduped)
+  and `default_deny = false` drops the guardrail set (`SendMessage`
+  stays). `bootstrap/handover/settings.json` now also wires
+  `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
+  longer blocks `--force-with-lease`. Downstream impact: marketer and
+  crm-gateway pick this up on their next settings render; on existing
+  hosts reinstall `~/.claude/settings.json` from
+  `share/spore/settings.json`. Agents that read `secrets.env` or a
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
 - Role loop (0.34.1): fixes from the PR #110 review.
   `spore task force-approve <slug> <A|B> --reason <text>` records an
   `operator_override` on the reviewer's escalated final verdict once

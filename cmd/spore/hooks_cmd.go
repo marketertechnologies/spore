@@ -33,6 +33,8 @@ func runHooks(args []string) int {
 		return runHooksPreToolUse()
 	case "stop":
 		return runHooksStop()
+	case "engineer-check":
+		return runHooksEngineerCheck()
 	case "settings":
 		return runHooksSettings()
 	case "codex-config":
@@ -100,6 +102,18 @@ func runHooksStop() int {
 	return writeHookResponse(resp)
 }
 
+// runHooksEngineerCheck leaves stdin unread: the hook needs only env,
+// and the engineer may run it by hand from a shell with no payload.
+func runHooksEngineerCheck() int {
+	res, err := hooks.EngineerCheck(hooks.EngineerCheckInputFromEnv())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks engineer-check:", err)
+		return 0
+	}
+	fmt.Fprint(os.Stderr, res.Stderr)
+	return res.Code
+}
+
 func readHookRequest() (hooks.Request, error) {
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -162,7 +176,14 @@ func runHooksSettings() int {
 			})
 		}
 	}
-	out, err := hooks.Settings(events)
+	perms := hooks.DefaultPermissions()
+	if root, err := repoRoot(); err == nil {
+		if perms, err = hooks.LoadPermissions(root); err != nil {
+			fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+			return 1
+		}
+	}
+	out, err := hooks.SettingsWith(events, perms)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
 		return 1
