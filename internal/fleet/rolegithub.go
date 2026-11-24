@@ -71,6 +71,9 @@ type mirrorEvent struct {
 	kind     string
 	round    int
 	instance task.ReviewerInstance
+	// note is the operator's reason on an override event, captured
+	// when the event is listed so posting it never re-reads the file.
+	note string
 }
 
 const (
@@ -106,17 +109,13 @@ func mirrorEvents(projectRoot, slug string, snap Snapshot) ([]mirrorEvent, error
 		return true
 	}
 	addEng()
-	aFixLanded, err := mirrorAFixLanded(projectRoot, slug, eng)
-	if err != nil {
-		return nil, err
-	}
 reviews:
 	for _, inst := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
 		rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
 		if err != nil {
 			return nil, err
 		}
-		if inst == task.ReviewerB && aFixLanded {
+		if inst == task.ReviewerB && snap.AFixLanded {
 			// A's escalation fix pass, answered before the operator
 			// force-approved A: the phase machine counts it as one more
 			// engineer round, so B's revisions start one later.
@@ -135,7 +134,7 @@ reviews:
 			}
 			out = append(out, mirrorEvent{name: fmt.Sprintf("%s/round-%d.json", inst, r), kind: eventReview, round: r, instance: inst})
 			if rev.Forced() {
-				out = append(out, mirrorEvent{name: fmt.Sprintf("override-%s-%d", inst, r), kind: eventOverride, round: r, instance: inst})
+				out = append(out, mirrorEvent{name: fmt.Sprintf("override-%s-%d", inst, r), kind: eventOverride, round: r, instance: inst, note: strings.TrimSpace(rev.OperatorOverride)})
 			}
 			if rev.Verdict == task.VerdictRequestChanges {
 				engRound++
@@ -157,25 +156,6 @@ reviews:
 	return out, nil
 }
 
-// mirrorAFixLanded is escalationFixLanded over the files on disk, so
-// the mirror pairs engineer rounds with verdicts the way the phase
-// machine does.
-func mirrorAFixLanded(projectRoot, slug string, eng []int) (bool, error) {
-	aRounds, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerA)
-	if err != nil {
-		return false, err
-	}
-	aRev, err := loadReviews(projectRoot, slug, task.ReviewerA, aRounds)
-	if err != nil {
-		return false, err
-	}
-	bRounds, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerB)
-	if err != nil {
-		return false, err
-	}
-	return escalationFixLanded(projectRoot, slug, eng, aRev, bRounds)
-}
-
 // githubMirror carries one tick's mirror pass for a task.
 type githubMirror struct {
 	projectRoot, tasksDir, slug string
@@ -192,8 +172,11 @@ type githubMirror struct {
 // the lock makes this tick a no-op.
 func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 	statePath := githubStatePath(projectRoot, slug)
-	unlock, ok := lockGitHubState(statePath)
-	if !ok {
+	unlock, err := lockGitHubState(statePath)
+	if err != nil {
+		if !errors.Is(err, errLockHeld) {
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
+		}
 		return
 	}
 	defer unlock()
@@ -207,7 +190,7 @@ func mirrorGitHub(projectRoot, tasksDir, slug string, snap Snapshot) {
 	if b, err := os.ReadFile(statePath); err == nil {
 		_ = json.Unmarshal(b, &m.state)
 	}
-	err := m.run(snap)
+	err = m.run(snap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "role-loop github mirror %s: %v\n", slug, err)
 		if key := mirrorErrorKey(err); key != m.state.LastError {
@@ -241,35 +224,51 @@ func mirrorErrorKey(err error) string {
 	return msg
 }
 
+// errLockHeld is what a lock helper returns when another process holds
+// the lock. Any other error means the lock could not be taken at all.
+var errLockHeld = errors.New("lock held")
+
 // lockGitHubState takes a non-blocking flock beside the state file so
 // two drives never post the same event twice.
-func lockGitHubState(statePath string) (func(), bool) {
+func lockGitHubState(statePath string) (func(), error) {
 	return flockNB(statePath + ".lock")
 }
 
 // lockRoleDrive serialises drive ticks and `spore task reopen` /
 // `force-approve` on one slug, so none of them acts on a half-moved
 // tree. The lock file sits outside state/, which reopen archives.
-func lockRoleDrive(projectRoot, slug string) (func(), bool) {
+func lockRoleDrive(projectRoot, slug string) (func(), error) {
 	return flockNB(filepath.Join(task.RoleTaskDir(projectRoot, slug), "drive.lock"))
 }
 
-func flockNB(path string) (func(), bool) {
+func flockNB(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, false
+		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, false
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errLockHeld
+		}
+		return nil, fmt.Errorf("flock %s: %w", path, err)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, true
+	}, nil
+}
+
+// lockRefusal words a failed lock for the operator: retry when another
+// process holds it, the underlying error otherwise.
+func lockRefusal(op, slug, holder string, err error) error {
+	if errors.Is(err, errLockHeld) {
+		return fmt.Errorf("%s %s: %s; retry", op, slug, holder)
+	}
+	return fmt.Errorf("%s %s: lock: %w", op, slug, err)
 }
 
 func (m *githubMirror) save() {
@@ -373,13 +372,9 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 	case eventReopened:
 		return m.redraft()
 	case eventOverride:
-		rev, err := task.ReadReview(m.projectRoot, m.slug, e.instance, e.round)
-		if err != nil {
-			return err
-		}
 		label, _ := reviewerName(m.projectRoot, m.slug, e.instance, e.round)
 		return m.prComment(fmt.Sprintf("**Operator force-approved %s (%sround %d).**\n\n%s\n\nIts comments stay on record; the loop moves on.",
-			label, m.cyclePrefix(), e.round, strings.TrimSpace(rev.OperatorOverride)))
+			label, m.cyclePrefix(), e.round, e.note))
 	case eventReady:
 		m.applyPRDescription()
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {

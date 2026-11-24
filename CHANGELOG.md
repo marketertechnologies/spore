@@ -4,13 +4,17 @@
 
 - Role loop (0.34.1): fixes from the PR #110 review.
   `spore task force-approve <slug> <A|B> --reason <text>` records an
-  `operator_override` on the reviewer's latest verdict; a forced
-  approve skips the grade/round rule, so the operator's override is no
-  longer bounced and silently undone. `spore task reopen` takes the
+  `operator_override` on the reviewer's escalated final verdict once
+  the engineer's fix pass has landed; a forced approve skips the
+  grade/round rule, so the operator's override is no longer bounced
+  and silently undone. Only files the command records in
+  `state/operator-overrides` may carry the field, so a reviewer cannot
+  force its own approve. `spore task reopen` takes the
   drive and `github.json` locks before it moves anything, so a busy
   mirror refuses cleanly instead of leaving a half-reopened loop;
   drive ticks now hold a per-slug `drive.lock` and a busy tick only
-  reports. The PR mirror counts A's escalation fix pass like the phase
+  reports; a lock that cannot be taken at all is an error, not a busy
+  tick. The PR mirror counts A's escalation fix pass like the phase
   machine after a force-approve, so B's engineer rounds are no longer
   skipped or posted one verdict late, and it posts the override with
   its reason.

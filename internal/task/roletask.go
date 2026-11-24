@@ -394,12 +394,27 @@ func ReadReview(projectRoot, slug string, instance ReviewerInstance, round int) 
 	if err != nil {
 		return Review{}, err
 	}
+	return ParseReviewAt(projectRoot, slug, instance, round, b)
+}
+
+// ParseReviewAt validates b as the content of instance's round-N
+// file, with that file's legacy, order-exempt and override markers.
+// It lets a caller check a rewrite before it replaces the file.
+func ParseReviewAt(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) (Review, error) {
+	if err := validateInstance(instance); err != nil {
+		return Review{}, err
+	}
+	path := ReviewPath(projectRoot, slug, instance, round)
 	rel := relTo(RoleTaskDir(projectRoot, slug), path)
 	legacy, sorted, err := reviewStrictness(projectRoot, slug, rel)
 	if err != nil {
 		return Review{}, err
 	}
-	return parseReview(path, b, instance, round, legacy, sorted)
+	override, err := overrideRecorded(projectRoot, slug, rel)
+	if err != nil {
+		return Review{}, err
+	}
+	return parseReview(path, b, instance, round, legacy, sorted, override)
 }
 
 // ListReviewRounds returns the sorted round numbers under the given

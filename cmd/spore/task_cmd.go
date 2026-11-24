@@ -49,9 +49,10 @@ Subcommands:
                                appends the note to spec.md, re-drafts the PR.
                                --note-file <path> reads the note from a file.
   force-approve <slug> <A|B> --reason <text>
-                               Override a reviewer's latest verdict to
-                               approve; its comments stay on record and
-                               the reason is posted to the PR.
+                               Override a reviewer's escalated final
+                               verdict to approve once the engineer's
+                               fix pass landed; its comments stay on
+                               record and the reason is posted to the PR.
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary

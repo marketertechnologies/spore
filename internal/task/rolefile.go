@@ -33,6 +33,11 @@ const legacyMarker = "legacy-files"
 // IDs already went out, and bouncing them would rewind the loop.
 const orderExemptMarker = "order-exempt-files"
 
+// overrideMarker lists the review files `spore task force-approve`
+// rewrote. Only those may carry `operator_override`: a reviewer that
+// sets it itself would approve past its own high/medium comments.
+const overrideMarker = "operator-overrides"
+
 // ErrInvalidRoleFile is wrapped by every validation failure so callers
 // can tell a bad file (skip it, bounce it) from an I/O error.
 var ErrInvalidRoleFile = errors.New("invalid role file")
@@ -113,7 +118,11 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 	if err != nil {
 		return err
 	}
-	_, err = parseReview(f.Path, b, f.Instance, f.Round, legacy, sorted)
+	override, err := overrideRecorded(projectRoot, slug, f.Rel)
+	if err != nil {
+		return err
+	}
+	_, err = parseReview(f.Path, b, f.Instance, f.Round, legacy, sorted, override)
 	return err
 }
 
@@ -133,18 +142,23 @@ func reviewStrictness(projectRoot, slug, rel string) (legacy, sorted bool, err e
 // Legacy mode (grandfathered files) tolerates unknown keys, a missing
 // author, and any comment order. Both enforce the verdict enum, a
 // known `prefix`, the graded comment shape, and the grade-derived
-// verdict rule for round (the N in round-N.json).
+// verdict rule for round (the N in round-N.json). It rejects
+// `operator_override`: only a file recorded by RecordOperatorOverride
+// may carry one (see ReadReview).
 func ParseReview(path string, b []byte, instance ReviewerInstance, round int, legacy bool) (Review, error) {
-	return parseReview(path, b, instance, round, legacy, !legacy)
+	return parseReview(path, b, instance, round, legacy, !legacy, false)
 }
 
 // parseReview is ParseReview with the severity-order check split from
 // legacy: a strict file written before the check existed is exempt
-// (see orderExemptMarker).
-func parseReview(path string, b []byte, instance ReviewerInstance, round int, legacy, sorted bool) (Review, error) {
+// (see orderExemptMarker). override allows `operator_override`.
+func parseReview(path string, b []byte, instance ReviewerInstance, round int, legacy, sorted, override bool) (Review, error) {
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
 		return r, invalid(path, err.Error())
+	}
+	if r.OperatorOverride != "" && !override {
+		return r, invalid(path, "operator_override is written only by `spore task force-approve`; remove it")
 	}
 	if r.Verdict != VerdictApprove && r.Verdict != VerdictRequestChanges {
 		return r, invalid(path, fmt.Sprintf("verdict %q not one of %q, %q", r.Verdict, VerdictApprove, VerdictRequestChanges))
@@ -312,6 +326,40 @@ func listedInMarker(projectRoot, slug, name, rel string) (bool, error) {
 		}
 	}
 	return false, sc.Err()
+}
+
+// RecordOperatorOverride lists the review at instance/round in the
+// override marker, so its `operator_override` validates. Idempotent.
+func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int) error {
+	if err := validateInstance(instance); err != nil {
+		return err
+	}
+	rel := relTo(RoleTaskDir(projectRoot, slug), ReviewPath(projectRoot, slug, instance, round))
+	if ok, err := overrideRecorded(projectRoot, slug, rel); err != nil || ok {
+		return err
+	}
+	stateDir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(stateDir, overrideMarker), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(rel + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// overrideRecorded reports whether rel is in the override marker. Unlike
+// the other list markers, a missing marker lists nothing.
+func overrideRecorded(projectRoot, slug, rel string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker)); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return listedInMarker(projectRoot, slug, overrideMarker, rel)
 }
 
 func relTo(root, p string) string {

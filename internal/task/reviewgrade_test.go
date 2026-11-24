@@ -212,19 +212,42 @@ func TestReviewCounts(t *testing.T) {
 
 func TestParseReviewOperatorOverride(t *testing.T) {
 	forced := `{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`
-	if _, err := ParseReview("r.json", []byte(forced), ReviewerA, 3, false); err != nil {
-		t.Fatalf("forced approve with a medium: %v", err)
+	if _, err := ParseReview("r.json", []byte(forced), ReviewerA, 3, false); err == nil {
+		t.Fatal("a reviewer-written operator_override validated")
+	}
+	if _, err := parseReview("r.json", []byte(forced), ReviewerA, 3, false, true, true); err != nil {
+		t.Fatalf("recorded forced approve with a medium: %v", err)
 	}
 	rcOverride := `{"author":"A","verdict":"request_changes","summary":"s","operator_override":"x","comments":[` + lowNit + `]}`
-	if _, err := ParseReview("r.json", []byte(rcOverride), ReviewerA, 2, false); err == nil {
+	if _, err := parseReview("r.json", []byte(rcOverride), ReviewerA, 2, false, true, true); err == nil {
 		t.Fatal("an override on request_changes skipped the round rule")
 	}
 	blank := `{"author":"A","verdict":"approve","summary":"s","operator_override":"  ","comments":[` + medEdge + `]}`
-	if _, err := ParseReview("r.json", []byte(blank), ReviewerA, 3, false); err == nil {
+	if _, err := parseReview("r.json", []byte(blank), ReviewerA, 3, false, true, true); err == nil {
 		t.Fatal("a blank override skipped the round rule")
 	}
 	bad := `{"author":"A","verdict":"approve","summary":"s","operator_override":"ok","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
-	if _, err := ParseReview("r.json", []byte(bad), ReviewerA, 3, false); err == nil {
+	if _, err := parseReview("r.json", []byte(bad), ReviewerA, 3, false, true, true); err == nil {
 		t.Fatal("an override skipped the comment shape check")
+	}
+}
+
+func TestOperatorOverrideNeedsRecord(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	forced := []byte(`{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`)
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err == nil {
+		t.Fatal("override validated with no record")
+	}
+	if err := RecordOperatorOverride(root, slug, ReviewerA, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordOperatorOverride(root, slug, ReviewerA, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerA, 3, forced); err != nil {
+		t.Fatalf("recorded override: %v", err)
+	}
+	if _, err := ParseReviewAt(root, slug, ReviewerB, 3, []byte(strings.Replace(string(forced), `"A"`, `"B"`, 1))); err == nil {
+		t.Fatal("A's record authorised B's override")
 	}
 }

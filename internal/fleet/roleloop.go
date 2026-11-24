@@ -59,6 +59,10 @@ type Snapshot struct {
 	Slug string
 	// Phase is the derived loop step.
 	Phase Phase
+	// AFixLanded is escalationFixLanded's answer: the A phase accounts
+	// for one engineer round more than its request_changes count. The
+	// PR mirror pairs engineer rounds with verdicts from it.
+	AFixLanded bool
 	// EngineerRound is the highest engineer-round-N.json present
 	// (== count, since rounds are dense). Zero before the engineer
 	// has shipped anything.
@@ -112,13 +116,13 @@ func DeriveSnapshot(projectRoot, slug string) (Snapshot, error) {
 	if len(engRounds) > 0 {
 		snap.EngineerRound = engRounds[len(engRounds)-1]
 	}
-	aFixLanded, err := escalationFixLanded(projectRoot, slug, engRounds, aReviews, bRounds)
+	snap.AFixLanded, err = escalationFixLanded(projectRoot, slug, engRounds, aReviews, bRounds)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	var expected int
 	snap.Phase, snap.CurrentReviewer, snap.ReviewerRound, snap.LastVerdict, expected =
-		derivePhase(len(engRounds), aReviews, bReviews, aFixLanded)
+		derivePhase(len(engRounds), aReviews, bReviews, snap.AFixLanded)
 	if snap.LastVerdict != "" {
 		revs := aReviews
 		if snap.CurrentReviewer == task.ReviewerB {
@@ -169,8 +173,11 @@ func validEngineerRounds(projectRoot, slug string) ([]int, error) {
 // A phase accounts for one more engineer round than its
 // request_changes count. It needs all of:
 //
-//   - A's latest verdict is approve and an `escalated-A-*` marker
-//     exists (the driver escalated A and woke the engineer);
+//   - A's latest verdict is approve, and either it is forced (only an
+//     escalated verdict can be, after its fix pass landed; see
+//     ForceApproveReview) or an `escalated-A-*` marker exists (the
+//     driver escalated A and woke the engineer). The forced check
+//     survives the Done tick clearing the markers;
 //   - the engineer response after A's last request_changes exists;
 //   - that response predates B's first verdict (if any). A response
 //     written after it answers B, not the escalation.
@@ -181,9 +188,11 @@ func escalationFixLanded(projectRoot, slug string, engRounds []int, aRev []task.
 	if len(aRev) == 0 || aRev[len(aRev)-1].Verdict != task.VerdictApprove {
 		return false, nil
 	}
-	marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(task.ReviewerA)+"-*"))
-	if err != nil || len(marks) == 0 {
-		return false, err
+	if !aRev[len(aRev)-1].Forced() {
+		marks, err := filepath.Glob(filepath.Join(task.RoleTaskDir(projectRoot, slug), "state", "escalated-"+string(task.ReviewerA)+"-*"))
+		if err != nil || len(marks) == 0 {
+			return false, err
+		}
 	}
 	idx := 1 + countRequestChanges(aRev)
 	if len(engRounds) <= idx {

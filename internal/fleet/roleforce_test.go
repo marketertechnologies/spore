@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,13 +22,21 @@ func markEscalatedA(t *testing.T, root, slug string) {
 	}
 }
 
+// escalateAWithFix walks A to an escalation at round 3 and lands the
+// engineer's fix pass (round 4), the state force-approve accepts.
+func escalateAWithFix(t *testing.T, root, slug string) {
+	t.Helper()
+	escalateA(t, root, slug)
+	markEscalatedA(t, root, slug)
+	writeEng(4)(t, root, slug)
+}
+
 // Editing the final verdict to approve while its high/medium comments
 // stay used to be bounced by the round rule and silently restart A.
 func TestForceApproveKeepsCommentsAndMovesOn(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
-	escalateA(t, root, slug)
-	markEscalatedA(t, root, slug)
+	escalateAWithFix(t, root, slug)
 
 	plain := filepath.Join(task.RoleTaskDir(root, slug), "plain.json")
 	if err := os.WriteFile(plain, []byte(strings.Replace(mustRead(t, task.ReviewPath(root, slug, task.ReviewerA, 3)), `"request_changes"`, `"approve"`, 1)), 0o644); err != nil {
@@ -58,21 +67,62 @@ func TestForceApproveKeepsCommentsAndMovesOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Phase != PhaseReviewB {
-		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseReviewB)
+	if snap.Phase != PhaseReviewB || !snap.AFixLanded {
+		t.Fatalf("snap = %+v, want %s with the fix pass counted", snap, PhaseReviewB)
+	}
+	if _, err := os.Stat(task.ReviewPath(root, slug, task.ReviewerA, 3) + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left behind: %v", err)
 	}
 	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "again"); err == nil {
 		t.Fatal("force-approve of an approve succeeded")
 	}
 }
 
-func TestForceApproveRefusedWhileDriveHoldsLoop(t *testing.T) {
+// Forcing a verdict the engineer already answered (or is answering)
+// would shift the engineer-round pairing onto B's verdicts.
+func TestForceApproveRefusedOutsideEscalation(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	writeEng(1)(t, root, slug)
+	writeGraded(task.ReviewerA, 1, task.VerdictRequestChanges, highBug)(t, root, slug)
+	path := task.ReviewPath(root, slug, task.ReviewerA, 1)
+	before := mustRead(t, path)
+	for _, step := range []stepFn{nil, writeEng(2)} {
+		if step != nil {
+			step(t, root, slug)
+		}
+		if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || !strings.Contains(err.Error(), "escalated final verdict") {
+			t.Fatalf("err = %v, want an escalation-only refusal", err)
+		}
+		if mustRead(t, path) != before {
+			t.Fatal("verdict changed by a refused force-approve")
+		}
+	}
+}
+
+// With the fix pass still pending, B's round 1 could land first and the
+// mtime check would then pair the late fix pass with B.
+func TestForceApproveRefusedWhileFixPending(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
 	escalateA(t, root, slug)
-	unlock, ok := lockRoleDrive(root, slug)
-	if !ok {
-		t.Fatal("lock")
+	markEscalatedA(t, root, slug)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || !strings.Contains(err.Error(), "engineer-round-4.json") {
+		t.Fatalf("err = %v, want a fix-pending refusal", err)
+	}
+	writeEng(4)(t, root, slug)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err != nil {
+		t.Fatalf("after the fix pass: %v", err)
+	}
+}
+
+func TestForceApproveRefusedWhileDriveHoldsLoop(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	escalateAWithFix(t, root, slug)
+	unlock, err := lockRoleDrive(root, slug)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer unlock()
 	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || !strings.Contains(err.Error(), "retry") {
@@ -84,15 +134,42 @@ func TestForceApproveRefusedWhileDriveHoldsLoop(t *testing.T) {
 	}
 }
 
+// A reviewer that writes operator_override itself must not approve past
+// its own high/medium comments.
+func TestReviewerWrittenOverrideNotCounted(t *testing.T) {
+	root, slug := t.TempDir(), "demo"
+	setupRoleLoopDriveFixture(t, root, slug)
+	escalateAWithFix(t, root, slug)
+	path := task.ReviewPath(root, slug, task.ReviewerA, 3)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, path)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["verdict"], doc["operator_override"] = task.VerdictApprove, "self-approved"
+	b, _ := json.Marshal(doc)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.ReadReview(root, slug, task.ReviewerA, 3); err == nil || !strings.Contains(err.Error(), "force-approve") {
+		t.Fatalf("err = %v, want the self-written override rejected", err)
+	}
+	snap, err := DeriveSnapshot(root, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Phase == PhaseReviewB {
+		t.Fatal("a reviewer-written override moved the loop to review B")
+	}
+}
+
 // Fix pass posted while A3 was request_changes, then the operator
 // force-approves A3: the engineer round answering B1 is round 5, and
-// the mirror must post it after B1.
+// the mirror must post it after B1. The order must hold after the
+// Done tick clears the escalation markers.
 func TestMirrorEventsForceApproveAfterFixPass(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
-	escalateA(t, root, slug)
-	markEscalatedA(t, root, slug)
-	writeEng(4)(t, root, slug)
+	escalateAWithFix(t, root, slug)
 	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "accepted"); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +188,28 @@ func TestMirrorEventsForceApproveAfterFixPass(t *testing.T) {
 	if got := eventNames(evs); !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v\nwant     %v", got, want)
 	}
+	for _, e := range evs {
+		if e.kind == eventOverride && e.note != "accepted" {
+			t.Fatalf("override note = %q, want the reason captured on the event", e.note)
+		}
+	}
+
+	writeGraded(task.ReviewerB, 2, task.VerdictApprove)(t, root, slug)
+	if err := clearEscalationMarkers(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = DeriveSnapshot(root, slug)
+	if snap.Phase != PhaseDone {
+		t.Fatalf("phase = %s, want %s", snap.Phase, PhaseDone)
+	}
+	evs, err = mirrorEvents(root, slug, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, "B/round-2.json", eventReady)
+	if got := eventNames(evs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after Done cleared the markers:\nevents = %v\nwant     %v", got, want)
+	}
 }
 
 func TestDriveRoleLoopSkipsWhileLocked(t *testing.T) {
@@ -119,9 +218,9 @@ func TestDriveRoleLoopSkipsWhileLocked(t *testing.T) {
 	slug := "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
 	panes := stubPanes(t)
-	unlock, ok := lockRoleDrive(root, slug)
-	if !ok {
-		t.Fatal("lock")
+	unlock, err := lockRoleDrive(root, slug)
+	if err != nil {
+		t.Fatal(err)
 	}
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	unlock()
@@ -133,38 +232,29 @@ func TestDriveRoleLoopSkipsWhileLocked(t *testing.T) {
 	}
 }
 
-func mustRead(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-func TestForceApproveInvalidResultLeavesFile(t *testing.T) {
-	root, slug := t.TempDir(), "demo"
+// A drive.lock that cannot be opened is an error, not a held lock: a
+// silent report-only tick would stall the loop forever.
+func TestDriveRoleLoopLockErrorSurfaces(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+	slug := "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
-	writeEng(1)(t, root, slug)
-	path := task.ReviewPath(root, slug, task.ReviewerA, 1)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	stubPanes(t)
+	if err := os.MkdirAll(filepath.Join(task.RoleTaskDir(root, slug), "drive.lock"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	raw := `{"author":"A","verdict":"request_changes","summary":"s","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
-	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err == nil {
+		t.Fatal("drive with an unopenable lock succeeded")
 	}
-	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || !strings.Contains(err.Error(), "left as it was") {
-		t.Fatalf("err = %v, want a validation refusal", err)
-	}
-	if got := mustRead(t, path); got != raw {
-		t.Fatalf("file changed after a refused override:\n%s", got)
+	if _, err := ForceApproveReview(root, tasksDir, slug, task.ReviewerA, "ok"); err == nil || strings.Contains(err.Error(), "retry") {
+		t.Fatalf("err = %v, want the lock error, not a retry", err)
 	}
 }
 
 func TestGitHubMirrorPostsOverrideReason(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	escalateA(t, f.root, f.slug)
+	writeEng(4)(t, f.root, f.slug)
 	for range 2 {
 		f.tick(t)
 	}
@@ -178,4 +268,13 @@ func TestGitHubMirrorPostsOverrideReason(t *testing.T) {
 	if s := f.state(t); !s.posted("override-A-3") {
 		t.Fatal("override event not recorded as posted")
 	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

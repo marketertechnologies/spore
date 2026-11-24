@@ -46,14 +46,14 @@ func ReopenRoleLoop(projectRoot, tasksDir, slug, note string) (int, error) {
 	if err := requireActive(tasksDir, slug); err != nil {
 		return 0, err
 	}
-	unlockDrive, ok := lockRoleDrive(projectRoot, slug)
-	if !ok {
-		return 0, fmt.Errorf("reopen %s: a drive tick holds the loop; retry", slug)
+	unlockDrive, err := lockRoleDrive(projectRoot, slug)
+	if err != nil {
+		return 0, lockRefusal("reopen", slug, "a drive tick holds the loop", err)
 	}
 	defer unlockDrive()
-	unlockGitHub, ok := lockGitHubState(githubStatePath(projectRoot, slug))
-	if !ok {
-		return 0, fmt.Errorf("reopen %s: github.json is locked by a running mirror; retry", slug)
+	unlockGitHub, err := lockGitHubState(githubStatePath(projectRoot, slug))
+	if err != nil {
+		return 0, lockRefusal("reopen", slug, "github.json is locked by a running mirror", err)
 	}
 	defer unlockGitHub()
 	snap, err := DeriveSnapshot(projectRoot, slug)

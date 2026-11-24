@@ -58,11 +58,13 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
 	}
-	unlock, ok := lockRoleDrive(projectRoot, slug)
-	if !ok {
-		// Another drive, a reopen or a force-approve holds the slug;
-		// this tick only reports.
+	unlock, err := lockRoleDrive(projectRoot, slug)
+	if errors.Is(err, errLockHeld) {
+		// A drive, reopen or force-approve holds the slug: report only.
 		return DeriveSnapshot(projectRoot, slug)
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
 	}
 	defer unlock()
 	if err := task.CacheSpecFromTaskFile(projectRoot, tasksDir, slug); err != nil {

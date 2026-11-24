@@ -214,11 +214,11 @@ func TestReopenRoleLoopLockedLeavesTreeUntouched(t *testing.T) {
 	slug := "demo"
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
 	walkToDone(t, root, slug)
-	unlock, ok := lockGitHubState(githubStatePath(root, slug))
-	if !ok {
-		t.Fatal("lock")
+	unlock, err := lockGitHubState(githubStatePath(root, slug))
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err := ReopenRoleLoop(root, tasksDir, slug, "note")
+	_, err = ReopenRoleLoop(root, tasksDir, slug, "note")
 	unlock()
 	if err == nil || !strings.Contains(err.Error(), "retry") {
 		t.Fatalf("err = %v, want a retry refusal", err)

@@ -10,11 +10,16 @@ import (
 	"github.com/versality/spore/internal/task"
 )
 
-// ForceApproveReview flips reviewer inst's latest verdict to approve
-// with the operator's reason in `operator_override`, which exempts it
-// from the grade/round verdict rule (see task.Review.Forced). Every
-// other field, comments included, is kept. Returns the
-// round it overrode.
+// ForceApproveReview flips reviewer inst's final, escalated verdict to
+// approve with the operator's reason in `operator_override`, which
+// exempts it from the grade/round verdict rule (see task.Review.Forced).
+// Every other field, comments included, is kept. Returns the round it
+// overrode.
+//
+// Only an escalation whose fix pass has landed can be forced. Earlier
+// verdicts were answered (or are being answered) by an engineer round
+// the phase machine pairs with them; flipping one would shift that
+// pairing onto the next reviewer's verdicts.
 func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerInstance, reason string) (int, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -23,19 +28,38 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
 	}
-	unlock, ok := lockRoleDrive(projectRoot, slug)
-	if !ok {
-		return 0, fmt.Errorf("force-approve %s: a drive tick holds the loop; retry", slug)
+	unlock, err := lockRoleDrive(projectRoot, slug)
+	if err != nil {
+		return 0, lockRefusal("force-approve", slug, "a drive tick holds the loop", err)
 	}
 	defer unlock()
+	snap, err := DeriveSnapshot(projectRoot, slug)
+	if err != nil {
+		return 0, fmt.Errorf("force-approve %s: snapshot: %w", slug, err)
+	}
+	if snap.Phase != PhaseEscalated || snap.CurrentReviewer != inst {
+		return 0, fmt.Errorf("force-approve %s: loop is in phase %s (reviewer %s); only reviewer %s's escalated final verdict can be forced",
+			slug, snap.Phase, snap.CurrentReviewer, inst)
+	}
+	if snap.EscalationFixPending {
+		return 0, fmt.Errorf("force-approve %s: the engineer's fix pass for reviewer %s round %d has not landed; retry once engineer-round-%d.json is written",
+			slug, inst, snap.ReviewerRound, snap.EngineerRound+1)
+	}
 	rounds, err := task.ListReviewRounds(projectRoot, slug, inst)
 	if err != nil {
 		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
 	}
-	if len(rounds) == 0 {
-		return 0, fmt.Errorf("force-approve %s: reviewer %s has no verdict yet", slug, inst)
+	// The snapshot skipped invalid files; force the verdict it counted.
+	round := 0
+	for i := len(rounds) - 1; i >= 0 && round == 0; i-- {
+		if _, err := task.ReadReview(projectRoot, slug, inst, rounds[i]); err == nil {
+			round = rounds[i]
+		}
 	}
-	round := rounds[len(rounds)-1]
+	if round == 0 {
+		return 0, fmt.Errorf("force-approve %s: reviewer %s has no valid verdict", slug, inst)
+	}
+
 	path := task.ReviewPath(projectRoot, slug, inst, round)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -45,11 +69,6 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return 0, fmt.Errorf("force-approve %s: %s: %w", slug, path, err)
 	}
-	var verdict string
-	_ = json.Unmarshal(doc["verdict"], &verdict)
-	if verdict == task.VerdictApprove {
-		return 0, fmt.Errorf("force-approve %s: reviewer %s round %d already approves", slug, inst, round)
-	}
 	doc["verdict"], _ = json.Marshal(task.VerdictApprove)
 	doc["operator_override"], _ = json.Marshal(reason)
 	var out bytes.Buffer
@@ -58,20 +77,31 @@ func ForceApproveReview(projectRoot, tasksDir, slug string, inst task.ReviewerIn
 	if err := enc.Encode(doc); err != nil {
 		return 0, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out.Bytes(), 0o644); err != nil {
-		return 0, err
+	// The record goes first so the rewrite validates; it only
+	// authorises this round's file, which the reviewer already wrote.
+	if err := task.RecordOperatorOverride(projectRoot, slug, inst, round); err != nil {
+		return 0, fmt.Errorf("force-approve %s: record override: %w", slug, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return 0, err
-	}
-	if _, err := task.ReadReview(projectRoot, slug, inst, round); err != nil {
-		// Left in place, the drive would bounce the file and re-run the
-		// reviewer: the very undo this command exists to prevent.
-		if rerr := os.WriteFile(path, b, 0o644); rerr != nil {
-			return 0, fmt.Errorf("force-approve %s: override does not validate (%v) and restoring %s failed: %w", slug, err, path, rerr)
-		}
+	if _, err := task.ParseReviewAt(projectRoot, slug, inst, round, out.Bytes()); err != nil {
 		return 0, fmt.Errorf("force-approve %s: override does not validate; verdict left as it was: %w", slug, err)
 	}
+	if err := writeFileAtomic(path, out.Bytes()); err != nil {
+		return 0, fmt.Errorf("force-approve %s: %w", slug, err)
+	}
 	return round, nil
+}
+
+// writeFileAtomic replaces path via a sibling temp file, so a reader or
+// a crash never sees a truncated file.
+func writeFileAtomic(path string, b []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
