@@ -248,6 +248,18 @@ engineer and reviewers stay on one agent. `SPORE_AGENT_BINARY` is the
 claude worker launcher and is ignored for `agent: codex`, which starts
 codex on the brief directly.
 
+## Worktree Base
+
+A new `wt/<slug>` branch starts from a freshly fetched `origin/<default>` (resolved from `origin/HEAD`, else `main`, else `master`), not from whatever the main checkout has checked out. With no `origin` remote or a failed fetch, spore warns on stderr and branches from `HEAD`; an existing branch is reused as is. Opt out per project:
+
+```toml
+# spore.toml
+[fleet]
+worktree_base = "head"
+```
+
+A `.worktreeinclude` file at the project root lists gitignored files (`.env`, `config/master.key`) to copy from the main checkout into each new worktree. See [docs/worker-dispatch.md](docs/worker-dispatch.md#worktree-base) for the pattern syntax.
+
 ## Editor
 
 The coordinator can connect to the operator's VS Code window (Claude

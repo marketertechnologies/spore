@@ -49,6 +49,21 @@ the landed `main` branch is published upstream.
   Tmux windows are the only sanctioned channel for long-running
   jobs.
 
+## Worktree Base
+
+`internal/task/worktreebase.go` creates every task worktree. For a new `wt/<slug>` branch it runs `git fetch origin <default>` and branches from `origin/<default>` with `--no-track`, so workers start on the current upstream tip instead of a stale main checkout. `<default>` comes from `refs/remotes/origin/HEAD`, else the first of `main` / `master` known locally or as a remote-tracking ref. With no `origin` remote, a failed fetch (offline), or a missing ref after the fetch, spore prints one warning line to stderr and branches from the main checkout's `HEAD`; the spawn never fails on the fetch. An existing `wt/<slug>` branch is reused untouched. `[fleet] worktree_base = "head"` in spore.toml skips the fetch and always branches from `HEAD`; any other value means `"fresh"`.
+
+After `git worktree add`, gitignored paths that match a project-root `.worktreeinclude` are copied from the main checkout into the new worktree (same idea as Claude Code's `.worktreeinclude`). Existing files in the worktree are never overwritten, and a copy error is a stderr warning, not a spawn failure. Supported syntax is a subset of gitignore:
+
+- `#` comments and blank lines.
+- A pattern without a slash matches a file or directory name at any depth (`.env`, `.env*`).
+- A leading or inner `/` anchors to the project root (`/config/master.key`, `secrets/*.pem`).
+- A trailing `/` matches directories only; a matched directory is copied whole.
+- `!` negates; the last matching line wins.
+- Globs are `filepath.Match` per path segment. `**` is not supported.
+
+Candidates are the paths `git ls-files --others --ignored --exclude-standard --directory` reports, which collapses wholly ignored directories. Only anchored patterns descend into those, so `.env` does not pick up `node_modules/pkg/.env`; negations are not re-checked inside a directory that is copied whole. Tracked files and untracked files that are not ignored are never copied.
+
 ## Agent Selection
 
 `tasks/<slug>.md` frontmatter controls the worker process. With no

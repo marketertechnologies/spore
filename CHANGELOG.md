@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Worktrees (0.34.2): new task worktrees branch from a fresh upstream base. Creating a new `wt/<slug>` branch now runs `git fetch origin <default>` and branches from `origin/<default>` (default from `origin/HEAD`, else `main`, else `master`) with `--no-track`, instead of forking from the main checkout's possibly stale `HEAD`. No `origin` remote or a failed fetch prints one stderr warning and falls back to `HEAD`; the spawn never fails on it. Existing branches are reused as is. Opt out with `[fleet] worktree_base = "head"`. A project-root `.worktreeinclude` (gitignore-style subset: anchoring, trailing `/`, `!`, `filepath.Match` globs per segment, no `**`) copies matching gitignored files such as `.env` or `config/master.key` from the main checkout into each new worktree. Makes downstream `pre_start` fetch-and-reset hooks unnecessary. See `docs/worker-dispatch.md`.
 - Role loop (0.34.0): `spore task reopen <slug> --note <text>`
   (or `--note-file`) runs a new engineer -> review A -> review B cycle
   on a done or escalated role task, on the same branch, worktree and
