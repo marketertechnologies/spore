@@ -8,6 +8,17 @@
   graph DSL. Adapted from HumanLayer's `show-me` skill (MIT). Consumer
   impact: the updated skill ships to downstream projects on the next
   release.
+- Role loop: reviewer comments carry a severity tier prefix,
+  `[blocker]`, `[nice-to-have]`, or `[nit]`, in both reviewer slots.
+  Only a blocker yields `request_changes`; a verdict with only
+  non-blocking findings approves and keeps them as comments on the
+  PR. The engineer may skip non-blockers without a reason, later
+  rounds do not re-raise them, and the round cap escalates only on
+  outstanding blockers. Consumer impact: role bodies are embedded,
+  so projects on the bundled bodies get tiered verdicts on upgrade
+  and fewer escalations from edge cases; projects overriding
+  `bootstrap/roles/*.md` keep their old rule until they update. The
+  verdict schema and the phase machine are unchanged.
 
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
