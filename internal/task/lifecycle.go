@@ -163,6 +163,37 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
+// SpawnedRoleSlugs lists the slugs that have at least one
+// "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
+// tmux server is running.
+func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, nil
+	}
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "spore-role/" + project + "/"
+	seen := map[string]bool{}
+	var slugs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		slug, _, ok := strings.Cut(rest, "/")
+		if !ok || slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
+}
+
 // Pause flips an active task to paused. The worktree and every tmux
 // session (worker and role panes) stay; the reconciler keeps paused
 // sessions too. Refuses when the inbox has unread messages.
