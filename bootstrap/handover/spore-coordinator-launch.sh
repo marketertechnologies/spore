@@ -59,6 +59,9 @@ fi
 case "$provider" in
   claude)
     args=(--dangerously-skip-permissions)
+    if [[ -n "${SPORE_SANDBOX_SETTINGS:-}" ]]; then
+      args+=(--settings "$SPORE_SANDBOX_SETTINGS")
+    fi
     if [[ -n "$model" ]]; then
       args+=(--model "$model")
     fi

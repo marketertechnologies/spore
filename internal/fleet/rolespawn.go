@@ -139,6 +139,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if s.Role == "engineer" {
 		args = append(args, commitIdentityEnv(s.ProjectRoot)...)
 	}
+	args = append(args, task.SandboxSessionEnv(s.ProjectRoot, cwd)...)
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
 	args = append(args, roleShellCommand(prelude, withBody, bare, rolePath))
 	return args, nil

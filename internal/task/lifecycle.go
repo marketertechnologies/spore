@@ -570,7 +570,7 @@ func workerSessionArgs(projectRoot, slug, session, worktree string) ([]string, e
 	if tier := LoadAccountTier(projectRoot); tier != "" {
 		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+tier)
 	}
-	return args, nil
+	return append(args, SandboxSessionEnv(projectRoot, worktree)...), nil
 }
 
 func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {

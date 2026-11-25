@@ -53,7 +53,7 @@ ending in `(absent: pr_flow off)` means no App is configured for
 this project. Config is per project: an App set up for one project
 does not carry over to another. Run this before telling the
 operator no App exists, and confirm a token mints with
-`spore gh token`.
+`spore gh exec -- gh api /rate_limit`.
 
 ### Set up for a new project
 
@@ -61,7 +61,8 @@ The org has one App and one installation, shared by every
 teammate; each teammate brings their own private key. App creation
 and teammate onboarding (key generation, finding the ids) live in
 `docs/github-app.md` in the spore repo. Once the ids and key are in
-hand:
+hand, the operator runs (from their own shell: inside a sandboxed
+pane the guard denies `config --set` and `token`):
 
 ```
 spore gh config --set app_id=<app id> \
@@ -85,12 +86,16 @@ spore gh exec -- git push -u origin <feature-branch>
 
 `exec` sets `GH_TOKEN` to an installation token and injects a git
 credential helper, so both `gh` and `git push` over https act as
-the App. For raw API calls, `spore gh token` prints the token:
+the App. For raw API calls use `gh api`:
 
 ```
-curl -sH "Authorization: Bearer $(spore gh token)" \
-  https://api.github.com/repos/<owner>/<repo>/pulls
+spore gh exec -- gh api repos/<owner>/<repo>/pulls
 ```
+
+`spore gh` runs outside the Claude Code sandbox (it reads the App
+key), so in agent panes the PreToolUse guard allows only
+`spore gh exec` around `git` or `gh` and read-only `spore gh config`
+(docs/sandbox.md in the spore repo).
 
 This is an installation token. Endpoints that need the App's own
 JWT (`GET /app`, anything under `/app/installations`) reject it with 401 "A JSON web token could not be
@@ -104,7 +109,7 @@ decoded"; that is expected, not a broken setup.
 - Reach for `spore-with-secrets gh` when the action should carry
   the operator's identity, or when `spore gh config` is absent.
 - `pr_flow=draft` only turns on the role loop's draft-PR mirror.
-  Plain `spore gh exec` / `spore gh token` work without it.
+  Plain `spore gh exec` works without it.
 
 ### Policy caveat
 

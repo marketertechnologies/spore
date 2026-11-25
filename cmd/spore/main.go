@@ -49,6 +49,7 @@ Commands:
   show       Open <path>[:<line>[:<col>]] in the connected editor.
   code       Editor helpers (workspace: VS Code multi-root of all worktrees).
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
+  sandbox    Claude Code sandbox settings for spore panes (settings, prepare).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -212,6 +213,8 @@ func main() {
 		os.Exit(runCode(args))
 	case "gh":
 		os.Exit(runGH(args))
+	case "sandbox":
+		os.Exit(runSandbox(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)

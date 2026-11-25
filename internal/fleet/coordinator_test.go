@@ -256,10 +256,10 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 
 func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
 	got := coordinatorShellCommand("claude", "/tmp/role.md")
-	if !strings.Contains(got, "exec claude --dangerously-skip-permissions -- \"$(cat") {
+	if !strings.Contains(got, "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} -- \"$(cat") {
 		t.Errorf("claude command missing flag injection: %s", got)
 	}
-	if !strings.Contains(got, "else exec claude --dangerously-skip-permissions;") {
+	if !strings.Contains(got, "else exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"};") {
 		t.Errorf("claude bare command missing skip-permissions: %s", got)
 	}
 }

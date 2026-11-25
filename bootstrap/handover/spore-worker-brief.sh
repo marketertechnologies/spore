@@ -24,10 +24,15 @@ export PATH="/run/current-system/sw/bin:${PATH}"
 slug="${SPORE_TASK_SLUG:-}"
 agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
+# Pane sandbox settings from the tmux session env (internal/sandbox).
+settings=()
+if [[ -n "${SPORE_SANDBOX_SETTINGS:-}" ]]; then
+  settings=(--settings "$SPORE_SANDBOX_SETTINGS")
+fi
 
 if [[ -z "$slug" ]]; then
   echo "spore-worker-brief: SPORE_TASK_SLUG not set; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  exec "$agent" --dangerously-skip-permissions "${settings[@]}"
 fi
 
 # Absorb the spawn race: tmux can open before the binary finishes
@@ -39,7 +44,7 @@ done
 
 if [[ ! -f "$brief" ]]; then
   echo "spore-worker-brief: no brief at $(pwd)/$brief after retry; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  exec "$agent" --dangerously-skip-permissions "${settings[@]}"
 fi
 
-exec "$agent" --dangerously-skip-permissions -- "$(cat "$brief")"
+exec "$agent" --dangerously-skip-permissions "${settings[@]}" -- "$(cat "$brief")"

@@ -69,7 +69,10 @@ in
         Notification, PreToolUse, SessionStart and Stop hooks
         (run through `/run/current-system/sw`, which also gets
         this package and the shims' hook scripts) and
-        `permissions.deny`. Managed settings apply to every
+        `permissions.deny`, plus the Claude Code sandbox floor
+        (no unsandboxed escape, strict network allowlist, secret
+        paths unreadable; spore turns the sandbox on per pane, see
+        docs/sandbox.md). Managed settings apply to every
         Claude Code session of every account on the host and sit
         above user and project settings: the `block-bg-bash.pl`
         guard (no `Bash` `run_in_background`) and the
@@ -105,8 +108,11 @@ in
     (lib.mkIf (cfg.enable && cfg.claudeManagedSettings.enable) {
       environment.etc."claude-code/managed-settings.d/50-spore.json".source = managedSettings;
       # The drop-in's commands resolve here; shimsPackage is already a
-      # system package (spore-fleet.nix).
-      environment.systemPackages = [ cfg.package ];
+      # system package (spore-fleet.nix). The sandbox's in-namespace
+      # network bridge runs socat from a bash that may re-source
+      # /etc/profile and lose Claude Code's wrapper PATH, so socat and
+      # bwrap must be on the system profile too (docs/sandbox.md).
+      environment.systemPackages = [ cfg.package pkgs.socat pkgs.bubblewrap ];
       environment.pathsToLink = [ "/share/spore/hooks" ];
     })
   ];
