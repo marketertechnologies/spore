@@ -115,7 +115,7 @@ func ticketLine(meta frontmatter.Meta) string {
 }
 
 // changeBullets is up to maxBodyBullets non-merge commit subjects on
-// the branch, oldest first. The base is tried as origin's ref first:
+// the branch, oldest first, with any "area: " prefix stripped. The base is tried as origin's ref first:
 // a stack parent may exist only on the remote.
 func (m *githubMirror) changeBullets(base string) []string {
 	var out string
@@ -132,7 +132,7 @@ func (m *githubMirror) changeBullets(base string) []string {
 	seen := map[string]bool{}
 	var bullets []string
 	for _, s := range strings.Split(out, "\n") {
-		s = strings.TrimSpace(s)
+		s = strings.TrimSpace(areaPrefixRE.ReplaceAllString(s, ""))
 		if s == "" || seen[s] || absPathRE.MatchString(s) {
 			continue
 		}
@@ -144,6 +144,9 @@ func (m *githubMirror) changeBullets(base string) []string {
 	}
 	return bullets
 }
+
+// areaPrefixRE matches a lowercase "area: " or "a, b: " subject prefix.
+var areaPrefixRE = regexp.MustCompile(`^[a-z0-9_/.-]+(, ?[a-z0-9_/.-]+)*: `)
 
 var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")
 

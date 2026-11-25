@@ -308,7 +308,7 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 			reviewLabel(e.instance), e.round, MaxReviewerRounds))
 	case eventReady:
 		if err := m.refreshPRBody(); err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: refresh PR body: %v\n", m.slug, err)
 		}
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err

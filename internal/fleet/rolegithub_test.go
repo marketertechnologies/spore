@@ -536,6 +536,19 @@ func TestGitHubMirrorKeepsAdoptedBody(t *testing.T) {
 	}
 }
 
+func TestAreaPrefixRE(t *testing.T) {
+	for in, want := range map[string]string{
+		"rules: add core/pr-description":         "add core/pr-description",
+		"fleet, compose: keep foreign PR bodies": "keep foreign PR bodies",
+		"Fix the widget: it spins":               "Fix the widget: it spins",
+		"add --add-defaults flag":                "add --add-defaults flag",
+	} {
+		if got := areaPrefixRE.ReplaceAllString(in, ""); got != want {
+			t.Errorf("strip(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestTicketLineGitHub(t *testing.T) {
 	m := frontmatter.Meta{Extra: map[string]string{"matter": "github", "matter_id": "#4", "matter_url": "https://g/4"}}
 	if got := ticketLine(m); got != "Issue: [#4](https://g/4)" {
