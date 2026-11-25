@@ -50,7 +50,7 @@ func record(t *testing.T, id, session string) {
 const idleScreen = "previous output\n\n────────\n❯ \n────────\n  status line"
 
 func loggedOutScreen() string {
-	return "earlier work\n  Login expired · Please run /login\n\n────────\n❯ \n────────\n  status line"
+	return "earlier work\n  Login expired \u00b7 Please run /login\n\n────────\n❯ \n────────\n  status line"
 }
 
 // P1.3: after one /login, a single command resumes every stopped pane:
@@ -67,7 +67,7 @@ func TestNudge_ResumesEveryStoppedPane(t *testing.T) {
 		screens: map[string]string{
 			"spore/p/w1":       loggedOutScreen(),
 			"spore/p/healthy":  idleScreen,
-			"spore/p/retrying": "  API Error: 401 OAuth token has expired · Retrying in 17s\n────────\n❯ \n────────",
+			"spore/p/retrying": "  API Error: 401 OAuth token has expired \u00b7 Retrying in 17s\n────────\n❯ \n────────",
 			"spore/pilot/op":   loggedOutScreen(),
 			"other":            loggedOutScreen(),
 		},

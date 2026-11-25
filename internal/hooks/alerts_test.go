@@ -45,7 +45,7 @@ func coordinatorNotices(t *testing.T, coordState, project string) []string {
 	return out
 }
 
-const limitBanner = "You've hit your limit · resets 2:15pm (Europe/Oslo)"
+const limitBanner = "You've hit your limit \u00b7 resets 2:15pm (Europe/Oslo)"
 
 func TestStopFailure_UsageLimitAlertsOncePerIncident(t *testing.T) {
 	env := setupAlerts(t, "proj")
@@ -212,8 +212,8 @@ func TestClearAlerts_ReleasesClaimsAfterCooldown(t *testing.T) {
 func TestResetTime(t *testing.T) {
 	for in, want := range map[string]string{
 		limitBanner: "2:15pm (Europe/Oslo)",
-		"Usage limit reached - limit resets 2:15pm":                  "2:15pm",
-		"API Error: Request rejected (429) · rate limit. Try later.": "",
+		"Usage limit reached - limit resets 2:15pm":                       "2:15pm",
+		"API Error: Request rejected (429) \u00b7 rate limit. Try later.": "",
 	} {
 		if got := resetTime(in); got != want {
 			t.Errorf("resetTime(%q) = %q, want %q", in, got, want)

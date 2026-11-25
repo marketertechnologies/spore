@@ -285,7 +285,7 @@ func claimAlert(path, body string) (bool, error) {
 
 // resetRe pulls the reset time out of Claude Code's limit banners
 // ("resets 2:15pm (Europe/Oslo)", "limit resets 2:15pm").
-var resetRe = regexp.MustCompile(`(?i)\bresets?\s+(?:at\s+)?([^·\n.;]+)`)
+var resetRe = regexp.MustCompile(`(?i)\bresets?\s+(?:at\s+)?([^\x{00B7}\n.;]+)`)
 
 func resetTime(detail string) string {
 	m := resetRe.FindStringSubmatch(detail)
