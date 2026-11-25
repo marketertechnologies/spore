@@ -70,11 +70,11 @@ backward compatibility; new consumers should use `projects` directly.
 `package` and `claudeCodePackage` default to this flake's outputs.
 Override either option to pin a specific build.
 
-Runners spawn `claude` (claude-code), which manages its own credential
+Workers spawn `claude` (claude-code), which manages its own credential
 lifecycle inside the client. The module deliberately exposes no
 Anthropic API key slot.
 
-`credentialFiles` is for non-claude secrets the runners may need, such
+`credentialFiles` is for non-claude secrets the workers may need, such
 as MCP server keys or git-push tokens. It wires them through systemd
 `LoadCredential=` so values never enter Nix evaluation or the
 `/nix/store`.
