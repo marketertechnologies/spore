@@ -619,15 +619,7 @@ and merge with `spore task merge <slug>`. Then run:
 
     spore task done <slug>
 
-Done flips the status, kills the homogeneous worker session, removes
-the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`,
-and clears the `state/ready` marker. It refuses while the branch has
-unmerged commits (`--force` discards them). It does not kill role
-panes: its session cleanup matches `<project>/<slug>` at a name
-boundary, which `spore-role/...` names never hit. On the normal path
-that is moot (the done tick already reaped all three panes), but when
-you abandon an escalated task, kill the surviving panes yourself with
-`tmux kill-session -t spore-role/<project>/<slug>/<role>`.
+Done flips the status, kills the task's tmux sessions (the homogeneous worker session and every `spore-role/<project>/<slug>/<role>` pane, so an abandoned escalated task leaves nothing running), removes the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`, and clears the `state/ready` marker. It refuses while the branch has unmerged commits (`--force` discards them). `spore task merge` kills the same sessions.
 
 ### Reopening a finished loop
 

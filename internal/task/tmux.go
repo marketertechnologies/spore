@@ -47,6 +47,7 @@ const IdleReapThreshold = 5 * time.Minute
 //   - wt-style "<icon> <project>/<slug>" or "<icon> <project>/<slug> [tag]"
 //   - any external spawner that recorded its own name in frontmatter
 //     and embedded "<project>/<slug>" in it
+//   - role-loop panes "spore-role/<project>/<slug>/<role>"
 //
 // Returns nil when tmux isn't running or no session matches. Pure
 // substring scan: the slug-end boundary is enforced by requiring the
@@ -59,6 +60,10 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 	}
 	project := filepath.Base(projectRoot)
 	needle := project + "/" + slug
+	rolePrefix := "spore-role/" + needle + "/"
+	if name, err := ProjectName(projectRoot); err == nil {
+		rolePrefix = "spore-role/" + name + "/" + slug + "/"
+	}
 	recorded := ""
 	if m, err := readTaskMeta(tasksDir, slug); err == nil {
 		recorded = m.Session
@@ -74,6 +79,10 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 	}
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, rolePrefix) {
+			add(line)
 			continue
 		}
 		i := strings.Index(line, needle)
