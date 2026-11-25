@@ -168,6 +168,10 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 	if rolePath == "" {
 		rolePath = CoordinatorRolePath(root)
 	}
+	respawn, err := respawnCommand(pane, root, agent, rolePath, plan.cfg)
+	if err != nil {
+		return res, fmt.Errorf("coordinator swap: %w", err)
+	}
 
 	// Mutations run cheapest-to-undo first: session env, then the
 	// driver override, then the respawn. A failure undoes the earlier
@@ -184,7 +188,7 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 	}
 	logf("coordinator swap: %s driver=%s model=%s", plan.path, plan.cfg.Driver, displayModel(plan.cfg.Model))
 	logf("coordinator swap: respawning %s (%s) with %s", spec.Session, pane, agent)
-	if _, err := swapTmux(respawnCommand(pane, root, agent, rolePath)...); err != nil {
+	if _, err := swapTmux(respawn...); err != nil {
 		left := "driver override restored"
 		if rerr := plan.rollback(); rerr != nil {
 			left = fmt.Sprintf("driver override %s NOT restored (%v), still says driver=%s", plan.path, rerr, plan.cfg.Driver)
@@ -232,30 +236,38 @@ func exactSession(session string) string {
 	return "=" + session
 }
 
-// swapEnvCommands sets provider and model in the session env, which
-// respawn-pane layers over the global env. A cleared model is marked -r
-// so a value inherited by the tmux server (e.g. from
-// /etc/spore/coordinator.env) cannot leak back in.
+// swapEnvCommands sets provider, model and effort in the session env,
+// which respawn-pane layers over the global env. A cleared model or
+// effort is marked -r so a value inherited by the tmux server (e.g.
+// from /etc/spore/coordinator.env) cannot leak back in.
 func swapEnvCommands(target string, cfg CoordinatorConfig) [][]string {
-	model := []string{"set-environment", "-t", target, "-r", "SPORE_COORDINATOR_MODEL"}
-	if cfg.Model != "" {
-		model = []string{"set-environment", "-t", target, "SPORE_COORDINATOR_MODEL", cfg.Model}
+	setOrRemove := func(k, v string) []string {
+		if v == "" {
+			return []string{"set-environment", "-t", target, "-r", k}
+		}
+		return []string{"set-environment", "-t", target, k, v}
 	}
 	return [][]string{
 		{"set-environment", "-t", target, "SPORE_COORDINATOR_PROVIDER", cfg.Driver},
-		model,
+		setOrRemove("SPORE_COORDINATOR_MODEL", cfg.Model),
+		setOrRemove(CoordinatorEffortEnv, task.NormalizeAgentEffort(cfg.Effort)),
 	}
 }
 
-func respawnCommand(pane, root, agent, rolePath string) []string {
-	return []string{"respawn-pane", "-k", "-t", pane, "-c", root, coordinatorShellCommand(agent, rolePath)}
+func respawnCommand(pane, root, agent, rolePath string, cfg CoordinatorConfig) ([]string, error) {
+	st := task.AgentSettings{Model: cfg.Model, Effort: task.NormalizeAgentEffort(cfg.Effort)}
+	cmd, err := coordinatorShellCommand(agent, rolePath, st)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"respawn-pane", "-k", "-t", pane, "-c", root, cmd}, nil
 }
 
 // restoreSwapEnv puts provider and model back as they were and returns
 // a description of the state left behind, for the error message.
 func restoreSwapEnv(target string, prev tmuxEnv, left string) string {
 	var failed []string
-	for _, k := range []string{"SPORE_COORDINATOR_PROVIDER", "SPORE_COORDINATOR_MODEL"} {
+	for _, k := range []string{"SPORE_COORDINATOR_PROVIDER", "SPORE_COORDINATOR_MODEL", CoordinatorEffortEnv} {
 		args := []string{"set-environment", "-t", target, "-u", k}
 		if v, ok := prev.vals[k]; ok {
 			args = []string{"set-environment", "-t", target, k, v}

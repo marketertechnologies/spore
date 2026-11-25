@@ -20,7 +20,7 @@ func TestWorkerAgentCommandCodexUsesEffortPolicy(t *testing.T) {
 			"model":  "gpt-5.5",
 		},
 	}
-	got, err := workerAgentCommand(m)
+	got, err := workerAgentCommand(m, TaskAgentSettings(m))
 	if err != nil {
 		t.Fatalf("workerAgentCommand: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestWorkerAgentCommandOverrideIsClaudeOnly(t *testing.T) {
 	t.Setenv(CodexBinEnv, "")
 	t.Setenv(CodexModelEnv, "")
 	for _, agent := range []string{"", "claude", "claude-code"} {
-		got, err := workerAgentCommand(frontmatter.Meta{Agent: agent})
+		got, err := workerAgentCommand(frontmatter.Meta{Agent: agent}, AgentSettings{})
 		if err != nil {
 			t.Fatalf("workerAgentCommand(%q): %v", agent, err)
 		}
@@ -43,7 +43,7 @@ func TestWorkerAgentCommandOverrideIsClaudeOnly(t *testing.T) {
 			t.Errorf("agent %q: command = %q want override", agent, got)
 		}
 	}
-	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"})
+	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"}, AgentSettings{})
 	if err != nil {
 		t.Fatalf("workerAgentCommand: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestWorkerAgentCommandOverrideIsClaudeOnly(t *testing.T) {
 
 func TestWorkerAgentCommandCodexBin(t *testing.T) {
 	t.Setenv(CodexBinEnv, "/opt/codex/bin/codex")
-	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"})
+	got, err := workerAgentCommand(frontmatter.Meta{Agent: "codex"}, AgentSettings{})
 	if err != nil {
 		t.Fatal(err)
 	}

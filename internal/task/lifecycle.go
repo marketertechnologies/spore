@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
@@ -521,7 +520,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if hasSession(session) {
 		return session, nil
 	}
-	agent, err := workerAgentCommand(meta)
+	settings, err := WorkerAgentSettings(projectRoot, meta)
+	if err != nil {
+		return "", err
+	}
+	agent, err := workerAgentCommand(meta, settings)
 	if err != nil {
 		return "", err
 	}
@@ -529,6 +532,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	args = append(args, workerSettingsEnv(meta, settings)...)
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
@@ -587,42 +591,6 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return m, nil
-}
-
-// workerAgentCommand returns the agent command for a worker. The
-// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
-// it is a claude launcher, so honouring it for codex would run claude.
-func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	switch m.Agent {
-	case "", "claude", "claude-code":
-		if override := os.Getenv(AgentBinaryEnv); override != "" {
-			return override, nil
-		}
-		return defaultAgentBinary, nil
-	case "codex":
-		return CodexAgentCommand(m)
-	default:
-		return m.Agent, nil
-	}
-}
-
-// CodexAgentCommand returns the interactive codex command line for a
-// task, without a prompt: effort and model from the frontmatter, the
-// model falling back to SPORE_CODEX_MODEL. Role panes share it.
-func CodexAgentCommand(m frontmatter.Meta) (string, error) {
-	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
-	if err != nil {
-		return "", err
-	}
-	model := m.Extra["model"]
-	if model == "" {
-		model = os.Getenv(CodexModelEnv)
-	}
-	args := codexpolicy.InteractiveArgs(model, effort)
-	if bin := os.Getenv(CodexBinEnv); bin != "" {
-		args[0] = bin
-	}
-	return shellJoin(args), nil
 }
 
 // briefRelPath is the brief's path relative to the worktree, where

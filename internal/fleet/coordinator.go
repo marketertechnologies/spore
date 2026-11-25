@@ -108,7 +108,11 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	args = append(args, coordinatorShellCommand(agent, rolePath))
+	cmd, err := coordinatorShellCommand(agent, rolePath, coordinatorSettings(tomlCfg))
+	if err != nil {
+		return "", false, err
+	}
+	args = append(args, cmd)
 	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
@@ -165,6 +169,9 @@ func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg Coord
 	if v := coordinatorModel(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
 	}
+	if v := coordinatorEffort(tomlCfg); v != "" {
+		args = append(args, "-e", CoordinatorEffortEnv+"="+v)
+	}
 	if v := coordinatorAutoConnectIDE(projectRoot); v != "" {
 		args = append(args, "-e", editor.AutoConnectIDEEnv+"="+v)
 	}
@@ -208,6 +215,26 @@ func coordinatorModel(cfg CoordinatorConfig) string {
 		return v
 	}
 	return cfg.Model
+}
+
+// CoordinatorEffortEnv carries the coordinator's effort to launcher
+// scripts (spore-coordinator-launch).
+const CoordinatorEffortEnv = "SPORE_COORDINATOR_EFFORT"
+
+// coordinatorEffort returns the effort injected into the session env,
+// the very-high aliases folded to xhigh. Env wins over the configured
+// effort. Empty when neither source set it.
+func coordinatorEffort(cfg CoordinatorConfig) string {
+	if v := os.Getenv(CoordinatorEffortEnv); v != "" {
+		return v
+	}
+	return task.NormalizeAgentEffort(cfg.Effort)
+}
+
+// coordinatorSettings is the model and effort a claude- or
+// codex-shaped coordinator agent gets as flags.
+func coordinatorSettings(cfg CoordinatorConfig) task.AgentSettings {
+	return task.AgentSettings{Model: coordinatorModel(cfg), Effort: coordinatorEffort(cfg)}
 }
 
 // coordinatorAutoConnectIDE returns the CLAUDE_CODE_AUTO_CONNECT_IDE
@@ -257,9 +284,12 @@ func driverToBinary(driver string) string {
 // bootstrap/handover/spore-worker-brief.sh); we inject those flags
 // only for claude-shaped agents so a sleep-based test agent still
 // boots clean.
-func coordinatorShellCommand(agent, rolePath string) string {
-	cmdWithBody, cmdBare := agentInvocations(agent)
-	return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+func coordinatorShellCommand(agent, rolePath string, st task.AgentSettings) (string, error) {
+	cmdWithBody, cmdBare, err := agentInvocations(agent, st)
+	if err != nil {
+		return "", err
+	}
+	return bodyShellCommand(cmdWithBody, cmdBare, rolePath), nil
 }
 
 func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
@@ -271,16 +301,32 @@ func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
 
 // agentInvocations returns the agent command for a run with a prompt
 // body and for a bare run. Role bodies open with `---` frontmatter, so
-// the body run ends in `--` for both claude and codex.
-func agentInvocations(agent string) (withBody, bare string) {
+// the body run ends in `--` for both claude and codex. Model and effort
+// flags apply to claude and codex only; any other agent (a launcher, a
+// test stub) runs verbatim.
+func agentInvocations(agent string, st task.AgentSettings) (withBody, bare string, err error) {
 	if isClaudeAgent(agent) {
-		return agent + " --dangerously-skip-permissions --", agent + " --dangerously-skip-permissions"
+		claude := agent + " --dangerously-skip-permissions" + shellArgs(task.ClaudeFlags(st))
+		return claude + " --", claude, nil
 	}
 	if isCodexAgent(agent) {
-		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig)
-		return codex + " --", codex
+		flags, err := task.CodexFlags(st)
+		if err != nil {
+			return "", "", err
+		}
+		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig) + shellArgs(flags)
+		return codex + " --", codex, nil
 	}
-	return agent, agent
+	return agent, agent, nil
+}
+
+// shellArgs renders args single-quoted, each with a leading space.
+func shellArgs(args []string) string {
+	var b strings.Builder
+	for _, a := range args {
+		b.WriteString(" " + shellSingleQuote(a))
+	}
+	return b.String()
 }
 
 // isClaudeAgent reports whether the agent string resolves to the

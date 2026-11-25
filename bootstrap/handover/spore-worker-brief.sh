@@ -15,6 +15,9 @@
 #
 # Override knobs:
 #   SPORE_WORKER_AGENT     binary to exec (default: claude)
+#   SPORE_AGENT_MODEL      --model for claude (set by spore from
+#                          [agents.worker] / task `model:`)
+#   SPORE_AGENT_EFFORT     --effort for claude (same sources, `effort:`)
 set -euo pipefail
 
 # Ensure the nix-managed claude wins over any /usr/local/bin/ shadow
@@ -25,9 +28,17 @@ slug="${SPORE_TASK_SLUG:-}"
 agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
 
+flags=(--dangerously-skip-permissions)
+if [[ -n "${SPORE_AGENT_MODEL:-}" ]]; then
+  flags+=(--model "$SPORE_AGENT_MODEL")
+fi
+if [[ -n "${SPORE_AGENT_EFFORT:-}" ]]; then
+  flags+=(--effort "$SPORE_AGENT_EFFORT")
+fi
+
 if [[ -z "$slug" ]]; then
   echo "spore-worker-brief: SPORE_TASK_SLUG not set; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  exec "$agent" "${flags[@]}"
 fi
 
 # Absorb the spawn race: tmux can open before the binary finishes
@@ -39,7 +50,7 @@ done
 
 if [[ ! -f "$brief" ]]; then
   echo "spore-worker-brief: no brief at $(pwd)/$brief after retry; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  exec "$agent" "${flags[@]}"
 fi
 
-exec "$agent" --dangerously-skip-permissions -- "$(cat "$brief")"
+exec "$agent" "${flags[@]}" -- "$(cat "$brief")"

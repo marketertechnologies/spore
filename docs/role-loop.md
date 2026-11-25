@@ -223,6 +223,10 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   spawn from the current config, like the task agent, and never from
   the worker ratio: a live pane keeps its agent, but a pane spawned
   after a config edit picks up the new one.
+- Model and agent CLI effort come from `[agents.engineer]`,
+  `[agents.reviewer]` and `[agents.reviewer.<A|B>]` (README "Model
+  and effort per role"); the slot `effort` above is only the
+  `/code-review` level.
 - Panes get `SPORE_REVIEWER_MODE`, `SPORE_REVIEWER_PREFIX`,
   `SPORE_REVIEWER_LABEL` (see "Comment IDs"), plus
   `SPORE_REVIEW_EFFORT` in code-review mode.

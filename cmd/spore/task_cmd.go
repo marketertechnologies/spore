@@ -247,6 +247,13 @@ func runTaskStatus(args []string) error {
 		return err
 	}
 	printRoleSnapshot(snap)
+	lines, err := fleet.TaskAgentLines(projectRoot, resolveTasksDir(), slug)
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Printf("agent:    %s: %s\n", l.Name, l)
+	}
 	return nil
 }
 

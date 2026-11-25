@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -189,6 +190,11 @@ func runFleetStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	if line, err := fleet.CoordinatorAgentLine(root); err != nil {
+		fmt.Printf("coordinator: %v\n", err)
+	} else {
+		fmt.Printf("coordinator: %s\n", line)
+	}
 	slugs, err := task.SpawnedSlugs(root)
 	if err != nil {
 		return err
@@ -199,9 +205,30 @@ func runFleetStatus(args []string) error {
 	}
 	fmt.Println("sessions:")
 	for _, s := range slugs {
-		fmt.Printf("  %s\n", s)
+		fmt.Printf("  %s%s\n", s, sessionAgentSuffix(root, s))
 	}
 	return nil
+}
+
+// sessionAgentSuffix renders a fleet session's resolved agent, model
+// and effort; a session whose task file is gone or unreadable gets
+// none.
+func sessionAgentSuffix(root, slug string) string {
+	var line fleet.AgentLine
+	if slug == fleet.CoordinatorSlug {
+		l, err := fleet.CoordinatorAgentLine(root)
+		if err != nil {
+			return ""
+		}
+		line = l
+	} else {
+		lines, err := fleet.TaskAgentLines(root, filepath.Join(root, "tasks"), slug)
+		if err != nil || len(lines) != 1 {
+			return ""
+		}
+		line = lines[0]
+	}
+	return "  (" + line.String() + ")"
 }
 
 func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
