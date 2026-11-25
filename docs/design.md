@@ -123,19 +123,7 @@ in your tree".
 
 ## Naming: coordinator and worker
 
-Spore's internal defaults are `dispatcher` (coordinator) and `runner`
-(worker), used in spore's own repo, docs, and tests.
-
-When spore initiates in a downstream project, the bootstrap flow
-**prompts the operator of that project** for the two role names
-during the `repo-mapped` stage, before any kernel files are written.
-Defaults are `dispatcher` / `runner`; the operator can accept the
-defaults or pick anything (`foreman` / `crew`, `pilot` / `cell`,
-`captain` / `hand`, or anything fitting the project's voice).
-
-The picked names get baked into the project's instruction files, the task
-driver's CLI, and the rendered hook plumbing. Renaming after the
-fact is not free but is a recipe, not a fork.
+The two agent roles are `coordinator` and `worker`. The names are fixed across spore and every consumer: the CLI, tmux session names (`spore/<project>/coordinator`, `spore/<project>/<task-slug>`), env (`SPORE_TASK_SLUG=coordinator`) and the rendered rules all use them. Bootstrap does not prompt for other names.
 
 ## Sync model with the upstream harness
 

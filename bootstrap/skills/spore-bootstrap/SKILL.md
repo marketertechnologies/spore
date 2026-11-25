@@ -22,7 +22,6 @@ detector reads. This skill is what does that walk.
 
 - The operator runs `/spore-bootstrap`.
 - `spore bootstrap` blocks at `info-gathered` or `readme-followed`.
-- The operator opens a tree spore has not yet bootstrapped.
 
 ## Orienting
 

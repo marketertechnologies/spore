@@ -3,7 +3,6 @@
 # target: AGENTS.md
 core/header
 core/roles
-core/source-map
 core/tier-policy
 core/role
 core/writing-style
