@@ -49,7 +49,10 @@ type EngineerCheckResult struct {
 // role pane with a check configured, and only when the latest engineer
 // response has no pass or give-up marker for the worktree's HEAD
 // newer than it, and no request_changes verdict is newer than that
-// response (a stop mid-revision is not a handoff). It then runs the check in the task worktree: a pass
+// response (a stop mid-revision is not a handoff). Runs on one round
+// are serialised by a flock (task.CheckLockPath): a second run waits,
+// then returns the first one's result for the same HEAD instead of
+// rerunning. It then runs the check in the task worktree: a pass
 // records check-pass-<round>-<sha>; a failure records an attempt and
 // blocks the stop, until the MaxCheckAttempts-th failure on the same
 // round and sha records check-failed-<round>-<sha> and lets the stop
@@ -81,6 +84,43 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 	if err != nil || state != task.CheckPending {
 		return EngineerCheckResult{}, err
 	}
+	before, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)
+	if err != nil {
+		return EngineerCheckResult{}, err
+	}
+	unlock, waited, err := lockCheckRun(task.CheckLockPath(in.ProjectRoot, in.Slug, round),
+		time.Duration(cfg.TimeoutSeconds)*time.Second+checkLockGrace)
+	if errors.Is(err, errCheckLockTimeout) {
+		return EngineerCheckResult{Stderr: fmt.Sprintf(
+			"spore engineer-check: another run of `%s` for engineer round %d still holds %s; not running a second one. Reviewers stay held until a run passes.\n",
+			cfg.Cmd, round, task.CheckLockPath(in.ProjectRoot, in.Slug, round))}, nil
+	}
+	if err != nil {
+		return EngineerCheckResult{}, err
+	}
+	defer unlock()
+	if waited {
+		// The run we waited on may have settled this HEAD already.
+		sha0 := sha
+		if sha, err = task.HeadSHA(wt); err != nil {
+			return EngineerCheckResult{}, err
+		}
+		state, err := task.ReadCheckState(in.ProjectRoot, in.Slug, round, sha)
+		if err != nil || state != task.CheckPending {
+			return EngineerCheckResult{}, err
+		}
+		n, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)
+		if err != nil {
+			return EngineerCheckResult{}, err
+		}
+		if sha == sha0 && n > before {
+			body, _ := os.ReadFile(task.CheckAttemptPath(in.ProjectRoot, in.Slug, round, sha, n))
+			return EngineerCheckResult{Code: 2, Stderr: fmt.Sprintf(
+				"spore engineer-check: a concurrent run of `%s` failed on HEAD %s (engineer round %d, attempt %d/%d) while this one waited; not rerunning. "+
+					"Reviewers stay held until it passes. Fix the failure, commit, and end your turn again.\n%s",
+				cfg.Cmd, shortSHA(sha), round, n, task.MaxCheckAttempts, body)}, nil
+		}
+	}
 
 	start := time.Now()
 	code, out := runCheck(wt, cfg)
@@ -98,10 +138,7 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 	if err != nil {
 		return EngineerCheckResult{}, err
 	}
-	short := sha
-	if len(short) > 12 {
-		short = short[:12]
-	}
+	short := shortSHA(sha)
 	if n >= task.MaxCheckAttempts {
 		if err := writeMarker(task.CheckFailedPath(in.ProjectRoot, in.Slug, round, sha), record); err != nil {
 			return EngineerCheckResult{}, err
@@ -160,4 +197,54 @@ func writeMarker(path, body string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// checkLockGrace pads the wait for a concurrent run past the check
+// timeout, covering the WaitDelay and marker writes after a kill.
+var checkLockGrace = 30 * time.Second
+
+// checkLockPoll is how often a waiting run retries the lock.
+var checkLockPoll = 200 * time.Millisecond
+
+var errCheckLockTimeout = errors.New("check lock held past the wait")
+
+// lockCheckRun takes an exclusive flock on path, waiting up to wait for
+// a concurrent holder. waited reports whether it had to: the caller
+// then re-reads the gate, since the other run may have settled it.
+func lockCheckRun(path string, wait time.Duration) (unlock func(), waited bool, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, false, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, false, err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = f.Close()
+			return nil, false, fmt.Errorf("flock %s: %w", path, err)
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, true, errCheckLockTimeout
+		}
+		waited = true
+		time.Sleep(checkLockPoll)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, waited, nil
 }

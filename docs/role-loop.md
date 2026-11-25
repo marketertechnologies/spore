@@ -308,6 +308,8 @@ killed):
 A newer response re-arms the gate, and so does a commit (new sha).
 The hook reads no stdin, so the engineer can run it by hand.
 
+Runs on one round are serialised by a flock on `state/check-N.lock`: a second run (the Stop hook racing a manual run) waits for the first, up to `check_timeout_seconds` plus 30s. If the first one recorded a pass or give-up for the same HEAD, the second returns without running; if it recorded a failing attempt, the second blocks with that attempt's output instead of rerunning. A holder that outlives the wait leaves the second run a clean exit (stop let through, nothing recorded); the driver still holds reviewers.
+
 The driver records the gate in the snapshot (`Check`, `CheckSHA`;
 `spore task status` prints a `check:` line) for the latest engineer
 round at the worktree HEAD, in review phases only:
@@ -594,7 +596,8 @@ Markers under `.spore/<slug>/state/`:
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
 - `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
-  `check-failed-<round>-<sha>`: engineer check gate results;
+  `check-failed-<round>-<sha>`: engineer check gate results
+  (`check-<round>.lock` serialises runs);
   `check-held-<round>-<sha>-<stamp>` and
   `check-failed-reviewer-<instance>-<round>-<stamp>` mark its wakes.
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this

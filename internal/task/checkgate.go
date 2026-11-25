@@ -98,6 +98,12 @@ func CheckAttemptPath(projectRoot, slug string, round int, sha string, n int) st
 	return checkMarker(projectRoot, slug, fmt.Sprintf("check-attempt-%d-%s-%d", round, sha, n))
 }
 
+// CheckLockPath is the flock file serialising check runs on engineer
+// round `round`, so the Stop hook and a manual run never overlap.
+func CheckLockPath(projectRoot, slug string, round int) string {
+	return checkMarker(projectRoot, slug, fmt.Sprintf("check-%d.lock", round))
+}
+
 func checkMarker(projectRoot, slug, name string) string {
 	return filepath.Join(RoleTaskDir(projectRoot, slug), "state", name)
 }
