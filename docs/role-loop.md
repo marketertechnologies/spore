@@ -164,9 +164,8 @@ mode = "fleet"
 - `code-review` runs the `reviewer-code-review.md` body, which
   invokes Claude Code's `code-review` skill at `effort` on the branch
   diff (on the draft PR with `--comment` when `github.json` holds a
-  PR number). Findings map to the verdict: any non-cosmetic finding
-  is `request_changes`, none or cosmetic-only is `approve`, one
-  `path:line: text` comment per finding. The verdict file schema and
+  PR number). Each finding gets one `[<tier>] path:line: text`
+  comment, tiered as in "Severity tiers" below. The verdict file schema and
   the `Review #1` / `Review #2` mirror are unchanged. The run has no
   spec context, so the engineer pushes back with a one-line reason
   on findings the spec contradicts, and later rounds do not re-raise
@@ -192,6 +191,32 @@ mode = "fleet"
 The default pairing is A = code-review, B = fleet: bug hunt first,
 spec and verification second. spore's own spore.toml pins it
 explicitly.
+
+### Severity tiers
+
+Both slots prefix every comment with one tier, so a verdict means
+the same thing whichever slot wrote it:
+
+- `[blocker]`: a realistic input or state produces wrong output, a
+  crash, data loss, a security hole, or a regression. The fleet slot
+  also counts an unmet spec requirement, red tests or lints, and a
+  PR over the size cap.
+- `[nice-to-have]`: needs unusual or adversarial input, a race with
+  a manual human edit, or is a theoretical cost. Never a security
+  defect: an exploitable hole is a blocker even behind crafted input.
+- `[nit]`: cosmetic.
+
+A verdict is `request_changes` only with at least one blocker;
+otherwise it is `approve` and the non-blocking comments stay in the
+verdict file, which the `Review #N` mirror posts to the PR in the
+draft-PR flow. The engineer treats an untagged comment as a blocker,
+must address blockers, and may skip the rest without a reason (listed as
+`skipped:` in `pushback`); later rounds do not re-raise a skipped
+non-blocker unless the reviewer retiers it to `[blocker]` with
+`retiered: <why>`, and new findings in fix code block only as blockers.
+So the round cap escalates only on outstanding blockers. The Go
+side does not parse tiers: the verdict string alone drives the
+phase machine.
 
 ### Pre-start hook
 
@@ -275,8 +300,8 @@ B's own verdicts. Each round a reviewer writes
     {
       "author": "A",
       "verdict": "approve" | "request_changes",
-      "summary": "one-line overall take",
-      "comments": ["one string per concern"]
+      "summary": "1 blocker, 1 nit: nil deref in X",
+      "comments": ["[blocker] one string per concern", "[nit] ..."]
     }
 
 ## File validation

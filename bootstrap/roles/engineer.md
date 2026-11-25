@@ -45,9 +45,11 @@ files only.
 
   - `author`: required. The value of `$SPORE_ROLE` (`engineer`).
   - `addressed`: one entry per review comment you fixed, with how.
-  - `pushback`: comments you do not intend to address, with the
-    reason. Pushback is allowed; overusing it risks the loop hitting
-    the 3-round cap and escalating to the operator.
+  - `pushback`: comments you do not intend to address. A blocker
+    needs a reason; overusing that risks the loop hitting the
+    3-round cap and escalating to the operator. Skipped non-blockers
+    go here too, as `skipped: <comment>` with no reason (see
+    "Severity tiers").
   - `notes`: anything else the reviewer should know going in.
   - `followups`: optional. Out-of-scope work you propose for a
     separate PR (see "Fix rounds").
@@ -78,6 +80,20 @@ A reviewer slot in code-review mode runs `/code-review` without the
 spec, so its findings may lack spec context. When a finding
 contradicts the spec, push back with a one-line reason (spec intends
 it / pre-existing code / out of scope) instead of implementing it.
+
+## Severity tiers
+
+Reviewer comments may carry a tier prefix: `[blocker]`,
+`[nice-to-have]`, or `[nit]`. Only blockers hold the loop back; a
+verdict with no blocker is an approve.
+
+- Treat an untagged comment as `[blocker]`.
+- Address every `[blocker]`, or push back on it with a concrete
+  reason.
+- You may skip `[nice-to-have]` and `[nit]` comments without a
+  reason. List each one in `pushback` as `skipped: <comment>` so the
+  reviewer does not re-raise it. Fix one only when it is cheap and
+  sits in code you are already changing.
 
 ## Fix rounds
 

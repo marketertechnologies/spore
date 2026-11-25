@@ -599,3 +599,16 @@ func TestEngineerCommitIdentityEnv(t *testing.T) {
 		t.Error("pr_flow off engineer got commit identity")
 	}
 }
+
+func TestReviewBodyApproveKeepsTieredComments(t *testing.T) {
+	raw := `{"author":"A","verdict":"approve","summary":"0 blocker, 1 nice-to-have, 1 nit","comments":["[nice-to-have] a.go:3: races a manual edit","[nit] b.go:9: rename x"]}`
+	rev, err := task.ParseReview("round-1.json", []byte(raw), task.ReviewerA, false)
+	if err != nil {
+		t.Fatalf("ParseReview: %v", err)
+	}
+	want := "**Review #1 (round 2): approve**\n\n0 blocker, 1 nice-to-have, 1 nit\n\n" +
+		"- [nice-to-have] a.go:3: races a manual edit\n- [nit] b.go:9: rename x\n"
+	if got := reviewBody(task.ReviewerA, 2, rev); got != want {
+		t.Fatalf("body:\n got %q\nwant %q", got, want)
+	}
+}

@@ -59,14 +59,28 @@ Never measure against a sibling task branch.
 
 ## Verdict mapping
 
-- Any finding that is not purely cosmetic (naming, formatting,
-  comment wording) -> `request_changes`.
-- Zero findings, or cosmetic findings only -> `approve`.
-- One `comments` entry per finding, shaped `path:line: text`. Keep
-  each to the defect and its failure scenario; no repeat of the
-  inline comment's full body.
-- `summary`: one line, e.g. `2 findings: nil deref in X, missing
-  error check in Y`.
+Tag every finding with exactly one tier, as a prefix on its
+`comments` entry: `[blocker] path:line: text`.
+
+- `[blocker]`: a realistic input or state produces wrong output, a
+  crash, data loss, a security hole, or a regression of behavior
+  that worked before the branch.
+- `[nice-to-have]`: a real defect that needs unusual or adversarial
+  input, a race with a manual human edit, or a theoretical cost.
+  Never a security defect: an exploitable hole is a `[blocker]` even
+  when only crafted input reaches it.
+- `[nit]`: cosmetic (naming, formatting, comment wording).
+
+Then:
+
+- At least one `[blocker]` -> `request_changes`.
+- No blockers (zero findings, or only nice-to-have and nit) ->
+  `approve`. Keep the non-blocking comments in the verdict: it is
+  their record, and in the draft-PR flow it reaches the PR.
+- One `comments` entry per finding. Keep each to the defect and its
+  failure scenario; no repeat of the inline comment's full body.
+- `summary`: one line that counts per tier, then names the
+  blockers, e.g. `1 blocker, 3 nice-to-have: nil deref in X`.
 
 ## Rounds 2+
 
@@ -74,9 +88,15 @@ Read the engineer's latest response first. Do not re-raise a finding
 the engineer pushed back on with a concrete reason (out of scope,
 intended by the spec, pre-existing code) unless the reason is wrong.
 When it is wrong, say so explicitly in that finding's comment
-(`pushback rejected: <why>`). A finding the engineer marked addressed
-but that the new run still reports is a fresh `request_changes`
-comment.
+(`pushback rejected: <why>`). A blocker the engineer marked addressed
+but that the new run still reports is a fresh `[blocker]` comment.
+
+Do not re-raise a `[nice-to-have]` or `[nit]` the engineer skipped;
+skipping those needs no reason. The one exception is a finding you
+tiered too low: re-raise it as `[blocker]` with `retiered: <why>`
+in its comment. A new finding in code the engineer
+wrote to fix a previous round blocks only if it is a `[blocker]`;
+tier it honestly rather than escalating edge cases in fix code.
 
 ## What you write
 
@@ -88,8 +108,8 @@ comment.
   {
     "author": "A",
     "verdict": "approve" | "request_changes",
-    "summary": "one-line overall take",
-    "comments": ["path:line: ...", "..."]
+    "summary": "1 blocker, 1 nit: nil deref in X",
+    "comments": ["[blocker] path:line: ...", "[nit] path:line: ..."]
   }
   ```
 
@@ -122,9 +142,11 @@ comment.
 
 ## Cap
 
-Three rounds per reviewer phase. If round 3 still has non-cosmetic
-findings, write `request_changes` anyway; the coordinator escalates
-to the operator. Do not soften a verdict to dodge escalation.
+Three rounds per reviewer phase. If round 3 still has an outstanding
+`[blocker]`, write `request_changes` anyway; the coordinator
+escalates to the operator. Only blockers escalate: round 3 with
+nice-to-have or nit findings alone is an `approve`. Do not soften a
+blocker's tier to dodge escalation.
 
 ## Where you run
 
