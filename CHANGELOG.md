@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
+  - **Coordinator respawn after switch.** The graceful-deploy post
+    step re-enabled the fleet inside activation, before
+    `/run/current-system` switched, so respawned coordinators ran
+    SessionStart hooks that did not exist yet (`load-state-md.pl`
+    exit 127, no `state.md`). Activation now queues
+    `spore-fleet-graceful-post.service`, which switch-to-configuration
+    starts once the new system is current. Downstream: hosts pick this
+    up on their next `nixos-rebuild switch`. Activation runs the new
+    generation's scripts, so the switch onto 0.40.5 already uses it.
+  - **+refspec force push denied.** `git push origin +branch` and
+    `+HEAD:branch` are now blocked by `permissions.deny`
+    (`Bash(git push +*)`, `Bash(git push * +*)`) and the PreToolUse
+    guard. `--force-with-lease` and `--force-if-includes` stay allowed.
+    Downstream: managed settings update on the next switch; hosts with
+    a hand-installed `~/.claude/settings.json` reinstall it from
+    `share/spore/settings.json`.
+  - **NormalizeCommand** skips leading `NAME=value` assignments, so a
+    hook command with an env prefix matches its managed copy.
+  - **Shared coordinator role** gains a "GitHub PR flow" section for
+    projects with a GitHub App and `pr_flow = "draft"`. Consumers can
+    drop the generic part from their project role.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current
   memory guidance (root `CLAUDE.md` under about 200 lines, area rules
