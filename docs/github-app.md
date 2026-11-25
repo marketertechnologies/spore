@@ -73,6 +73,8 @@ is replaced by the task title. Everyone with repo access reads it, so
 open the brief with a plain summary: no host paths, no
 coordinator-only notes. The rest of the brief stays off GitHub.
 
+Everything the mirror posts (PR title and body, review bodies, inline comments, engineer comments, the final `pr` title and body) passes through one redaction step (`internal/redact`) on its way to gh. It replaces, with `[redacted]`: every value of 8 or more characters in the layered secrets files (`${XDG_CONFIG_HOME:-~/.config}/spore/secrets.env`, then `.../spore/<project>/secrets.env`), marked `[redacted:NAME]` with the variable name, never the value; GitHub token shapes (`ghp_`, `ghs_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`) and Anthropic keys (`sk-ant-`); PEM private key blocks; and absolute paths under `$HOME`, `/home/<user>` or `/Users/<user>`. Shorter secrets.env values are left alone, since they would shred ordinary prose. Commit contents are not scanned. Only the posted text and the `--title` / `--body` values are redacted, not refs, logins or repo names.
+
 The PR base is the task's `base:` frontmatter (a stack parent branch),
 else the remote default branch (`git symbolic-ref
 refs/remotes/origin/HEAD`; run `git remote set-head origin --auto` if
@@ -108,7 +110,7 @@ existing app skip to [Teammate onboarding](#teammate-onboarding).
      --set operator_login=<github login> \
      --set "commit_name=<your name>" --set commit_email=<email linked to that login> \
      --set pr_flow=draft
-   spore gh token
+   spore gh exec -- gh api installation/repositories --jq .total_count
    ```
 
 ## Teammate onboarding
@@ -153,7 +155,7 @@ Below, `<pem>` is `~/.config/spore/<project>/github-app.pem`.
 6. Continue with [One-time setup](#one-time-setup) steps 4-5: https
    `origin`, `spore gh config --set ...` with your own
    `private_key`, `operator_login`, `commit_name`, `commit_email`, then
-   `spore gh token`.
+   `spore gh exec -- gh api installation/repositories --jq .total_count`.
 
 ## Config
 
@@ -182,7 +184,9 @@ flow was turned on keep their old identity until respawned.
 
 ## `spore gh`
 
-- `spore gh token` prints an installation token. Tokens are cached in
+- `spore gh token` prints an installation token, for humans only:
+  run from an agent pane, the token lands in the transcript. Agents
+  use `spore gh exec`. Tokens are cached in
   `$XDG_STATE_HOME/spore/<project>/github-token.json` (0600) until 5
   minutes before expiry; changing `app_id` or `installation_id`
   invalidates the cache.

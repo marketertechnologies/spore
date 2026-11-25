@@ -477,22 +477,6 @@ func TestGitHubMirrorPRBodyDropsPaths(t *testing.T) {
 	}
 }
 
-func TestAbsPathRE(t *testing.T) {
-	for in, want := range map[string]bool{
-		"see /home/u/x":                 true,
-		"key at ~/.config/spore/a.pem":  true,
-		"(`/etc/nixos/flake.nix`)":      true,
-		"/srv/a/b at the start":         true,
-		"Make the widget spin.":         false,
-		"see https://github.com/a/b":    false,
-		"read and/or write the a/b key": false,
-	} {
-		if got := absPathRE.MatchString(in); got != want {
-			t.Errorf("absPathRE(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 // TestGitHubMirrorAdoptedPRAssignsOperator: a PR opened before the
 // role loop took the task over must still land on the operator.
 func TestGitHubMirrorAdoptedPRAssignsOperator(t *testing.T) {
@@ -708,5 +692,90 @@ func TestGitHubMirrorPRDescriptionFailureStillMarksReady(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("coordinator not told about the failed edit")
+	}
+}
+
+// TestGitHubMirrorRedactsSecrets: a secrets.env value, token shapes,
+// a PEM key and home paths planted in every posted field reach gh as
+// [redacted]; a value shorter than the minimum is left alone.
+func TestGitHubMirrorRedactsSecrets(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	secrets := filepath.Join(cfg, "spore", "demo-project", "secrets.env")
+	if err := os.MkdirAll(filepath.Dir(secrets), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const canary, short = "CANARY-vuNfvrcKGX", "abc1234"
+	if err := os.WriteFile(secrets, []byte("API_KEY="+canary+"\nSHORT="+short+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ghp := "ghp_" + strings.Repeat("Q9", 18)
+	pemKey := "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----"
+	leak := func(field string) string { return canary + "-" + field }
+
+	if err := os.WriteFile(filepath.Join(f.tasksDir, "demo.md"), []byte("---\nstatus: active\nslug: demo\ntitle: Demo "+leak("TASKTITLE")+"\nloop: role\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.WriteSpec(f.root, f.slug, []byte("Spin it with "+leak("SPEC")+" and "+ghp+", keep "+short+".\n")); err != nil {
+		t.Fatal(err)
+	}
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{
+		Verdict: task.VerdictRequestChanges, Prefix: "R",
+		Summary: "Summary leaks " + leak("REVSUM") + " from /home/alice/secrets.env",
+		Comments: []task.ReviewComment{
+			{Severity: task.SeverityHigh, Category: "security", Where: "one.txt:1", Text: "API_KEY=" + leak("INLINE"),
+				Reason: leak("REVREASON"), Trigger: leak("REVTRIGGER"), Suggestion: "-API_KEY=" + leak("REVSUGG")},
+			{Severity: task.SeverityHigh, Category: "security", Where: "nowhere " + leak("WHERE"), Text: leak("REVTEXT") + "\n" + pemKey, Reason: "home is /home/alice/x",
+				Trigger: "sk-ant-api03-" + strings.Repeat("k", 24)},
+		},
+	})
+	f.tick(t)
+	if err := task.WriteEngineerResponse(f.root, f.slug, 2, task.EngineerResponse{
+		Addressed: []string{"also removed " + leak("ENGADDR")},
+		Pushback:  []string{"R1.2: kept " + leak("ENGPUSH")},
+		Notes:     "holds " + leak("ENGNOTES"),
+		Followups: []string{"rotate " + leak("ENGFOLLOW")},
+		Outcomes:  []task.CommentOutcome{{Reviewer: "A", Round: 1, Comment: 0, Outcome: task.OutcomeFixed, Detail: "replaced " + leak("ENGOUTCOME")}},
+		PR:        &task.PRDescription{Title: "Spin " + leak("PRTITLE"), Body: "Body " + leak("PRBODY") + " with " + ghp},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, "two")
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "good", Prefix: "R"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship " + leak("REVB"), Prefix: "C"})
+	for range 3 {
+		f.tick(t)
+	}
+	if !f.state(t).Ready {
+		t.Fatalf("loop did not reach ready; calls = %q", f.calls(t))
+	}
+
+	log := f.log(t)
+	for _, r := range f.reviews(t) {
+		log += r.Body
+		for _, c := range r.Comments {
+			log += "\n" + c.Body
+		}
+	}
+	for _, s := range []string{canary, ghp, "sk-ant-api03", "PRIVATE KEY", "/home/alice"} {
+		if strings.Contains(log, s) {
+			t.Errorf("gh received %q:\n%s", s, log)
+		}
+	}
+	for _, field := range []string{"TASKTITLE", "SPEC", "REVSUM", "INLINE", "REVREASON", "REVTRIGGER", "REVSUGG", "WHERE", "REVTEXT",
+		"ENGADDR", "ENGPUSH", "ENGNOTES", "ENGFOLLOW", "ENGOUTCOME", "PRTITLE", "PRBODY", "REVB"} {
+		if !strings.Contains(log, "[redacted:API_KEY]-"+field) {
+			t.Errorf("field %s not posted redacted", field)
+		}
+	}
+	if !strings.Contains(log, "keep "+short+".") {
+		t.Errorf("short value %q was redacted:\n%s", short, log)
+	}
+	if !strings.Contains(log, "ARGS: pr edit 12 --title Spin [redacted:API_KEY]-PRTITLE --body-file -") {
+		t.Errorf("pr edit title not redacted: %q", f.calls(t))
 	}
 }

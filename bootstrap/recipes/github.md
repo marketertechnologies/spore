@@ -53,7 +53,8 @@ ending in `(absent: pr_flow off)` means no App is configured for
 this project. Config is per project: an App set up for one project
 does not carry over to another. Run this before telling the
 operator no App exists, and confirm a token mints with
-`spore gh token`.
+`spore gh exec -- gh api installation/repositories --jq .total_count` (it prints the number of repos
+the App reaches, not the token).
 
 ### Set up for a new project
 
@@ -67,7 +68,7 @@ hand:
 spore gh config --set app_id=<app id> \
   --set installation_id=<installation id> \
   --set private_key=~/.config/spore/<project>/github-app.pem
-spore gh token
+spore gh exec -- gh api installation/repositories --jq .total_count
 ```
 
 `--set key=` deletes a key. `origin` must be https
@@ -85,12 +86,16 @@ spore gh exec -- git push -u origin <feature-branch>
 
 `exec` sets `GH_TOKEN` to an installation token and injects a git
 credential helper, so both `gh` and `git push` over https act as
-the App. For raw API calls, `spore gh token` prints the token:
+the App. For raw API calls, use `gh api` under `exec`:
 
 ```
-curl -sH "Authorization: Bearer $(spore gh token)" \
-  https://api.github.com/repos/<owner>/<repo>/pulls
+spore gh exec -- gh api repos/<owner>/<repo>/pulls
 ```
+
+Never run `spore gh token` from an agent pane, and never put a
+token in a command line (`https://x-access-token:<token>@...`,
+`GH_TOKEN=<token> gh ...`): the token lands in the transcript.
+`exec` keeps it in the child's environment.
 
 This is an installation token. Endpoints that need the App's own
 JWT (`GET /app`, anything under `/app/installations`) reject it with 401 "A JSON web token could not be

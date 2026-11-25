@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -95,5 +96,40 @@ func TestGHExecRefusesSSHRemote(t *testing.T) {
 	}
 	if code := runGH([]string{"exec", "--", "true"}); code != 1 {
 		t.Fatalf("exec with ssh origin exit %d, want 1", code)
+	}
+}
+
+func TestGHTokenHelpWarnsAboutTranscripts(t *testing.T) {
+	if !strings.Contains(ghUsage, "token lands in its transcript") || !strings.Contains(ghUsage, "spore gh exec -- git push") {
+		t.Fatalf("spore gh token help lacks the transcript warning:\n%s", ghUsage)
+	}
+}
+
+// TestPromptsKeepTokensOffCommandLines: recipes, role prompts and the
+// App docs that agents follow push and call the API through
+// `spore gh exec`, never with a token spliced into the command.
+func TestPromptsKeepTokensOffCommandLines(t *testing.T) {
+	inline := regexp.MustCompile(`\$\(\s*spore gh token|x-access-token:\$|tok=\$\(|(?m)^\s*spore gh token\s*$`)
+	var files []string
+	for _, dir := range []string{"../../bootstrap", "../../rules"} {
+		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+				files = append(files, p)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	files = append(files, "../../docs/github-app.md")
+	for _, p := range files {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := inline.Find(b); m != nil {
+			t.Errorf("%s inlines a token: %q", p, m)
+		}
 	}
 }
