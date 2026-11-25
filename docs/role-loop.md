@@ -619,7 +619,7 @@ and merge with `spore task merge <slug>`. Then run:
 
     spore task done <slug>
 
-Done flips the status, kills the task's tmux sessions (the homogeneous worker session and every `spore-role/<project>/<slug>/<role>` pane, so an abandoned escalated task leaves nothing running), removes the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`, and clears the `state/ready` marker. It refuses while the branch has unmerged commits (`--force` discards them). `spore task merge` kills the same sessions.
+Done flips the status, kills the task's tmux sessions (the homogeneous worker session and every `spore-role/<project>/<slug>/<role>` pane, so an abandoned escalated task leaves nothing running), removes the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`, and clears the `state/ready` marker. It refuses while the branch has commits not yet merged into the task's `base:` (checked against the local branch and `origin/<base>`; the integration branch when `base:` is unset); `--force` discards them. `spore task merge` kills the same sessions.
 
 ### Reopening a finished loop
 
