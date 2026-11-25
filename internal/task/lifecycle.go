@@ -163,34 +163,23 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
-// Pause flips an active task to paused. The worktree is left in
-// place; the tmux session is reaped only if it has been idle past
-// IdleReapThreshold (model exited, pane sitting at an empty prompt).
-// A mid-tool-call rower stays alive so the operator can attach and
-// finish a thought. Refuses when the inbox has unread messages.
+// Pause flips an active task to paused. The worktree and every tmux
+// session (worker and role panes) stay; the reconciler keeps paused
+// sessions too. Refuses when the inbox has unread messages.
 func Pause(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
 	}
-	if err := flipStatus(tasksDir, slug, "active", "paused"); err != nil {
-		return err
-	}
-	reapIdleSlugSessions(tasksDir, slug)
-	return nil
+	return flipStatus(tasksDir, slug, "active", "paused")
 }
 
-// Block flips an active task to blocked. Same idle-gated reap as
-// Pause: the worktree stays, the session is killed only if idle past
-// IdleReapThreshold. Refuses when the inbox has unread messages.
+// Block flips an active task to blocked. Like Pause, it tears
+// nothing down. Refuses when the inbox has unread messages.
 func Block(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
 	}
-	if err := flipStatus(tasksDir, slug, "active", "blocked"); err != nil {
-		return err
-	}
-	reapIdleSlugSessions(tasksDir, slug)
-	return nil
+	return flipStatus(tasksDir, slug, "active", "blocked")
 }
 
 // Verify reads tasks/<slug>.md and runs the structural evidence
