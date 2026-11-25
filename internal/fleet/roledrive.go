@@ -72,6 +72,7 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: snapshot: %w", slug, err)
 	}
+	stampReviewedSHAs(projectRoot, slug)
 
 	prFlow := githubFlow(projectRoot)
 	engineer := EngineerSpec(projectRoot, slug)
