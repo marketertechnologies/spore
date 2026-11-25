@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `spore-coordinator-launch`: claude coordinators start with
+  `--remote-control <name>`, named after the pane's tmux session
+  (fallback `spore-<cwd basename>-coordinator`), so Remote Control
+  survives a wrap-up respawn. `SPORE_COORDINATOR_REMOTE_CONTROL=0`
+  opts out. Consumer impact: every claude coordinator on a host gets
+  Remote Control after the next rebuild plus its next respawn.
 - PR descriptions: new `rules/core/pr-description.md` fragment (ticket
   link, one paragraph, 3-5 change bullets, no headed sections), a
   default every consumer list carries. The advisory consumer-defaults
