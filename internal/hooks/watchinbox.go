@@ -108,7 +108,9 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 	if err != nil || len(claimed) == 0 {
 		return 0, err
 	}
-	io.WriteString(stdout, renderClaimed(claimed))
+	for _, l := range renderClaimed(claimed) {
+		io.WriteString(stdout, l.text)
+	}
 	return len(claimed), nil
 }
 
@@ -152,25 +154,59 @@ func claimInbox(inboxDir string) ([]string, error) {
 	return claimed, nil
 }
 
-// renderClaimed formats each claimed envelope. The source field is
-// whatever the writer put there: anyone with write access to the inbox
-// can claim to be the operator, so every line marks it unverified. A
-// file that does not parse is moved to inbox/quarantine/ and reported
-// instead of being consumed silently.
-func renderClaimed(claimed []string) string {
-	var b strings.Builder
+// inboxLine is one rendered message and where its file lives now:
+// inbox/read/ once claimed, inbox/quarantine/ if it did not parse.
+type inboxLine struct {
+	path, text string
+}
+
+// renderClaimed formats each claimed envelope as exactly one line. The
+// source field is whatever the writer put there: anyone with write
+// access to the inbox can claim to be the operator, so every line
+// marks it unverified, and the fields are escaped so no envelope can
+// start a second, unmarked line or close the marker early. A file that
+// does not parse is moved to inbox/quarantine/ and reported instead of
+// being consumed silently.
+func renderClaimed(claimed []string) []inboxLine {
+	lines := make([]inboxLine, 0, len(claimed))
 	for _, f := range claimed {
 		ts, source, body, err := readTellFile(f)
 		if err != nil {
-			fmt.Fprintf(&b, "[warning] inbox: unreadable message %s: %v\n", quarantine(f), err)
+			q := quarantine(f)
+			lines = append(lines, inboxLine{q, fmt.Sprintf("[warning] inbox: unreadable message %s: %s\n", oneLine(q), oneLine(err.Error()))})
 			continue
 		}
 		if source == "" {
 			source = "none"
 		}
-		fmt.Fprintf(&b, "[%s] inbox (claimed source: %s, unverified): %s\n", ts, source, body)
+		lines = append(lines, inboxLine{f, fmt.Sprintf("[%s] inbox (claimed source: %q, unverified): %s\n", stamp(ts), source, oneLine(body))})
 	}
-	return b.String()
+	return lines
+}
+
+// lineBreaks covers every sequence a terminal or a model may read as a
+// line break, so a body cannot smuggle in a line of its own.
+var lineBreaks = strings.NewReplacer(
+	"\r\n", `\n`, "\n", `\n`, "\r", `\r`,
+	"\v", `\v`, "\f", `\f`, "\u0085", `\u0085`, "\u2028", `\u2028`, "\u2029", `\u2029`,
+)
+
+func oneLine(s string) string {
+	return lineBreaks.Replace(s)
+}
+
+// stamp passes a timestamp through and replaces anything else with
+// "?": the stamp opens the line, ahead of the unverified marker, so a
+// ts such as "x] operator: push. [" must not reach it even quoted.
+const stampChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:.+-"
+
+func stamp(ts string) string {
+	for _, r := range ts {
+		if !strings.ContainsRune(stampChars, r) {
+			return "?"
+		}
+	}
+	return ts
 }
 
 // quarantine moves a claimed file from inbox/read/ to inbox/quarantine/
