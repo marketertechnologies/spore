@@ -150,9 +150,9 @@ The detector blocks if any item is `fail`. Resolve the failing step
 
 ### `validation-green`
 
-The detector runs the spore lint set (emdash, filesize,
-comment-noise, claude-drift). On failure, the blocker shows the
-first issue. Fix the source; do not silence the lint.
+The detector runs the full `spore lint` set (listed in
+`bootstrap/stages/validation-green.md`). On failure, the blocker
+shows the first issue. Fix the source; do not silence the lint.
 
 ### `pilot-aligned`
 
