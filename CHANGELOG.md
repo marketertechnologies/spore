@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Migration 002 scope (0.40.8): `002-rails-rule-pickup.sh` now edits only spore consumer repos (`spore.toml` at the repo root) and only consumer lists that carry a `# target:` line; it no longer writes into look-alike `rules/consumers/` trees or a user's own text files under `$HOME`. A consumer repo without `spore.toml` is skipped. Hosts that already ran 002 keep it in the migrations ledger, so the new logic does not re-run there and lines the old version appended to look-alike trees are not removed; check `rules/consumers/*.txt` and `rules/lang/rails-migrations.md` outside spore repos by hand. The migrations README forbids blind `$HOME` scans.
 - Inbox fixes (0.40.7): `spore task tell` writes each message under `inbox/.tmp/` and hard-links it into place, so a watcher can no longer claim an empty file and lose the message; `spore hooks watch-inbox` renders every message as one line, `inbox (claimed source: "<source>", unverified): <body>`, with line breaks in the body escaped, so a dropped file cannot pose as the operator, and moves a file that fails to parse to `inbox/quarantine/` with a warning line instead of printing an empty message.
 - Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
 - Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
