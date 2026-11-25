@@ -70,7 +70,8 @@ while IFS= read -r toml; do
     rules_dir="$project_root/rules"
     consumers_dir="$rules_dir/consumers"
     if [ -L "$rules_dir" ] || [ -L "$consumers_dir" ] || [ ! -d "$consumers_dir" ] ||
-        [ -L "$rules_dir/lang" ] || [ -L "$rules_dir/lang/rails-migrations.md" ]; then
+        [ -L "$rules_dir/lang" ] || [ -L "$rules_dir/lang/rails-migrations.md" ] ||
+        { [ -e "$rules_dir/lang" ] && [ ! -d "$rules_dir/lang" ]; }; then
         continue
     fi
 

@@ -35,7 +35,7 @@ func snapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
 		out[p] = readFile(t, p)
@@ -113,5 +113,78 @@ func TestRailsRulePickup_noSporeRepos(t *testing.T) {
 	}
 	if got := readFile(t, list); got != "# target: CLAUDE.md\n" {
 		t.Errorf("non-spore list changed: %q", got)
+	}
+}
+
+func sporeRailsRepo(t *testing.T, root string) {
+	t.Helper()
+	railsRepo(t, root)
+	writeFile(t, filepath.Join(root, "spore.toml"), "")
+}
+
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRailsRulePickup_skipsUnsafeLayouts(t *testing.T) {
+	const list = "# target: CLAUDE.md\n"
+	cases := map[string]func(t *testing.T, repo, outside string){
+		"symlinked rules": func(t *testing.T, repo, outside string) {
+			mustSymlink(t, outside, filepath.Join(repo, "rules"))
+		},
+		"symlinked consumers": func(t *testing.T, repo, outside string) {
+			mustSymlink(t, filepath.Join(outside, "consumers"), filepath.Join(repo, "rules/consumers"))
+		},
+		"symlinked lang": func(t *testing.T, repo, outside string) {
+			writeFile(t, filepath.Join(repo, "rules/consumers/app.txt"), list)
+			mustSymlink(t, filepath.Join(outside, "lang"), filepath.Join(repo, "rules/lang"))
+		},
+		"symlinked fragment": func(t *testing.T, repo, outside string) {
+			writeFile(t, filepath.Join(repo, "rules/consumers/app.txt"), list)
+			mustSymlink(t, filepath.Join(outside, "lang/rails-migrations.md"), filepath.Join(repo, "rules/lang/rails-migrations.md"))
+		},
+		"symlinked list": func(t *testing.T, repo, outside string) {
+			mustSymlink(t, filepath.Join(outside, "consumers/app.txt"), filepath.Join(repo, "rules/consumers/app.txt"))
+		},
+		"lang is a file": func(t *testing.T, repo, outside string) {
+			writeFile(t, filepath.Join(repo, "rules/consumers/app.txt"), list)
+			writeFile(t, filepath.Join(repo, "rules/lang"), "not a dir\n")
+		},
+		"no consumers dir": func(t *testing.T, repo, outside string) {},
+	}
+	for name, layout := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			outside := filepath.Join(home, "outside")
+			writeFile(t, filepath.Join(outside, "consumers/app.txt"), list)
+			writeFile(t, filepath.Join(outside, "lang/rails-migrations.md"), "keep\n")
+			repo := filepath.Join(home, "repo")
+			sporeRailsRepo(t, repo)
+			layout(t, repo, outside)
+
+			before := snapshot(t, home)
+			out := runRailsPickup(t, home)
+			after := snapshot(t, home)
+
+			for p, body := range before {
+				if after[p] != body {
+					t.Errorf("%s changed: %q -> %q", p, body, after[p])
+				}
+			}
+			for p := range after {
+				if _, ok := before[p]; !ok {
+					t.Errorf("%s created", p)
+				}
+			}
+			if strings.TrimSpace(out) != "spore migrate 002: all spore consumer repos already carry the rails-migrations rule" {
+				t.Errorf("output:\n%s", out)
+			}
+		})
 	}
 }
