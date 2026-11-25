@@ -246,6 +246,10 @@
                   home-manager.nixosModules.home-manager
                 ];
 
+                # Test VMs omit switch-to-configuration by default; the
+                # graceful-deploy check below drives a real switch.
+                system.switch.enable = true;
+
                 users.users.spore-test = {
                   isNormalUser = true;
                   home = "/home/spore-test";
@@ -476,6 +480,19 @@
                   # and cwd handling worked.
                   machine.succeed("grep -q 'fleet disable' /home/spore-test/spore-stub.log")
                   machine.succeed("grep -q 'fleet enable' /home/spore-test/spore-stub.log")
+
+                  # Under switch-to-configuration the post step runs as a
+                  # unit started after activation (once /run/current-system
+                  # points at the new system), not inside the activation
+                  # script. The unit has no wantedBy, so it only runs when
+                  # activation queues it.
+                  unit = "spore-fleet-graceful-post.service"
+                  machine.fail(f"journalctl -b -u {unit} -o cat | grep -q re-enabling")
+                  machine.succeed("/run/current-system/bin/switch-to-configuration test")
+                  machine.succeed("test -e /home/spore-test/.local/state/spore/fleet-enabled")
+                  machine.succeed(f"journalctl -b -u {unit} -o cat | grep -q 're-enabling kill-switch'")
+                  status = machine.succeed(f"systemctl show -p Result {unit}")
+                  assert status.strip() == "Result=success", status
                 '';
             };
           };
