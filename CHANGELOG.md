@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Inbox fixes (0.40.7): `spore task tell` writes each message under `inbox/.tmp/` and hard-links it into place, so a watcher can no longer claim an empty file and lose the message; `spore hooks watch-inbox` renders every message as one line, `inbox (claimed source: "<source>", unverified): <body>`, with line breaks in the body escaped, so a dropped file cannot pose as the operator, and moves a file that fails to parse to `inbox/quarantine/` with a warning line instead of printing an empty message.
 - Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
 - Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
   - **Coordinator respawn after switch.** The graceful-deploy post
