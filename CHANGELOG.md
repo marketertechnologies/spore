@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Inbox fixes (0.40.7): `spore task tell` writes each message under `inbox/.tmp/` and hard-links it into place, so a watcher can no longer claim an empty file and lose the message; `spore hooks watch-inbox` renders every message as `inbox (claimed source: <source>, unverified): <body>` so a dropped file cannot pose as the operator, and moves a file that fails to parse to `inbox/quarantine/` with a warning line instead of printing an empty message.
 - Role-loop fixes (0.40.4): with `[fleet.roles.engineer] check` set, the draft-PR mirror holds the push and PR reply for an engineer round until its check passes at HEAD; `spore task done` and `spore task merge` kill the task's `spore-role/...` panes; `spore task done` counts unmerged commits against the task's `base:` (local or `origin/<base>`) instead of main; concurrent `spore hooks engineer-check` runs on one round are serialised by a lock and the waiter reuses the first run's result; `spore task status` prints `review-A (held: check)` while the check is pending.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current

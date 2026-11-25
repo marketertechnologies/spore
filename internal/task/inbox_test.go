@@ -19,17 +19,11 @@ func TestTellWritesJSON(t *testing.T) {
 	}
 
 	inbox := filepath.Join(state, "spore", filepath.Base(dir), "foo", "inbox")
-	entries, err := os.ReadDir(inbox)
-	if err != nil {
-		t.Fatalf("read inbox: %v", err)
-	}
+	entries := inboxMessages(t, inbox)
 	if len(entries) != 1 {
-		t.Fatalf("inbox entries = %d, want 1", len(entries))
+		t.Fatalf("inbox messages = %v, want 1", entries)
 	}
-	name := entries[0].Name()
-	if !strings.HasSuffix(name, ".json") {
-		t.Errorf("entry %q lacks .json suffix", name)
-	}
+	name := entries[0]
 
 	raw, err := os.ReadFile(filepath.Join(inbox, name))
 	if err != nil {
@@ -100,11 +94,36 @@ func TestTellCoordinatorWritesCoordinatorInbox(t *testing.T) {
 	if want != filepath.Join(state, "spore", "coordinator", filepath.Base(dir), "inbox") {
 		t.Fatalf("CoordinatorInboxDirForProject = %q", want)
 	}
-	entries, err := os.ReadDir(want)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("coordinator inbox entries = %v (err %v), want 1", entries, err)
+	if entries := inboxMessages(t, want); len(entries) != 1 {
+		t.Fatalf("coordinator inbox messages = %v, want 1", entries)
 	}
 	if _, err := os.Stat(filepath.Join(state, "spore", filepath.Base(dir), "coordinator")); !os.IsNotExist(err) {
 		t.Errorf("Tell wrote the legacy per-project coordinator dir (stat err %v)", err)
+	}
+}
+
+func inboxMessages(t *testing.T, inbox string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatalf("read inbox: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+func TestWriteUniqueInboxFileLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeUniqueInboxFile(dir, 1, []byte(`{"msg":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	left, err := os.ReadDir(filepath.Join(dir, ".tmp"))
+	if err != nil || len(left) != 0 {
+		t.Fatalf(".tmp = %v (err %v), want empty", left, err)
 	}
 }

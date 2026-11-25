@@ -124,7 +124,7 @@ func TestDeliverCodexQueuesRenderedBatchAndClaims(t *testing.T) {
 	if len(q.calls) != 1 {
 		t.Fatalf("queue calls = %d, want 1 batch", len(q.calls))
 	}
-	want := "[2026-10-21T00:00:00Z] worker: ready abc\n[2026-10-21T00:00:01Z] tell: hi"
+	want := "[2026-10-21T00:00:00Z] inbox (claimed source: worker, unverified): ready abc\n[2026-10-21T00:00:01Z] inbox (claimed source: tell, unverified): hi"
 	if q.calls[0].thread != "thread-1" || q.calls[0].msg != want {
 		t.Errorf("queued %+v, want thread-1 / %q", q.calls[0], want)
 	}
@@ -225,7 +225,7 @@ func TestWatchInboxCodexLoopDeliversOnWakeAndStops(t *testing.T) {
 	if err := watchInboxCodex(ctx, inbox, "k", testCodexOpts(q, w, &bytes.Buffer{})); err != nil {
 		t.Fatal(err)
 	}
-	if len(q.calls) != 1 || q.calls[0].msg != "[t] s: late" {
+	if len(q.calls) != 1 || q.calls[0].msg != "[t] inbox (claimed source: s, unverified): late" {
 		t.Errorf("queue calls = %+v, want the envelope that landed after start", q.calls)
 	}
 	if !w.closed {

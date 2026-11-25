@@ -19,7 +19,7 @@ var ErrWake = errors.New("inbox drained")
 
 // WatchInbox is the Stop-hook implementation for inbox-based wakeup.
 // It watches $WT_STATE/<slug>/inbox/ for arriving .json files, drains
-// them into stdout formatted as "[ts] source: body", moves claimed
+// them into stdout (one line per message, see renderClaimed), moves claimed
 // files to inbox/read/, and returns ErrWake when files were drained.
 // Returns nil on timeout (no files), or a real error on failure.
 func WatchInbox(slug string) error {
@@ -101,7 +101,7 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 }
 
 // drainInbox claims every pending envelope in inboxDir and prints
-// "[ts] source: body" for each one this caller claimed. Returns the
+// each one this caller claimed (see renderClaimed). Returns the
 // claim count.
 func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 	claimed, err := claimInbox(inboxDir)
@@ -152,19 +152,42 @@ func claimInbox(inboxDir string) ([]string, error) {
 	return claimed, nil
 }
 
+// renderClaimed formats each claimed envelope. The source field is
+// whatever the writer put there: anyone with write access to the inbox
+// can claim to be the operator, so every line marks it unverified. A
+// file that does not parse is moved to inbox/quarantine/ and reported
+// instead of being consumed silently.
 func renderClaimed(claimed []string) string {
 	var b strings.Builder
 	for _, f := range claimed {
-		ts, source, body := readTellFile(f)
-		fmt.Fprintf(&b, "[%s] %s: %s\n", ts, source, body)
+		ts, source, body, err := readTellFile(f)
+		if err != nil {
+			fmt.Fprintf(&b, "[warning] inbox: unreadable message %s: %v\n", quarantine(f), err)
+			continue
+		}
+		if source == "" {
+			source = "none"
+		}
+		fmt.Fprintf(&b, "[%s] inbox (claimed source: %s, unverified): %s\n", ts, source, body)
 	}
 	return b.String()
 }
 
-func readTellFile(path string) (ts, source, body string) {
+// quarantine moves a claimed file from inbox/read/ to inbox/quarantine/
+// and returns where it now lives (the original path if the move fails).
+func quarantine(claimed string) string {
+	dir := filepath.Join(filepath.Dir(filepath.Dir(claimed)), "quarantine")
+	dst := filepath.Join(dir, filepath.Base(claimed))
+	if os.MkdirAll(dir, 0o755) != nil || os.Rename(claimed, dst) != nil {
+		return claimed
+	}
+	return dst
+}
+
+func readTellFile(path string) (ts, source, body string, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return "", "", "", err
 	}
 	var ev struct {
 		Ts     string `json:"ts"`
@@ -174,7 +197,7 @@ func readTellFile(path string) (ts, source, body string) {
 		Msg    string `json:"msg"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(b), &ev); err != nil {
-		return
+		return "", "", "", err
 	}
 	if ev.Source == "" && ev.Msg != "" {
 		ev.Source = "tell"
@@ -182,7 +205,7 @@ func readTellFile(path string) (ts, source, body string) {
 	if ev.Body == "" {
 		ev.Body = ev.Msg
 	}
-	return ev.Ts, ev.Source, ev.Body
+	return ev.Ts, ev.Source, ev.Body, nil
 }
 
 func workerInbox(slug string) string {
