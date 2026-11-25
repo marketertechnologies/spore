@@ -529,6 +529,10 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, reused, err := existingWorktree(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
 	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
 	if err != nil {
 		return "", err
@@ -550,6 +554,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 		return "", err
 	}
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
+	if reused {
+		if note := dirtyWorktreeNote(worktree, briefRelPath(tasksDir, slug)); note != "" {
+			prelude += appendStartNote(note)
+		}
+	}
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
 	} else {

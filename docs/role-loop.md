@@ -266,9 +266,9 @@ ignored.
 A non-zero exit (including a missing `flock`, or 124 on timeout) never stops the agent.
 The agent's first prompt gets one leading line: `spore: pre-start
 hook failed (exit N): <command>. Services may be down.` Role panes
-put it above the role body; a role pane with no role body, and a
-worker (which starts with no prompt), get that line alone as the
-prompt. Unset or empty leaves the spawn argv byte-identical to
+put it above the role body; a role pane with no role body gets that
+line alone as the prompt. A worker gets it as the agent's first
+argument, which `spore-worker-brief` puts above the brief. Unset or empty leaves the spawn argv byte-identical to
 before.
 
 ### Engineer check gate
