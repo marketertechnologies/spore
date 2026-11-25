@@ -471,17 +471,17 @@ mechanical = "codex"
 
 func TestLoadMaxWorkersTOML(t *testing.T) {
 	root := t.TempDir()
-	if got, err := LoadMaxWorkers(root); err != nil || got != DefaultMaxWorkers {
-		t.Fatalf("missing toml: got %d err %v, want %d nil", got, err, DefaultMaxWorkers)
+	if got, set, err := LoadMaxWorkers(root); err != nil || got != DefaultMaxWorkers || set {
+		t.Fatalf("missing toml: got %d set=%v err %v, want %d unset nil", got, set, err, DefaultMaxWorkers)
 	}
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\nmax_workers = 7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadMaxWorkers(root)
+	got, set, err := LoadMaxWorkers(root)
 	if err != nil {
 		t.Fatalf("LoadMaxWorkers: %v", err)
 	}
-	if got != 7 {
+	if got != 7 || !set {
 		t.Errorf("max_workers = %d, want 7", got)
 	}
 
@@ -491,7 +491,7 @@ func TestLoadMaxWorkersTOML(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(mixed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err = LoadMaxWorkers(root)
+	got, _, err = LoadMaxWorkers(root)
 	if err != nil {
 		t.Fatalf("LoadMaxWorkers with account_tier: %v", err)
 	}

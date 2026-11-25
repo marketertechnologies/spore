@@ -12,7 +12,6 @@
 package fleet
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -20,10 +19,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -340,69 +339,27 @@ func syncMatters(projectRoot string) []MatterResult {
 }
 
 // LoadMaxWorkers reads `[fleet] max_workers = N` from a spore.toml
-// at projectRoot, falling back to DefaultMaxWorkers when missing.
-// Mirrors the tiny TOML subset accepted by `internal/align`.
-func LoadMaxWorkers(projectRoot string) (int, error) {
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(tomlPath)
+// at projectRoot. set reports whether the key is present; without it
+// n is DefaultMaxWorkers.
+func LoadMaxWorkers(projectRoot string) (n int, set bool, err error) {
+	entries, err := sporetoml.ReadSection(projectRoot, "fleet")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return DefaultMaxWorkers, nil
+		return DefaultMaxWorkers, false, fmt.Errorf("fleet: %w", err)
+	}
+	for _, e := range entries {
+		if e.Key != "max_workers" {
+			continue
 		}
-		return DefaultMaxWorkers, err
-	}
-	overrides, err := parseFleetTOML(string(b))
-	if err != nil {
-		return DefaultMaxWorkers, fmt.Errorf("fleet: parse %s: %w", tomlPath, err)
-	}
-	if v, ok := overrides["max_workers"]; ok {
-		n, err := strconv.Atoi(v)
+		n, err := strconv.Atoi(e.Value)
 		if err != nil {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers: want integer, got %q", v)
+			return DefaultMaxWorkers, false, fmt.Errorf("fleet: max_workers: want integer, got %q", e.Value)
 		}
 		if n < 1 {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
+			return DefaultMaxWorkers, false, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
 		}
-		return n, nil
+		return n, true, nil
 	}
-	return DefaultMaxWorkers, nil
-}
-
-// parseFleetTOML collects the scalar entries of the [fleet] section as
-// raw strings (comments stripped, quotes kept for the caller to strip)
-// so integer knobs (max_workers) and string knobs (account_tier) can
-// share the section.
-func parseFleetTOML(content string) (map[string]string, error) {
-	out := map[string]string{}
-	inFleet := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inFleet = strings.TrimSpace(line[1:len(line)-1]) == "fleet"
-			continue
-		}
-		if !inFleet {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return nil, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		if i := strings.IndexByte(val, '#'); i >= 0 {
-			val = strings.TrimSpace(val[:i])
-		}
-		out[key] = val
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return DefaultMaxWorkers, false, nil
 }
 
 // FlagPath returns the kill-switch path:

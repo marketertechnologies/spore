@@ -10,6 +10,7 @@ import (
 
 	"github.com/versality/spore/internal/budget"
 	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 
 	// Linear is the first matter adapter; the side-effect import
@@ -56,7 +57,10 @@ Subcommands:
                   else the cwd repo (a worktree resolves to its main repo).
 
 Flags (reconcile):
-  --max-workers N   Override concurrency cap. Beats spore.toml.
+  --max-workers N   Override concurrency cap. Precedence: this flag,
+                    then spore.toml [fleet] max_workers, then
+                    $SPORE_FLEET_MAX_WORKERS (host default), then
+                    $WT_FLEET_FLOOR, then 3.
 `
 
 func runFleet(args []string) error {
@@ -108,6 +112,7 @@ func runFleetReconcile(args []string) error {
 	if err != nil {
 		return err
 	}
+	sporetoml.WarnUnknown(os.Stderr, "spore fleet reconcile", root)
 	resolved, err := resolveMaxWorkers(*maxWorkers, root)
 	if err != nil {
 		return err
@@ -204,25 +209,33 @@ func runFleetStatus(args []string) error {
 	return nil
 }
 
+// resolveMaxWorkers picks the concurrency cap: --max-workers, then
+// spore.toml [fleet] max_workers, then SPORE_FLEET_MAX_WORKERS (the
+// host default the NixOS module sets), then WT_FLEET_FLOOR, then
+// fleet.DefaultMaxWorkers.
 func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 	if flagVal > 0 {
 		return flagVal, nil
 	}
-	if env := os.Getenv("SPORE_FLEET_MAX_WORKERS"); env != "" {
-		n, err := strconv.Atoi(env)
-		if err != nil || n < 1 {
-			return 0, fmt.Errorf("SPORE_FLEET_MAX_WORKERS=%q: want positive integer", env)
-		}
+	n, set, err := fleet.LoadMaxWorkers(projectRoot)
+	if err != nil {
+		return 0, err
+	}
+	if set {
 		return n, nil
 	}
-	if env := os.Getenv("WT_FLEET_FLOOR"); env != "" {
-		n, err := strconv.Atoi(env)
-		if err != nil || n < 1 {
-			return 0, fmt.Errorf("WT_FLEET_FLOOR=%q: want positive integer", env)
+	for _, name := range []string{"SPORE_FLEET_MAX_WORKERS", "WT_FLEET_FLOOR"} {
+		env := os.Getenv(name)
+		if env == "" {
+			continue
 		}
-		return n, nil
+		v, err := strconv.Atoi(env)
+		if err != nil || v < 1 {
+			return 0, fmt.Errorf("%s=%q: want positive integer", name, env)
+		}
+		return v, nil
 	}
-	return fleet.LoadMaxWorkers(projectRoot)
+	return n, nil
 }
 
 // replenishReconcile is a test seam: the real Reconcile drives tmux.
