@@ -87,20 +87,22 @@ func readCheckGate(projectRoot, slug string, snap *Snapshot) error {
 	return err
 }
 
-// holdForCheck cuts pending at the latest engineer round's event while
-// the engineer check is configured and that round has no pass marker
-// at the worktree HEAD, so neither the push nor the PR reply (nor
-// anything after them) reaches GitHub before the check is green. A
-// give-up (check-failed) keeps holding: the round lands once a later
-// round passes. PhaseDone releases the hold, since the engineer pane
-// is gone and nothing would ever record a pass.
+// holdForCheck cuts pending at its first engineer event while the
+// engineer check is configured and the latest engineer round has no
+// pass marker at the worktree HEAD. Every engineer event pushes the
+// current HEAD, so an earlier unposted round (one the check gave up
+// on) is held too: posting it would push the latest, unchecked
+// commits. Nothing after the cut reaches GitHub either. A gave-up
+// round lands once a later round passes at HEAD, so the push then
+// carries checked code. PhaseDone releases the hold, since the
+// engineer pane is gone and nothing would ever record a pass.
 func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) ([]mirrorEvent, error) {
 	if snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
 		return pending, nil
 	}
 	cut := -1
 	for i, e := range pending {
-		if e.kind == eventEngineer && e.round == snap.EngineerRound {
+		if e.kind == eventEngineer {
 			cut = i
 			break
 		}

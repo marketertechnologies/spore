@@ -755,3 +755,45 @@ func TestGitHubMirrorHoldsEngineerRoundUntilCheckPasses(t *testing.T) {
 		t.Fatalf("round 2 after pass: calls %v, head %s", got[before:], f.bareHead(t))
 	}
 }
+
+// A round the check gave up on stays off GitHub when the engineer
+// writes the next round: posting it would push the new, unchecked
+// HEAD. Both land once the next round passes at HEAD.
+func TestGitHubMirrorHoldsGaveUpRoundUntilLaterRoundPasses(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	if err := os.WriteFile(filepath.Join(f.root, "spore.toml"), []byte("[fleet.roles.engineer]\ncheck = \"just check\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reject := task.Review{Verdict: task.VerdictRequestChanges, Summary: "again", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("fix")}}
+	writeEng(1)(t, f.root, f.slug)
+	head1 := runGit(t, f.wt, "rev-parse", "HEAD")
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 1, head1))
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, reject)
+	f.tick(t)
+
+	head2 := f.commit(t, "two")
+	writeEng(2)(t, f.root, f.slug)
+	touchMarker(t, task.CheckFailedPath(f.root, f.slug, 2, head2))
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, reject)
+	f.tick(t)
+	head3 := f.commit(t, "three")
+	writeEng(3)(t, f.root, f.slug)
+	f.tick(t)
+	if st := f.state(t); st.posted("engineer-round-2.json") || st.posted("A/round-2.json") || f.bareHead(t) != head1 {
+		t.Fatalf("held rounds leaked: posted %v, origin head %s (head1 %s)", st.Posted, f.bareHead(t), head1)
+	}
+
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 3, head3))
+	f.tick(t)
+	st := f.state(t)
+	for _, name := range []string{"engineer-round-2.json", "A/round-2.json", "engineer-round-3.json"} {
+		if !st.posted(name) {
+			t.Errorf("%s not posted after round 3 passed: %v", name, st.Posted)
+		}
+	}
+	if f.bareHead(t) != head3 {
+		t.Errorf("origin head = %s, want %s", f.bareHead(t), head3)
+	}
+}
