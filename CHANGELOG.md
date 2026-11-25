@@ -11,7 +11,10 @@
     `spore-fleet-graceful-post.service`, which switch-to-configuration
     starts once the new system is current. Downstream: hosts pick this
     up on their next `nixos-rebuild switch`. Activation runs the new
-    generation's scripts, so the switch onto 0.40.5 already uses it.
+    generation's scripts, so the switch onto 0.40.5 already uses it. A
+    failing post step (`spore fleet enable`) now shows as a failed
+    `spore-fleet-graceful-post.service` and a non-zero switch exit;
+    before, activation ignored it.
   - **+refspec force push denied.** `git push origin +branch` and
     `+HEAD:branch` are now blocked by `permissions.deny`
     (`Bash(git push +*)`, `Bash(git push * +*)`) and the PreToolUse
