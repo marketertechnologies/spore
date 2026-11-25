@@ -191,7 +191,11 @@ func main() {
 			os.Exit(1)
 		}
 	case "bootstrap":
-		if err := runBootstrap(args); err != nil {
+		err := runBootstrap(args)
+		if errors.Is(err, errBootstrapBlocked) {
+			os.Exit(exitBootstrapBlocked)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "spore bootstrap:", err)
 			os.Exit(1)
 		}

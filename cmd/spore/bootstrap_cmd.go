@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +25,9 @@ Re-entrant. Each call advances the project as far as the gates allow,
 then prints the current stage and any blocker. Once a stage is
 completed or skipped it is not re-run; use ` + "`reset`" + ` to wipe state.
 
+Exit status: 0 when every stage is done, 3 when a stage blocks
+(the blocker is printed), 1 on an error, 2 on a usage error.
+
 Stage sequence (default):
   repo-mapped -> info-gathered -> tests-pass -> creds-wired ->
   readme-followed -> validation-green -> pilot-aligned -> worker-fleet-ready
@@ -35,6 +39,13 @@ Flags:
                 do not skip in production bootstraps.
   --yes         Confirm destructive subcommand (reset).
 `
+
+// errBootstrapBlocked makes runBootstrap's caller exit
+// exitBootstrapBlocked, so a script can tell a blocked run from a
+// finished one.
+var errBootstrapBlocked = errors.New("bootstrap blocked")
+
+const exitBootstrapBlocked = 3
 
 // stringList is a flag.Value that accumulates --skip occurrences.
 type stringList []string
@@ -109,7 +120,7 @@ func runBootstrap(args []string) error {
 	if res.Current == "pilot-aligned" {
 		fmt.Println("see `spore align status` for the alignment checklist.")
 	}
-	return nil
+	return errBootstrapBlocked
 }
 
 func runBootstrapStatus(args []string) error {

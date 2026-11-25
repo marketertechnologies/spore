@@ -169,7 +169,7 @@ package is broken; report and stop.
 
 ## End of bootstrap
 
-When `spore bootstrap` reports `bootstrap complete.` the project is
-ready for routine work. Subsequent `spore bootstrap` calls are
+When `spore bootstrap` reports `bootstrap complete.` (exit 0) the
+project is ready for routine work. A blocked run exits 3. Subsequent `spore bootstrap` calls are
 no-ops; `spore bootstrap reset` (with `--yes`) wipes state if the
 operator wants to re-run.
