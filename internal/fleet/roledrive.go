@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 )
@@ -372,12 +372,12 @@ func sendWakeVerified(session, msg string) (bool, error) {
 	if !hasInputPrompt(pane) {
 		return false, nil
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", session, "-l", "--", msg).Run(); err != nil {
+	if err := callbudget.Command("tmux", "send-keys", "-t", session, "-l", "--", msg).Run(); err != nil {
 		return false, fmt.Errorf("tmux send-keys text: %w", err)
 	}
 	time.Sleep(wakePasteSettle)
 	for range 2 {
-		if err := exec.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
+		if err := callbudget.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
 			return false, fmt.Errorf("tmux send-keys enter: %w", err)
 		}
 		time.Sleep(wakeSubmitSettle)
@@ -393,7 +393,7 @@ func sendWakeVerified(session, msg string) (bool, error) {
 }
 
 func capturePane(session string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", session).Output()
+	out, err := callbudget.Command("tmux", "capture-pane", "-p", "-t", session).Output()
 	return string(out), err
 }
 
@@ -565,7 +565,7 @@ func notifyRoleLoop(projectRoot, body string) {
 // stamp, so the marker name changes and the next drive tick re-fires
 // the send-keys nudge.
 func sessionCreated(name string) (string, error) {
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_created}").Output()
+	out, err := callbudget.Command("tmux", "display-message", "-p", "-t", name, "#{session_created}").Output()
 	if err != nil {
 		return "", err
 	}

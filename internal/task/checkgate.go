@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/sporetoml"
 )
 
@@ -116,7 +116,7 @@ func TaskWorktree(projectRoot, slug string) string {
 
 // HeadSHA returns the full commit id HEAD points at in dir.
 func HeadSHA(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	out, err := callbudget.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD in %s: %w", dir, err)
 	}

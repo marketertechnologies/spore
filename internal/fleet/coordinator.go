@@ -3,13 +3,13 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/versality/spore/codexpolicy"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
@@ -109,7 +109,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return "", false, err
 	}
 	args = append(args, coordinatorShellCommand(agent, rolePath))
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -316,7 +316,7 @@ func ReapCoordinator(projectRoot string) bool {
 	if !hasSession(session) {
 		return false
 	}
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 	return true
 }
 
@@ -347,7 +347,7 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return "", false
 	}
@@ -363,5 +363,5 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
 }

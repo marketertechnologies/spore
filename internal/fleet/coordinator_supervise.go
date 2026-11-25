@@ -3,11 +3,12 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 // Seams for superviseCoordinator; tests swap the probe to avoid
@@ -40,7 +41,7 @@ func superviseCoordinator(projectRoot string) string {
 		if !guard.mayRespawn() {
 			return coordinatorCapped(projectRoot, guard, reason)
 		}
-		_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+		_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 		fmt.Fprintf(os.Stderr, "fleet: coordinator %s: %s; respawning\n", session, reason)
 	} else {
 		if tomlCfg, _ := LoadCoordinatorConfig(projectRoot); tomlCfg.ExternalSessionPattern != "" {
@@ -101,7 +102,7 @@ func coordinatorGuard(projectRoot string) *spawnGuard {
 // script that runs the agent as a child shows as a shell the whole
 // time.
 func coordinatorAgentGoneTmux(session string, now time.Time) string {
-	out, err := exec.Command("tmux", "list-panes", "-s", "-t", session, "-F",
+	out, err := callbudget.Command("tmux", "list-panes", "-s", "-t", session, "-F",
 		"#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{session_created}").Output()
 	if err != nil {
 		return ""

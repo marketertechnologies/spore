@@ -3,9 +3,9 @@ package task
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -48,7 +48,7 @@ func StartWithOptions(tasksDir, slug string, opts StartOptions) (string, error) 
 	// Pause leaves the session alive for the operator; Start
 	// replaces it so a resume gets a fresh agent and new-session
 	// does not collide on the name.
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 	out, err := ensureSession(tasksDir, slug)
 	if err != nil {
 		return "", err

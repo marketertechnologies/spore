@@ -13,7 +13,6 @@ package fleet
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task"
@@ -36,7 +36,9 @@ const DefaultMaxWorkers = 3
 type Config struct {
 	TasksDir    string
 	ProjectRoot string
-	MaxWorkers  int
+	// MaxWorkers caps concurrent agent units: each worker session and
+	// each role loop with a live pane takes one slot.
+	MaxWorkers int
 }
 
 // Result is the outcome of one reconcile pass. Slug lists are
@@ -219,10 +221,26 @@ func Reconcile(cfg Config) (Result, error) {
 		}
 	}
 
+	// One slot per agent unit: a worker session, or a role loop with
+	// any live pane (engineer plus reviewers count once). Running units
+	// hold their slot; new ones fill free slots in actives order.
+	roleRunning := runningRoleLoops(cfg.ProjectRoot)
+	used := len(runningSet) + len(roleRunning)
+	var drive []string
+
 	guards := workerGuards(cfg.ProjectRoot, activeSet)
 	now := nowFunc()
 	for _, slug := range actives {
 		if roleLooped[slug] {
+			switch {
+			case roleRunning[slug]:
+				drive = append(drive, slug)
+			case used >= cfg.MaxWorkers:
+				res.Skipped = append(res.Skipped, slug)
+			default:
+				drive = append(drive, slug)
+				used++
+			}
 			continue
 		}
 		g := guards(slug)
@@ -243,7 +261,7 @@ func Reconcile(cfg Config) (Result, error) {
 			continue
 		}
 		saveGuard(g)
-		if len(runningSet) >= cfg.MaxWorkers {
+		if used >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
@@ -256,28 +274,27 @@ func Reconcile(cfg Config) (Result, error) {
 			res.warn(fmt.Sprintf("ensure %s: %v", slug, err))
 			continue
 		}
+		g.spawned(now)
+		saveGuard(g)
+		used++
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
 		// "in progress" mirror to (e.g. Linear's Ready -> In
 		// Progress flip). Errors from a matter push do not roll
 		// back the spawn; the worker is real, the kanban catches
 		// up on the next reconcile pass.
-		g.spawned(now)
-		saveGuard(g)
 		task.NotifyMatterSpawn(cfg.ProjectRoot, cfg.TasksDir, slug, os.Stderr)
 		res.Spawned = append(res.Spawned, slug)
 		runningSet[slug] = true
 		agentCounts[picked]++
 	}
 
-	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
-	// precondition for these slugs (see the homogeneous-spawn skip
-	// above) and creates `.spore/<slug>/` itself on the first tick, so
-	// a task starts moving on the same pass that classified it.
-	for _, slug := range actives {
-		if !roleLooped[slug] {
-			continue
-		}
+	// Advance the role-looped tasks that hold a slot. DriveRoleLoop
+	// owns the worktree precondition for these slugs (see the
+	// homogeneous-spawn skip above) and creates `.spore/<slug>/` itself
+	// on the first tick, so a task starts moving on the same pass that
+	// classified it.
+	for _, slug := range drive {
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
 		}
@@ -293,6 +310,31 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Skipped)
 	sort.Strings(res.Crashed)
 	return res, nil
+}
+
+// runningRoleLoops returns the slugs with at least one live role pane
+// (spore-role/<project>/<slug>/<role>).
+func runningRoleLoops(projectRoot string) map[string]bool {
+	out := map[string]bool{}
+	project, err := task.ProjectName(projectRoot)
+	if err != nil {
+		return out
+	}
+	lines, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return out
+	}
+	prefix := "spore-role/" + project + "/"
+	for _, line := range strings.Split(string(lines), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		if slug, _, ok := strings.Cut(rest, "/"); ok && slug != "" {
+			out[slug] = true
+		}
+	}
+	return out
 }
 
 // workerGuards returns a loader for per-slug crash-loop records under
@@ -393,9 +435,10 @@ func syncMatters(projectRoot string) []MatterResult {
 		return nil
 	}
 	out := make([]MatterResult, 0, len(matters))
-	ctx := context.Background()
 	for _, m := range matters {
+		ctx, cancel := callbudget.Context()
 		c, u, err := m.Sync(ctx, projectRoot)
+		cancel()
 		out = append(out, MatterResult{Name: m.Name(), Created: c, Updated: u, Err: err})
 	}
 	return out

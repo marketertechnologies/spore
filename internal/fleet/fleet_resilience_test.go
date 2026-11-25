@@ -310,3 +310,43 @@ func TestCoordinatorAgentGoneSeesChildOfLauncherShell(t *testing.T) {
 		t.Errorf("launches = %d, want 1 (a launcher running the agent as a child is alive)", n)
 	}
 }
+
+// Role loops take one slot each toward MaxWorkers, so the cap bounds
+// agents, not just generic workers.
+func TestReconcileCountsRoleLoopsTowardMaxWorkers(t *testing.T) {
+	requireToolchain(t)
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 300")
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	shimClaudeOnPath(t)
+	writeRoleLoopTask(t, dirs.tasks, "a-role", "active")
+	writeTask(t, dirs.tasks, "b-work", "active")
+	writeTask(t, dirs.tasks, "c-work", "active")
+	writeRoleLoopTask(t, dirs.tasks, "d-role", "active")
+	t.Cleanup(func() {
+		killSporeSessions(dirs.project)
+		killRoleSessions(dirs.project)
+	})
+	project, _ := task.ProjectName(dirs.project)
+
+	for pass := range 2 {
+		r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := r.Skipped, []string{"c-work", "d-role"}; !equalSlices(got, want) {
+			t.Errorf("pass %d: Skipped = %v, want %v", pass, got, want)
+		}
+	}
+	if !hasSession(fmt.Sprintf("spore-role/%s/a-role/engineer", project)) {
+		t.Errorf("a-role: engineer pane missing")
+	}
+	if hasSession(fmt.Sprintf("spore-role/%s/d-role/engineer", project)) {
+		t.Errorf("d-role: engineer spawned past the cap")
+	}
+	if hasSession(fmt.Sprintf("spore/%s/c-work", project)) {
+		t.Errorf("c-work: worker spawned past the cap")
+	}
+}

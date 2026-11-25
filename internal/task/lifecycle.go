@@ -1,11 +1,9 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -144,7 +143,7 @@ func Reap(tasksDir, projectRoot, slug string) error {
 // "spore/<project>/<slug>" pattern. Returns an empty slice (and a
 // nil error) when no tmux server is running.
 func SpawnedSlugs(projectRoot string) ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		// tmux exits non-zero with "no server running" or no
 		// sessions; treat both as empty.
@@ -350,7 +349,9 @@ func notifyMatterDone(projectRoot, slug string, m frontmatter.Meta, warnOut io.W
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnDone(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnDone(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore task done %s: matter %s OnDone: %v\n", slug, name, err)
 	}
 }
@@ -407,7 +408,9 @@ func notifyMatterSpawn(projectRoot, slug string, m frontmatter.Meta, warnOut io.
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnSpawn(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnSpawn(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore notify-matter-spawn %s: matter %s OnSpawn: %v\n", slug, name, err)
 	}
 }
@@ -535,7 +538,7 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	} else {
 		args = append(args, workerShellCommand(prelude, agent))
 	}
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}

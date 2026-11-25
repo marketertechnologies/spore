@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/versality/spore/internal/fleet"
 )
@@ -217,5 +218,31 @@ func TestFleetReplenishHook_OtherRepoDoesNotReconcile(t *testing.T) {
 	}
 	if !samePath(got[0].ProjectRoot, project) || !samePath(got[0].TasksDir, filepath.Join(project, "tasks")) {
 		t.Errorf("config = %+v, want project %s", got[0], project)
+	}
+}
+
+func TestReconcileBudgetedAbandonsHungPass(t *testing.T) {
+	t.Setenv(PassTimeoutEnv, "100ms")
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	orig, origAbort := replenishReconcile, passAbort
+	t.Cleanup(func() { replenishReconcile, passAbort = orig, origAbort })
+	replenishReconcile = func(fleet.Config) (fleet.Result, error) {
+		<-release
+		return fleet.Result{}, nil
+	}
+	aborted := false
+	passAbort = func() { aborted = true }
+
+	start := time.Now()
+	_, err := reconcileBudgeted(fleet.Config{})
+	if err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("err = %v, want a budget error", err)
+	}
+	if !aborted {
+		t.Error("in-flight calls not aborted")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("took %s", took)
 	}
 }

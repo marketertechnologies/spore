@@ -322,11 +322,27 @@ in
       type = lib.types.ints.positive;
       default = 3;
       description = ''
-        Concurrency cap. Wired through SPORE_FLEET_MAX_WORKERS so
+        Concurrency cap: each worker session and each role loop
+        with a live pane takes one slot. Wired through
+        SPORE_FLEET_MAX_WORKERS so
         an explicit `[fleet] max_workers` in the project's
         spore.toml still wins (matching `spore fleet reconcile`
         precedence: --max-workers > env > spore.toml > built-in
         default).
+      '';
+    };
+
+    reconcileTimeout = lib.mkOption {
+      type = lib.types.str;
+      default = "15min";
+      example = "30min";
+      description = ''
+        TimeoutStartSec of each reconcile oneshot. A pass past it is
+        killed, so one hung call cannot hold the unit (and with it
+        every later timer tick) forever. spore itself gives up on a
+        pass after SPORE_FLEET_PASS_TIMEOUT (default 10m) and on a
+        single git/tmux call after SPORE_FLEET_CALL_TIMEOUT (default
+        2m); keep this above both. Set either through extraEnv.
       '';
     };
 
@@ -718,6 +734,7 @@ in
             };
             Service = {
               Type = "oneshot";
+              TimeoutStartSec = cfg.reconcileTimeout;
               WorkingDirectory = toString project.path;
               ExecStart = "${cfg.package}/bin/spore fleet reconcile";
               Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (

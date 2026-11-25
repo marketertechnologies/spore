@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/budget"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/task"
 
@@ -59,7 +61,13 @@ Subcommands:
                   else the cwd repo (a worktree resolves to its main repo).
 
 Flags (reconcile):
-  --max-workers N   Override concurrency cap. Beats spore.toml.
+  --max-workers N   Override concurrency cap (worker sessions plus live
+                    role loops, one slot each). Beats spore.toml.
+
+Time budgets (Go durations): each git/tmux/matter call gets
+$SPORE_FLEET_CALL_TIMEOUT (default 2m); the whole pass gets
+$SPORE_FLEET_PASS_TIMEOUT (default 10m), after which in-flight calls
+are killed and reconcile exits non-zero.
 `
 
 func runFleet(args []string) error {
@@ -116,7 +124,7 @@ func runFleetReconcile(args []string) error {
 		return err
 	}
 
-	res, err := replenishReconcile(fleet.Config{
+	res, err := reconcileBudgeted(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
@@ -234,6 +242,58 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 // replenishReconcile is a test seam: the real Reconcile drives tmux.
 var replenishReconcile = fleet.Reconcile
 
+// passAbort is a test seam: the real one kills the abandoned pass's
+// calls and is permanent for the process.
+var passAbort = callbudget.Abort
+
+// PassTimeoutEnv overrides defaultPassTimeout with a Go duration.
+const PassTimeoutEnv = "SPORE_FLEET_PASS_TIMEOUT"
+
+// defaultPassTimeout bounds a whole reconcile pass. Each git/tmux call
+// has its own, shorter budget (callbudget); this one catches a pass
+// that is slow through many calls. Keep it under the NixOS module's
+// TimeoutStartSec so the pass reports before systemd kills it.
+const defaultPassTimeout = 10 * time.Minute
+
+func passTimeout() time.Duration {
+	if v := os.Getenv(PassTimeoutEnv); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		fmt.Fprintf(os.Stderr, "spore: %s=%q: want a positive Go duration; using %s\n", PassTimeoutEnv, v, defaultPassTimeout)
+	}
+	return defaultPassTimeout
+}
+
+// reconcileBudgeted runs one pass under passTimeout. Past the budget it
+// kills the pass's in-flight calls and returns an error; the caller
+// exits, so the next timer tick starts clean.
+func reconcileBudgeted(cfg fleet.Config) (fleet.Result, error) {
+	type outcome struct {
+		res fleet.Result
+		err error
+	}
+	budget := passTimeout()
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := replenishReconcile(cfg)
+		done <- outcome{res, err}
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case o := <-done:
+		return o.res, o.err
+	case <-timer.C:
+	}
+	passAbort()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+	return fleet.Result{}, fmt.Errorf("reconcile pass exceeded its %s budget (%s); in-flight calls killed", budget, PassTimeoutEnv)
+}
+
 // runFleetReplenishHook is the Stop-hook entry point for `spore fleet
 // replenish-hook`. It reads context entirely from the environment so a
 // settings.json hook entry can be a static string (no slug
@@ -277,7 +337,7 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	res, err := replenishReconcile(fleet.Config{
+	res, err := reconcileBudgeted(fleet.Config{
 		TasksDir:    filepath.Join(root, "tasks"),
 		ProjectRoot: root,
 		MaxWorkers:  resolved,

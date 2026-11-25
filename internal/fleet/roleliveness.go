@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 )
@@ -22,7 +22,7 @@ import (
 var (
 	spawnRole       = SpawnRole
 	probeRolePane   = probeRolePaneTmux
-	killRoleSession = func(session string) { _ = exec.Command("tmux", "kill-session", "-t", session).Run() }
+	killRoleSession = func(session string) { _ = callbudget.Command("tmux", "kill-session", "-t", session).Run() }
 	nowFunc         = time.Now
 )
 
@@ -55,7 +55,7 @@ func probeRolePaneTmux(session string) (paneProbe, error) {
 	if !hasSession(session) {
 		return paneProbe{}, nil
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", session,
+	out, err := callbudget.Command("tmux", "display-message", "-p", "-t", session,
 		"#{pane_dead}\t#{pane_current_command}\t#{session_created}").Output()
 	if err != nil {
 		return paneProbe{}, fmt.Errorf("tmux display-message %s: %w", session, err)

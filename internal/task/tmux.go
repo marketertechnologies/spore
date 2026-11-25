@@ -3,11 +3,12 @@ package task
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 func tmuxSessionName(projectRoot, slug string) string {
@@ -55,7 +56,7 @@ const IdleReapThreshold = 5 * time.Minute
 // next char to be end-of-string or a space (so slug "foo" doesn't
 // kill "foo-bar").
 func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []string {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return nil
 	}
@@ -111,7 +112,7 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []
 // nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug, true) {
-		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
+		if out, err := callbudget.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
 				name, err, strings.TrimSpace(string(out)))
 		}
@@ -142,7 +143,7 @@ func reapIdleSlugSessions(tasksDir, slug string) {
 		if idle < threshold {
 			continue
 		}
-		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		_ = callbudget.Command("tmux", "kill-session", "-t", name).Run()
 	}
 }
 
@@ -152,7 +153,7 @@ func reapIdleSlugSessions(tasksDir, slug string) {
 // caller to leave the session alone rather than treat unknown as
 // stale.
 func sessionIdle(name string, now time.Time) (time.Duration, bool) {
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_activity}").Output()
+	out, err := callbudget.Command("tmux", "display-message", "-p", "-t", name, "#{session_activity}").Output()
 	if err != nil {
 		return 0, false
 	}
@@ -172,5 +173,5 @@ func sessionIdle(name string, now time.Time) (time.Duration, bool) {
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
 }
