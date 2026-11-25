@@ -45,10 +45,14 @@ func tellInboxDir(slug string) (string, error) {
 	return InboxDir(slug)
 }
 
+var linkFile = os.Link
+
 // writeUniqueInboxFile writes body under dir/.tmp and hard-links it to
 // the first free "<stamp>[-n].json" in dir. The link is the publish: a
 // watcher never sees the final name before the body is complete, and
-// link fails with EEXIST instead of clobbering a colliding message.
+// link fails with EEXIST instead of clobbering a colliding message. On
+// a filesystem without hard links it falls back to renaming onto a name
+// that was free a moment ago, which only a same-stamp writer can race.
 func writeUniqueInboxFile(dir string, stamp int64, body []byte) error {
 	tmpDir := filepath.Join(dir, ".tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
@@ -75,11 +79,18 @@ func writeUniqueInboxFile(dir string, stamp int64, body []byte) error {
 		if n > 0 {
 			name = fmt.Sprintf("%d-%d.json", stamp, n)
 		}
-		err := os.Link(tmp.Name(), filepath.Join(dir, name))
+		final := filepath.Join(dir, name)
+		err := linkFile(tmp.Name(), final)
 		if os.IsExist(err) {
 			continue
 		}
-		return err
+		if err == nil {
+			return nil
+		}
+		if _, serr := os.Lstat(final); !os.IsNotExist(serr) {
+			continue
+		}
+		return os.Rename(tmp.Name(), final)
 	}
 	return fmt.Errorf("inbox: no free message filename for stamp %d", stamp)
 }

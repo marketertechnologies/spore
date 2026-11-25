@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -125,5 +126,25 @@ func TestWriteUniqueInboxFileLeavesNoTemp(t *testing.T) {
 	left, err := os.ReadDir(filepath.Join(dir, ".tmp"))
 	if err != nil || len(left) != 0 {
 		t.Fatalf(".tmp = %v (err %v), want empty", left, err)
+	}
+}
+
+func TestWriteUniqueInboxFileFallsBackWithoutHardLinks(t *testing.T) {
+	linkFile = func(string, string) error { return &os.LinkError{Op: "link", Err: syscall.EPERM} }
+	t.Cleanup(func() { linkFile = os.Link })
+	dir := t.TempDir()
+	for _, m := range []string{"first", "second"} {
+		if err := writeUniqueInboxFile(dir, 7, []byte(`{"msg":"`+m+`"}`)); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+	}
+	for name, want := range map[string]string{"7.json": "first", "7-1.json": "second"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !strings.Contains(string(got), want) {
+			t.Errorf("%s = %q (err %v), want %s", name, got, err, want)
+		}
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, ".tmp")); len(left) != 0 {
+		t.Errorf(".tmp not empty: %v", left)
 	}
 }
