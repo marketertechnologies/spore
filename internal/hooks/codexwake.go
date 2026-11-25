@@ -222,7 +222,7 @@ func deliverCodex(ctx context.Context, inbox, key string, o codexWatchOpts) erro
 	if err != nil {
 		return err
 	}
-	claimed, err := claimInbox(inbox)
+	claimed, err := claimInbox(inbox, "read")
 	if err != nil || len(claimed) == 0 {
 		return err
 	}
