@@ -46,6 +46,9 @@ responses to read.
   reply to that verdict). Use them the same way A does: see what
   was addressed and what was pushed back on. Still do not read A's
   reviews or the engineer responses written during the A phase.
+- The `structure` field of the latest engineer response that has
+  one (every instance may read this field). Flag a block that
+  misrepresents the diff: it opens the PR body.
 
 ## What you write
 

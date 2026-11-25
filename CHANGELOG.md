@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Role loop: engineer responses take an optional `structure` field, a
+  fenced `diff` sketch of the change's shape (the engineer body asks
+  for it in round 1). The latest block opens `summary.md` and the
+  draft PR body; when a later round changes the block, the mirror
+  swaps it in place in the live body, keeping operator edits, and
+  skips bodies it did not write. Reviewer bodies flag a block that
+  misrepresents the diff. Consumer impact: the updated role bodies
+  and fleet ship to consumers on the next release; engineer panes
+  start sending `structure`, which older binaries reject as an
+  unknown key, so upgrade the binary with the bodies.
 - diagram skill: new "Pick the smallest view" section (pseudocode,
   call tree, component tree, shallow file tree, structural +/- diff)
   saying which forms go inline as fenced ASCII and which use the
