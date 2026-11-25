@@ -15,6 +15,7 @@ import (
 	"github.com/versality/spore/internal/coordinator/tokenmonitor"
 	"github.com/versality/spore/internal/coordinator/verify"
 	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/sporetoml"
 )
 
 // defaultCoordinatorStateDir resolves the coordinator state dir from
@@ -55,6 +56,12 @@ func runCoordinator(args []string) int {
 		return 2
 	}
 	sub, rest := args[0], args[1:]
+	switch sub {
+	case "start", "restart", "status", "swap":
+		if cwd, err := os.Getwd(); err == nil {
+			sporetoml.WarnUnknown(os.Stderr, "spore coordinator "+sub, cwd)
+		}
+	}
 	switch sub {
 	case "-h", "--help", "help":
 		fmt.Print(coordinatorUsage)
@@ -222,7 +229,7 @@ func runCoordinatorStatus(args []string) int {
 		return 1
 	}
 	session := fleet.CoordinatorSessionName(root)
-	cfg, _ := fleet.LoadCoordinatorConfig(root)
+	cfg := fleet.LoadCoordinatorConfigWarn(root)
 	alive := fleet.CoordinatorAlive(root)
 
 	state := "down"

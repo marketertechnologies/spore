@@ -69,7 +69,7 @@ func CoordinatorRolePath(projectRoot string) string {
 	if p := os.Getenv(CoordinatorRoleEnv); p != "" {
 		return p
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.Brief != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.Brief != "" {
 		if filepath.IsAbs(cfg.Brief) {
 			return cfg.Brief
 		}
@@ -96,7 +96,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return session, false, nil
 	}
 
-	tomlCfg, _ := LoadCoordinatorConfig(projectRoot)
+	tomlCfg := LoadCoordinatorConfigWarn(projectRoot)
 	if pat := tomlCfg.ExternalSessionPattern; pat != "" {
 		if name, ok := externalCoordinatorSession(pat); ok {
 			return name, false, nil
@@ -328,7 +328,7 @@ func CoordinatorAlive(projectRoot string) bool {
 	if hasSession(CoordinatorSessionName(projectRoot)) {
 		return true
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.ExternalSessionPattern != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.ExternalSessionPattern != "" {
 		if _, ok := externalCoordinatorSession(cfg.ExternalSessionPattern); ok {
 			return true
 		}

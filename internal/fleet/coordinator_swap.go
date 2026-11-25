@@ -83,7 +83,7 @@ func SwapModel(cur CoordinatorConfig, to, model string, modelSet bool) string {
 // the session env first (it beats file config at spawn), then the host
 // driver override over spore.toml, then the kernel default driver.
 func runningConfig(root string, env map[string]string) CoordinatorConfig {
-	cfg, _ := LoadCoordinatorConfig(root)
+	cfg := LoadCoordinatorConfigWarn(root)
 	if v := env["SPORE_COORDINATOR_PROVIDER"]; v != "" {
 		cfg.Driver = v
 	}
