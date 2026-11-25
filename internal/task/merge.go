@@ -41,11 +41,11 @@ func (e *MergeGateError) Unwrap() error { return e.Err }
 // ExitCode returns 2, matching `wt merge`'s upstream gate.
 func (e *MergeGateError) ExitCode() int { return 2 }
 
-// Merge fast-forward merges the wt/<slug> branch into main, then
-// cleans up the worktree and branch. The task file's status is
-// flipped to done as part of the merge. Refuses if the merge would
-// not be a fast-forward or if the landed main cannot be pushed to
-// origin.
+// Merge fast-forward merges the wt/<slug> branch into main, flips the
+// task file to done, pushes main, then cleans up the worktree and
+// branch. Every refusal (check gate, inbox gate, evidence gate) runs
+// before main moves; a failed push rolls local main and the task file
+// back, so a refused or failed merge leaves the repo as it was.
 func Merge(tasksDir, slug string) error {
 	return MergeWithOptions(tasksDir, slug, MergeOptions{})
 }
@@ -58,6 +58,7 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	if err != nil {
 		return err
 	}
+	tasksDir = filepath.Join(projectRoot, filepath.Base(tasksDir))
 	branch := "wt/" + slug
 	if !branchExists(projectRoot, branch) {
 		return fmt.Errorf("branch %s does not exist", branch)
@@ -72,17 +73,30 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	if err := runJustCheckGate(projectRoot, slug, branch, opts.ForceMergeRed); err != nil {
 		return err
 	}
+	closer, err := prepareMergedTaskClose(tasksDir, slug)
+	if err != nil {
+		return err
+	}
 
-	// Fast-forward main to include wt/<slug>.
+	beforeOut, err := gitCmd(projectRoot, "rev-parse", "main").Output()
+	if err != nil {
+		return fmt.Errorf("git rev-parse main: %w", err)
+	}
+	before := strings.TrimSpace(string(beforeOut))
+
 	out, err := gitCmd(projectRoot, "merge", "--ff-only", branch).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("merge --ff-only: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := closeMergedTask(tasksDir, slug); err != nil {
-		return err
+	if err := closer.apply(projectRoot, slug); err != nil {
+		return rollbackMerge(projectRoot, before, closer, err)
 	}
-	if err := pushAndVerifyMain(projectRoot); err != nil {
+	if out, err := gitCmd(projectRoot, "push", "origin", "main:main").CombinedOutput(); err != nil {
+		pushErr := fmt.Errorf("git push origin main:main: %w: %s", err, strings.TrimSpace(string(out)))
+		return rollbackMerge(projectRoot, before, closer, pushErr)
+	}
+	if err := verifyMainPushed(projectRoot); err != nil {
 		return err
 	}
 
@@ -95,6 +109,30 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	killAllSlugSessions(tasksDir, projectRoot, slug)
 
 	return nil
+}
+
+// rollbackMerge resets local main to before and restores the task
+// file. `reset --keep` (not --hard) so uncommitted operator edits in
+// the main checkout survive; it refuses rather than clobbers them.
+func rollbackMerge(projectRoot, before string, closer *mergedTaskClose, cause error) error {
+	var problems []string
+	if out, err := gitCmd(projectRoot, "reset", "-q", "--keep", before).CombinedOutput(); err != nil {
+		problems = append(problems, fmt.Sprintf("git reset --keep %s: %v: %s", before, err, strings.TrimSpace(string(out))))
+	}
+	if err := closer.restore(); err != nil {
+		problems = append(problems, fmt.Sprintf("restore %s: %v", closer.path, err))
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%w; rollback incomplete: %s", cause, strings.Join(problems, "; "))
+	}
+	return fmt.Errorf("%w (local main and task file rolled back to %s)", cause, shortSHA(before))
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 func requireMainCheckout(projectRoot string) error {
@@ -135,12 +173,7 @@ func requireMainBase(tasksDir, projectRoot, slug string) error {
 	return nil
 }
 
-func pushAndVerifyMain(projectRoot string) error {
-	out, err := gitCmd(projectRoot, "push", "origin", "main:main").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git push origin main:main: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-
+func verifyMainPushed(projectRoot string) error {
 	localOut, err := gitCmd(projectRoot, "rev-parse", "main").Output()
 	if err != nil {
 		return fmt.Errorf("git rev-parse main: %w", err)
@@ -161,41 +194,59 @@ func pushAndVerifyMain(projectRoot string) error {
 	return nil
 }
 
-func closeMergedTask(tasksDir, slug string) error {
+// mergedTaskClose is the done flip Merge applies after the
+// fast-forward. A nil-path close (no task file, or already done) is a
+// no-op.
+type mergedTaskClose struct {
+	path   string
+	raw    []byte
+	closed []byte
+}
+
+// prepareMergedTaskClose runs the inbox and evidence gates and builds
+// the done flip without writing anything, so Merge can refuse before
+// main moves.
+func prepareMergedTaskClose(tasksDir, slug string) (*mergedTaskClose, error) {
 	path := filepath.Join(tasksDir, slug+".md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return &mergedTaskClose{}, nil
 		}
-		return err
+		return nil, err
 	}
 	m, body, err := frontmatter.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if m.Status == "done" {
-		return nil
+		return &mergedTaskClose{}, nil
 	}
 	if err := inboxGate(slug); err != nil {
-		return err
+		return nil, err
 	}
 	if err := evidenceGate(slug, m, body, os.Stderr); err != nil {
-		return err
+		return nil, err
 	}
-
 	m.Status = "done"
-	if err := os.WriteFile(path, frontmatter.Write(m, body), 0o644); err != nil {
-		return err
-	}
+	return &mergedTaskClose{path: path, raw: raw, closed: frontmatter.Write(m, body)}, nil
+}
 
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
-	if err != nil {
+// apply writes the done flip and commits it, unless the task file is
+// gitignored: then the flip stays a local file edit.
+func (c *mergedTaskClose) apply(projectRoot, slug string) error {
+	if c.path == "" {
+		return nil
+	}
+	if err := os.WriteFile(c.path, c.closed, 0o644); err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(projectRoot, path)
+	rel, err := filepath.Rel(projectRoot, c.path)
 	if err != nil {
-		rel = path
+		rel = c.path
+	}
+	if gitCmd(projectRoot, "check-ignore", "-q", "--", rel).Run() == nil {
+		return nil
 	}
 	if out, err := gitCmd(projectRoot, "add", "--", rel).CombinedOutput(); err != nil {
 		return fmt.Errorf("git add task close: %w: %s", err, strings.TrimSpace(string(out)))
@@ -207,6 +258,13 @@ func closeMergedTask(tasksDir, slug string) error {
 		return fmt.Errorf("git commit task close: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func (c *mergedTaskClose) restore() error {
+	if c.path == "" {
+		return nil
+	}
+	return os.WriteFile(c.path, c.raw, 0o644)
 }
 
 // runJustCheckGate runs `just check` from the wt/<slug> worktree
