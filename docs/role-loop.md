@@ -308,8 +308,10 @@ killed):
 A newer response re-arms the gate, and so does a commit (new sha).
 The hook reads no stdin, so the engineer can run it by hand.
 
+Runs on one round are serialised by a flock on `state/check-N.lock`, which the holder stamps with its start time. A second run (the Stop hook racing a manual run) waits for the first, up to `check_timeout_seconds` plus 30s but never so long that the wait plus its own run would pass the 3600s hook timeout. Then it re-reads the gate: if the first run recorded a pass or give-up, or the engineer wrote a newer round meanwhile, it returns without running; if the first run recorded a failing attempt (any attempt written since the holder's stamp), it blocks with that attempt's output instead of rerunning. A holder that outlives the wait leaves the second run a clean exit (stop let through, nothing recorded); the driver still holds reviewers.
+
 The driver records the gate in the snapshot (`Check`, `CheckSHA`;
-`spore task status` prints a `check:` line) for the latest engineer
+`spore task status` prints a `check:` line, and while the check is pending its phase line reads `review-A (held: check)` so the hold does not look like a running reviewer) for the latest engineer
 round at the worktree HEAD, in review phases only:
 
 - `pending`: no reviewer wake, and a reviewer at round 0 is not
@@ -325,6 +327,8 @@ round at the worktree HEAD, in review phases only:
 - `failed`: hand off anyway; the reviewer wake (a one-off wake for a
   fresh reviewer) names the failed check and the marker holding its
   output, to treat as a finding.
+
+The draft-PR mirror holds the same gate on GitHub: while `check` is set, it does not push the branch or post the latest engineer round (nor any event after it) until `check-pass-N-<sha>` exists for the worktree HEAD. A failing run or a give-up (`check-failed`) leaves GitHub untouched for that round. While the latest round is held, every unposted engineer round is held with it, because each engineer event pushes the current HEAD; a gave-up round lands, with its verdict, once a later round passes at HEAD. `done` releases the hold, since the engineer pane is reaped and nothing would record a pass; so does a give-up at HEAD while `escalated`, since no later round will pass and the operator needs the PR current (a fix-pass commit moves HEAD and holds it again until that HEAD passes). With no `check` the mirror is unchanged.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round
@@ -592,7 +596,8 @@ Markers under `.spore/<slug>/state/`:
   `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
 - `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
-  `check-failed-<round>-<sha>`: engineer check gate results;
+  `check-failed-<round>-<sha>`: engineer check gate results
+  (`check-<round>.lock` serialises runs);
   `check-held-<round>-<sha>-<stamp>` and
   `check-failed-reviewer-<instance>-<round>-<stamp>` mark its wakes.
 - `invalid-<file>-<n>-<hash>`: the coordinator was told about this
@@ -621,15 +626,7 @@ and merge with `spore task merge <slug>`. Then run:
 
     spore task done <slug>
 
-Done flips the status, kills the homogeneous worker session, removes
-the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`,
-and clears the `state/ready` marker. It refuses while the branch has
-unmerged commits (`--force` discards them). It does not kill role
-panes: its session cleanup matches `<project>/<slug>` at a name
-boundary, which `spore-role/...` names never hit. On the normal path
-that is moot (the done tick already reaped all three panes), but when
-you abandon an escalated task, kill the surviving panes yourself with
-`tmux kill-session -t spore-role/<project>/<slug>/<role>`.
+Done flips the status, kills the task's tmux sessions (the homogeneous worker session and every `spore-role/<project>/<slug>/<role>` pane, so an abandoned escalated task leaves nothing running), removes the worktree and the `wt/<slug>` branch, deletes `tasks/<slug>.md`, and clears the `state/ready` marker. It refuses while the branch has commits not yet merged into the task's `base:` (checked against the local branch and `origin/<base>`; the integration branch when `base:` is unset); `--force` discards them. `spore task merge` kills the same sessions.
 
 ### Reopening a finished loop
 

@@ -92,8 +92,7 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	}
 	_ = gitCmd(projectRoot, "branch", "-d", branch).Run()
 
-	session := taskTmuxSession(tasksDir, projectRoot, slug)
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	killAllSlugSessions(tasksDir, projectRoot, slug)
 
 	return nil
 }

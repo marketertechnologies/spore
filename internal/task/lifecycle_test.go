@@ -740,3 +740,57 @@ func readStatus(t *testing.T, path string) string {
 	}
 	return m.Status
 }
+
+// A task stacked on another branch is measured against its `base:`,
+// not main: commits base carries (and main lacks) never count, and a
+// merge that only reached origin/<base> counts as merged.
+func TestDoneCountsUnmergedAgainstBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	repo := t.TempDir()
+	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	configureOrigin(t, repo)
+	runGit(t, repo, "checkout", "-q", "-b", "dev")
+	for range 3 {
+		runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "dev work")
+	}
+	runGit(t, repo, "push", "-q", "origin", "dev")
+	runGit(t, repo, "checkout", "-q", "-b", "wt/x")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feature")
+	runGit(t, repo, "checkout", "-q", "main")
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "x.md"), []byte("---\nstatus: active\nslug: x\ntitle: X\nbase: origin/dev\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := UnmergedCommitsAgainst(repo, "wt/x", "dev"); err != nil || n != 1 {
+		t.Fatalf("UnmergedCommitsAgainst before merge = %d, %v; want 1", n, err)
+	}
+	if n, err := UnmergedCommits(repo, "wt/x"); err != nil || n != 4 {
+		t.Fatalf("UnmergedCommits against main = %d, %v; want 4", n, err)
+	}
+	err := Done(tasksDir, "x", false)
+	if err == nil || !strings.Contains(err.Error(), "1 unmerged commit") {
+		t.Fatalf("Done before merge = %v, want a refusal naming 1 unmerged commit", err)
+	}
+
+	// The PR merges on GitHub: origin/dev moves, local dev stays behind.
+	runGit(t, repo, "push", "-q", "origin", "wt/x:dev")
+	runGit(t, repo, "fetch", "-q", "origin")
+	if err := Done(tasksDir, "x", false); err != nil {
+		t.Fatalf("Done after merge into origin/dev: %v", err)
+	}
+	if branchExists(repo, "wt/x") {
+		t.Error("wt/x not deleted after Done")
+	}
+}

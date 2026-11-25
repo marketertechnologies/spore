@@ -267,7 +267,7 @@ func runTaskReviewStats(args []string) error {
 
 func printRoleSnapshot(snap fleet.Snapshot) {
 	fmt.Printf("slug:     %s\n", snap.Slug)
-	fmt.Printf("phase:    %s\n", snap.Phase)
+	fmt.Printf("phase:    %s\n", snap.PhaseLabel())
 	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
 	if snap.CurrentReviewer == "" {
 		return

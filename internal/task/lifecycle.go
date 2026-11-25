@@ -258,7 +258,7 @@ func Done(tasksDir, slug string, force bool) error {
 	}
 
 	branch := "wt/" + slug
-	unmerged, err := UnmergedCommits(projectRoot, branch)
+	unmerged, err := UnmergedCommitsAgainst(projectRoot, branch, m.Extra["base"])
 	if err != nil {
 		return err
 	}
@@ -266,7 +266,7 @@ func Done(tasksDir, slug string, force bool) error {
 		if force {
 			fmt.Fprintf(os.Stderr, "spore task done %s: --force: discarding %d unmerged commit(s) on %s\n", slug, unmerged, branch)
 		} else {
-			return fmt.Errorf("done refused for %s: branch %q has %d unmerged commit(s); run 'spore task merge %s' first, or 'spore task done %s --force' to discard", slug, branch, unmerged, slug, slug)
+			return fmt.Errorf("done refused for %s: branch %q has %d unmerged commit(s) against its base; merge it (PR or 'spore task merge %s') first, or 'spore task done %s --force' to discard", slug, branch, unmerged, slug, slug)
 		}
 	}
 

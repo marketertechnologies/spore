@@ -264,6 +264,10 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
+	pending, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
+	if err != nil {
+		return err
+	}
 	if len(pending) == 0 {
 		return nil
 	}
