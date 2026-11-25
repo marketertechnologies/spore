@@ -18,6 +18,7 @@ spore-fleet module's activation hook, or by hand via `spore migrate`.
 - Run as the spore user (via `runuser -u spore` in the activation
   script); migrations can read and write anything under the spore
   user's home.
+- Never scan `$HOME` blindly. Write only to fixed host paths (`~/.config/spore/`, `~/.claude/`) or to repos that prove they are spore consumers: `spore.toml` at the repo root, and for rule pool edits a `rules/consumers/*.txt` that carries a `# target:` line. A directory that merely looks like a spore layout is the operator's own and stays untouched.
 
 ## Ledger
 

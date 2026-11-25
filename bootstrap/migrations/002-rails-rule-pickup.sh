@@ -2,17 +2,19 @@
 # Propagate the rules/lang/rails-migrations.md rule to existing
 # bootstrapped projects on this host that vendor the spore rule pool.
 #
-# Discovery: walk $HOME (depth-limited) for any directory shaped like
-# a vendored spore consumer pool (a "rules/consumers/" subdirectory
-# with at least one *.txt file). The parent of that "rules/" dir is
-# treated as the project root.
+# Discovery: find spore consumer repos under $HOME (depth-limited).
+# A repo counts only when its root holds spore.toml and a
+# "rules/consumers/" directory. Inside it, only consumer lists spore
+# renders are edited: a *.txt carrying a "# target:" directive (the
+# same opt-in `spore compose --write` and the claude-drift lint key
+# on). Anything else under $HOME is never written.
 #
-# For each discovered project root that ALSO has a Rails marker pair
+# For each consumer repo that ALSO has a Rails marker pair
 # (Gemfile + config/application.rb), this migration:
 #   1. Writes "rules/lang/rails-migrations.md" if absent or stale
 #      (compared by content equality with the canonical body below).
-#   2. Appends "?rails lang/rails-migrations" to every consumer txt
-#      under "rules/consumers/" that doesn't already reference it.
+#   2. Appends "?rails lang/rails-migrations" to every spore consumer
+#      list under "rules/consumers/" that doesn't already reference it.
 #
 # Re-rendering of the consumer's target files (CLAUDE.md / AGENTS.md)
 # is left to the project's own drift lint on next commit. This
@@ -47,35 +49,43 @@ Edit the generated file in place after generation if the scaffold needs adjustin
 EOF
 )
 
-# `find` collects candidate consumer dirs. -maxdepth 6 covers
-# $HOME/<repo>/rules/consumers and $HOME/<group>/<repo>/rules/consumers
-# without descending into deep node_modules/vendor trees. -prune skips
-# .git and .worktrees explicitly.
-candidates=$(find "$home_root" \
-    -maxdepth 6 \
+# -maxdepth 5 reaches $HOME/<repo>/spore.toml through
+# $HOME/<a>/<b>/<c>/<repo>/spore.toml without descending into deep
+# dependency trees.
+roots=$(find "$home_root" \
+    -maxdepth 5 \
     \( -name .git -o -name .worktrees -o -name node_modules -o -name vendor \) -prune \
-    -o -type d -name consumers -path '*/rules/consumers' -print \
+    -o -type f -name spore.toml -print \
     2>/dev/null || true)
 
-if [ -z "$candidates" ]; then
-    echo "spore migrate 002: no vendored-rules projects found under $home_root; skipping"
+if [ -z "$roots" ]; then
+    echo "spore migrate 002: no spore consumer repos found under $home_root; skipping"
     exit 0
 fi
 
 touched=0
-while IFS= read -r consumers_dir; do
-    [ -z "$consumers_dir" ] && continue
-    rules_dir=$(dirname "$consumers_dir")
-    project_root=$(dirname "$rules_dir")
+while IFS= read -r toml; do
+    [ -z "$toml" ] && continue
+    project_root=$(dirname "$toml")
+    rules_dir="$project_root/rules"
+    consumers_dir="$rules_dir/consumers"
+    if [ -L "$rules_dir" ] || [ -L "$consumers_dir" ] || [ ! -d "$consumers_dir" ] ||
+        [ -L "$rules_dir/lang" ] || [ -L "$rules_dir/lang/rails-migrations.md" ]; then
+        continue
+    fi
 
-    # Rails marker check.
     if [ ! -f "$project_root/Gemfile" ] || [ ! -f "$project_root/config/application.rb" ]; then
         continue
     fi
 
-    # At least one consumer txt to patch.
+    consumer_files=()
     shopt -s nullglob
-    consumer_files=("$consumers_dir"/*.txt)
+    for txt in "$consumers_dir"/*.txt; do
+        if [ -f "$txt" ] && [ ! -L "$txt" ] &&
+            grep -qE '^[[:space:]]*#[[:space:]]*target:[[:space:]]*[^[:space:]]' "$txt"; then
+            consumer_files+=("$txt")
+        fi
+    done
     shopt -u nullglob
     if [ ${#consumer_files[@]} -eq 0 ]; then
         continue
@@ -103,8 +113,8 @@ while IFS= read -r consumers_dir; do
         echo "spore migrate 002: appended '$predicate_line' to $txt"
         touched=1
     done
-done <<<"$candidates"
+done <<<"$roots"
 
 if [ "$touched" -eq 0 ]; then
-    echo "spore migrate 002: all candidate projects already carry the rails-migrations rule"
+    echo "spore migrate 002: all spore consumer repos already carry the rails-migrations rule"
 fi

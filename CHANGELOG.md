@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Migration 002 scope (0.40.8): `002-rails-rule-pickup.sh` now edits only spore consumer repos (`spore.toml` at the repo root) and only consumer lists that carry a `# target:` line; it no longer writes into look-alike `rules/consumers/` trees or a user's own text files under `$HOME`. The migrations README forbids blind `$HOME` scans.
 - Role-loop fixes (0.40.4): with `[fleet.roles.engineer] check` set, the draft-PR mirror holds the push and PR reply for an engineer round until its check passes at HEAD; `spore task done` and `spore task merge` kill the task's `spore-role/...` panes; `spore task done` counts unmerged commits against the task's `base:` (local or `origin/<base>`) instead of main; concurrent `spore hooks engineer-check` runs on one round are serialised by a lock and the waiter reuses the first run's result; `spore task status` prints `review-A (held: check)` while the check is pending.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current
