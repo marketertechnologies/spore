@@ -5,6 +5,7 @@ package spore
 
 import (
 	"embed"
+	"io/fs"
 	"strings"
 )
 
@@ -83,3 +84,20 @@ var BundledRecipes embed.FS
 //
 //go:embed all:bootstrap/roles
 var BundledRoles embed.FS
+
+// BundledCoreRules is the core rule-pool tree. `spore compose
+// --add-defaults` and the repo-mapped bootstrap stage copy the
+// composer.DefaultCore fragments from here into a consumer's pool.
+//
+//go:embed rules/core
+var BundledCoreRules embed.FS
+
+// CorePool is BundledCoreRules rooted like a rule pool, so fragment
+// ids such as "core/pr-description" resolve directly.
+func CorePool() fs.FS {
+	sub, err := fs.Sub(BundledCoreRules, "rules")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}

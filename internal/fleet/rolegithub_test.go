@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/task"
+	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 const fakeGH = `#!/bin/sh
@@ -221,7 +222,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("branch not pushed to origin")
 	}
 	log := f.log(t)
-	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`Review #1` / `Review #2`"} {
+	for _, s := range []string{"TOKEN: ghs_app", "BODY:\nMake the widget spin.\n\n- one\nEND"} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
 		}
@@ -251,6 +252,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"pr comment 12 --body-file -",
 		"pr review 12 --comment --body-file -",
 		"pr review 12 --comment --body-file -",
+		"pr edit 12 --body-file -",
 		"pr ready 12",
 	)
 	if got := f.calls(t); !reflect.DeepEqual(got, want) {
@@ -265,6 +267,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",
 		"**Review #1 (round 2): approve**",
 		"**Review #2 (round 1): approve**\n\nship it",
+		"BODY:\nMake the widget spin.\n\n- one\n- two\nEND",
 	} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
@@ -279,6 +282,40 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 	}
 	if f.mints.Load() != 1 {
 		t.Fatalf("token mints = %d, want 1 (cached)", f.mints.Load())
+	}
+}
+
+func TestGitHubMirrorPRBodyShape(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	meta := "---\nstatus: active\nslug: demo\ntitle: Demo widget\nloop: role\nmatter: linear\nmatter_id: HK-7\nmatter_url: https://linear.app/x/issue/HK-7\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(f.tasksDir, "demo.md"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"two", "three", "four", "five", "six"} {
+		f.commit(t, name)
+	}
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	want := "BODY:\nLinear: [HK-7](https://linear.app/x/issue/HK-7)\n\nMake the widget spin.\n\n- one\n- two\n- three\n- four\n- five\nEND"
+	if log := f.log(t); !strings.Contains(log, want) {
+		t.Fatalf("PR body: want %q in\n%s", want, log)
+	}
+}
+
+func TestTicketLine(t *testing.T) {
+	cases := []struct {
+		extra map[string]string
+		want  string
+	}{
+		{nil, ""},
+		{map[string]string{"matter_url": "https://x"}, ""},
+		{map[string]string{"matter_id": "PROJ-1"}, "Ticket: PROJ-1"},
+		{map[string]string{"matter": "jira", "matter_id": "PROJ-1", "matter_url": "https://j/PROJ-1"}, "Jira: [PROJ-1](https://j/PROJ-1)"},
+	}
+	for _, c := range cases {
+		if got := ticketLine(frontmatter.Meta{Extra: c.extra}); got != c.want {
+			t.Errorf("ticketLine(%v) = %q, want %q", c.extra, got, c.want)
+		}
 	}
 }
 

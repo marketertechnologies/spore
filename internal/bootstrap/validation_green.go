@@ -23,7 +23,7 @@ func detectValidationGreen(root string) (string, error) {
 			continue
 		}
 		summary = append(summary, fmt.Sprintf("%s: %d", l.Name(), len(issues)))
-		if len(issues) > 0 {
+		if len(issues) > 0 && !lints.Advisory(l) {
 			head := issues[0].String()
 			blockers = append(blockers, fmt.Sprintf("%s: %d issue(s); first: %s", l.Name(), len(issues), head))
 		}

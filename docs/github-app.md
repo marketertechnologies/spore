@@ -40,12 +40,17 @@ Every gh call runs with `GH_REPO` set from `origin`'s URL, so gh and
 `git push` always target the same repo; without it gh prefers an
 `upstream` remote in a fork-style clone.
 
-The PR body is the first prose paragraph of `.spore/<slug>/spec.md`
-(the task brief, skipping headings and the `**Status**` line) plus a
-fixed footer; a paragraph naming an absolute path (`/...` or `~/...`)
-is replaced by the task title. Everyone with repo access reads it, so
-open the brief with a plain summary: no host paths, no
-coordinator-only notes. The rest of the brief stays off GitHub.
+The PR body follows `rules/core/pr-description.md`: the ticket link
+when the task carries `matter_id` (and `matter_url`), the first prose
+paragraph of `.spore/<slug>/spec.md` (the task brief, skipping
+headings and the `**Status**` line), then up to 5 bullets from the
+branch's non-merge commit subjects. It is written on PR open and
+rewritten from the final branch just before `gh pr ready`. A
+paragraph naming an absolute path (`/...` or `~/...`) is replaced by
+the task title, and such commit subjects are dropped. Everyone with
+repo access reads it, so open the brief with a plain summary: no host
+paths, no coordinator-only notes. The rest of the brief stays off
+GitHub, and review rounds stay in PR comments.
 
 The PR base is the task's `base:` frontmatter (a stack parent branch),
 else the remote default branch (`git symbolic-ref

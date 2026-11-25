@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/composer"
 	"github.com/versality/spore/internal/install"
 )
 
@@ -91,6 +92,60 @@ func TestDetectRepoMappedDropsStarterInstructions(t *testing.T) {
 	}
 	if string(agents) != string(claude) {
 		t.Fatalf("starter AGENTS.md differs from CLAUDE.md")
+	}
+}
+
+func TestDetectRepoMappedSeedsDefaultConsumerList(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "My App")
+	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
+	notes, err := detectRepoMapped(root)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !strings.Contains(notes, "seeded rules/my-app/header.md / rules/consumers/my-app.txt") {
+		t.Errorf("notes=%q; want seeded header and consumer list", notes)
+	}
+	list := filepath.Join(root, "rules", "consumers", "my-app.txt")
+	missing, err := composer.MissingDefaults(list)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("seeded list missing defaults %v (err %v)", missing, err)
+	}
+	for _, id := range composer.DefaultCore {
+		if _, err := os.Stat(filepath.Join(root, "rules", id+".md")); err != nil {
+			t.Errorf("default fragment %s not copied into pool: %v", id, err)
+		}
+	}
+	claude, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(claude), "# PR descriptions") || !strings.Contains(string(claude), "spore compose --consumer my-app") {
+		t.Errorf("CLAUDE.md does not render the seeded list:\n%s", claude)
+	}
+	rendered, err := composer.Compose(filepath.Join(root, "rules"), list, composer.Options{})
+	if err != nil || rendered != string(claude) {
+		t.Errorf("CLAUDE.md drifts from compose output (err %v)", err)
+	}
+}
+
+func TestDetectRepoMappedReusesExistingConsumerList(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "app")
+	writeFile(t, filepath.Join(root, "flake.nix"), []byte("{}\n"))
+	writeFile(t, filepath.Join(root, "rules", "app", "own.md"), []byte("# Own rule\n"))
+	writeFile(t, filepath.Join(root, "rules", "consumers", "app.txt"), []byte("app/own\n"))
+	notes, err := detectRepoMapped(root)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if strings.Contains(notes, "seeded") {
+		t.Errorf("notes=%q; existing list must be reused, not reseeded", notes)
+	}
+	claude, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(claude), "# Own rule") || !strings.Contains(string(claude), "# PR descriptions") {
+		t.Errorf("CLAUDE.md = %q; want own rule plus defaults", claude)
 	}
 }
 

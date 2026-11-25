@@ -91,6 +91,25 @@ Don't summarize the question back. Don't enumerate when one sentence works. Don'
 
 Commit your own work when a unit lands. Don't ask. Overrides the default harness rule.
 
+# PR descriptions
+
+**Keep PR descriptions short and on-subject.** Use this shape:
+
+```
+<Tracker>: [<ID>](<url>)
+
+One short paragraph: what was broken or missing, and why.
+
+- 3-5 bullets on what changed, naming classes, jobs, functions, and key numbers.
+
+Follow-up: [<ID>](<url>)
+```
+
+- The first line is the ticket link (`Linear:`, `Jira:`, `Issue:`). Omit it when there is no ticket.
+- Add the `Follow-up:` line only when work was split out to another ticket.
+- No headed sections (Problem / Change / Testing). No test-case lists. Do not restate the diff.
+- Review-round history goes in PR comments, not the body.
+
 # Version bump by change size
 
 **Every landed unit carries a VERSION bump on its branch, sized to the change.** Fixes get a patch bump; real features or upgrades get a bigger one. Pick the number before the branch is handed off, not after.

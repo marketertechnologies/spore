@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -305,6 +304,9 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer. The PR stays draft until the operator decides.",
 			reviewLabel(e.instance), e.round, MaxReviewerRounds))
 	case eventReady:
+		if err := m.refreshPRBody(); err != nil {
+			return err
+		}
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err
 		}
@@ -418,19 +420,15 @@ func (m *githubMirror) ensurePR() error {
 	if err != nil {
 		return err
 	}
-	base := meta.Extra["base"]
-	if base == "" {
-		head, err := m.git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-		if err != nil {
-			return fmt.Errorf("no PR base: set `base:` in tasks/%s.md or run `git remote set-head origin --auto`", m.slug)
-		}
-		base = strings.TrimPrefix(head, "origin/")
+	base, err := m.prBase(meta)
+	if err != nil {
+		return err
 	}
 	title := meta.Title
 	if title == "" {
 		title = m.slug
 	}
-	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
+	out, err = m.gh(m.prBody(meta, base), "pr", "create", "--draft", "--base", base, "--head", branch,
 		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
 	if err != nil {
 		return err
@@ -443,35 +441,6 @@ func (m *githubMirror) ensurePR() error {
 	m.state.PRNumber, m.state.PRURL = n, url
 	m.save()
 	return nil
-}
-
-// prBody is the brief's summary paragraph plus a fixed footer. The rest
-// of spec.md stays off the PR: briefs carry host paths and
-// coordinator-only notes. A summary naming an absolute path falls back
-// to the task title.
-func (m *githubMirror) prBody(title string) string {
-	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
-	summary := specSummary(string(spec))
-	if summary == "" || absPathRE.MatchString(summary) {
-		summary = title
-	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. Opened by spore's role loop: reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
-		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
-}
-
-var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")
-
-// specSummary returns the spec's first prose paragraph, skipping
-// headings and the **Status** line.
-func specSummary(spec string) string {
-	for _, para := range strings.Split(spec, "\n\n") {
-		p := strings.TrimSpace(para)
-		if p == "" || strings.HasPrefix(p, "#") || strings.HasPrefix(p, "**Status**") || strings.HasPrefix(p, "```") {
-			continue
-		}
-		return p
-	}
-	return ""
 }
 
 func lastLine(s string) string {
