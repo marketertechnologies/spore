@@ -344,8 +344,8 @@ func TestReminderTextBindingHints(t *testing.T) {
 	if !strings.Contains(got, "long=18%") {
 		t.Errorf("missing long pct: %q", got)
 	}
-	if !strings.Contains(got, "runner") {
-		t.Errorf("missing tighten advice tail (runner mention): %q", got)
+	if !strings.Contains(got, "worker starts") {
+		t.Errorf("missing tighten advice tail (worker mention): %q", got)
 	}
 
 	rationShort := windowState{Frac: 0.92, OldestEventAt: ptrTime(now.Add(-4*time.Hour - 22*time.Minute))}
@@ -355,7 +355,7 @@ func TestReminderTextBindingHints(t *testing.T) {
 	if !strings.Contains(gotR, "AGENT BUDGET (ration):") {
 		t.Errorf("missing ration header: %q", gotR)
 	}
-	if !strings.Contains(gotR, "Stop spawning runners") {
+	if !strings.Contains(gotR, "Stop spawning workers") {
 		t.Errorf("missing ration advice tail: %q", gotR)
 	}
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
 - Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
   - **Coordinator respawn after switch.** The graceful-deploy post
     step re-enabled the fleet inside activation, before
