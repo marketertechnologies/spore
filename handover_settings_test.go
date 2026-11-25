@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/versality/spore/internal/hooks"
@@ -33,6 +34,11 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(settings.Permissions.Deny, hooks.DefaultDeny()) {
 		t.Fatalf("handover permissions.deny drifted from hooks.DefaultDeny():\ngot  %q\nwant %q", settings.Permissions.Deny, hooks.DefaultDeny())
+	}
+	for _, rule := range []string{"Read(~/.claude/.credentials.json)", "Edit(~/.claude/.credentials.json)", "Bash(*.claude/.credentials.json*)"} {
+		if !slices.Contains(settings.Permissions.Deny, rule) {
+			t.Fatalf("handover permissions.deny lacks %s", rule)
+		}
 	}
 	if !hasCommand(settings.Hooks["SessionStart"], "/home/spore/.claude/hooks/load-state-md.pl") {
 		t.Fatal("handover settings lost load-state-md SessionStart hook")

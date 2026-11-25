@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +95,59 @@ func TestSettingsWith_RendersMergedDeny(t *testing.T) {
 	want := append(DefaultDeny(), "Bash(nixos-rebuild *)")
 	if !reflect.DeepEqual(parsed.Permissions.Deny, want) {
 		t.Fatalf("deny = %q, want %q", parsed.Permissions.Deny, want)
+	}
+}
+
+// bashRuleMatches approximates claude-code's Bash(...) rule match for
+// rules without the word-bounded " *" suffix: "*" spans any text.
+func bashRuleMatches(rule, cmd string) bool {
+	inner, ok := strings.CutPrefix(rule, "Bash(")
+	if !ok {
+		return false
+	}
+	inner = strings.TrimSuffix(inner, ")")
+	parts := strings.Split(inner, "*")
+	for i := range parts {
+		parts[i] = regexp.QuoteMeta(parts[i])
+	}
+	return regexp.MustCompile("^" + strings.Join(parts, ".*") + "$").MatchString(cmd)
+}
+
+func TestDefaultDeny_ClaudeCredentials(t *testing.T) {
+	deny := DefaultDeny()
+	for _, rule := range []string{"Read(~/.claude/.credentials.json)", "Edit(~/.claude/.credentials.json)"} {
+		if !slices.Contains(deny, rule) {
+			t.Fatalf("deny lacks %s: %q", rule, deny)
+		}
+	}
+	denied := func(cmd string) bool {
+		for _, r := range deny {
+			if bashRuleMatches(r, cmd) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, cmd := range []string{
+		"cat ~/.claude/.credentials.json",
+		"base64 ~/.claude/.credentials.json",
+		"grep . /home/user/.claude/.credentials.json",
+		"jq .claudeAiOauth $HOME/.claude/.credentials.json",
+		"cp ~/.claude/.credentials.json /tmp/c",
+		"tar czf x.tgz ~/.claude/.credentials.json*",
+	} {
+		if !denied(cmd) {
+			t.Errorf("not denied: %s", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"cat ~/.claude/settings.json",
+		"ls ~/.claude",
+		"go test ./internal/budget",
+		"rg credentials internal/budget",
+	} {
+		if denied(cmd) {
+			t.Errorf("denied: %s", cmd)
+		}
 	}
 }
