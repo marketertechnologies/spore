@@ -70,6 +70,28 @@ func TestParseEngineerResponseStrict(t *testing.T) {
 	}
 }
 
+func TestParseEngineerResponseStructure(t *testing.T) {
+	r, err := ParseEngineerResponse("x", []byte(`{"author":"engineer","addressed":[],"structure":"`+"```diff\\n+ a\\n```"+`"}`), false)
+	if err != nil {
+		t.Fatalf("structure: %v", err)
+	}
+	if r.Structure != "```diff\n+ a\n```" {
+		t.Errorf("structure = %q", r.Structure)
+	}
+	r, err = ParseEngineerResponse("x", []byte(`{"author":"engineer","addressed":[]}`), false)
+	if err != nil || r.Structure != "" {
+		t.Errorf("omitted structure: %q, %v", r.Structure, err)
+	}
+	for _, body := range []string{
+		`{"author":"engineer","structure":["a"]}`,
+		`{"author":"engineer","structure":3}`,
+	} {
+		if _, err := ParseEngineerResponse("x", []byte(body), false); !errors.Is(err, ErrInvalidRoleFile) {
+			t.Errorf("body %q: err = %v, want invalid", body, err)
+		}
+	}
+}
+
 func TestEnsureLegacyMarkerGrandfathersExistingFilesOnly(t *testing.T) {
 	root := t.TempDir()
 	slug := "demo"

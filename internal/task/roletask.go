@@ -122,6 +122,9 @@ type EngineerResponse struct {
 	// Followups proposes out-of-scope work (new services, extra
 	// features) for a separate PR instead of growing this one.
 	Followups []string `json:"followups,omitempty"`
+	// Structure is a fenced diff block sketching the shape of the
+	// change. The latest non-empty one feeds the PR body and summary.md.
+	Structure string `json:"structure,omitempty"`
 }
 
 // Review is a reviewer's verdict for one round. Persisted as
