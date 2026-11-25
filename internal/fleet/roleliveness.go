@@ -116,12 +116,14 @@ func roleKey(spec RoleSpawnSpec) string {
 }
 
 // ensureRolePane keeps the agent for spec running. A healthy pane is
-// left alone. A missing session is spawned silently and never counts
-// toward the cap: a token-monitor wrap kills its own session on
-// purpose and must always recover. A session whose agent is gone is
-// killed and respawned; each such respawn claims a marker
+// left alone. A session whose agent is gone is killed and respawned;
+// a missing session is respawned too, and counts as a death only when
+// the agent never ran FastDeathWindow (the role launch line execs the
+// agent, so with remain-on-exit off a crash removes the session). A
+// token-monitor wrap kills its own session after a long run, so that
+// respawn stays silent. Each counted respawn claims a marker
 // `respawn-<key>-r<round>-<n>` under state/ and notifies the
-// coordinator, and once MaxRoleRespawns are used the pass stops and
+// coordinator; once MaxRoleRespawns are used the pass stops and
 // escalates once instead. round is the role's completed-round count,
 // so a new round re-arms the cap.
 func ensureRolePane(spec RoleSpawnSpec, round int) error {
@@ -135,40 +137,64 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		fmt.Fprintf(os.Stderr, "role-loop probe %s: %v\n", session, err)
 		return nil
 	}
-	if !p.Exists {
-		_, _, err := spawnRole(spec)
-		return err
-	}
-	reason := agentGone(p, nowFunc())
-	if reason == "" || (!p.Dead && preStartRunning(spec, p.Created)) {
-		return nil
+	stateDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
+	key := roleKey(spec)
+	guard := loadGuard(filepath.Join(stateDir, "spawn-"+key+".json"))
+	now := nowFunc()
+
+	var reason string
+	if p.Exists {
+		reason = agentGone(p, now)
+		if reason == "" || (!p.Dead && preStartRunning(spec, p.Created)) {
+			guard.alive(now)
+			return saveRoleGuard(guard)
+		}
+		guard.dead()
+	} else {
+		if _, err := os.Stat(filepath.Join(stateDir, fmt.Sprintf("respawn-capped-%s-r%d", key, round))); err == nil {
+			return nil
+		}
+		if !guard.dead() {
+			return spawnRoleGuarded(spec, guard, now)
+		}
+		reason = fmt.Sprintf("session gone within %s of spawn", FastDeathWindow)
 	}
 
-	stateDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return err
 	}
-	key := roleKey(spec)
 	stem := fmt.Sprintf("respawn-%s-r%d-", key, round)
 	respawns, err := countMarkers(stateDir, stem)
 	if err != nil {
 		return err
 	}
 	if respawns >= MaxRoleRespawns {
+		if err := saveRoleGuard(guard); err != nil {
+			return err
+		}
 		created, err := createMarkerExcl(filepath.Join(stateDir, fmt.Sprintf("respawn-capped-%s-r%d", key, round)))
 		if err != nil {
 			return err
 		}
 		if created {
+			left := "pane left for inspection"
+			if !p.Exists {
+				left = "no pane left"
+			}
 			notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf(
-				"%s: escalated: %s agent died again after %d respawns in round %d (%s); respawn stopped, pane left for inspection",
-				spec.Slug, key, respawns, round+1, reason))
+				"%s: escalated: %s agent died again after %d respawns in round %d (%s); respawn stopped, %s",
+				spec.Slug, key, respawns, round+1, reason, left))
 		}
 		return nil
 	}
-	killRoleSession(session)
-	if _, spawned, err := spawnRole(spec); err != nil || !spawned {
+	if p.Exists {
+		killRoleSession(session)
+	}
+	if err := spawnRoleGuarded(spec, guard, now); err != nil {
 		return err
+	}
+	if !guard.Pending {
+		return nil
 	}
 	n := respawns + 1
 	created, err := createMarkerExcl(filepath.Join(stateDir, stem+strconv.Itoa(n)))
@@ -178,6 +204,26 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 	if created {
 		notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf("%s: respawned %s (%s; round %d, respawn %d/%d)",
 			spec.Slug, key, reason, round+1, n, MaxRoleRespawns))
+	}
+	return nil
+}
+
+// spawnRoleGuarded spawns spec and, when a session was created, marks
+// the guard pending so the next pass can judge the run.
+func spawnRoleGuarded(spec RoleSpawnSpec, guard *spawnGuard, now time.Time) error {
+	_, spawned, err := spawnRole(spec)
+	if err != nil {
+		return err
+	}
+	if spawned {
+		guard.spawned(now)
+	}
+	return saveRoleGuard(guard)
+}
+
+func saveRoleGuard(g *spawnGuard) error {
+	if err := g.save(); err != nil {
+		return fmt.Errorf("role crash record: %w", err)
 	}
 	return nil
 }
