@@ -173,4 +173,18 @@ func TestRunTaskTellRoleTaskWithoutPaneErrors(t *testing.T) {
 	if entries, _ := os.ReadDir(inbox); len(entries) != 1 {
 		t.Errorf("plain tell inbox has %d entries, want 1", len(entries))
 	}
+
+	if err := os.WriteFile(filepath.Join("tasks", "broken.md"), []byte("no frontmatter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTaskTell([]string{"broken", "hello"}); err != nil {
+		t.Fatalf("tell on unparseable task: %v", err)
+	}
+	inbox, err = task.InboxDir("broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(inbox); len(entries) != 1 {
+		t.Errorf("unparseable task inbox has %d entries, want 1", len(entries))
+	}
 }

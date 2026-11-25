@@ -429,7 +429,7 @@ func runTaskTell(args []string) error {
 	if slug != "coordinator" {
 		role, err := task.IsRoleLoop(resolveTasksDir(), slug)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
+			fmt.Fprintf(os.Stderr, "%s: %v; writing to the worker inbox\n", slug, err)
 		}
 		if role {
 			projectRoot, err := task.MainRepoRoot("")

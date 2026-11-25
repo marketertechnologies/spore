@@ -98,3 +98,58 @@ func TestTellRoleErrorsWhenPromptNotUp(t *testing.T) {
 		t.Fatalf("err = %v, want a not-delivered error", err)
 	}
 }
+
+func TestTellRoleFlattensAndLeadsWithText(t *testing.T) {
+	root, slug := tellFixture(t)
+	eng, _ := EngineerSpec(root, slug).SessionName()
+	s := &tellStub{live: map[string]bool{eng: true}, delivered: true}
+	stubTell(t, s)
+
+	if _, err := TellRole(root, slug, "line one\nline two;"); err != nil {
+		t.Fatalf("TellRole: %v", err)
+	}
+	want := "line one line two;" + tellSuffix
+	if s.sent[0] != want {
+		t.Errorf("sent %q, want %q", s.sent[0], want)
+	}
+}
+
+func TestTellRoleFallsBackToEngineerWhenReviewerDown(t *testing.T) {
+	root, slug := tellFixture(t)
+	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	eng, _ := EngineerSpec(root, slug).SessionName()
+	s := &tellStub{live: map[string]bool{eng: true}, delivered: true}
+	stubTell(t, s)
+
+	got, err := TellRole(root, slug, "hello")
+	if err != nil {
+		t.Fatalf("TellRole: %v", err)
+	}
+	if got != eng {
+		t.Fatalf("delivered to %q, want engineer %q", got, eng)
+	}
+}
+
+func TestTellRoleRefusesWhileDriveHoldsLock(t *testing.T) {
+	root, slug := tellFixture(t)
+	eng, _ := EngineerSpec(root, slug).SessionName()
+	s := &tellStub{live: map[string]bool{eng: true}, delivered: true}
+	stubTell(t, s)
+	prev := tellLockWait
+	tellLockWait = 0
+	t.Cleanup(func() { tellLockWait = prev })
+
+	unlock, err := lockRoleDrive(root, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if _, err := TellRole(root, slug, "hello"); err == nil || !strings.Contains(err.Error(), "retry") {
+		t.Fatalf("err = %v, want a retry refusal", err)
+	}
+	if len(s.sent) != 0 {
+		t.Errorf("sent %v while the drive held the lock", s.sent)
+	}
+}
