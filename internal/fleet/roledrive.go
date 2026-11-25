@@ -359,7 +359,9 @@ const wakeSubmitSettle = 500 * time.Millisecond
 // is lost, so the caller must leave the marker unwritten and retry
 // next tick. After sending, a submission that cannot be verified
 // (message still pending, or the prompt vanished) retries Enter once
-// and then errors, again leaving the marker unwritten.
+// and then errors, again leaving the marker unwritten. The text goes
+// with -l so one naming a key is typed, not pressed; tmux still eats a
+// trailing ';' as a command separator, so free text must not end msg.
 func sendWakeVerified(session, msg string) (bool, error) {
 	pane, err := capturePane(session)
 	if err != nil {
@@ -370,7 +372,7 @@ func sendWakeVerified(session, msg string) (bool, error) {
 	if !hasInputPrompt(pane) {
 		return false, nil
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", session, msg).Run(); err != nil {
+	if err := exec.Command("tmux", "send-keys", "-t", session, "-l", "--", msg).Run(); err != nil {
 		return false, fmt.Errorf("tmux send-keys text: %w", err)
 	}
 	time.Sleep(wakePasteSettle)

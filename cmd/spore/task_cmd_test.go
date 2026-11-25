@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -127,4 +129,78 @@ func TestRunTaskReopenNoteFlags(t *testing.T) {
 	if err := runTaskReopen([]string{"demo", "--from-pr"}); err == nil || strings.Contains(err.Error(), "usage:") {
 		t.Errorf("--from-pr alone = %v, want it accepted past flag checks", err)
 	}
+}
+
+func TestRunTaskTellRoleTaskWithoutPaneErrors(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	t.Chdir(root)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_TASKS_DIR", filepath.Join(root, "tasks"))
+	if err := os.MkdirAll("tasks", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTask := func(slug, loop string) {
+		m := frontmatter.Meta{Status: "active", Slug: slug, Title: slug, Loop: loop}
+		if err := os.WriteFile(filepath.Join("tasks", slug+".md"), frontmatter.Write(m, []byte("body\n")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTask("roled", task.LoopRole)
+	writeTask("plain", "")
+
+	err := runTaskTell([]string{"roled", "hello"})
+	if err == nil || !strings.Contains(err.Error(), "not delivered") {
+		t.Fatalf("role tell err = %v, want a not-delivered error", err)
+	}
+	inbox, err := task.InboxDir("roled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := inboxMessages(t, inbox); n != 0 {
+		t.Errorf("role tell wrote %d inbox entries nobody reads", n)
+	}
+
+	if err := runTaskTell([]string{"plain", "hello"}); err != nil {
+		t.Fatalf("plain tell: %v", err)
+	}
+	inbox, err = task.InboxDir("plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := inboxMessages(t, inbox); n != 1 {
+		t.Errorf("plain tell inbox has %d entries, want 1", n)
+	}
+
+	if err := os.WriteFile(filepath.Join("tasks", "broken.md"), []byte("no frontmatter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTaskTell([]string{"broken", "hello"}); err != nil {
+		t.Fatalf("tell on unparseable task: %v", err)
+	}
+	inbox, err = task.InboxDir("broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := inboxMessages(t, inbox); n != 1 {
+		t.Errorf("unparseable task inbox has %d entries, want 1", n)
+	}
+}
+
+// inboxMessages counts published messages, skipping the .tmp staging dir.
+func inboxMessages(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			n++
+		}
+	}
+	return n
 }

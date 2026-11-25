@@ -3,6 +3,34 @@
 ## Unreleased
 
 - Credentials deny (0.40.9): the default `permissions.deny` set gains `Read(~/.claude/.credentials.json)`, `Edit(~/.claude/.credentials.json)` and `Bash(*.claude/.credentials.json*)`, so an agent's Read, Edit and Write tools and Bash commands that name the Claude login file (`cat`, `base64`, `grep`, `jq`, `cp`) are denied. Claude Code still reads the file itself; the rules are a speed bump like the `secrets.env` ones. Rendered into the project settings, the managed drop-in and the handover `settings.json`.
+- Migration 002 scope (0.40.8): `002-rails-rule-pickup.sh` now edits only spore consumer repos (`spore.toml` at the repo root) and only consumer lists that carry a `# target:` line; it no longer writes into look-alike `rules/consumers/` trees or a user's own text files under `$HOME`. A consumer repo without `spore.toml` is skipped. Hosts that already ran 002 keep it in the migrations ledger, so the new logic does not re-run there and lines the old version appended to look-alike trees are not removed; check `rules/consumers/*.txt` and `rules/lang/rails-migrations.md` outside spore repos by hand. The migrations README forbids blind `$HOME` scans.
+- Inbox fixes (0.40.7): `spore task tell` writes each message under `inbox/.tmp/` and hard-links it into place, so a watcher can no longer claim an empty file and lose the message; `spore hooks watch-inbox` renders every message as one line, `inbox (claimed source: "<source>", unverified): <body>`, with line breaks in the body escaped, so a dropped file cannot pose as the operator, and moves a file that fails to parse to `inbox/quarantine/` with a warning line instead of printing an empty message.
+- Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
+- Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
+  - **Coordinator respawn after switch.** The graceful-deploy post
+    step re-enabled the fleet inside activation, before
+    `/run/current-system` switched, so respawned coordinators ran
+    SessionStart hooks that did not exist yet (`load-state-md.pl`
+    exit 127, no `state.md`). Activation now queues
+    `spore-fleet-graceful-post.service`, which switch-to-configuration
+    starts once the new system is current. Downstream: hosts pick this
+    up on their next `nixos-rebuild switch`. Activation runs the new
+    generation's scripts, so the switch onto 0.40.5 already uses it. A
+    failing post step (`spore fleet enable`) now shows as a failed
+    `spore-fleet-graceful-post.service` and a non-zero switch exit;
+    before, activation ignored it.
+  - **+refspec force push denied.** `git push origin +branch` and
+    `+HEAD:branch` are now blocked by `permissions.deny`
+    (`Bash(git push +*)`, `Bash(git push * +*)`) and the PreToolUse
+    guard. `--force-with-lease` and `--force-if-includes` stay allowed.
+    Downstream: managed settings update on the next switch; hosts with
+    a hand-installed `~/.claude/settings.json` reinstall it from
+    `share/spore/settings.json`.
+  - **NormalizeCommand** skips leading `NAME=value` assignments, so a
+    hook command with an env prefix matches its managed copy.
+  - **Shared coordinator role** gains a "GitHub PR flow" section for
+    projects with a GitHub App and `pr_flow = "draft"`. Consumers can
+    drop the generic part from their project role.
 - Role-loop fixes (0.40.4): with `[fleet.roles.engineer] check` set, the draft-PR mirror holds the push and PR reply for an engineer round until its check passes at HEAD; `spore task done` and `spore task merge` kill the task's `spore-role/...` panes; `spore task done` counts unmerged commits against the task's `base:` (local or `origin/<base>`) instead of main; concurrent `spore hooks engineer-check` runs on one round are serialised by a lock and the waiter reuses the first run's result; `spore task status` prints `review-A (held: check)` while the check is pending.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current

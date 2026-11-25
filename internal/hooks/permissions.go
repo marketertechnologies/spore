@@ -17,6 +17,8 @@ var kernelDeny = []string{"SendMessage"}
 // https://code.claude.com/docs/en/permissions: a trailing " *" is a
 // word-bounded prefix match that also matches the bare command, so
 // --force-with-lease (used by the GitHub App mirror) stays allowed.
+// "+*" has no space before the star: a plain glob that catches a
+// +refspec, which force-updates that ref without any flag.
 // Read rules also cover cat/head/sed on the same path, but not a
 // subprocess that opens the file itself, which keeps
 // spore-with-secrets working. Rules are matched per subcommand of a
@@ -37,6 +39,8 @@ var defaultDeny = []string{
 	"Bash(git push * --force *)",
 	"Bash(git push * -f)",
 	"Bash(git push * -f *)",
+	"Bash(git push +*)",
+	"Bash(git push * +*)",
 }
 
 // DefaultDeny returns the kernel rules plus the guardrail set, in the

@@ -615,6 +615,10 @@ review threads (verdict, summary, comments per round) plus every
 engineer response. It embeds a fingerprint of the artifact counts and
 regenerates if the tree changes under it.
 
+## Telling a role pane
+
+Role panes have no inbox: they run without `SPORE_TASK_INBOX`, so the `watch-inbox` Stop hook never fires in them. `spore task tell <slug> <message>` on a `loop: role` task therefore types the message straight into a pane, with newlines and other control characters flattened to spaces and ` (operator message via spore task tell)` appended. The target is the role that owns the next file write (the engineer in engineer phases and while the check gate is pending, the current reviewer in review phases), or the engineer once the loop is done or when the reviewer pane is not up. The tell holds the drive lock while it types (waiting up to 5s for a running tick), so a drive wake cannot interleave with it. Delivery uses the same verified send as the drive's wakes. When no pane is up, its input prompt is not up yet (agent still booting), or the submit cannot be confirmed, the command exits 1 with the reason and the message is not queued anywhere: retry once the pane is up, and after an unconfirmed submit check the pane first, since the text may sit unsubmitted in its input. A tell on a task without `loop: role`, or whose task file cannot be parsed, still appends to the worker inbox.
+
 ## Finishing
 
 When the loop is done, review the branch (`summary.md` is the digest)

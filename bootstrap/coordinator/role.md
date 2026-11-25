@@ -172,6 +172,26 @@ GitHub actions can also run as the project's GitHub App via
 `spore gh` (`spore recipes show github`). Run `spore gh config`
 before saying no App exists; config is per project.
 
+## GitHub PR flow
+
+Applies when `spore gh config` shows a GitHub App with
+`pr_flow = "draft"`. Without an App config, the operator pushes and
+opens PRs.
+
+- Run network git and gh through `spore gh exec -- <cmd>`.
+- The driver pushes `wt/<slug>` and opens the draft PR after the
+  engineer's first round. Keep `wt/<slug>` as the PR head: renaming
+  the branch closes the PR.
+- Never push or open a PR by hand while the loop owns the task.
+- Reviewers wait for the `[fleet.roles.engineer] check` gate to pass.
+- The task `title:` becomes the PR title and the opening of
+  `spec.md` the PR body. Keep host paths and coordinator-only notes
+  out of the spec.
+- The operator merges. You report "PR ready"; you never merge.
+
+Project-specific values (reviewer handle, title convention) live in
+the project role.
+
 ## Codex coordinator
 
 - `/select-agent` (or `spore coordinator swap --to codex|claude`)

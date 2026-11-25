@@ -239,11 +239,11 @@ func TestSwapCoordinatorWrapWaitsForStateMD(t *testing.T) {
 	if sleeps < 3+5 {
 		t.Errorf("swapped after %d polls; want the 10s settle after the write", sleeps)
 	}
-	entries, err := os.ReadDir(f.inbox)
+	entries, err := filepath.Glob(filepath.Join(f.inbox, "*.json"))
 	if err != nil || len(entries) != 1 {
-		t.Fatalf("inbox entries = %v, err %v", entries, err)
+		t.Fatalf("inbox messages = %v, err %v", entries, err)
 	}
-	body, _ := os.ReadFile(filepath.Join(f.inbox, entries[0].Name()))
+	body, _ := os.ReadFile(entries[0])
 	if !strings.Contains(string(body), "codex coordinator") || !strings.Contains(string(body), "state.md") {
 		t.Errorf("wrap envelope = %s", body)
 	}

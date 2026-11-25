@@ -52,7 +52,9 @@
       "Bash(git push * --force)",
       "Bash(git push * --force *)",
       "Bash(git push * -f)",
-      "Bash(git push * -f *)"
+      "Bash(git push * -f *)",
+      "Bash(git push +*)",
+      "Bash(git push * +*)"
     ]
   }
 }

@@ -246,6 +246,13 @@
                   home-manager.nixosModules.home-manager
                 ];
 
+                # Test VMs omit switch-to-configuration by default; the
+                # graceful-deploy check below drives a real switch.
+                system.switch.enable = true;
+                # A second generation to switch to, so /run/current-system
+                # changes during the graceful-deploy switch below.
+                specialisation.next.configuration.environment.etc."spore-generation".text = "next";
+
                 users.users.spore-test = {
                   isNormalUser = true;
                   home = "/home/spore-test";
@@ -270,7 +277,10 @@
                     echo "$*" >> "$trace"
                     case "$1 $2" in
                       "fleet reconcile") echo "stub: reconcile" ; exit 0 ;;
-                      "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
+                      "fleet enable")
+                        : > "''${HOME}/.local/state/spore/fleet-enabled"
+                        readlink -f /run/current-system > "''${HOME}/fleet-enable-system"
+                        exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
                       "install --dest") cp -r ${./bootstrap/skills}/. "$3" ; exit 0 ;;
@@ -476,6 +486,27 @@
                   # and cwd handling worked.
                   machine.succeed("grep -q 'fleet disable' /home/spore-test/spore-stub.log")
                   machine.succeed("grep -q 'fleet enable' /home/spore-test/spore-stub.log")
+
+                  # Under switch-to-configuration the post step runs as a
+                  # unit started after activation (once /run/current-system
+                  # points at the new system), not inside the activation
+                  # script. The unit has no wantedBy, so it only runs when
+                  # activation queues it.
+                  unit = "spore-fleet-graceful-post.service"
+                  machine.fail(f"journalctl -b -u {unit} -o cat | grep -q re-enabling")
+                  machine.succeed("rm -f /home/spore-test/fleet-enable-system")
+                  machine.succeed("/run/current-system/specialisation/next/bin/switch-to-configuration test")
+                  machine.succeed("test -e /home/spore-test/.local/state/spore/fleet-enabled")
+                  # `fleet enable` ran with /run/current-system already on
+                  # the new generation, not the booted one.
+                  booted = machine.succeed("readlink -f /run/booted-system").strip()
+                  current = machine.succeed("readlink -f /run/current-system").strip()
+                  seen = machine.succeed("cat /home/spore-test/fleet-enable-system").strip()
+                  assert current != booted, (current, booted)
+                  assert seen == current, (seen, current, booted)
+                  machine.succeed(f"journalctl -b -u {unit} -o cat | grep -q 're-enabling kill-switch'")
+                  status = machine.succeed(f"systemctl show -p Result {unit}")
+                  assert status.strip() == "Result=success", status
                 '';
             };
           };
