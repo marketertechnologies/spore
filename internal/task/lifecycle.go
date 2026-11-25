@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/versality/spore/evidence"
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -174,6 +176,7 @@ func Pause(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "paused"); err != nil {
 		return err
 	}
+	recordEvent(tasksDir, events.Event{Kind: events.TaskPause, Slug: slug})
 	reapIdleSlugSessions(tasksDir, slug)
 	return nil
 }
@@ -188,6 +191,7 @@ func Block(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "blocked"); err != nil {
 		return err
 	}
+	recordEvent(tasksDir, events.Event{Kind: events.TaskBlock, Slug: slug})
 	reapIdleSlugSessions(tasksDir, slug)
 	return nil
 }
@@ -278,6 +282,7 @@ func Done(tasksDir, slug string, force bool) error {
 		return err
 	}
 
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskDone, Slug: slug, Fields: map[string]string{"unmerged_discarded": discarded(unmerged)}})
 	notifyMatterDone(projectRoot, slug, m, os.Stderr)
 
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
@@ -757,4 +762,11 @@ func slugServicesDir(slug string) (string, error) {
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "spore", "services", slug), nil
+}
+
+func discarded(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }

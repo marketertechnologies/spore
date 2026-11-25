@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/callbudget"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 )
@@ -184,6 +185,9 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 			notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf(
 				"%s: escalated: %s agent died again after %d respawns in round %d (%s); respawn stopped, %s",
 				spec.Slug, key, respawns, round+1, reason, left))
+			task.RecordEvent(spec.ProjectRoot, events.Event{Kind: events.RoleCrashLoop, Slug: spec.Slug,
+				Detail: fmt.Sprintf("%s died after %d respawns (%s); respawn stopped", key, respawns, reason),
+				Fields: map[string]string{"role": key, "round": strconv.Itoa(round + 1)}})
 		}
 		return nil
 	}
@@ -204,6 +208,9 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 	if created {
 		notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf("%s: respawned %s (%s; round %d, respawn %d/%d)",
 			spec.Slug, key, reason, round+1, n, MaxRoleRespawns))
+		task.RecordEvent(spec.ProjectRoot, events.Event{Kind: events.RoleRespawn, Slug: spec.Slug,
+			Detail: fmt.Sprintf("%s: %s (respawn %d/%d)", key, reason, n, MaxRoleRespawns),
+			Fields: map[string]string{"role": key, "round": strconv.Itoa(round + 1)}})
 	}
 	return nil
 }

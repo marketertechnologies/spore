@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/versality/spore/internal/events"
 )
 
 // AlertKind names an account-wide failure that stops every pane on the
@@ -86,6 +88,7 @@ func StopFailure(in StopFailureInput) error {
 	if inbox := os.Getenv("SPORE_TASK_INBOX"); inbox != "" {
 		errs = append(errs, RequeueInflight(inbox))
 	}
+	recordStopFailure(project, in)
 	kind := alertKindFor(in.Error)
 	if kind == "" {
 		return errors.Join(errs...)
@@ -348,4 +351,19 @@ func tmuxPaneSession(paneID string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// recordStopFailure writes one alert line per StopFailure, whatever
+// its kind. The assistant message is not recorded (it is model text);
+// only the reset time parsed out of it is.
+func recordStopFailure(project string, in StopFailureInput) {
+	kind := in.Error
+	if kind == "" {
+		kind = "unknown"
+	}
+	fields := map[string]string{"error": kind, "pane": os.Getenv("TMUX_PANE")}
+	if r := resetTime(in.LastAssistantMessage); r != "" {
+		fields["reset"] = r
+	}
+	events.Record(project, events.Event{Kind: events.Alert, Slug: os.Getenv("SPORE_TASK_SLUG"), Detail: kind, Fields: fields})
 }

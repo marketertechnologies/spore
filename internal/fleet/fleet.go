@@ -20,13 +20,19 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
+
+// skipEventEvery bounds reconcile.skipped ledger lines: a held lock or
+// a disabled fleet repeats on every timer tick.
+const skipEventEvery = time.Hour
 
 // DefaultMaxWorkers is the fallback concurrency cap when no override
 // is set via flag, env, or spore.toml.
@@ -95,6 +101,8 @@ func Reconcile(cfg Config) (Result, error) {
 	// add` for wt/<slug>; the loser fails. The holder covers it.
 	unlock, err := task.LockReconcile(cfg.ProjectRoot, 0)
 	if errors.Is(err, task.ErrLockHeld) {
+		task.RecordEventThrottled(cfg.ProjectRoot, "reconcile-locked", skipEventEvery,
+			events.Event{Kind: events.ReconcileSkipped, Detail: "another pass holds the reconcile lock"})
 		return Result{Locked: true}, nil
 	}
 	if err != nil {
@@ -113,6 +121,8 @@ func Reconcile(cfg Config) (Result, error) {
 		// preserving, so we tear it down with the flag.
 		ReapCoordinator(cfg.ProjectRoot)
 		clearGuard(coordinatorGuardPath(cfg.ProjectRoot))
+		task.RecordEventThrottled(cfg.ProjectRoot, "reconcile-disabled", skipEventEvery,
+			events.Event{Kind: events.ReconcileSkipped, Detail: "fleet disabled (kill-switch flag missing)"})
 		return Result{Disabled: true}, nil
 	}
 
@@ -271,6 +281,8 @@ func Reconcile(cfg Config) (Result, error) {
 				notifyFleet(cfg.ProjectRoot, fmt.Sprintf(
 					"%s: worker died within %s of spawn %d times in a row; respawn stopped. Inspect the task, then pause and restart it to retry.",
 					slug, FastDeathWindow, g.Deaths))
+				task.RecordEvent(cfg.ProjectRoot, events.Event{Kind: events.WorkerCrashLoop, Slug: slug,
+					Detail: fmt.Sprintf("%d fast deaths in a row; respawn stopped", g.Deaths)})
 			}
 			saveGuard(g)
 			res.Crashed = append(res.Crashed, slug)
@@ -290,6 +302,12 @@ func Reconcile(cfg Config) (Result, error) {
 			res.warn(fmt.Sprintf("ensure %s: %v", slug, err))
 			continue
 		}
+		spawnEv := events.Event{Kind: events.WorkerSpawn, Slug: slug, Fields: map[string]string{"agent": picked}}
+		if g.Deaths > 0 {
+			spawnEv.Kind = events.WorkerRespawn
+			spawnEv.Detail = fmt.Sprintf("after %d fast death(s)", g.Deaths)
+		}
+		task.RecordEvent(cfg.ProjectRoot, spawnEv)
 		g.spawned(now)
 		saveGuard(g)
 		used++

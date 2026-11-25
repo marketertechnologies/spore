@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/task"
 )
@@ -159,7 +164,11 @@ func runGHExec(args []string) (int, error) {
 	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = ghapp.Env(os.Environ(), tok.Token)
+	var out bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if isPRCreate(args) {
+		cmd.Stdout = io.MultiWriter(os.Stdout, &out)
+	}
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
@@ -167,5 +176,31 @@ func runGHExec(args []string) (int, error) {
 		}
 		return 0, err
 	}
+	recordPRCreate(root, args, out.String())
 	return 0, nil
+}
+
+var prURLRE = regexp.MustCompile(`https://[^\s/]+/[^\s/]+/[^\s/]+/pull/[0-9]+`)
+
+// recordPRCreate writes pr.opened when args is a `gh pr create` and its
+// output names the new PR.
+func recordPRCreate(root string, args []string, stdout string) {
+	if !isPRCreate(args) {
+		return
+	}
+	urls := prURLRE.FindAllString(stdout, -1)
+	if len(urls) == 0 {
+		return
+	}
+	fields := map[string]string{"url": urls[len(urls)-1]}
+	for _, a := range args[3:] {
+		if a == "--draft" || a == "-d" {
+			fields["draft"] = "true"
+		}
+	}
+	task.RecordEvent(root, events.Event{Kind: events.PROpened, Slug: os.Getenv("SPORE_TASK_SLUG"), Fields: fields})
+}
+
+func isPRCreate(args []string) bool {
+	return len(args) >= 3 && filepath.Base(args[0]) == "gh" && args[1] == "pr" && args[2] == "create"
 }

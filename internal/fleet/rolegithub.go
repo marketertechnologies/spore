@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/task"
 )
@@ -627,6 +628,8 @@ func (m *githubMirror) ensurePR() error {
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
 	m.save()
+	task.RecordEvent(m.projectRoot, events.Event{Kind: events.PROpened, Slug: m.slug,
+		Fields: map[string]string{"url": url, "draft": "true", "base": base}})
 	return nil
 }
 
