@@ -46,7 +46,14 @@ Subcommands:
   state-debt      Scan state.md for prose lessons that should be lifted.
   verify-done     Run the verify-done verdict for a slug.
   loop-guard      Check the respawn circuit breaker.
-  token-monitor   Stop-hook: check coordinator context budget.
+  token-monitor   Stop-hook: check coordinator context budget. Caps
+                  (soft 250000, finish-unit 290000, force 300000)
+                  are overridable with $SPORE_COORDINATOR_TOKEN_SOFT,
+                  $SPORE_COORDINATOR_TOKEN_WRAP (finish-unit) and
+                  $SPORE_COORDINATOR_TOKEN_FORCE. The respawn command
+                  it prints relaunches the configured agent
+                  ($SPORE_COORDINATOR_AGENT, else [coordinator]
+                  driver).
   monitor         Boot-time verdict over the token-monitor ledger.
 `
 
@@ -423,8 +430,16 @@ func runCoordinatorTokenMonitor(_ []string) int {
 		return 0
 	}
 
+	root := os.Getenv("SPORE_PROJECT_ROOT")
+	if root == "" {
+		root, _ = os.Getwd()
+	}
 	cfg := tokenmonitor.Config{
-		Inbox: os.Getenv("SPORE_TASK_INBOX"),
+		Inbox:    os.Getenv("SPORE_TASK_INBOX"),
+		SoftCap:  envInt("SPORE_COORDINATOR_TOKEN_SOFT"),
+		HardCap:  envInt("SPORE_COORDINATOR_TOKEN_WRAP"),
+		ForceCap: envInt("SPORE_COORDINATOR_TOKEN_FORCE"),
+		Respawn:  fleet.CoordinatorRespawnShell(root),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)

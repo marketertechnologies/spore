@@ -247,6 +247,19 @@ func driverToBinary(driver string) string {
 	}
 }
 
+// CoordinatorRespawnShell is the shell command that relaunches the
+// coordinator of projectRoot the way EnsureCoordinator spawned it: the
+// same agent precedence (SPORE_COORDINATOR_AGENT first, then config)
+// and the role file from SPORE_COORDINATOR_ROLE, which the session env
+// carries, else CoordinatorRolePath.
+func CoordinatorRespawnShell(projectRoot string) string {
+	rolePath := os.Getenv("SPORE_COORDINATOR_ROLE")
+	if rolePath == "" {
+		rolePath = CoordinatorRolePath(projectRoot)
+	}
+	return coordinatorShellCommand(coordinatorAgent(LoadCoordinatorConfigWarn(projectRoot)), rolePath)
+}
+
 // coordinatorShellCommand builds the shell snippet tmux runs for the
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers

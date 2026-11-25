@@ -185,8 +185,11 @@ func assertRespawnPaneMessage(t *testing.T, msg string) {
 	if !strings.Contains(msg, `"$(tmux display-message -p '#S'):0"`) {
 		t.Errorf("message must self-target via display-message, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "/usr/local/bin/spore-coordinator-launch") {
-		t.Errorf("message must exec the coordinator-launch shim, got:\n%s", msg)
+	if !strings.Contains(msg, `'exec claude --dangerously-skip-permissions'`) {
+		t.Errorf("message must exec the default agent when Respawn is unset, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "/usr/local/bin") {
+		t.Errorf("message must not name a host path, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "tmux kill-session") {
 		t.Errorf("message must not instruct kill-session (drops attached SSH), got:\n%s", msg)
@@ -243,5 +246,14 @@ func TestLedgerVerdictOldAndForceRows(t *testing.T) {
 	}
 	if !strings.Contains(sids, "dead1") || !strings.Contains(sids, "dead2") {
 		t.Errorf("broken sessions = %q, want dead1 dead2", sids)
+	}
+}
+
+func TestRespawnCommandUsesConfiguredLauncher(t *testing.T) {
+	cfg := Config{Respawn: `exec /opt/launch "$(cat 'role.md')"`}
+	got := cfg.RespawnCommand()
+	want := `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /opt/launch "$(cat '\''role.md'\'')"'`
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }

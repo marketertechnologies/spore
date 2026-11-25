@@ -29,16 +29,9 @@ const (
 	// the monitor demands an immediate wrap even mid-unit.
 	DefaultForceCap = 300000
 
-	// coordinatorRespawnCommand is the tmux command surfaced to the
-	// coordinator agent on soft/hard cap. respawn-pane -k re-execs the
-	// pane's command without tearing down the session, so an
-	// SSH-attached operator stays connected while the agent process is
-	// replaced. The session-name expression resolves to the current
-	// session, so an external_session_pattern coordinator (running
-	// under a non-spore session name) respawns itself in place too.
-	// The exec target is the host shim that spore infect installs;
-	// keep this in sync with internal/infect/infect.go install paths.
-	coordinatorRespawnCommand = `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /usr/local/bin/spore-coordinator-launch'`
+	// defaultRespawn is the pane command when Config.Respawn is empty:
+	// the kernel's default coordinator agent.
+	defaultRespawn = "exec claude --dangerously-skip-permissions"
 )
 
 type Config struct {
@@ -48,6 +41,23 @@ type Config struct {
 	StateDir   string
 	LedgerFile string
 	Inbox      string
+	// Respawn is the shell command the respawned pane runs: the same
+	// launch command the coordinator was spawned with.
+	Respawn string
+}
+
+// RespawnCommand is the tmux command surfaced to the coordinator agent
+// at each cap. respawn-pane -k re-execs the pane without tearing down
+// the session, so an SSH-attached operator stays connected while the
+// agent process is replaced. The session-name expression resolves to
+// the current session, so an external_session_pattern coordinator
+// (running under a non-spore session name) respawns itself in place.
+func (c Config) RespawnCommand() string {
+	return `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" ` + shellSingleQuote(c.Respawn)
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 type CheckResult struct {
@@ -80,6 +90,9 @@ func (c Config) Defaults() Config {
 	}
 	if c.LedgerFile == "" {
 		c.LedgerFile = filepath.Join(c.StateDir, "token-monitor.jsonl")
+	}
+	if c.Respawn == "" {
+		c.Respawn = defaultRespawn
 	}
 	return c
 }
@@ -155,7 +168,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"  3. Run: %s\n"+
 				"respawn-pane preserves the tmux session and any attached SSH client;\n"+
 				"only the agent process is replaced. The reconciler is not involved.",
-			ctx, cfg.ForceCap, coordinatorRespawnCommand)
+			ctx, cfg.ForceCap, cfg.RespawnCommand())
 		appendLedger(cfg, sid, ctx, false, false, true)
 		return result
 	}
@@ -174,7 +187,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"only the agent process is replaced. The reconciler is not involved.\n"+
 				"This reminder fires on every Stop past the cap. Force cap is %d;\n"+
 				"crossing it demands an immediate wrap even mid-unit.",
-			ctx, cfg.HardCap, coordinatorRespawnCommand, cfg.ForceCap)
+			ctx, cfg.HardCap, cfg.RespawnCommand(), cfg.ForceCap)
 		appendLedger(cfg, sid, ctx, false, true, false)
 		return result
 	}
@@ -189,7 +202,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"  %s\n"+
 				"Finish-unit cap is %d (past it, finish the in-flight unit and wrap;\n"+
 				"a reminder fires on every Stop). Force cap is %d (immediate wrap).",
-			ctx, cfg.SoftCap, coordinatorRespawnCommand, cfg.HardCap, cfg.ForceCap)
+			ctx, cfg.SoftCap, cfg.RespawnCommand(), cfg.HardCap, cfg.ForceCap)
 		appendLedger(cfg, sid, ctx, true, false, false)
 		return result
 	}

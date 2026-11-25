@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// A coordinator swap must not fall back to the host's launcher.
+	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	// Role spawns materialize bundled bodies under the state dir;
 	// keep them off the host's real one.
 	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {
