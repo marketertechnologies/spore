@@ -62,7 +62,7 @@ Subcommands:
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
-                               on done.
+                               on done. Refuses a task that is not active.
 
 Flags for 'new':
   --draft                      Set status=draft (default).

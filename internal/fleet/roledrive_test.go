@@ -748,3 +748,31 @@ func TestDriveRoleLoopRefusesGenericTask(t *testing.T) {
 		t.Errorf("worktree created on refused drive: %v", err)
 	}
 }
+
+// TestDriveRoleLoopRefusesNonActiveTask pins that role-drive refuses a
+// role task that is not active and spawns nothing for it.
+func TestDriveRoleLoopRefusesNonActiveTask(t *testing.T) {
+	for _, status := range []string{"draft", "paused", "blocked", "done"} {
+		t.Run(status, func(t *testing.T) {
+			root := newGitRepoFor(t, "demo-project")
+			t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+			slug := "idle"
+			tasksDir := filepath.Join(root, "tasks")
+			if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeRoleLoopTask(t, tasksDir, slug, status)
+
+			_, err := DriveRoleLoop(root, tasksDir, slug)
+			if err == nil || !strings.Contains(err.Error(), "only runs active tasks") {
+				t.Fatalf("DriveRoleLoop err = %v, want a not-active refusal", err)
+			}
+			if _, err := os.Stat(filepath.Join(task.RoleTaskDir(root, slug), "state")); !os.IsNotExist(err) {
+				t.Errorf("state dir created on refused drive: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".worktrees", slug)); !os.IsNotExist(err) {
+				t.Errorf("worktree created on refused drive: %v", err)
+			}
+		})
+	}
+}

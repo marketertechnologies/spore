@@ -33,7 +33,7 @@ homogeneous worker. A task seeded by hand with only the dir needs
 
 `role-drive` is also the manual driver: each run advances the loop by
 one idempotent tick, and refuses a task whose frontmatter lacks
-`loop: role`. The reconciler calls the same drive for
+`loop: role` or whose status is not `active`. The reconciler calls the same drive for
 role-looped slugs on every pass, so an active task keeps moving
 without manual ticks.
 
