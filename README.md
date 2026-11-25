@@ -279,7 +279,12 @@ workers around `nixos-rebuild switch` and colmena deploys:
   `gracefulDeploy.timeout` seconds for them to flush, then kills
   any holdouts;
 - post-activation re-enables the kill-switch so the next
-  reconcile pass repopulates the fleet.
+  reconcile pass repopulates the fleet. On `nixos-rebuild switch` /
+  `test` this runs as `spore-fleet-graceful-post.service`, which the
+  activation script queues in `/run/nixos/activation-restart-list`;
+  switch-to-configuration starts it after `/run/current-system`
+  points at the new system, so respawned coordinators find their
+  SessionStart hooks under `/run/current-system/sw`.
 
 The `preScript` and `postScript` paths are also exposed as
 read-only options so a colmena `deployment.preActivation` /

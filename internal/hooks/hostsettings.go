@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -165,14 +166,20 @@ func managedKey(event, matcher, command string) string {
 	return event + "\x00" + matcher + "\x00" + NormalizeCommand(command)
 }
 
+var envAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
 // NormalizeCommand reduces every program in a hook command to its base
 // name, keeping arguments. A program is the first word or any word
-// after `;`, `|`, `||`, `&&` or `exec`, so compound commands such as
-// engineerCheckCommand compare equal across spore paths.
+// after `;`, `|`, `||`, `&&` or `exec`, past leading `NAME=value`
+// assignments, so compound commands such as engineerCheckCommand
+// compare equal across spore paths.
 func NormalizeCommand(command string) string {
 	fields := strings.Fields(command)
 	cmdPos := true
 	for i, f := range fields {
+		if cmdPos && envAssignment.MatchString(f) {
+			continue
+		}
 		if cmdPos {
 			fields[i] = filepath.Base(f)
 		}
