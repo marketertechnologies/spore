@@ -51,6 +51,16 @@ func wakeEngineerForCheck(projectRoot, slug string, snap Snapshot) error {
 	return err
 }
 
+// PhaseLabel is snap.Phase for display, suffixed ` (held: check)` while
+// the driver holds the reviewer on a pending engineer check, so a
+// review phase does not read as if the reviewer were running.
+func (s Snapshot) PhaseLabel() string {
+	if s.Check == task.CheckPending {
+		return string(s.Phase) + " (held: check)"
+	}
+	return string(s.Phase)
+}
+
 func shortSHA(sha string) string {
 	if len(sha) > 12 {
 		return sha[:12]
