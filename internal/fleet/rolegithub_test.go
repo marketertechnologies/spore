@@ -32,8 +32,10 @@ if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; f
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
   "pr create") cp "$log.in" "$log.body"; echo "https://github.com/acme/widget/pull/12" ;;
-  "pr edit") if [ -e "$log.in" ]; then mv "$log.in" "$log.body"; fi ;;
-  "pr view") cat "$log.body" ;;
+  "pr edit") if [ -e "$log.in" ]; then cp "$log.in" "$log.body"; fi ;;
+  "pr view")
+    if [ -n "$FAKE_GH_PR_BODY" ]; then printf '%s\n' "$FAKE_GH_PR_BODY"; elif [ -e "$log.body" ]; then cat "$log.body"; fi
+    if [ -e "$log.race" ]; then printf '\noperator edit' >> "$log.body"; fi ;;
 esac
 rm -f "$log.in"
 `
@@ -225,7 +227,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("branch not pushed to origin")
 	}
 	log := f.log(t)
-	for _, s := range []string{"TOKEN: ghs_app", "BODY:\nMake the widget spin.\n\n- one\nEND"} {
+	for _, s := range []string{"TOKEN: ghs_app", "BODY:\nMake the widget spin.\n\n- one\n\nDispatched by @octo. "} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
 		}
@@ -255,7 +257,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"pr comment 12 --body-file -",
 		"pr review 12 --comment --body-file -",
 		"pr review 12 --comment --body-file -",
-		"pr view 12 --json body --jq .body",
+		"pr view 12 --json body -q .body",
 		"pr edit 12 --body-file -",
 		"pr ready 12",
 	)
@@ -271,7 +273,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",
 		"**Review #1 (round 2): approve**",
 		"**Review #2 (round 1): approve**\n\nship it",
-		"BODY:\nMake the widget spin.\n\n- one\n- two\nEND",
+		"BODY:\nMake the widget spin.\n\n- one\n- two\n\nDispatched by @octo. ",
 	} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
@@ -300,7 +302,7 @@ func TestGitHubMirrorPRBodyShape(t *testing.T) {
 	}
 	writeEng(1)(t, f.root, f.slug)
 	f.tick(t)
-	want := "BODY:\nLinear: [HK-7](https://linear.app/x/issue/HK-7)\n\nMake the widget spin.\n\n- one\n- two\n- three\n- four\n- five\nEND"
+	want := "BODY:\nLinear: [HK-7](https://linear.app/x/issue/HK-7)\n\nMake the widget spin.\n\n- one\n- two\n- three\n- four\n- five\n\nDispatched by @octo. "
 	if log := f.log(t); !strings.Contains(log, want) {
 		t.Fatalf("PR body: want %q in\n%s", want, log)
 	}

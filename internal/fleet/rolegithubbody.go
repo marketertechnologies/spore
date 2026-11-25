@@ -30,18 +30,16 @@ func (m *githubMirror) prBase(meta frontmatter.Meta) (string, error) {
 
 // prBody renders the PR description in the rules/core/pr-description.md
 // shape: ticket link, the brief's summary paragraph, and the branch's
-// commit subjects as change bullets. The rest of spec.md stays off the
-// PR: briefs carry host paths and coordinator-only notes. A summary
-// naming an absolute path falls back to the task title. Review rounds
-// go to PR comments, never here.
+// commit subjects as change bullets, then the engineer's structure
+// block and the fixed footer syncBody splices above. The rest of
+// spec.md stays off the PR: briefs carry host paths and
+// coordinator-only notes. A summary naming an absolute path falls back
+// to the task title. Review rounds go to PR comments, never here.
 func (m *githubMirror) prBody(meta frontmatter.Meta, base string) string {
 	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
 	summary := specSummary(string(spec))
 	if summary == "" || absPathRE.MatchString(summary) {
-		summary = meta.Title
-		if summary == "" {
-			summary = m.slug
-		}
+		summary = prTitle(meta.Title, m.slug)
 	}
 	var b strings.Builder
 	if link := ticketLine(meta); link != "" {
@@ -54,6 +52,11 @@ func (m *githubMirror) prBody(meta frontmatter.Meta, base string) string {
 			b.WriteString("- " + s + "\n")
 		}
 	}
+	if m.structure != "" {
+		b.WriteString("\n" + m.structure + "\n")
+	}
+	fmt.Fprintf(&b, "\nDispatched by @%s. "+prFooterMarker+": reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
+		m.cfg.OperatorLogin, m.cfg.OperatorLogin)
 	return b.String()
 }
 
@@ -70,11 +73,11 @@ func (m *githubMirror) refreshPRBody() error {
 	if err != nil || meta.Slug == "" {
 		return err
 	}
-	current, err := m.gh("", "pr", "view", strconv.Itoa(m.state.PRNumber), "--json", "body", "--jq", ".body")
+	current, err := m.viewBody()
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(current) != strings.TrimSpace(m.state.Body) {
+	if !sameBody(current, m.state.Body) {
 		return nil
 	}
 	base, err := m.prBase(meta)
@@ -88,7 +91,7 @@ func (m *githubMirror) refreshPRBody() error {
 	if _, err := m.gh(body, "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-"); err != nil {
 		return err
 	}
-	m.state.Body = body
+	m.state.Body, m.state.BodyStructure = body, m.structure
 	m.save()
 	return nil
 }

@@ -19,6 +19,7 @@ spore/
 |   |-- align/        Pilot-agent alignment-mode tracker.
 |   |-- bootstrap/    Stage-gate driver + per-stage detectors.
 |   |-- composer/     Instruction composer: rule-pool to rendered files.
+|   |-- evals/        Reviewer regression suite behind `spore eval`.
 |   |-- fleet/        Worker fleet: coordinator + workers consuming the task queue.
 |   |-- hooks/        Stop / PreToolUse / commit-msg hook entry points.
 |   |-- infect/       nixos-anywhere wrapper for `spore infect`.

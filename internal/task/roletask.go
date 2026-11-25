@@ -122,6 +122,9 @@ type EngineerResponse struct {
 	// Followups proposes out-of-scope work (new services, extra
 	// features) for a separate PR instead of growing this one.
 	Followups []string `json:"followups,omitempty"`
+	// Structure is a fenced diff block sketching the shape of the
+	// change. The latest non-empty one feeds the PR body and summary.md.
+	Structure string `json:"structure,omitempty"`
 }
 
 // Review is a reviewer's verdict for one round. Persisted as
@@ -225,6 +228,12 @@ func ReviewPath(projectRoot, slug string, instance ReviewerInstance, round int) 
 		string(instance),
 		fmt.Sprintf("round-%d.json", round),
 	)
+}
+
+// ReviewedSHAPath is where the drive loop records the commit a
+// reviewer's round-N verdict reviewed, for `spore eval confirm`.
+func ReviewedSHAPath(projectRoot, slug string, instance ReviewerInstance, round int) string {
+	return filepath.Join(RoleTaskDir(projectRoot, slug), "state", fmt.Sprintf("reviewed-%s-%d", instance, round))
 }
 
 // WriteEngineerResponse persists r at round N. The parent dir is

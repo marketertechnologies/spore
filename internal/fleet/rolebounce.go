@@ -18,7 +18,7 @@ var wakeRole = wakeSession
 
 const (
 	reviewKeys   = `"author", "verdict" ("approve" or "request_changes"), "summary", "comments"`
-	engineerKeys = `"author", "addressed", "pushback", "notes", "followups"`
+	engineerKeys = `"author", "addressed", "pushback", "notes", "followups", "structure"`
 )
 
 // bounceInvalidRoleFiles hands every role file that fails validation

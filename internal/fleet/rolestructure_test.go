@@ -1,0 +1,355 @@
+package fleet
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/versality/spore/internal/task"
+)
+
+const (
+	structV1 = "```diff\n Widget\n+  spin()\n```"
+	structV2 = "```diff\n Widget\n+  spin()\n+  stop()\n```"
+)
+
+func writeEngStructure(t *testing.T, root, slug string, round int, structure string) {
+	t.Helper()
+	if err := task.WriteEngineerResponse(root, slug, round, task.EngineerResponse{
+		Addressed: []string{"placeholder"},
+		Structure: structure,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requestChanges drives the loop from engineer round n to n+1 through
+// a reviewer A verdict asking for changes.
+func (f *mirrorFixture) requestChanges(t *testing.T, round int, structure string) {
+	t.Helper()
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, round, task.Review{Verdict: task.VerdictRequestChanges, Summary: "again"})
+	writeEngStructure(t, f.root, f.slug, round+1, structure)
+	f.tick(t)
+}
+
+func TestGitHubMirrorPRBodyStructure(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin.\n\n- one\n\n"+structV1+"\n\nDispatched by @octo") {
+		t.Fatalf("create body lacks structure between summary and footer:\n%s", log)
+	}
+
+	f.requestChanges(t, 1, "")
+	for _, c := range f.calls(t) {
+		if strings.HasPrefix(c, "pr edit") {
+			t.Fatalf("body edited with inherited structure: %q", f.calls(t))
+		}
+	}
+
+	f.requestChanges(t, 2, strings.TrimSuffix(strings.TrimPrefix(structV2, "```diff\n"), "\n```"))
+	calls := f.calls(t)
+	if last := calls[len(calls)-1]; last != "pr edit 12 --body-file -" {
+		t.Fatalf("last call = %q, want body edit; all %q", last, calls)
+	}
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin.\n\n- one\n\n"+structV2+"\n\nDispatched by") {
+		t.Fatalf("edited body lacks new structure:\n%s", log)
+	}
+	if s := f.state(t); s.BodyStructure != structV2 {
+		t.Fatalf("state = %+v", s)
+	}
+	n := len(f.calls(t))
+	f.tick(t)
+	if got := len(f.calls(t)); got != n {
+		t.Fatalf("idle tick made %d gh calls", got-n)
+	}
+}
+
+// TestGitHubMirrorPRBodyEditRetries: a structure change with no new
+// event to post still reaches the body, and a failed edit retries.
+func TestGitHubMirrorPRBodyEditRetries(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	writeEngStructure(t, f.root, f.slug, 1, structV2)
+	if err := os.WriteFile(f.failFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if s := f.state(t); s.BodyStructure != structV1 {
+		t.Fatalf("failed edit recorded: %+v", s)
+	}
+	if err := os.Remove(f.failFile); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	calls := f.calls(t)
+	if last := calls[len(calls)-1]; last != "pr edit 12 --body-file -" {
+		t.Fatalf("calls = %q", calls)
+	}
+	if s := f.state(t); s.BodyStructure != structV2 {
+		t.Fatalf("state = %+v", s)
+	}
+}
+
+func TestGitHubMirrorPRBodyStructureDropsPaths(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, "```diff\n+/srv/main/x.go\n```")
+	f.tick(t)
+	log := f.log(t)
+	if strings.Contains(log, "/srv/main") || !strings.Contains(log, "BODY:\nMake the widget spin.\n\n- one\n\nDispatched by") {
+		t.Fatalf("gh log:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorAdoptedPRBodyUntouched: the mirror never rewrites a
+// body it did not write.
+func TestGitHubMirrorAdoptedPRBodyUntouched(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	t.Setenv("FAKE_GH_PR_BODY", "Hand-written description.")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	f.requestChanges(t, 1, structV2)
+	views := 0
+	for _, c := range f.calls(t) {
+		if strings.Contains(c, "--body-file") && strings.HasPrefix(c, "pr edit") {
+			t.Fatalf("adopted PR body edited: %q", f.calls(t))
+		}
+		if strings.HasPrefix(c, "pr view") {
+			views++
+		}
+	}
+	if views != 2 {
+		t.Fatalf("pr view ran %d times, want once per structure change", views)
+	}
+}
+
+// TestGitHubMirrorLegacyPRGetsStructure: a PR an older mirror opened
+// (footer present, no recorded structure) gets the block inserted
+// above the footer.
+func TestGitHubMirrorLegacyPRGetsStructure(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	t.Setenv("FAKE_GH_PR_BODY", "Make the widget spin.\n\nDispatched by @octo. "+prFooterMarker+": reviews ...")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin.\n\n"+structV1+"\n\nDispatched by @octo. ") {
+		t.Fatalf("legacy body lacks structure:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorPRBodyKeepsOperatorEdits: a structure change swaps
+// only the block; operator text around it survives, and a body whose
+// block the operator rewrote is left alone.
+func TestGitHubMirrorPRBodyKeepsOperatorEdits(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	footer := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	t.Setenv("FAKE_GH_PR_BODY", "Make the widget spin. Closes #42.\n\n"+structV1+"\n\n"+footer)
+	f.requestChanges(t, 1, structV2)
+	if log := f.log(t); !strings.Contains(log, "BODY:\nMake the widget spin. Closes #42.\n\n"+structV2+"\n\n"+footer) {
+		t.Fatalf("operator edit lost:\n%s", log)
+	}
+
+	t.Setenv("FAKE_GH_PR_BODY", "Rewritten by hand.\n\n"+footer)
+	n := len(f.calls(t))
+	f.requestChanges(t, 2, structV1)
+	for _, c := range f.calls(t)[n:] {
+		if strings.HasPrefix(c, "pr edit") && strings.Contains(c, "--body-file") {
+			t.Fatalf("hand-rewritten body edited: %q", f.calls(t)[n:])
+		}
+	}
+	if s := f.state(t); s.BodyStructure != structV1 {
+		t.Fatalf("skipped sync not recorded: %+v", s)
+	}
+}
+
+func TestSummaryStructure(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	writeEngStructure(t, root, slug, 1, structV1)
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it"})
+	path := filepath.Join(task.RoleTaskDir(root, slug), "summary.md")
+	read := func() string {
+		t.Helper()
+		if err := writeSummary(root, slug); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	body := read()
+	i := strings.Index(body, "## structure\n\n"+structV1+"\n\n")
+	if i < 0 || i > strings.Index(body, "## reviewer A") {
+		t.Fatalf("structure missing or below the reviews:\n%s", body)
+	}
+	if again := read(); again != body {
+		t.Fatalf("summary regenerated on stable inputs")
+	}
+	writeEngStructure(t, root, slug, 1, structV2)
+	if body := read(); !strings.Contains(body, structV2) {
+		t.Fatalf("summary kept the stale structure:\n%s", body)
+	}
+}
+
+func TestLatestStructureInheritsAndFences(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	got := func() string {
+		t.Helper()
+		s, err := latestStructure(root, slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := got(); s != "" {
+		t.Fatalf("no rounds: %q", s)
+	}
+	writeEngStructure(t, root, slug, 1, "  Widget\n+  spin()\n")
+	writeEngStructure(t, root, slug, 2, "")
+	if s, want := got(), "```diff\n  Widget\n+  spin()\n```"; !reflect.DeepEqual(s, want) {
+		t.Fatalf("latest = %q, want %q", s, want)
+	}
+}
+
+func TestFenceStructure(t *testing.T) {
+	want := "```diff\n Widget\n+  spin()\n```"
+	for _, in := range []string{
+		" Widget\n+  spin()",
+		"```diff\n Widget\n+  spin()\n```",
+		"```diff\n Widget\n+  spin()\n",
+		"Shape of the change:\n```\n Widget\n+  spin()\n```\nThat is all.",
+		"\n\n```diff\n\n Widget\n+  spin()\n\n```\n",
+		" Widget\n+  spin()\n```",
+		"```diff\n Widget\n+  spin()\n```\nAlso see:\n```go\nfunc spin() {}\n```",
+	} {
+		if got := fenceStructure(in); got != want {
+			t.Errorf("fenceStructure(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got, want := fenceStructure("```diff\n Doc\n ```\n+ code\n```"), "```diff\n Doc\n ```\n+ code\n```"; got != want {
+		t.Errorf("indented context fence: got %q, want %q", got, want)
+	}
+	for _, in := range []string{"", "  \n", "```diff\n```"} {
+		if got := fenceStructure(in); got != "" {
+			t.Errorf("fenceStructure(%q) = %q, want empty", in, got)
+		}
+	}
+}
+
+func TestSpliceStructure(t *testing.T) {
+	foot := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	reflowed := "Dispatched by\n@octo. " + prFooterMarker + ": reviews ..."
+	for _, tc := range []struct {
+		name, body, prev, next, want string
+		ok                           bool
+	}{
+		{"not ours", "Hand-written.", "", structV1, "", false},
+		{"insert", "Sum.\n\n" + foot, "", structV1, "Sum.\n\n" + structV1 + "\n\n" + foot, true},
+		{"insert reflowed footer", "Sum.\n\n" + reflowed, "", structV1, "Sum.\n\nDispatched by\n\n" + structV1 + "\n\n@octo. " + prFooterMarker + ": reviews ...", true},
+		{"already carried", "Sum.\n\n" + structV1 + "\n\n" + foot, "", structV1, "Sum.\n\n" + structV1 + "\n\n" + foot, true},
+		{"swap last above footer", "Quoting " + structV1 + "\n\n" + structV1 + "\n\n" + foot, structV1, structV2, "Quoting " + structV1 + "\n\n" + structV2 + "\n\n" + foot, true},
+		{"prev gone", "Sum.\n\n" + foot, structV1, structV2, "", false},
+		{"remove", "Sum.\n\n" + structV1 + "\n\n" + foot, structV1, "", "Sum.\n\n" + foot, true},
+		{"remove without blank line", "Sum. " + structV1 + "\n" + foot, structV1, "", "Sum. \n\n" + foot, true},
+	} {
+		got, ok := spliceStructure(tc.body, tc.prev, tc.next)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestGitHubMirrorPRBodyCRLF: a body the web editor saved with CRLF
+// still gets its block swapped.
+func TestGitHubMirrorPRBodyCRLF(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	footer := "Dispatched by @octo. " + prFooterMarker + ": reviews ..."
+	t.Setenv("FAKE_GH_PR_BODY", strings.ReplaceAll("  Indented intro.\n\n"+structV1+"\n\n"+footer, "\n", "\r\n"))
+	f.requestChanges(t, 1, structV2)
+	if log := f.log(t); !strings.Contains(log, "BODY:\n  Indented intro.\n\n"+structV2+"\n\n"+footer+"END") {
+		t.Fatalf("CRLF body not swapped:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorPRBodyRace: an edit landing between the read and the
+// write defers the sync to the next tick, which keeps the edit.
+func TestGitHubMirrorPRBodyRace(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	race := f.ghLog + ".race"
+	if err := os.WriteFile(race, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeEngStructure(t, f.root, f.slug, 1, structV2)
+	n := len(f.calls(t))
+	f.tick(t)
+	for _, c := range f.calls(t)[n:] {
+		if strings.HasPrefix(c, "pr edit") {
+			t.Fatalf("raced body edited: %q", f.calls(t)[n:])
+		}
+	}
+	if s := f.state(t); s.BodyStructure != structV1 {
+		t.Fatalf("raced sync recorded: %+v", s)
+	}
+	if err := os.Remove(race); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if log := f.log(t); !strings.Contains(log, structV2+"\n\nDispatched by @octo. ") || !strings.HasSuffix(strings.TrimSpace(log), "operator editEND") {
+		t.Fatalf("deferred sync lost the edit or the block:\n%s", log)
+	}
+}
+
+// TestGitHubMirrorPRBodyOrder: ticket line, summary, bullets, then the
+// structure block, then the footer.
+func TestGitHubMirrorPRBodyOrder(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	meta := "---\nstatus: active\nslug: demo\ntitle: Demo widget\nloop: role\nmatter: linear\nmatter_id: HK-7\nmatter_url: https://linear.app/x/issue/HK-7\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(f.tasksDir, "demo.md"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, "two")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	want := "BODY:\nLinear: [HK-7](https://linear.app/x/issue/HK-7)\n\nMake the widget spin.\n\n- one\n- two\n\n" + structV1 + "\n\nDispatched by @octo. " + prFooterMarker
+	if log := f.log(t); !strings.Contains(log, want) {
+		t.Fatalf("PR body: want %q in\n%s", want, log)
+	}
+}
+
+// TestGitHubMirrorStructureSyncThenRefresh: a structure splice into the
+// loop's own body is not a human edit, so the ready-time refresh still
+// rewrites the body with the fix-round bullets.
+func TestGitHubMirrorStructureSyncThenRefresh(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEngStructure(t, f.root, f.slug, 1, structV1)
+	f.tick(t)
+	writeEngStructure(t, f.root, f.slug, 1, structV2)
+	f.tick(t)
+	if s := f.state(t); s.BodyStructure != structV2 || !strings.Contains(s.Body, structV2) {
+		t.Fatalf("splice did not move state.Body along: %+v", s)
+	}
+	f.commit(t, "two")
+	f.approveAll(t)
+	calls := f.calls(t)
+	if n := len(calls); n < 2 || calls[n-2] != "pr edit 12 --body-file -" || calls[n-1] != "pr ready 12" {
+		t.Fatalf("no refresh before ready: %q", calls)
+	}
+	want := "BODY:\nMake the widget spin.\n\n- one\n- two\n\n" + structV2 + "\n\nDispatched by @octo. "
+	if log := f.log(t); !strings.Contains(log, want) {
+		t.Fatalf("refreshed body: want %q in\n%s", want, log)
+	}
+}

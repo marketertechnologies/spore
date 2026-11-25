@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- PR descriptions: new `rules/core/pr-description.md` fragment (ticket
+  link, one paragraph, 3-5 change bullets, no headed sections), a
+  default every consumer list carries. The advisory consumer-defaults
+  lint warns on a missing default and `spore compose --add-defaults`
+  appends it; repo-mapped bootstrap seeds the defaults. The role-loop
+  draft PR body follows the same shape: ticket line from the matter
+  keys (`matter: github` reads `Issue:`), spec summary, commit-subject
+  bullets with any `area: ` prefix stripped, then the engineer's
+  structure block and the footer. Just before `gh pr ready` the body
+  is rebuilt from the final branch, only when it still equals what the
+  loop last wrote (structure re-syncs included); adopted or
+  hand-edited bodies stay, and a failed refresh never blocks ready.
+  Consumer impact: consumers get the fragment on their next compose
+  with `--add-defaults`; draft PRs opened by the loop carry bullets.
+
+- `spore eval`: reviewer regression suite. `candidates` detects
+  reviewer misses (a slot approved, a later slot requested changes)
+  and invalid comments (engineer pushback, `spore eval flag`) from
+  `.spore/<slug>/` trees; `confirm` freezes one as a host-side case
+  under `$XDG_STATE_HOME/spore/<project>/evals/cases/`; `run` replays
+  the case's reviewer slot headless with its production mode, agent,
+  effort and body, judges each verdict, and passes a case on a
+  majority of N runs; `promote` places a draft rule only on a green
+  ship gate. The drive loop now stamps the commit each verdict
+  reviewed under `.spore/<slug>/state/reviewed-<X>-<N>`. Consumer
+  impact: project rules placed under
+  `$XDG_STATE_HOME/spore/<project>/roles/rules/<body>/*.md` are
+  appended to that role body for live panes too, so once a project
+  has rules its reviewers (and engineer, for engineer rules) see
+  them on the next spawn. With no rules placed, panes run the same
+  body as before.
+
+- Role loop: engineer responses take an optional `structure` field, a
+  fenced `diff` sketch of the change's shape (the engineer body asks
+  for it in round 1). The latest block opens `summary.md` and the
+  draft PR body; when a later round changes the block, the mirror
+  swaps it in place in the live body, keeping operator edits, and
+  skips bodies it did not write. Reviewer bodies flag a block that
+  misrepresents the diff. Consumer impact: the updated role bodies
+  and fleet ship to consumers on the next release; engineer panes
+  start sending `structure`, which older binaries reject as an
+  unknown key, so upgrade the binary with the bodies.
+- diagram skill: new "Pick the smallest view" section (pseudocode,
+  call tree, component tree, shallow file tree, structural +/- diff)
+  saying which forms go inline as fenced ASCII and which use the
+  graph DSL. Adapted from HumanLayer's `show-me` skill (MIT). Consumer
+  impact: the updated skill ships to downstream projects on the next
+  release.
 - Role loop: reviewer comments carry a severity tier prefix,
   `[blocker]`, `[nice-to-have]`, or `[nit]`, in both reviewer slots.
   Only a blocker yields `request_changes`; a verdict with only

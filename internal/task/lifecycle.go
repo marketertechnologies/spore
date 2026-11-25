@@ -583,9 +583,18 @@ func workerAgentCommand(m frontmatter.Meta) (string, error) {
 // task, without a prompt: effort and model from the frontmatter, the
 // model falling back to SPORE_CODEX_MODEL. Role panes share it.
 func CodexAgentCommand(m frontmatter.Meta) (string, error) {
-	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
+	args, err := CodexAgentArgs(m)
 	if err != nil {
 		return "", err
+	}
+	return shellJoin(args), nil
+}
+
+// CodexAgentArgs is CodexAgentCommand as an argv.
+func CodexAgentArgs(m frontmatter.Meta) ([]string, error) {
+	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
+	if err != nil {
+		return nil, err
 	}
 	model := m.Extra["model"]
 	if model == "" {
@@ -595,7 +604,7 @@ func CodexAgentCommand(m frontmatter.Meta) (string, error) {
 	if bin := os.Getenv(CodexBinEnv); bin != "" {
 		args[0] = bin
 	}
-	return shellJoin(args), nil
+	return args, nil
 }
 
 // briefRelPath is the brief's path relative to the worktree, where

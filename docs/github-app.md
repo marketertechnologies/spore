@@ -44,8 +44,11 @@ The PR body follows `rules/core/pr-description.md`: the ticket link
 when the task carries `matter_id` (and `matter_url`), the first prose
 paragraph of `.spore/<slug>/spec.md` (the task brief, skipping
 headings and the `**Status**` line), then up to 5 bullets from the
-branch's non-merge commit subjects. It is written on PR open and
-rewritten from the final branch just before `gh pr ready`. A
+branch's non-merge commit subjects, then the engineer's structure
+block and the mirror's footer (see `docs/role-loop.md`). It is written
+on PR open and rewritten from the final branch just before `gh pr
+ready`, unless someone edited it since the loop last wrote it (a
+structure re-sync counts as the loop's write). A
 paragraph naming an absolute path (`/...` or `~/...`) is replaced by
 the task title, and such commit subjects are dropped. Everyone with
 repo access reads it, so open the brief with a plain summary: no host
