@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,10 +88,92 @@ func TestWatchInbox_DrainPreCheckWakes(t *testing.T) {
 		t.Errorf("missing second line: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(inbox, "100-1-1.json")); !os.IsNotExist(err) {
-		t.Errorf("file should have moved to read/")
+		t.Errorf("file should have moved to inflight/")
 	}
-	if _, err := os.Stat(filepath.Join(inbox, "read", "100-1-1.json")); err != nil {
-		t.Errorf("expected file in read/: %v", err)
+	if _, err := os.Stat(filepath.Join(inbox, "inflight", "100-1-1.json")); err != nil {
+		t.Errorf("expected file in inflight/: %v", err)
+	}
+}
+
+// P1.14: a message drained into a turn that ends in an API error is
+// redelivered on the next drain; one drained into a turn that succeeds
+// is acked into read/ when the next Stop hook starts.
+func TestWatchInbox_FailedTurnRedeliversMessage(t *testing.T) {
+	_, slug, inbox := setupInbox(t)
+	writeTell(t, filepath.Join(inbox, "100-1-1.json"),
+		`{"ts":"2026-04-29T10:00:00+03:00","source":"coordinator","body":"do the thing"}`)
+	opts := watchOpts{
+		timeout: 0, settle: 0,
+		initWatcher: func(string) (inboxWaiter, error) { return nil, errors.New("no inotify in test") },
+		sleep:       func(time.Duration) {},
+	}
+
+	var first bytes.Buffer
+	if err := watchInbox(slug, &first, io.Discard, opts); !errors.Is(err, ErrWake) {
+		t.Fatalf("first drain: err=%v, want ErrWake", err)
+	}
+
+	// The woken turn hits a 429: StopFailure fires, Stop does not.
+	if err := RequeueInflight(inbox); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingJSON(t, filepath.Join(inbox, "read")); len(got) != 0 {
+		t.Errorf("read/ after failed turn: %v, want empty", got)
+	}
+
+	var second bytes.Buffer
+	if err := watchInbox(slug, &second, io.Discard, opts); !errors.Is(err, ErrWake) {
+		t.Fatalf("redelivery drain: err=%v, want ErrWake", err)
+	}
+	if !strings.Contains(second.String(), "do the thing") || !strings.Contains(second.String(), "redelivered") {
+		t.Errorf("redelivery line: %q", second.String())
+	}
+
+	// That turn succeeds: the next Stop acks the message into read/.
+	var third bytes.Buffer
+	if err := watchInbox(slug, &third, io.Discard, opts); err != nil {
+		t.Fatalf("idle drain: err=%v", err)
+	}
+	if third.Len() != 0 {
+		t.Errorf("message delivered a third time: %q", third.String())
+	}
+	if got := pendingJSON(t, filepath.Join(inbox, "read")); len(got) != 1 {
+		t.Errorf("read/ after acked turn: %v, want one file", got)
+	}
+	if got := pendingJSON(t, filepath.Join(inbox, "inflight")); len(got) != 0 {
+		t.Errorf("inflight/ after ack: %v", got)
+	}
+}
+
+func TestRequeueInflight_KeepsOrderAndSinglePrefix(t *testing.T) {
+	_, _, inbox := setupInbox(t)
+	writeTell(t, filepath.Join(inbox, "100.json"), `{"body":"old"}`)
+	if _, err := claimInbox(inbox, "inflight"); err != nil {
+		t.Fatal(err)
+	}
+	writeTell(t, filepath.Join(inbox, "200.json"), `{"body":"new"}`)
+	for range 2 {
+		if err := RequeueInflight(inbox); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := claimInbox(inbox, "inflight"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RequeueInflight(inbox); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := claimInbox(inbox, "inflight")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range claimed {
+		names = append(names, filepath.Base(c))
+	}
+	want := []string{"redeliver-100.json", "redeliver-200.json"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("claimed %v, want %v", names, want)
 	}
 }
 

@@ -279,7 +279,7 @@ func refreshUsageSnapshot(s *state, now time.Time) {
 			return
 		}
 	}
-	ur, ferr := fetchUsage(context.Background(), now)
+	ur, ferr := fetchUsage(context.Background())
 	if ferr != nil {
 		fmt.Fprintf(os.Stderr, "spore budget: /usage unavailable (%v); transcript fallback in effect\n", ferr)
 		if s.UsageSnapshot != nil {

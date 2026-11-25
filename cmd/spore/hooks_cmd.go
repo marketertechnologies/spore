@@ -47,6 +47,8 @@ func runHooks(args []string) int {
 		return runHooksWatchInbox(rest)
 	case "notify-coordinator":
 		return runHooksNotifyCoordinator(rest)
+	case "stop-failure":
+		return runHooksStopFailure()
 	case "codex-session-start":
 		return runHooksCodexSessionStart()
 	default:
@@ -290,6 +292,9 @@ func runHooksWatchInbox(args []string) int {
 	if len(args) > 0 && args[0] == "--codex" {
 		return runHooksWatchInboxCodex(args[1:])
 	}
+	if err := hooks.ClearAlerts(); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox: clear alerts:", err)
+	}
 	var err error
 	switch len(args) {
 	case 0:
@@ -366,6 +371,23 @@ func runHooksCodexSessionStart() int {
 	}
 	if err := hooks.RecordCodexThread(inbox, key, req); err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks codex-session-start:", err)
+	}
+	return 0
+}
+
+// runHooksStopFailure always exits 0: Claude Code ignores StopFailure
+// output and exit codes, so errors only go to stderr for the debug log.
+func runHooksStopFailure() int {
+	var in hooks.StopFailureInput
+	body, err := io.ReadAll(os.Stdin)
+	if err == nil {
+		err = json.Unmarshal(body, &in)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-failure: read payload:", err)
+	}
+	if err := hooks.StopFailure(in); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-failure:", err)
 	}
 	return 0
 }
