@@ -56,7 +56,9 @@ Subcommands:
                   each pane the StopFailure hook recorded, plus any spore
                   pane whose screen shows the error. Run it once after
                   /login or after the limit clears. Host-wide; never
-                  types into spore/pilot/ sessions. --dry-run lists them.
+                  types into spore/pilot/ sessions. Refuses while
+                  "claude auth status" reports the host logged out.
+                  --dry-run lists them.
   worker-agent    Print the effective [fleet.workers] default agent and its
                   source. With claude|codex, write it to the host-side
                   overlay (<state dir>/workers.toml, which beats

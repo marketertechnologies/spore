@@ -1,9 +1,14 @@
 package fleet
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/hooks"
 )
@@ -27,14 +32,69 @@ var (
 	nudgeSessions    = listTmuxSessions
 	nudgeCapture     = capturePane
 	nudgeSend        = sendWakeVerified
+	nudgeAuthStatus  = claudeAuthStatus
 )
+
+// ErrLoggedOut stops a nudge while the host login is still expired:
+// every nudged pane would fail again on its next request.
+var ErrLoggedOut = errors.New("claude is not logged in on this host: run /login in any Claude Code pane first, then nudge again")
+
+// authStatus is the part of `claude auth status --json` the nudge
+// reads. LoginExpiresAt is epoch milliseconds or an RFC 3339 string,
+// null for an API key.
+type authStatus struct {
+	LoggedIn       bool            `json:"loggedIn"`
+	LoginExpiresAt json.RawMessage `json:"loginExpiresAt"`
+}
+
+func (a authStatus) expired(now time.Time) bool {
+	raw := strings.TrimSpace(string(a.LoginExpiresAt))
+	if raw == "" || raw == "null" {
+		return false
+	}
+	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return ms > 0 && time.UnixMilli(ms).Before(now)
+	}
+	var str string
+	if json.Unmarshal(a.LoginExpiresAt, &str) == nil {
+		if t, err := time.Parse(time.RFC3339, str); err == nil {
+			return t.Before(now)
+		}
+	}
+	return false
+}
+
+// claudeAuthStatus asks Claude Code itself; it prints no tokens. ok is
+// false when the CLI is missing or its output does not parse (the exit
+// code is ignored: logged out may exit non-zero with JSON), and the
+// nudge then goes ahead. SPORE_* and WT_* are stripped so nothing
+// spore-related starts from it.
+func claudeAuthStatus() (authStatus, bool) {
+	cmd := exec.Command("claude", "auth", "status", "--json")
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "SPORE_") && !strings.HasPrefix(kv, "WT_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	out, _ := cmd.Output()
+	var st authStatus
+	if json.Unmarshal(out, &st) != nil {
+		return st, false
+	}
+	return st, true
+}
 
 // Nudge resumes every pane stopped by an API error: first the panes
 // the StopFailure hook recorded, then any other spore session whose
 // screen shows the error (a pane started before the hook was bound).
-// The operator sessions under spore/pilot/ are never typed into.
+// The operator sessions under spore/pilot/ are never typed into. It
+// refuses (ErrLoggedOut) while `claude auth status` reports the host
+// logged out.
 func Nudge(dryRun bool) (NudgeResult, error) {
 	var res NudgeResult
+	if st, ok := nudgeAuthStatus(); ok && (!st.LoggedIn || st.expired(time.Now())) {
+		return res, ErrLoggedOut
+	}
 	recs, err := nudgeFailedPanes()
 	if err != nil {
 		return res, err

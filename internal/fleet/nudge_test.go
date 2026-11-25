@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,20 @@ type nudgeStub struct {
 	screens  map[string]string
 	sent     []string
 	noPrompt map[string]bool
+
+	auth      authStatus
+	noAuth    bool
+	loggedOut bool
 }
 
 func stubNudge(t *testing.T, s *nudgeStub) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	prevP, prevS, prevC, prevSend := nudgePaneSession, nudgeSessions, nudgeCapture, nudgeSend
+	prevP, prevS, prevC, prevSend, prevA := nudgePaneSession, nudgeSessions, nudgeCapture, nudgeSend, nudgeAuthStatus
+	nudgeAuthStatus = func() (authStatus, bool) { return s.auth, !s.noAuth }
+	if !s.noAuth && s.auth.LoginExpiresAt == nil && !s.loggedOut {
+		s.auth.LoggedIn = true
+	}
 	nudgePaneSession = func(id string) (string, bool) { v, ok := s.panes[id]; return v, ok }
 	nudgeSessions = func() ([]string, error) { return s.sessions, nil }
 	nudgeCapture = func(name string) (string, error) {
@@ -36,7 +45,9 @@ func stubNudge(t *testing.T, s *nudgeStub) {
 		s.sent = append(s.sent, target+": "+msg)
 		return true, nil
 	}
-	t.Cleanup(func() { nudgePaneSession, nudgeSessions, nudgeCapture, nudgeSend = prevP, prevS, prevC, prevSend })
+	t.Cleanup(func() {
+		nudgePaneSession, nudgeSessions, nudgeCapture, nudgeSend, nudgeAuthStatus = prevP, prevS, prevC, prevSend, prevA
+	})
 }
 
 func record(t *testing.T, id, session string) {
@@ -126,5 +137,52 @@ func TestNudge_DryRunSendsNothing(t *testing.T) {
 	}
 	if left, _ := hooks.FailedPanes(); len(left) != 1 {
 		t.Error("dry run dropped the record")
+	}
+}
+
+// Nudging while the host is still logged out would only fail every
+// pane again: refuse, and keep the records for the real nudge.
+func TestNudge_RefusesWhileLoggedOut(t *testing.T) {
+	for name, s := range map[string]*nudgeStub{
+		"logged out": {loggedOut: true},
+		"expired ms": {auth: authStatus{LoggedIn: true, LoginExpiresAt: []byte("1000")}},
+		"expired ts": {auth: authStatus{LoggedIn: true, LoginExpiresAt: []byte(`"2001-01-01T00:00:00Z"`)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s.panes = map[string]string{"%1": "spore/p/w1"}
+			stubNudge(t, s)
+			record(t, "%1", "spore/p/w1")
+			if _, err := Nudge(false); !errors.Is(err, ErrLoggedOut) {
+				t.Fatalf("err = %v, want ErrLoggedOut", err)
+			}
+			if len(s.sent) != 0 {
+				t.Errorf("sent while logged out: %v", s.sent)
+			}
+			if left, _ := hooks.FailedPanes(); len(left) != 1 {
+				t.Error("record dropped")
+			}
+		})
+	}
+}
+
+// Without a readable auth status (no claude CLI, API-key host) the
+// nudge goes ahead.
+func TestNudge_UnknownAuthStatusProceeds(t *testing.T) {
+	s := &nudgeStub{panes: map[string]string{"%1": "spore/p/w1"}, noAuth: true}
+	stubNudge(t, s)
+	record(t, "%1", "spore/p/w1")
+	res, err := Nudge(false)
+	if err != nil || len(res.Nudged) != 1 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestAuthStatusExpiry(t *testing.T) {
+	now := time.Now()
+	future := strconv.FormatInt(now.Add(time.Hour).UnixMilli(), 10)
+	for raw, want := range map[string]bool{"": false, "null": false, future: false, "1000": true} {
+		if got := (authStatus{LoggedIn: true, LoginExpiresAt: []byte(raw)}).expired(now); got != want {
+			t.Errorf("expired(%q) = %v, want %v", raw, got, want)
+		}
 	}
 }

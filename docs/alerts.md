@@ -28,7 +28,7 @@ A usage-limit notice quotes the reset time when the banner has one. Claude Code 
 Login expired:
 
 1. Run `/login` once in any Claude Code pane (for example `tmux attach -t spore/<project>/coordinator`). It rewrites `~/.claude/.credentials.json` for every pane. Do not restart panes: they pick up the new login on their next request and keep their context.
-2. Run `spore fleet nudge` from a shell on the host. It types a "continue" message into every pane the hook recorded and into any other `spore/` or `spore-role/` pane whose screen shows `Please run /login` or an `API Error` that is not being retried. It never types into `spore/pilot/` sessions. `--dry-run` lists the panes.
+2. Run `spore fleet nudge` from a shell on the host. It types a "continue" message into every pane the hook recorded and into any other `spore/` or `spore-role/` pane whose screen shows `Please run /login` or an `API Error` that is not being retried. It never types into `spore/pilot/` sessions. `--dry-run` lists the panes. It first asks `claude auth status --json` and refuses while that reports `loggedIn: false` or a past `loginExpiresAt` (a blanked credentials file reads as logged out), so a nudge before `/login` does not fail every pane again. Without a readable status (no `claude` on `PATH`) it goes ahead.
 
 Usage limit without a reset time: wait for the limit to clear, then run `spore fleet nudge`.
 
@@ -40,8 +40,4 @@ Check: `spore fleet status` (alerts), and the panes' inboxes drain within a minu
 
 ## Blank credentials file
 
-On a failed OAuth refresh Claude Code itself writes an empty login into `~/.claude/.credentials.json` (`accessToken: ""`, `expiresAt: 0`), which logs out every pane on the host. This is Claude Code's behavior, reproduced with a standalone `claude -p` and no spore code involved. Spore never writes that file: `spore budget` reads it and, on a 401, marks the budget stale instead of refreshing (see `docs/budget.md`). Recovery is the `/login` plus `spore fleet nudge` above. To check the file without printing tokens:
-
-```
-jq '.claudeAiOauth | {expiresAt, has_access: ((.accessToken // "") | length > 0)}' ~/.claude/.credentials.json
-```
+On a failed OAuth refresh Claude Code itself writes an empty login into `~/.claude/.credentials.json` (`accessToken: ""`, `expiresAt: 0`), which logs out every pane on the host. This is Claude Code's behavior, reproduced with a standalone `claude -p` and no spore code involved. Spore never writes that file: `spore budget` reads it and, on a 401, marks the budget stale instead of refreshing (see `docs/budget.md`). Recovery is the `/login` plus `spore fleet nudge` above. To check the login without printing tokens, run `claude auth status --json` (it exits 1 and reports `loggedIn: false` when logged out).
