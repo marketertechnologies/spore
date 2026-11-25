@@ -51,6 +51,16 @@ func wakeEngineerForCheck(projectRoot, slug string, snap Snapshot) error {
 	return err
 }
 
+// PhaseLabel is snap.Phase for display, suffixed ` (held: check)` while
+// the driver holds the reviewer on a pending engineer check, so a
+// review phase does not read as if the reviewer were running.
+func (s Snapshot) PhaseLabel() string {
+	if s.Check == task.CheckPending {
+		return string(s.Phase) + " (held: check)"
+	}
+	return string(s.Phase)
+}
+
 func shortSHA(sha string) string {
 	if len(sha) > 12 {
 		return sha[:12]
@@ -75,4 +85,43 @@ func readCheckGate(projectRoot, slug string, snap *Snapshot) error {
 	snap.CheckSHA = sha
 	snap.Check, err = task.ReadCheckState(projectRoot, slug, snap.EngineerRound, sha)
 	return err
+}
+
+// holdForCheck cuts pending at its first engineer event while the
+// engineer check is configured and the latest engineer round has no
+// pass marker at the worktree HEAD. Every engineer event pushes the
+// current HEAD, so an earlier unposted round (one the check gave up
+// on) is held too: posting it would push the latest, unchecked
+// commits. Nothing after the cut reaches GitHub either. A gave-up
+// round lands once a later round passes at HEAD, so the push then
+// carries checked code. PhaseDone releases the hold, since the
+// engineer pane is gone and nothing would ever record a pass; so does
+// a give-up at HEAD in PhaseEscalated, where no re-review (and so no
+// later passing round) follows and the operator needs the PR current.
+func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) ([]mirrorEvent, error) {
+	if snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
+		return pending, nil
+	}
+	cut := -1
+	for i, e := range pending {
+		if e.kind == eventEngineer {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return pending, nil
+	}
+	sha, err := task.HeadSHA(task.TaskWorktree(projectRoot, slug))
+	if err != nil {
+		sha = ""
+	}
+	state, err := task.ReadCheckState(projectRoot, slug, snap.EngineerRound, sha)
+	if err != nil {
+		return nil, err
+	}
+	if state == task.CheckPassed || (state == task.CheckFailed && snap.Phase == PhaseEscalated) {
+		return pending, nil
+	}
+	return pending[:cut], nil
 }
