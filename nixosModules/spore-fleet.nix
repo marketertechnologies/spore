@@ -132,7 +132,8 @@ let
     );
 
   # Rendered by the spore CLI itself so the binding set has one source
-  # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
+  # (internal/hooks/codexconfig.go). Hook commands call the system
+  # profile spore, not cfg.package, so a long-lived session survives GC.
   codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
     ${cfg.package}/bin/spore hooks codex-config --spore /run/current-system/sw/bin/spore > $out
   '';
