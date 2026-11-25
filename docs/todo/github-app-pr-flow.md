@@ -76,15 +76,15 @@ per distinct error.
 - **Engineer response `engineer-round-N.json` appears:** push the task
   branch via the app (`--force-with-lease` only if the branch was
   rewritten). Round 1 with no PR yet: `gh pr create --draft`, base =
-  the task's base (below), title = task title, body = spec summary +
-  `Dispatched by @<operator_login>` + a note that reviews arrive as
-  `Review #1` / `Review #2` comments. Assign `operator_login`. Round
+  the task's base (below), title = task title, body in the `rules/core/pr-description.md`
+  shape (ticket link, spec summary, commit-subject bullets). Assign `operator_login`. Round
   2+: post the response (`addressed`, `pushback`, `notes`,
   `followups`) as one PR comment headed `Engineer (round N)`.
 - **Reviewer verdict `reviews/<A|B>/round-N.json` appears:** post one
   `COMMENT` review: `Review #1 (round N): request changes` /
   `approve`, the summary, then the comments as a list.
-- **`PhaseDone`:** `gh pr ready`, then notify the coordinator with the
+- **`PhaseDone`:** rewrite the body from the final branch, `gh pr
+  ready`, then notify the coordinator with the
   PR url (extend the existing `notifyRoleLoop` message:
   `<slug>: done, PR #N ready for operator approval: <url>`).
 - **`PhaseEscalated`:** one PR comment with the cap and reviewer; PR

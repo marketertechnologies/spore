@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- PR descriptions: new `rules/core/pr-description.md` fragment (ticket
+  link, one paragraph, 3-5 change bullets, no headed sections), a
+  default every consumer list carries. The advisory consumer-defaults
+  lint warns on a missing default and `spore compose --add-defaults`
+  appends it; repo-mapped bootstrap seeds the defaults. The role-loop
+  draft PR body follows the same shape: ticket line from the matter
+  keys (`matter: github` reads `Issue:`), spec summary, commit-subject
+  bullets with any `area: ` prefix stripped, then the engineer's
+  structure block and the footer. Just before `gh pr ready` the body
+  is rebuilt from the final branch, only when it still equals what the
+  loop last wrote (structure re-syncs included); adopted or
+  hand-edited bodies stay, and a failed refresh never blocks ready.
+  Consumer impact: consumers get the fragment on their next compose
+  with `--add-defaults`; draft PRs opened by the loop carry bullets.
+
 - `spore eval`: reviewer regression suite. `candidates` detects
   reviewer misses (a slot approved, a later slot requested changes)
   and invalid comments (engineer pushback, `spore eval flag`) from

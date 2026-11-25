@@ -1,7 +1,6 @@
 package lints
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,7 +60,7 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 		}
 		name := strings.TrimSuffix(e.Name(), ".txt")
 		consumerPath := filepath.Join(absConsumers, e.Name())
-		targets, err := readTargetDirectives(consumerPath)
+		targets, err := composer.Targets(consumerPath)
 		if err != nil {
 			return nil, err
 		}
@@ -94,28 +93,4 @@ func (l ClaudeDrift) Run(root string) ([]Issue, error) {
 		}
 	}
 	return issues, nil
-}
-
-func readTargetDirectives(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var targets []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "#") {
-			continue
-		}
-		body := strings.TrimSpace(strings.TrimPrefix(line, "#"))
-		if v, ok := strings.CutPrefix(body, "target:"); ok {
-			target := strings.TrimSpace(v)
-			if target != "" {
-				targets = append(targets, target)
-			}
-		}
-	}
-	return targets, scanner.Err()
 }

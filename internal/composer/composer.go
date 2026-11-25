@@ -54,13 +54,30 @@ func Compose(rulesDir, consumerPath string, opts Options) (string, error) {
 }
 
 func readConsumer(path string, opts Options) ([]string, error) {
+	var ids []string
+	err := eachEntry(path, func(pred, id string) {
+		if pred == "" || opts.Predicates[pred] {
+			ids = append(ids, id)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("composer: consumer %q lists no rules", path)
+	}
+	return ids, nil
+}
+
+// eachEntry calls fn for every rule line of a consumer list, with pred
+// empty for an unconditional line. Comments and blanks are skipped.
+func eachEntry(path string, fn func(pred, id string)) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("composer: open consumer %q: %w", path, err)
+		return fmt.Errorf("composer: open consumer %q: %w", path, err)
 	}
 	defer f.Close()
 
-	var ids []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -70,23 +87,42 @@ func readConsumer(path string, opts Options) ([]string, error) {
 		if strings.HasPrefix(line, "?") {
 			pred, rule, ok := splitPredicate(line)
 			if !ok {
-				return nil, fmt.Errorf("composer: %s: malformed predicate line %q", path, line)
+				return fmt.Errorf("composer: %s: malformed predicate line %q", path, line)
 			}
-			if !opts.Predicates[pred] {
-				continue
-			}
-			ids = append(ids, rule)
+			fn(pred, rule)
 			continue
 		}
-		ids = append(ids, line)
+		fn("", line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("composer: read consumer %q: %w", path, err)
+		return fmt.Errorf("composer: read consumer %q: %w", path, err)
 	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("composer: consumer %q lists no rules", path)
+	return nil
+}
+
+// Targets returns the "# target: <repo-relative-path>" directives of a
+// consumer list: the files its render is written to.
+func Targets(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	return ids, nil
+	defer f.Close()
+	var targets []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		if v, ok := strings.CutPrefix(body, "target:"); ok {
+			if target := strings.TrimSpace(v); target != "" {
+				targets = append(targets, target)
+			}
+		}
+	}
+	return targets, scanner.Err()
 }
 
 func splitPredicate(line string) (pred, rule string, ok bool) {

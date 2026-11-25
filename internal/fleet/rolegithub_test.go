@@ -18,26 +18,26 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/task"
+	"github.com/versality/spore/internal/task/frontmatter"
 )
 
 const fakeGH = `#!/bin/sh
 log="$FAKE_GH_LOG"
 { printf 'ARGS:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\nTOKEN: %s\nREPO: %s\n' "$GH_TOKEN" "$GH_REPO"; } >> "$log"
 for a in "$@"; do
-  if [ "$a" = "--body-file" ]; then
-    cat > "$log.in"; printf 'BODY:\n' >> "$log"; cat "$log.in" >> "$log"; printf 'END\n' >> "$log"
-    case "$1 $2" in "pr create"|"pr edit") cp "$log.in" "$log.body" ;; esac
-  fi
+  if [ "$a" = "--body-file" ]; then cat > "$log.in"; printf 'BODY:\n' >> "$log"; cat "$log.in" >> "$log"; printf 'END\n' >> "$log"; fi
 done
 if [ -e "$FAKE_GH_FAIL.sleep" ]; then sleep 30; fi
 if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; fi
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
-  "pr create") echo "https://github.com/acme/widget/pull/12" ;;
+  "pr create") cp "$log.in" "$log.body"; echo "https://github.com/acme/widget/pull/12" ;;
+  "pr edit") if [ -e "$log.in" ]; then cp "$log.in" "$log.body"; fi ;;
   "pr view")
     if [ -n "$FAKE_GH_PR_BODY" ]; then printf '%s\n' "$FAKE_GH_PR_BODY"; elif [ -e "$log.body" ]; then cat "$log.body"; fi
     if [ -e "$log.race" ]; then printf '\noperator edit' >> "$log.body"; fi ;;
 esac
+rm -f "$log.in"
 `
 
 type mirrorFixture struct {
@@ -227,7 +227,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("branch not pushed to origin")
 	}
 	log := f.log(t)
-	for _, s := range []string{"TOKEN: ghs_app", "Make the widget spin.", "Dispatched by @octo", "`Review #1` / `Review #2`"} {
+	for _, s := range []string{"TOKEN: ghs_app", "BODY:\nMake the widget spin.\n\n- one\n\nDispatched by @octo. "} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
 		}
@@ -257,6 +257,8 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"pr comment 12 --body-file -",
 		"pr review 12 --comment --body-file -",
 		"pr review 12 --comment --body-file -",
+		"pr view 12 --json body -q .body",
+		"pr edit 12 --body-file -",
 		"pr ready 12",
 	)
 	if got := f.calls(t); !reflect.DeepEqual(got, want) {
@@ -271,6 +273,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"**Engineer (round 2)**\n\nAddressed:\n- placeholder\n",
 		"**Review #1 (round 2): approve**",
 		"**Review #2 (round 1): approve**\n\nship it",
+		"BODY:\nMake the widget spin.\n\n- one\n- two\n\nDispatched by @octo. ",
 	} {
 		if !strings.Contains(log, s) {
 			t.Errorf("gh log missing %q:\n%s", s, log)
@@ -285,6 +288,40 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 	}
 	if f.mints.Load() != 1 {
 		t.Fatalf("token mints = %d, want 1 (cached)", f.mints.Load())
+	}
+}
+
+func TestGitHubMirrorPRBodyShape(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	meta := "---\nstatus: active\nslug: demo\ntitle: Demo widget\nloop: role\nmatter: linear\nmatter_id: HK-7\nmatter_url: https://linear.app/x/issue/HK-7\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(f.tasksDir, "demo.md"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"two", "three", "four", "five", "six"} {
+		f.commit(t, name)
+	}
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	want := "BODY:\nLinear: [HK-7](https://linear.app/x/issue/HK-7)\n\nMake the widget spin.\n\n- one\n- two\n- three\n- four\n- five\n\nDispatched by @octo. "
+	if log := f.log(t); !strings.Contains(log, want) {
+		t.Fatalf("PR body: want %q in\n%s", want, log)
+	}
+}
+
+func TestTicketLine(t *testing.T) {
+	cases := []struct {
+		extra map[string]string
+		want  string
+	}{
+		{nil, ""},
+		{map[string]string{"matter_url": "https://x"}, ""},
+		{map[string]string{"matter_id": "PROJ-1"}, "Ticket: PROJ-1"},
+		{map[string]string{"matter": "jira", "matter_id": "PROJ-1", "matter_url": "https://j/PROJ-1"}, "Jira: [PROJ-1](https://j/PROJ-1)"},
+	}
+	for _, c := range cases {
+		if got := ticketLine(frontmatter.Meta{Extra: c.extra}); got != c.want {
+			t.Errorf("ticketLine(%v) = %q, want %q", c.extra, got, c.want)
+		}
 	}
 }
 
@@ -452,6 +489,72 @@ func TestGitHubMirrorDoneNoticeWhileFailing(t *testing.T) {
 	envs := readInboxEnvelopes(t, f.inbox)
 	if len(envs) != 3 || !strings.HasPrefix(envs[2].Body, "demo: done, PR #12 ready") {
 		t.Fatalf("after recovery envelopes = %+v", envs)
+	}
+}
+
+// approveAll drives the task to PhaseDone with both reviewers approving
+// round 1.
+func (f *mirrorFixture) approveAll(t *testing.T) {
+	t.Helper()
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	for range 3 {
+		f.tick(t)
+	}
+}
+
+func TestGitHubMirrorKeepsEditedBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	if err := os.WriteFile(f.ghLog+".body", []byte("Hand-written by the operator.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, "two")
+	f.approveAll(t)
+	for _, c := range f.calls(t) {
+		if strings.HasPrefix(c, "pr edit 12 --body-file") {
+			t.Fatalf("edited body was overwritten: %q", f.calls(t))
+		}
+	}
+	if !f.state(t).Ready {
+		t.Fatal("PR not marked ready")
+	}
+}
+
+func TestGitHubMirrorKeepsAdoptedBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	f.approveAll(t)
+	for _, c := range f.calls(t) {
+		if strings.HasPrefix(c, "pr view") || strings.HasPrefix(c, "pr edit 7 --body-file") {
+			t.Fatalf("adopted PR body touched: %q", f.calls(t))
+		}
+	}
+	if !f.state(t).Ready {
+		t.Fatal("PR not marked ready")
+	}
+}
+
+func TestAreaPrefixRE(t *testing.T) {
+	for in, want := range map[string]string{
+		"rules: add core/pr-description":         "add core/pr-description",
+		"fleet, compose: keep foreign PR bodies": "keep foreign PR bodies",
+		"Fix the widget: it spins":               "Fix the widget: it spins",
+		"add --add-defaults flag":                "add --add-defaults flag",
+	} {
+		if got := areaPrefixRE.ReplaceAllString(in, ""); got != want {
+			t.Errorf("strip(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTicketLineGitHub(t *testing.T) {
+	m := frontmatter.Meta{Extra: map[string]string{"matter": "github", "matter_id": "#4", "matter_url": "https://g/4"}}
+	if got := ticketLine(m); got != "Issue: [#4](https://g/4)" {
+		t.Fatalf("ticketLine = %q", got)
 	}
 }
 
