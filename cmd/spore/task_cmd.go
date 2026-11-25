@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,9 @@ Subcommands:
                                Merge wt/<slug> into main; push origin main:main only.
                                Refuses on red 'just check' (exit 2);
                                --force-merge-red bypasses with a logged reason.
-  tell <slug> <message>        Append a message to the slug's inbox dir.
+  tell <slug> <message>        Append a message to the slug's inbox dir. On a
+                               loop: role task, type it into the active role's
+                               pane instead (exit 1 if no pane takes it).
   verify <slug>                Print the evidence verdict for slug.
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
@@ -422,7 +425,26 @@ func runTaskTell(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: spore task tell <slug> <message>")
 	}
-	return task.Tell(args[0], args[1])
+	slug, msg := args[0], args[1]
+	if slug != "coordinator" {
+		role, err := task.IsRoleLoop(resolveTasksDir(), slug)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if role {
+			projectRoot, err := task.MainRepoRoot("")
+			if err != nil {
+				return fmt.Errorf("resolve main repo: %w", err)
+			}
+			session, err := fleet.TellRole(projectRoot, slug, msg)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "%s: delivered to %s\n", slug, session)
+			return nil
+		}
+	}
+	return task.Tell(slug, msg)
 }
 
 func runTaskVerify(args []string) error {

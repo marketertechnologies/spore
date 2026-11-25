@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current
   memory guidance (root `CLAUDE.md` under about 200 lines, area rules

@@ -41,19 +41,29 @@ const LoopRole = "role"
 
 // RequireRoleLoop errors unless tasks/<slug>.md carries `loop: role`.
 func RequireRoleLoop(tasksDir, slug string) error {
-	path := filepath.Join(tasksDir, slug+".md")
-	raw, err := os.ReadFile(path)
+	ok, err := IsRoleLoop(tasksDir, slug)
 	if err != nil {
 		return err
 	}
-	m, _, err := frontmatter.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("roletask: parse %s: %w", path, err)
-	}
-	if m.Loop != LoopRole {
+	if !ok {
 		return fmt.Errorf("task %s: not role-looped (frontmatter lacks loop: %s); add it to opt in", slug, LoopRole)
 	}
 	return nil
+}
+
+// IsRoleLoop reports whether tasks/<slug>.md carries `loop: role`. A
+// missing file errors with fs.ErrNotExist.
+func IsRoleLoop(tasksDir, slug string) (bool, error) {
+	path := filepath.Join(tasksDir, slug+".md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	m, _, err := frontmatter.Parse(raw)
+	if err != nil {
+		return false, fmt.Errorf("roletask: parse %s: %w", path, err)
+	}
+	return m.Loop == LoopRole, nil
 }
 
 // IsEscalated reports whether any `state/escalated-*` marker exists
