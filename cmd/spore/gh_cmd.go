@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/ghapp"
+	"github.com/versality/spore/internal/secrets"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -33,6 +35,9 @@ Subcommands:
   exec     Run <cmd> with GH_TOKEN set and a git credential helper
            injected, so gh and git push over https act as the app.
            Refuses when the cwd repo's origin is not https.
+
+token and exec refuse on a host running the secrets broker: the App
+key is not readable there (docs/secrets.md).
 
 See docs/github-app.md for the one-time app setup.
 `
@@ -123,9 +128,17 @@ func runGHConfig(args []string) error {
 	return nil
 }
 
+// errBrokered refuses token and exec on a host whose App key is held
+// by the secrets broker: the role loop pushes through the broker, and
+// agents never push by hand.
+var errBrokered = errors.New("the GitHub App key is held by the secrets broker on this host; the role loop pushes and opens PRs through it, and agents do not push by hand (docs/secrets.md)")
+
 func runGHToken(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: spore gh token")
+	}
+	if secrets.Available() {
+		return errBrokered
 	}
 	root, err := ghProjectRoot()
 	if err != nil {
@@ -145,6 +158,9 @@ func runGHExec(args []string) (int, error) {
 	}
 	if len(args) == 0 {
 		return 0, fmt.Errorf("usage: spore gh exec -- <cmd> [args...]")
+	}
+	if secrets.Available() {
+		return 0, errBrokered
 	}
 	if out, err := exec.Command("git", "config", "--get", "remote.origin.url").Output(); err == nil {
 		if err := ghapp.CheckHTTPSRemote(strings.TrimSpace(string(out))); err != nil {
@@ -170,4 +186,17 @@ func runGHExec(args []string) (int, error) {
 		return 0, err
 	}
 	return 0, nil
+}
+
+// brokerFetch is task.BrokerFetch: the base fetch through the secrets
+// broker, for hosts where this process holds no GitHub credential.
+func brokerFetch(projectRoot, branch string) error {
+	if !secrets.Available() {
+		return task.ErrNoFetchAuth
+	}
+	name, err := task.ProjectName(projectRoot)
+	if err != nil {
+		return err
+	}
+	return secrets.Fetch(name, projectRoot, branch, 2*time.Minute)
 }

@@ -172,6 +172,15 @@ GitHub actions can also run as the project's GitHub App via
 `spore gh` (`spore recipes show github`). Run `spore gh config`
 before saying no App exists; config is per project.
 
+## Secrets
+
+On a host with the secrets broker, project secrets are not readable.
+Use `spore secrets list` to see the profiles (read-only DB, Sentry,
+NewRelic) and `spore secrets run <profile> -- <command> [args]` to
+use one; output comes back redacted. A worker that needs another
+project's profile needs the operator: `sudo spore secrets grant
+<slug> <profile> --for <duration>`.
+
 ## GitHub PR flow
 
 Applies when `spore gh config` shows a GitHub App with
@@ -182,6 +191,9 @@ opens PRs.
   `spore gh exec -- git push -u origin <branch>`. Never run
   `spore gh token` or put a token in a command line: it lands in
   the transcript.
+- On a host with the secrets broker, `spore gh token` and
+  `spore gh exec` refuse: the loop pushes and opens PRs through the
+  broker, and you do not push by hand (`docs/secrets.md`).
 - The driver pushes `wt/<slug>` and opens the draft PR after the
   engineer's first round. Keep `wt/<slug>` as the PR head: renaming
   the branch closes the PR.

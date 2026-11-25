@@ -3,46 +3,44 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/versality/spore/internal/redact"
+	"github.com/versality/spore/internal/secrets"
 )
 
 func (m *githubMirror) git(args ...string) (string, error) {
 	return m.run1("git", "", args...)
 }
 
-// gh runs gh with its posted text redacted: stdin (JSON-aware for
-// `--input -`) and the values of --title and --body. Other args are
-// left alone, since they carry refs, logins and repo names that a
-// secrets.env value could collide with.
+// gh runs gh with its posted text redacted (redact.GHCall). Behind the
+// secrets broker the call runs there instead, redacted broker-side,
+// since the agent user cannot read the secrets to redact against.
 func (m *githubMirror) gh(stdin string, args ...string) (string, error) {
+	if m.brokered {
+		return m.brokerGH(stdin, args)
+	}
 	if m.redactor == nil {
 		m.redactor = redact.New(m.projectRoot)
 	}
-	args = slices.Clone(args)
-	jsonInput := false
-	for i, a := range args {
-		if i == 0 {
-			continue
-		}
-		switch args[i-1] {
-		case "--title", "--body":
-			args[i] = m.redactor.String(a)
-		case "--input":
-			jsonInput = a == "-"
-		}
-	}
-	if jsonInput {
-		stdin = m.redactor.JSON(stdin)
-	} else {
-		stdin = m.redactor.String(stdin)
-	}
+	stdin, args = m.redactor.GHCall(stdin, args)
 	return m.run1("gh", stdin, args...)
+}
+
+func (m *githubMirror) brokerGH(stdin string, args []string) (string, error) {
+	out, err := secrets.GH(m.project, stdin, args, mirrorCallTimeout)
+	var ee *secrets.ExitError
+	if errors.As(err, &ee) {
+		return "", &cmdError{
+			key:    fmt.Sprintf("gh %s: %v", strings.Join(args[:min(2, len(args))], " "), ee),
+			stderr: ee.Stderr,
+		}
+	}
+	return out, err
 }
 
 // mirrorCallTimeout bounds every git/gh call and the token mint: the

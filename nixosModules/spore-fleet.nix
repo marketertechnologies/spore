@@ -3,6 +3,10 @@
 let
   cfg = config.services.spore-fleet;
   stateRel = ".local/state/spore/fleet-enabled";
+  # Behind the secrets broker the flag lives where the agent cannot
+  # write it (spore-fleet-secrets.nix).
+  brokered = cfg.secrets.enable;
+  flagPath = if brokered then cfg.secrets.fleetFlag else "%h/${stateRel}";
 
   # effectiveProjects collapses the legacy single-project schema and
   # the multi-project schema into one attrset of { <name> = { path }; }.
@@ -58,6 +62,7 @@ let
   ];
 
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
+        ${lib.optionalString brokered "rm -f '${cfg.secrets.fleetFlag}'"}
         ${asUserPreamble}
 
         timeout=${toString cfg.gracefulDeploy.timeout}
@@ -113,6 +118,12 @@ let
   '';
 
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
+    ${lib.optionalString brokered ''
+      # Only root re-enables a brokered fleet; the agent user cannot.
+      echo "spore-fleet-graceful: re-enabling kill-switch" >&2
+      ${pkgs.coreutils}/bin/install -o ${cfg.secrets.user} -g ${cfg.secrets.user} -m 0644 /dev/null '${cfg.secrets.fleetFlag}'
+      exit 0
+    ''}
     ${asUserPreamble}
 
     sporecli='${cfg.package}/bin/spore'
@@ -211,7 +222,7 @@ let
   };
 in
 {
-  imports = [ ./spore-fleet-claude.nix ];
+  imports = [ ./spore-fleet-claude.nix ./spore-fleet-secrets.nix ./spore-fleet-tmux.nix ];
 
   options.services.spore-fleet = {
     enable = lib.mkEnableOption "spore fleet reconciler (systemd-user)";
@@ -503,85 +514,9 @@ in
       };
     };
 
-    tmux = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = cfg.enable;
-        defaultText = lib.literalExpression "config.services.spore-fleet.enable";
-        description = ''
-          Prepend spore's tmux baseline to `/etc/tmux.conf`: deep
-          scrollback, mouse wheel into copy-mode, Claude Code TUI
-          passthrough and extended keys, and half-page wheel scroll
-          in copy-mode. Lines the host adds to
-          `environment.etc."tmux.conf".text` render after this block,
-          so a host's own `set` lines win.
-        '';
-      };
-
-      historyLimit = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 250000;
-        description = ''
-          Scrollback lines per pane. tmux's own default (2000) loses
-          long agent output. Also seeds `programs.tmux.historyLimit`
-          (at mkDefault) so enabling the stock NixOS tmux module does
-          not reset it to 2000.
-        '';
-      };
-
-      mouse = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Wheel enters copy-mode and pages history. Shift+drag keeps
-          terminal-native selection.
-        '';
-      };
-
-      defaultShell = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = lib.literalExpression ''"''${pkgs.bashInteractive}/bin/bash"'';
-        description = ''
-          Pin tmux's default-shell. Set this when the operator user's
-          login shell is `spore-attach`: tmux otherwise inherits it
-          and mis-parses the `-c CMD` it uses for new panes.
-        '';
-      };
-
-      extraConfig = lib.mkOption {
-        type = lib.types.lines;
-        default = "";
-        description = "Extra tmux lines appended to spore's baseline block.";
-      };
-    };
   };
 
   config = lib.mkMerge [
-    (lib.mkIf cfg.tmux.enable {
-      programs.tmux.historyLimit = lib.mkDefault cfg.tmux.historyLimit;
-
-      environment.etc."tmux.conf".text = lib.mkBefore (
-        lib.optionalString (cfg.tmux.defaultShell != null) ''
-          set -g default-shell ${cfg.tmux.defaultShell}
-        ''
-        + ''
-          set -g history-limit ${toString cfg.tmux.historyLimit}
-          set -g mouse ${if cfg.tmux.mouse then "on" else "off"}
-          set -g allow-passthrough on
-          set -g detach-on-destroy off
-          set -s extended-keys on
-          set -as terminal-features 'xterm*:extkeys'
-          bind -n S-PageUp copy-mode -eu
-          bind -T copy-mode WheelUpPane send -N25 -X scroll-up
-          bind -T copy-mode WheelDownPane send -N25 -X scroll-down
-          bind -T copy-mode-vi WheelUpPane send -N25 -X scroll-up
-          bind -T copy-mode-vi WheelDownPane send -N25 -X scroll-down
-        ''
-        + cfg.tmux.extraConfig
-      );
-    })
-
     (lib.mkIf cfg.enable {
       assertions = [
         {
@@ -724,6 +659,9 @@ in
                 {
                   SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
                   SPORE_HOST_ID = cfg.hostId;
+                } // lib.optionalAttrs brokered {
+                  SPORE_FLEET_FLAG = cfg.secrets.fleetFlag;
+                } // {
                   # bashInteractive + coreutils land on PATH so the shims
                   # the reconciler spawns (spore-coordinator-launch,
                   # spore-worker-brief) can resolve `#!/usr/bin/env bash`
@@ -768,7 +706,7 @@ in
             "spore-fleet-reconcile-flag-${name}" = {
               Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
               Path = {
-                PathChanged = "%h/${stateRel}";
+                PathChanged = flagPath;
                 Unit = "spore-fleet-reconcile-${name}.service";
               };
               Install.WantedBy = [ "default.target" ];
