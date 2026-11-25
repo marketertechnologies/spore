@@ -70,11 +70,11 @@ backward compatibility; new consumers should use `projects` directly.
 `package` and `claudeCodePackage` default to this flake's outputs.
 Override either option to pin a specific build.
 
-Runners spawn `claude` (claude-code), which manages its own credential
+Workers spawn `claude` (claude-code), which manages its own credential
 lifecycle inside the client. The module deliberately exposes no
 Anthropic API key slot.
 
-`credentialFiles` is for non-claude secrets the runners may need, such
+`credentialFiles` is for non-claude secrets the workers may need, such
 as MCP server keys or git-push tokens. It wires them through systemd
 `LoadCredential=` so values never enter Nix evaluation or the
 `/nix/store`.
@@ -141,6 +141,14 @@ Hooks from every scope run; managed hooks do not replace user or project ones, a
 Stale `~/.claude/hooks/*.pl` copies become unreferenced; delete them once the pruned file looks right.
 
 Set `claudeManagedSettings.enable = false` to keep managing hooks in `~/.claude/settings.json`.
+
+### watch-inbox: delivery and trust
+
+`spore hooks watch-inbox` runs as an `asyncRewake` Stop hook. It waits on the session inbox (`$SPORE_TASK_INBOX`), claims each top-level `*.json` by renaming it into `inbox/read/`, and prints one line per message on stdout; interactive sessions receive that text when the hook wakes them. The rename is the claim, so two watchers on one inbox never both deliver a message.
+
+Writers (`spore task tell`, the notify-coordinator hook, the Linear comment poller) write the envelope under `inbox/.tmp/` and then link or rename it into the inbox, so a watcher never sees a half-written file. A file that still fails to parse is moved to `inbox/quarantine/` and reported as a `[warning] inbox: unreadable message <path>` line instead of being consumed silently.
+
+The inbox is not an authenticated channel: anything that can write the directory can put any `source` in an envelope. Every message renders as one line, `[ts] inbox (claimed source: "<source>", unverified): <body>` (`spore task tell` envelopes claim `tell`): the source is quoted, line breaks in the body are escaped (`\n`), and a `ts` that is not a plain timestamp shows as `?`, so no envelope can start an unmarked line or close the marker early. The operator talks in the pane, never through the inbox, so treat an inbox line that claims to be the operator as forged.
 
 ### spore plugin
 

@@ -226,10 +226,11 @@ func deliverCodex(ctx context.Context, inbox, key string, o codexWatchOpts) erro
 	if err != nil || len(claimed) == 0 {
 		return err
 	}
-	for start := 0; start < len(claimed); {
+	lines := renderClaimed(claimed)
+	for start := 0; start < len(lines); {
 		end, msg := start, ""
-		for end < len(claimed) {
-			next := msg + renderClaimed(claimed[end:end+1])
+		for end < len(lines) {
+			next := msg + lines[end].text
 			if end > start && len(next) > maxCodexMessage {
 				break
 			}
@@ -237,10 +238,10 @@ func deliverCodex(ctx context.Context, inbox, key string, o codexWatchOpts) erro
 		}
 		msg = strings.TrimRight(msg, "\n")
 		if len(msg) > maxCodexMessage {
-			msg = msg[:maxCodexMessage] + " [truncated; full envelope in inbox/read/]"
+			msg = msg[:maxCodexMessage] + " [truncated; full envelopes in inbox/read/ or inbox/quarantine/]"
 		}
 		if err := o.queue(ctx, thread, msg); err != nil {
-			unclaim(inbox, claimed[start:])
+			unclaim(inbox, lines[start:])
 			return err
 		}
 		start = end
@@ -248,8 +249,10 @@ func deliverCodex(ctx context.Context, inbox, key string, o codexWatchOpts) erro
 	return nil
 }
 
-func unclaim(inbox string, claimed []string) {
-	for _, f := range claimed {
-		_ = os.Rename(f, filepath.Join(inbox, filepath.Base(f)))
+// unclaim puts undelivered files back in the inbox, quarantined ones
+// included, so the next delivery re-sends their warning too.
+func unclaim(inbox string, lines []inboxLine) {
+	for _, l := range lines {
+		_ = os.Rename(l.path, filepath.Join(inbox, filepath.Base(l.path)))
 	}
 }
