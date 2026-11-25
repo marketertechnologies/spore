@@ -6,36 +6,7 @@ spore is a drop-in harness template for LLM-coding agents.
 
 ## Roles
 
-spore uses `dispatcher` (coordinator) and `runner` (worker) internally.
-Downstream projects pick their own names during bootstrap; the kernel
-parameterizes both. When working in this repo, use the internal names.
-
-## Source map
-
-```
-spore/
-|-- cmd/spore/        CLI entry point (Go).
-|-- internal/         Go internal packages, kernel implementation.
-|   |-- align/        Pilot-agent alignment-mode tracker.
-|   |-- bootstrap/    Stage-gate driver + per-stage detectors.
-|   |-- composer/     Instruction composer: rule-pool to rendered files.
-|   |-- fleet/        Worker fleet: coordinator + workers consuming the task queue.
-|   |-- hooks/        Stop / PreToolUse / commit-msg hook entry points.
-|   |-- infect/       nixos-anywhere wrapper for `spore infect`.
-|   |-- install/      Drops embedded skills into a target's .claude/skills/.
-|   |-- lints/        Portable lint set (drift, file-size, comment-noise, em-dash).
-|   `-- task/         Worktree-task driver.
-|-- rules/            Markdown rule pool, composed into CLAUDE.md / AGENTS.md.
-|   |-- consumers/    Per-consumer rule lists (line per fragment id).
-|   |-- core/         Always-on, language-agnostic fragments.
-|   `-- lang/         Language-specific fragments (later phase).
-|-- bootstrap/        spore-bootstrap skill body, stage runbooks, drop-ins.
-|   |-- skills/       spore-bootstrap and diagram skills.
-|   |-- stages/       One runbook per stage gate.
-|   |-- mcp/          MCP server config templates.
-|   `-- flake/        Minimal NixOS flake used by `spore infect`.
-`-- docs/             Design notes, rationale, multi-session specs.
-```
+spore has two agent roles: the `coordinator` (one per project; dispatches tasks, talks to the operator) and the `worker` (one per task, in its own worktree). A `loop: role` task runs an `engineer` plus reviewers instead of a single worker. Use these names in code, docs and rules.
 
 ## Tier policy
 
@@ -119,7 +90,7 @@ For known file URLs, prefer a direct fetch over `WebFetch`:
 
 When stating a fact about live state - a binary's version, a service's status, whether a fix landed, what's at a path, what a config currently says - run the command that returns that fact in the SAME turn and quote the output. Never report from intent, recent activity, or "should be the case". Examples: `spore --version` before claiming a version; `systemctl status X` before claiming a service runs; `git log --oneline main -1` before claiming a commit landed.
 
-Stating intent ("I'm minting a runner to do X") is fine; stating outcome ("X is now Y") requires the verifying tool call in the same turn.
+Stating intent ("I'm minting a worker to do X") is fine; stating outcome ("X is now Y") requires the verifying tool call in the same turn.
 
 ## Validation
 
@@ -161,9 +132,6 @@ tmux capture-pane -t <name> -p   # read recent output
 
 - Source edits stay inside the spore tree. Do not leak into a consumer
   project's working copy, even when dogfooding the bootstrap flow.
-- Do not rename `dispatcher` or `runner` without updating the
-  composer plus its tests in the same commit. The names are
-  kernel-internal contract; silent drift breaks downstream rendering.
 - Opensource-bound. Mind the leak surface: no internal hostnames, no
   operator-machine paths, no personal email beyond what
   `git config user.email` resolves to.
