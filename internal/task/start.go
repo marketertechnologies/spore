@@ -1,9 +1,11 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -30,17 +32,32 @@ func ValidateAgent(agent string) error {
 // "spore/<project>/<slug>" running ${SPORE_AGENT_BINARY:-claude-code}
 // in the worktree, with SPORE_TASK_SLUG=<slug> in the session env.
 // Returns the tmux session name on success.
+// startLockWait bounds how long Start waits for a running reconcile
+// pass to release the project lock.
+var startLockWait = 2 * time.Minute
+
 func Start(tasksDir, slug string) (string, error) {
 	return StartWithOptions(tasksDir, slug, StartOptions{})
 }
 
 func StartWithOptions(tasksDir, slug string, opts StartOptions) (string, error) {
-	m, err := activate(tasksDir, slug, opts)
+	projectRoot, err := projectRootFromTasksDir(tasksDir)
 	if err != nil {
 		return "", err
 	}
+	// Held from before the status flip: the flip wakes the fleet's
+	// tasks/ path unit, whose pass then finds the lock taken and
+	// leaves the spawn to us instead of racing `git worktree add`.
+	unlock, err := LockReconcile(projectRoot, startLockWait)
+	if errors.Is(err, ErrLockHeld) {
+		return "", fmt.Errorf("start %s: a fleet reconcile pass is still running after %s; retry", slug, startLockWait)
+	}
+	if err != nil {
+		return "", fmt.Errorf("start %s: reconcile lock: %w", slug, err)
+	}
+	defer unlock()
 
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
+	m, err := activate(tasksDir, slug, opts)
 	if err != nil {
 		return "", err
 	}

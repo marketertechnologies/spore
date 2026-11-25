@@ -350,3 +350,59 @@ func TestReconcileCountsRoleLoopsTowardMaxWorkers(t *testing.T) {
 		t.Errorf("c-work: worker spawned past the cap")
 	}
 }
+
+// Two concurrent passes (timer plus the tasks/ path unit) must not both
+// create wt/<slug>: one runs, the other sees the lock and does nothing.
+func TestReconcileConcurrentPassesSpawnOnce(t *testing.T) {
+	requireToolchain(t)
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 300")
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	for _, slug := range []string{"a", "b", "c"} {
+		writeTask(t, dirs.tasks, slug, "active")
+	}
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	type out struct {
+		r   Result
+		err error
+	}
+	results := make(chan out, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 5})
+			results <- out{r, err}
+		}()
+	}
+	close(start)
+	var spawned []string
+	for range 2 {
+		o := <-results
+		if o.err != nil {
+			t.Fatalf("Reconcile: %v", o.err)
+		}
+		if len(o.r.Warnings) != 0 {
+			t.Errorf("warnings = %q", o.r.Warnings)
+		}
+		spawned = append(spawned, o.r.Spawned...)
+	}
+	if len(spawned) != 3 {
+		t.Errorf("spawned = %v, want a, b, c once each", spawned)
+	}
+
+	// Deterministic half: a held lock makes the pass a no-op.
+	unlock, err := task.LockReconcile(dirs.project, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	flipStatus(t, dirs.tasks, "a", "done")
+	r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 5})
+	if err != nil || !r.Locked || len(r.Reaped) != 0 {
+		t.Errorf("pass under a held lock: %+v, %v; want Locked and no action", r, err)
+	}
+}

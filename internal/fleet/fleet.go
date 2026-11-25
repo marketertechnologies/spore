@@ -50,6 +50,10 @@ type Result struct {
 	// case; the sessions already running (if any) are NOT reaped.
 	Disabled bool
 
+	// Locked is true when another pass or `spore task start` held the
+	// project's reconcile lock and this pass did nothing.
+	Locked bool
+
 	Active  []string
 	Spawned []string
 	Reaped  []string
@@ -86,6 +90,18 @@ type MatterResult struct {
 // singleton coordinator session is ensured alongside the worker fleet
 // when the flag is on, and reaped when the flag goes off.
 func Reconcile(cfg Config) (Result, error) {
+	// Two passes (timer, tasks/ path unit, Stop hook) or a pass and
+	// `spore task start` racing on one task both run `git worktree
+	// add` for wt/<slug>; the loser fails. The holder covers it.
+	unlock, err := task.LockReconcile(cfg.ProjectRoot, 0)
+	if errors.Is(err, task.ErrLockHeld) {
+		return Result{Locked: true}, nil
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("reconcile lock: %w", err)
+	}
+	defer unlock()
+
 	enabled, err := Enabled()
 	if err != nil {
 		return Result{}, err

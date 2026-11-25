@@ -132,6 +132,9 @@ func runFleetReconcile(args []string) error {
 	if err != nil {
 		return err
 	}
+	if res.Locked {
+		return nil
+	}
 	if res.Disabled {
 		flagPath, _ := fleet.FlagPath()
 		fmt.Printf("fleet: disabled (flag missing at %s)\n", flagPath)
@@ -346,7 +349,7 @@ func runFleetReplenishHook(args []string) error {
 		fmt.Fprintln(os.Stderr, "replenish-hook:", err)
 		return nil
 	}
-	if res.Disabled {
+	if res.Disabled || res.Locked {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
