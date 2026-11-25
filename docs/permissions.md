@@ -13,7 +13,7 @@ Claude Code evaluates `permissions.deny` in every mode, including `bypassPermiss
 | `Read(~/.config/spore/**/*.pem)` | Keeps GitHub App private keys out of the transcript. |
 | `Bash(git push --force *)`, `Bash(git push -f *)` | Force push with the flag first. |
 | `Bash(git push * --force)`, `Bash(git push * --force *)`, `Bash(git push * -f)`, `Bash(git push * -f *)` | Force push with the flag after the remote or refspec. |
-| `Bash(git push +*)`, `Bash(git push * +*)` | A `+refspec` (`git push origin +branch`, `+HEAD:branch`) force-updates that ref without any flag. `+*` has no space before `*`, so it is a plain glob, not a word-bounded prefix. |
+| `Bash(git push +*)`, `Bash(git push * +*)` | A `+refspec` (`git push origin +branch`, `+HEAD:branch`) force-updates that ref without any flag. `+*` has no space before `*`, so it is a plain glob, not a word-bounded prefix. Any argument starting with `+` is denied, including a push option (`git push -o +ci.skip origin x`); that cost is accepted. |
 
 What still works:
 
@@ -48,7 +48,7 @@ Claude Code merges `permissions.deny` across user, project and local settings fi
 
 - `sudo` at the start of a line.
 - `rm -rf /`.
-- `git push` with `--force`, `-f`, a short-flag cluster holding `f` (`-fu`) or a `+refspec` word (`+branch`, `+HEAD:branch`, quoted or not) anywhere before the next `|`, `;` or `&`, including behind git options (`git -C dir`, quoted paths, `--no-pager`) and wrappers. `--force-with-lease`, `--force-if-includes` and a `+` inside a word (`a+b`) pass. The pattern matches inside quoted text so `bash -c "git push -f"` is caught; a command that only mentions a force push (`rg "git push -f" docs/`) is denied too.
+- `git push` with `--force`, `-f`, a short-flag cluster holding `f` (`-fu`) or a `+refspec` word (`+branch`, `+HEAD:branch`, quoted or not) anywhere before the next `|`, `;` or `&`, including behind git options (`git -C dir`, quoted paths, `--no-pager`) and wrappers. A backslash-escaped `\+main` and a `+` push refspec set through `git -c remote.<name>.push=+...` are caught too; the deny rules miss both, so the guard is the only layer there. A push option starting with `+` is denied as a false positive. `--force-with-lease`, `--force-if-includes` and a `+` inside a word (`a+b`) pass. The pattern matches inside quoted text so `bash -c "git push -f"` is caught; a command that only mentions a force push (`rg "git push -f" docs/`) is denied too.
 
 The role loop is unaffected: role panes push through spore commands, which call git from Go, not through the Bash tool.
 
