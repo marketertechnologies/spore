@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,7 +87,9 @@ func TestFleetReplenishHook_StdoutEmpty(t *testing.T) {
 	t.Setenv("AGENT_BUDGET_STATE_DIR", t.TempDir())
 	t.Setenv("AGENT_BUDGET_MODE", "api")
 	t.Setenv("SPORE_FLEET_MAX_WORKERS", "2")
-	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("SPORE_PROJECT_ROOT", dir)
+	t.Chdir(dir)
 
 	orig := replenishReconcile
 	t.Cleanup(func() { replenishReconcile = orig })
@@ -141,5 +144,78 @@ func TestFleetWorkerAgentSetPrintClear(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("project root not untouched: %v", entries)
+	}
+}
+
+func gitInitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+}
+
+// A `claude -p` started from a coordinator pane inherits the
+// coordinator env; its Stop hook must not reconcile the repo it runs in.
+func TestFleetReplenishHook_OtherRepoDoesNotReconcile(t *testing.T) {
+	state := t.TempDir()
+	project := filepath.Join(t.TempDir(), "proj")
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	gitInitRepo(t, project)
+	gitInitRepo(t, scratch)
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
+	t.Setenv("SKYHELM_STATE_DIR", "")
+	t.Setenv("SPORE_TASK_INBOX", filepath.Join(state, "proj", "inbox"))
+	t.Setenv("SPORE_PROJECT_ROOT", project)
+	t.Setenv("WT_PROJECT", "proj")
+	t.Setenv("AGENT_BUDGET_STATE_DIR", t.TempDir())
+	t.Setenv("AGENT_BUDGET_MODE", "api")
+	t.Setenv("SPORE_FLEET_MAX_WORKERS", "2")
+
+	var got []fleet.Config
+	orig := replenishReconcile
+	t.Cleanup(func() { replenishReconcile = orig })
+	replenishReconcile = func(c fleet.Config) (fleet.Result, error) {
+		got = append(got, c)
+		return fleet.Result{}, nil
+	}
+	run := func(dir string) {
+		t.Chdir(dir)
+		code, stdout, stderr := captureHook(t, `{}`, func() int {
+			if err := runFleetReplenishHook(nil); err != nil {
+				t.Errorf("runFleetReplenishHook: %v", err)
+				return 1
+			}
+			return 0
+		})
+		if code != 0 || stdout != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	}
+
+	run(scratch)
+	if len(got) != 0 {
+		t.Fatalf("reconciled from a foreign repo: %+v", got)
+	}
+
+	t.Setenv("SPORE_PROJECT_ROOT", "")
+	run(scratch)
+	if len(got) != 0 {
+		t.Fatalf("reconciled from a repo not named $WT_PROJECT: %+v", got)
+	}
+
+	t.Setenv("SPORE_PROJECT_ROOT", project)
+	sub := filepath.Join(project, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(sub)
+	if len(got) != 1 {
+		t.Fatalf("own project: reconcile calls = %d, want 1", len(got))
+	}
+	if !samePath(got[0].ProjectRoot, project) || !samePath(got[0].TasksDir, filepath.Join(project, "tasks")) {
+		t.Errorf("config = %+v, want project %s", got[0], project)
 	}
 }

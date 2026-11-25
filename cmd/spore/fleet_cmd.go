@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -39,9 +40,11 @@ Subcommands:
                   exits 0 when there is nothing to do. Short-circuits when
                   the kill-switch flag is missing.
   replenish-hook  Stop-hook variant of reconcile: reads context from env
-                  ($SPORE_TASK_INBOX, $WT_PROJECT, $WT_FLEET_FLOOR), no-ops in
-                  non-coordinator sessions, skips when the budget advice
-                  is tighten/ration, and never propagates errors.
+                  ($SPORE_TASK_INBOX, $SPORE_PROJECT_ROOT, $WT_PROJECT,
+                  $WT_FLEET_FLOOR), no-ops in non-coordinator sessions and
+                  when the cwd repo is not $SPORE_PROJECT_ROOT (else a repo
+                  named $WT_PROJECT), skips when the budget advice is
+                  tighten/ration, and never propagates errors.
   enable          Create the kill-switch flag (the reconciler resumes
                   spawning on the next pass).
   disable         Remove the kill-switch flag (the reconciler stops
@@ -261,9 +264,8 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	root, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "replenish-hook:", err)
+	root, ok := replenishProjectRoot()
+	if !ok {
 		return nil
 	}
 	resolved, err := resolveMaxWorkers(0, root)
@@ -273,7 +275,7 @@ func runFleetReplenishHook(args []string) error {
 	}
 
 	res, err := replenishReconcile(fleet.Config{
-		TasksDir:    "tasks",
+		TasksDir:    filepath.Join(root, "tasks"),
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
 	})
@@ -287,6 +289,44 @@ func runFleetReplenishHook(args []string) error {
 	fmt.Fprintf(os.Stderr, "replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
 		len(res.Active), len(res.Spawned), len(res.Kept), len(res.Reaped), len(res.Skipped))
 	return nil
+}
+
+// replenishProjectRoot returns the main repo root of the cwd when it
+// is the session's own project: $SPORE_PROJECT_ROOT's main repo, else
+// a repo named $WT_PROJECT. Any agent started from a coordinator pane
+// (`claude -p` in a scratch repo) inherits the coordinator env, so
+// without this check its Stop hook would reconcile, and spawn a
+// coordinator for, whatever directory it ran in.
+func replenishProjectRoot() (string, bool) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	root, err := task.MainRepoRoot(wd)
+	if err != nil {
+		return "", false
+	}
+	if want := os.Getenv("SPORE_PROJECT_ROOT"); want != "" {
+		wantRoot, err := task.MainRepoRoot(want)
+		if err != nil {
+			return "", false
+		}
+		return root, samePath(root, wantRoot)
+	}
+	if want := os.Getenv("WT_PROJECT"); want != "" {
+		return root, filepath.Base(root) == want
+	}
+	return "", false
+}
+
+func samePath(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
+	}
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // isCoordinatorSession reports whether $SPORE_TASK_INBOX points under the
