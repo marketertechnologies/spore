@@ -62,6 +62,8 @@ func TestNormalizeCommand(t *testing.T) {
 		"spore  hooks   watch-inbox":                         "spore hooks watch-inbox",
 		"/home/spore/.claude/hooks/load-state-md.pl":         "load-state-md.pl",
 		"": "",
+		engineerCheckCommand("/run/current-system/sw/bin/spore"): engineerCheckCommand("spore"),
+		"a /x/b; /x/c && /x/d | exec /x/e":                       "a /x/b; c && d | exec e",
 	} {
 		if got := NormalizeCommand(in); got != want {
 			t.Errorf("NormalizeCommand(%q) = %q, want %q", in, got, want)
