@@ -67,54 +67,39 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 	if cfg.Cmd == "" {
 		return EngineerCheckResult{}, nil
 	}
-	rounds, err := task.ListEngineerRounds(in.ProjectRoot, in.Slug)
-	if err != nil || len(rounds) == 0 {
+	round, sha, ok, err := checkTarget(in)
+	if err != nil || !ok {
 		return EngineerCheckResult{}, err
 	}
-	round := rounds[len(rounds)-1]
-	if revising, err := task.RevisionPending(in.ProjectRoot, in.Slug, round); err != nil || revising {
-		return EngineerCheckResult{}, err
-	}
-	wt := task.TaskWorktree(in.ProjectRoot, in.Slug)
-	sha, err := task.HeadSHA(wt)
-	if err != nil {
-		return EngineerCheckResult{}, err
-	}
-	state, err := task.ReadCheckState(in.ProjectRoot, in.Slug, round, sha)
-	if err != nil || state != task.CheckPending {
-		return EngineerCheckResult{}, err
-	}
-	before, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)
-	if err != nil {
-		return EngineerCheckResult{}, err
-	}
-	unlock, waited, err := lockCheckRun(task.CheckLockPath(in.ProjectRoot, in.Slug, round),
-		time.Duration(cfg.TimeoutSeconds)*time.Second+checkLockGrace)
+	lock := task.CheckLockPath(in.ProjectRoot, in.Slug, round)
+	unlock, holderStart, err := lockCheckRun(lock, checkLockWait(cfg))
 	if errors.Is(err, errCheckLockTimeout) {
 		return EngineerCheckResult{Stderr: fmt.Sprintf(
 			"spore engineer-check: another run of `%s` for engineer round %d still holds %s; not running a second one. Reviewers stay held until a run passes.\n",
-			cfg.Cmd, round, task.CheckLockPath(in.ProjectRoot, in.Slug, round))}, nil
+			cfg.Cmd, round, lock)}, nil
 	}
 	if err != nil {
 		return EngineerCheckResult{}, err
 	}
 	defer unlock()
-	if waited {
-		// The run we waited on may have settled this HEAD already.
-		sha0 := sha
-		if sha, err = task.HeadSHA(wt); err != nil {
+	if !holderStart.IsZero() {
+		// The run we waited on may have settled the gate, or the
+		// engineer moved on to a new round or HEAD meanwhile.
+		r, s, ok, err := checkTarget(in)
+		if err != nil || !ok || r != round {
 			return EngineerCheckResult{}, err
 		}
-		state, err := task.ReadCheckState(in.ProjectRoot, in.Slug, round, sha)
-		if err != nil || state != task.CheckPending {
-			return EngineerCheckResult{}, err
-		}
-		n, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)
+		sha = s
+		prev, err := task.LatestCheckAttemptSince(in.ProjectRoot, in.Slug, round, sha, holderStart)
 		if err != nil {
 			return EngineerCheckResult{}, err
 		}
-		if sha == sha0 && n > before {
-			body, _ := os.ReadFile(task.CheckAttemptPath(in.ProjectRoot, in.Slug, round, sha, n))
+		if prev != "" {
+			n, err := task.CountCheckAttempts(in.ProjectRoot, in.Slug, round, sha)
+			if err != nil {
+				return EngineerCheckResult{}, err
+			}
+			body, _ := os.ReadFile(prev)
 			return EngineerCheckResult{Code: 2, Stderr: fmt.Sprintf(
 				"spore engineer-check: a concurrent run of `%s` failed on HEAD %s (engineer round %d, attempt %d/%d) while this one waited; not rerunning. "+
 					"Reviewers stay held until it passes. Fix the failure, commit, and end your turn again.\n%s",
@@ -123,7 +108,7 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 	}
 
 	start := time.Now()
-	code, out := runCheck(wt, cfg)
+	code, out := runCheck(task.TaskWorktree(in.ProjectRoot, in.Slug), cfg)
 	took := time.Since(start).Round(time.Second)
 	tail := lastLines(out, checkTailLines)
 	record := fmt.Sprintf("command: %s\nexit: %d\nduration: %s\nhead: %s\n", cfg.Cmd, code, took, sha)
@@ -152,6 +137,39 @@ func EngineerCheck(in EngineerCheckInput) (EngineerCheckResult, error) {
 			"Reviewers stay held until it passes. Fix the failure, commit, and end your turn again.\n"+
 			"--- last %d lines ---\n%s",
 		cfg.Cmd, code, short, round, n, task.MaxCheckAttempts, checkTailLines, tail)}, nil
+}
+
+// checkTarget names the engineer round and worktree HEAD the gate
+// would check now; ok is false when there is nothing to run: no
+// response, a stop mid-revision, or a pass or give-up already
+// recorded for that round at HEAD.
+func checkTarget(in EngineerCheckInput) (round int, sha string, ok bool, err error) {
+	rounds, err := task.ListEngineerRounds(in.ProjectRoot, in.Slug)
+	if err != nil || len(rounds) == 0 {
+		return 0, "", false, err
+	}
+	round = rounds[len(rounds)-1]
+	if revising, err := task.RevisionPending(in.ProjectRoot, in.Slug, round); err != nil || revising {
+		return 0, "", false, err
+	}
+	sha, err = task.HeadSHA(task.TaskWorktree(in.ProjectRoot, in.Slug))
+	if err != nil {
+		return 0, "", false, err
+	}
+	state, err := task.ReadCheckState(in.ProjectRoot, in.Slug, round, sha)
+	if err != nil || state != task.CheckPending {
+		return 0, "", false, err
+	}
+	return round, sha, true, nil
+}
+
+// checkLockWait bounds the wait for a concurrent run so the wait plus
+// this run's own check still fit in the Stop hook timeout; a hook
+// killed by the harness records nothing.
+func checkLockWait(cfg task.EngineerCheck) time.Duration {
+	run := time.Duration(cfg.TimeoutSeconds) * time.Second
+	budget := time.Duration(task.EngineerCheckHookTimeout)*time.Second - run - checkLockGrace
+	return max(0, min(run+checkLockGrace, budget))
 }
 
 // runCheck runs cfg.Cmd under sh in dir, bounded by cfg.TimeoutSeconds,
@@ -215,16 +233,18 @@ var checkLockPoll = 200 * time.Millisecond
 
 var errCheckLockTimeout = errors.New("check lock held past the wait")
 
-// lockCheckRun takes an exclusive flock on path, waiting up to wait for
-// a concurrent holder. waited reports whether it had to: the caller
-// then re-reads the gate, since the other run may have settled it.
-func lockCheckRun(path string, wait time.Duration) (unlock func(), waited bool, err error) {
+// lockCheckRun takes an exclusive flock on path, waiting up to wait
+// for a concurrent holder, and stamps the file with its own start
+// time. holderStart is the start time the holder stamped when this
+// call had to wait (zero when it did not): attempts written since then
+// are that holder's, so the caller can reuse its result.
+func lockCheckRun(path string, wait time.Duration) (unlock func(), holderStart time.Time, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, false, err
+		return nil, time.Time{}, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, false, err
+		return nil, time.Time{}, err
 	}
 	deadline := time.Now().Add(wait)
 	for {
@@ -234,17 +254,35 @@ func lockCheckRun(path string, wait time.Duration) (unlock func(), waited bool, 
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			_ = f.Close()
-			return nil, false, fmt.Errorf("flock %s: %w", path, err)
+			return nil, time.Time{}, fmt.Errorf("flock %s: %w", path, err)
 		}
-		if time.Now().After(deadline) {
+		if holderStart.IsZero() {
+			holderStart = readLockStamp(path)
+		}
+		if !time.Now().Before(deadline) {
 			_ = f.Close()
-			return nil, true, errCheckLockTimeout
+			return nil, holderStart, errCheckLockTimeout
 		}
-		waited = true
 		time.Sleep(checkLockPoll)
+	}
+	if err := f.Truncate(0); err == nil {
+		_, _ = f.WriteAt([]byte(time.Now().Format(time.RFC3339Nano)), 0)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, waited, nil
+	}, holderStart, nil
+}
+
+// readLockStamp reads the holder's start time from the lock file. An
+// unreadable stamp falls back to the Unix epoch: still non-zero, so
+// the caller re-reads the gate, and any attempt counts as the holder's.
+func readLockStamp(path string) time.Time {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b))); err == nil {
+			return t
+		}
+	}
+	return time.Unix(0, 0)
 }

@@ -175,6 +175,33 @@ func CountCheckAttempts(projectRoot, slug string, round int, sha string) (int, e
 	return n, nil
 }
 
+// LatestCheckAttemptSince returns the path of the highest attempt slot
+// for round and sha written at or after both since and the response,
+// or "" when none was.
+func LatestCheckAttemptSince(projectRoot, slug string, round int, sha string, since time.Time) (string, error) {
+	resp, err := os.Stat(EngineerResponsePath(projectRoot, slug, round))
+	if err != nil {
+		return "", err
+	}
+	if resp.ModTime().After(since) {
+		since = resp.ModTime()
+	}
+	latest := ""
+	for i := 1; ; i++ {
+		p := CheckAttemptPath(projectRoot, slug, round, sha, i)
+		st, err := os.Stat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return latest, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if !st.ModTime().Before(since) {
+			latest = p
+		}
+	}
+}
+
 // WriteCheckAttempt records a failing run in the first free attempt
 // slot for round and sha. The slot is claimed with O_EXCL, so a manual
 // run racing the Stop hook cannot overwrite the other's attempt; stale

@@ -308,7 +308,7 @@ killed):
 A newer response re-arms the gate, and so does a commit (new sha).
 The hook reads no stdin, so the engineer can run it by hand.
 
-Runs on one round are serialised by a flock on `state/check-N.lock`: a second run (the Stop hook racing a manual run) waits for the first, up to `check_timeout_seconds` plus 30s. If the first one recorded a pass or give-up for the same HEAD, the second returns without running; if it recorded a failing attempt, the second blocks with that attempt's output instead of rerunning. A holder that outlives the wait leaves the second run a clean exit (stop let through, nothing recorded); the driver still holds reviewers.
+Runs on one round are serialised by a flock on `state/check-N.lock`, which the holder stamps with its start time. A second run (the Stop hook racing a manual run) waits for the first, up to `check_timeout_seconds` plus 30s but never so long that the wait plus its own run would pass the 3600s hook timeout. Then it re-reads the gate: if the first run recorded a pass or give-up, or the engineer wrote a newer round meanwhile, it returns without running; if the first run recorded a failing attempt (any attempt written since the holder's stamp), it blocks with that attempt's output instead of rerunning. A holder that outlives the wait leaves the second run a clean exit (stop let through, nothing recorded); the driver still holds reviewers.
 
 The driver records the gate in the snapshot (`Check`, `CheckSHA`;
 `spore task status` prints a `check:` line, and while the check is pending its phase line reads `review-A (held: check)` so the hold does not look like a running reviewer) for the latest engineer

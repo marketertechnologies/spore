@@ -97,3 +97,82 @@ func TestEngineerCheckLockTimeoutExitsCleanly(t *testing.T) {
 		t.Errorf("check ran %d times, want 0", n)
 	}
 }
+
+// waitOnHeldLock runs EngineerCheck while the test holds the round's
+// lock, calls during once the run is waiting, then releases.
+func waitOnHeldLock(t *testing.T, in EngineerCheckInput, round int, before, during func()) EngineerCheckResult {
+	t.Helper()
+	unlock, _, err := lockCheckRun(task.CheckLockPath(in.ProjectRoot, "demo", round), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before()
+	done := make(chan EngineerCheckResult)
+	go func() {
+		res, err := EngineerCheck(in)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- res
+	}()
+	time.Sleep(3 * checkLockPoll)
+	during()
+	unlock()
+	return <-done
+}
+
+// The waiter shows the holder's attempt, not a stale slot from before
+// a rewritten response, even when the holder wrote it before the
+// waiter started waiting.
+func TestEngineerCheckWaiterShowsHolderAttempt(t *testing.T) {
+	in, runs := checkFixture(t, "exit 1")
+	sha := headOf(t, in.ProjectRoot)
+	if err := task.WriteCheckAttempt(in.ProjectRoot, "demo", 1, sha, "stale tail\n"); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(task.CheckAttemptPath(in.ProjectRoot, "demo", 1, sha, 1), old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeResponse(t, in.ProjectRoot, 1)
+	res := waitOnHeldLock(t, in, 1, func() {
+		if err := task.WriteCheckAttempt(in.ProjectRoot, "demo", 1, sha, "holder tail\n"); err != nil {
+			t.Fatal(err)
+		}
+	}, func() {})
+	if res.Code != 2 || !strings.Contains(res.Stderr, "holder tail") || strings.Contains(res.Stderr, "stale tail") || !strings.Contains(res.Stderr, "attempt 1/3") {
+		t.Fatalf("%+v, want the holder's attempt 1/3", res)
+	}
+	if n := checkRuns(t, runs); n != 0 {
+		t.Errorf("check ran %d times, want 0", n)
+	}
+}
+
+// A new engineer round written while the run waited is left to that
+// round's own stop: the waiter checks nothing.
+func TestEngineerCheckWaiterSkipsSupersededRound(t *testing.T) {
+	in, runs := checkFixture(t, "true")
+	writeResponse(t, in.ProjectRoot, 1)
+	res := waitOnHeldLock(t, in, 1, func() {}, func() { writeResponse(t, in.ProjectRoot, 2) })
+	if res.Code != 0 || res.Stderr != "" {
+		t.Fatalf("%+v, want a silent exit", res)
+	}
+	if n := checkRuns(t, runs); n != 0 {
+		t.Errorf("check ran %d times, want 0", n)
+	}
+}
+
+func TestCheckLockWaitFitsHookTimeout(t *testing.T) {
+	for _, c := range []struct {
+		timeout int
+		want    time.Duration
+	}{
+		{900, 930 * time.Second},
+		{3000, 570 * time.Second},
+		{task.MaxEngineerCheckTimeoutSeconds, 30 * time.Second},
+	} {
+		if got := checkLockWait(task.EngineerCheck{TimeoutSeconds: c.timeout}); got != c.want {
+			t.Errorf("timeout %d: wait %s, want %s", c.timeout, got, c.want)
+		}
+	}
+}
