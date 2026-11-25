@@ -159,8 +159,8 @@ func TestRunTaskTellRoleTaskWithoutPaneErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(inbox); len(entries) != 0 {
-		t.Errorf("role tell wrote %d inbox entries nobody reads", len(entries))
+	if n := inboxMessages(t, inbox); n != 0 {
+		t.Errorf("role tell wrote %d inbox entries nobody reads", n)
 	}
 
 	if err := runTaskTell([]string{"plain", "hello"}); err != nil {
@@ -170,8 +170,8 @@ func TestRunTaskTellRoleTaskWithoutPaneErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(inbox); len(entries) != 1 {
-		t.Errorf("plain tell inbox has %d entries, want 1", len(entries))
+	if n := inboxMessages(t, inbox); n != 1 {
+		t.Errorf("plain tell inbox has %d entries, want 1", n)
 	}
 
 	if err := os.WriteFile(filepath.Join("tasks", "broken.md"), []byte("no frontmatter\n"), 0o644); err != nil {
@@ -184,7 +184,23 @@ func TestRunTaskTellRoleTaskWithoutPaneErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := os.ReadDir(inbox); len(entries) != 1 {
-		t.Errorf("unparseable task inbox has %d entries, want 1", len(entries))
+	if n := inboxMessages(t, inbox); n != 1 {
+		t.Errorf("unparseable task inbox has %d entries, want 1", n)
 	}
+}
+
+// inboxMessages counts published messages, skipping the .tmp staging dir.
+func inboxMessages(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			n++
+		}
+	}
+	return n
 }
