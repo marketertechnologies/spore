@@ -191,3 +191,122 @@ func TestReconcileCapsWorkerCrashLoop(t *testing.T) {
 		t.Errorf("after healthy run: guard = %+v, want judged healthy with 0 deaths", g)
 	}
 }
+
+// launchScript writes an agent script that logs each launch, then runs
+// tail (a shell snippet).
+func launchScript(t *testing.T, tail string) (agent, log string) {
+	t.Helper()
+	dir := t.TempDir()
+	log = filepath.Join(dir, "launches.log")
+	agent = filepath.Join(dir, "agent.sh")
+	body := fmt.Sprintf("#!/bin/sh\necho launch >> %s\n%s\n", log, tail)
+	if err := os.WriteFile(agent, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return agent, log
+}
+
+func launches(t *testing.T, log string) int {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(b), "launch")
+}
+
+// A coordinator that dies on spawn must not abort the pass: the worker
+// still spawns. After MaxFastDeaths the pass stops trying and tells the
+// coordinator inbox once.
+func TestReconcileCoordinatorDiesOnSpawnKeepsPassAlive(t *testing.T) {
+	requireToolchain(t)
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	agent, log := launchScript(t, "exit 1")
+	t.Setenv("SPORE_COORDINATOR_AGENT", agent)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	now := fakeClock(t)
+	writeTask(t, dirs.tasks, "w1", "active")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	for pass := range MaxFastDeaths + 2 {
+		r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3})
+		if err != nil {
+			t.Fatalf("pass %d: Reconcile aborted: %v", pass, err)
+		}
+		if pass == 0 && !equalSlices(r.Spawned, []string{"w1"}) {
+			t.Errorf("Spawned = %v, want [w1]", r.Spawned)
+		}
+		if len(r.Warnings) == 0 || !strings.Contains(r.Warnings[0], "coordinator") {
+			t.Errorf("pass %d: warnings = %q, want a coordinator warning", pass, r.Warnings)
+		}
+		*now = now.Add(5 * time.Second)
+	}
+	if n := launches(t, log); n != MaxFastDeaths {
+		t.Errorf("coordinator launches = %d, want %d", n, MaxFastDeaths)
+	}
+	if n := fleetNotices(t, dirs.project); len(n) != 1 || !strings.Contains(n[0], "coordinator") {
+		t.Errorf("notices = %q, want one coordinator notice", n)
+	}
+}
+
+// A launcher that falls back to an idle shell keeps the session alive
+// after the agent exits. The pass must see through it and respawn.
+func TestReconcileRespawnsCoordinatorBehindGreetShell(t *testing.T) {
+	requireToolchain(t)
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("needs /proc")
+	}
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	agent, log := launchScript(t, "exec sh")
+	t.Setenv("SPORE_COORDINATOR_AGENT", agent)
+	prev := coordinatorGrace
+	coordinatorGrace = 0
+	t.Cleanup(func() { coordinatorGrace = prev })
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	session := CoordinatorSessionName(dirs.project)
+	for range 3 {
+		if _, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := launches(t, log); n != 3 {
+		t.Errorf("launches = %d, want 3 (one per pass: the idle shell is a dead agent)", n)
+	}
+	if !hasSession(session) {
+		t.Errorf("coordinator session gone; want the latest respawn alive")
+	}
+}
+
+// An agent run as a child of a launcher shell is alive: only an idle
+// shell counts as an exit.
+func TestCoordinatorAgentGoneSeesChildOfLauncherShell(t *testing.T) {
+	requireToolchain(t)
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("needs /proc")
+	}
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	agent, log := launchScript(t, "sleep 300\nexit 0")
+	// Run through sh so the pane process shows as a shell, like a
+	// bash launcher script does.
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sh "+agent)
+	prev := coordinatorGrace
+	coordinatorGrace = 0
+	t.Cleanup(func() { coordinatorGrace = prev })
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	for range 3 {
+		if _, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := launches(t, log); n != 1 {
+		t.Errorf("launches = %d, want 1 (a launcher running the agent as a child is alive)", n)
+	}
+}

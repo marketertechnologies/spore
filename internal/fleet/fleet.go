@@ -94,6 +94,7 @@ func Reconcile(cfg Config) (Result, error) {
 		// is a kernel singleton with no operator-attached state worth
 		// preserving, so we tear it down with the flag.
 		ReapCoordinator(cfg.ProjectRoot)
+		clearGuard(coordinatorGuardPath(cfg.ProjectRoot))
 		return Result{Disabled: true}, nil
 	}
 
@@ -101,9 +102,7 @@ func Reconcile(cfg Config) (Result, error) {
 		cfg.MaxWorkers = DefaultMaxWorkers
 	}
 
-	if _, _, err := EnsureCoordinator(cfg.ProjectRoot); err != nil {
-		return Result{}, fmt.Errorf("coordinator: %w", err)
-	}
+	coordinatorWarning := superviseCoordinator(cfg.ProjectRoot)
 
 	matterRes := syncMatters(cfg.ProjectRoot)
 
@@ -144,6 +143,9 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 
 	res := Result{Matter: matterRes}
+	if coordinatorWarning != "" {
+		res.warn(coordinatorWarning)
+	}
 	res.Warnings = append(res.Warnings, noticeBadTasks(cfg.ProjectRoot, badTasks)...)
 
 	// Reap first so freed slots count toward the cap on spawn.

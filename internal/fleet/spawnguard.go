@@ -60,8 +60,13 @@ func clearGuard(path string) { _ = os.Remove(path) }
 
 // alive records a pass that saw the agent running. Once the pending
 // spawn has been up for FastDeathWindow the run is healthy and the
-// death count resets.
+// death count resets. A live agent after a capped streak was started
+// outside the reconciler (by hand); its run is judged from now.
 func (g *spawnGuard) alive(now time.Time) {
+	if !g.Pending && g.Deaths > 0 {
+		g.spawned(now)
+		return
+	}
 	if g.Pending && now.Sub(time.Unix(g.Spawned, 0)) >= FastDeathWindow {
 		g.Pending = false
 		g.Deaths = 0
