@@ -132,7 +132,7 @@ func RaiseAlert(a Alert) error {
 	now := alertNow()
 	var errs []error
 	if a.PaneID != "" {
-		errs = append(errs, writeFailedPane(dir, FailedPane{
+		errs = append(errs, RecordFailedPane(FailedPane{
 			Kind: a.Kind, PaneID: a.PaneID, Session: a.Session, Project: a.Project, Ts: now,
 		}))
 	}
@@ -251,7 +251,12 @@ func failedPanePath(dir, paneID string) string {
 	return filepath.Join(dir, "panes", strings.TrimPrefix(paneID, "%")+".json")
 }
 
-func writeFailedPane(dir string, fp FailedPane) error {
+// RecordFailedPane writes (or replaces) the pane's failed record.
+func RecordFailedPane(fp FailedPane) error {
+	dir := AlertsDir()
+	if err := os.MkdirAll(filepath.Join(dir, "panes"), 0o700); err != nil {
+		return err
+	}
 	b, err := json.Marshal(fp)
 	if err != nil {
 		return err

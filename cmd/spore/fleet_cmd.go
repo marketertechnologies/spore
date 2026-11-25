@@ -10,6 +10,7 @@ import (
 
 	"github.com/versality/spore/internal/budget"
 	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 
 	// Linear is the first matter adapter; the side-effect import
@@ -27,6 +28,7 @@ Usage:
   spore fleet enable
   spore fleet disable
   spore fleet status
+  spore fleet nudge [--dry-run]
   spore fleet worker-agent [claude|codex | --clear]
 
 Subcommands:
@@ -46,8 +48,15 @@ Subcommands:
                   spawning on the next pass).
   disable         Remove the kill-switch flag (the reconciler stops
                   spawning; running sessions are left alone).
-  status          Print the kill-switch state plus the list of slugs whose
-                  session is currently alive.
+  status          Print the kill-switch state, any active usage-limit or
+                  login alert, and the list of slugs whose session is
+                  currently alive.
+  nudge           Resume every agent pane stopped by an API error (usage
+                  limit, expired login): type a "continue" message into
+                  each pane the StopFailure hook recorded, plus any spore
+                  pane whose screen shows the error. Run it once after
+                  /login or after the limit clears. Host-wide; never
+                  types into spore/pilot/ sessions. --dry-run lists them.
   worker-agent    Print the effective [fleet.workers] default agent and its
                   source. With claude|codex, write it to the host-side
                   overlay (<state dir>/workers.toml, which beats
@@ -80,6 +89,8 @@ func runFleet(args []string) error {
 		return runFleetDisable(rest)
 	case "status":
 		return runFleetStatus(rest)
+	case "nudge":
+		return runFleetNudge(rest)
 	case "worker-agent":
 		return runFleetWorkerAgent(rest)
 	default:
@@ -184,6 +195,9 @@ func runFleetStatus(args []string) error {
 	} else {
 		fmt.Println("fleet: disabled")
 	}
+	for _, a := range hooks.ActiveAlerts() {
+		fmt.Println("alert:", a)
+	}
 
 	root, err := os.Getwd()
 	if err != nil {
@@ -200,6 +214,33 @@ func runFleetStatus(args []string) error {
 	fmt.Println("sessions:")
 	for _, s := range slugs {
 		fmt.Printf("  %s\n", s)
+	}
+	return nil
+}
+
+func runFleetNudge(args []string) error {
+	fs := flag.NewFlagSet("fleet nudge", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "list the panes without typing into them")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return fmt.Errorf("usage: spore fleet nudge [--dry-run]")
+	}
+	res, err := fleet.Nudge(*dryRun)
+	if err != nil {
+		return err
+	}
+	verb := "nudged"
+	if *dryRun {
+		verb = "would nudge"
+	}
+	for _, s := range res.Nudged {
+		fmt.Printf("%s: %s\n", verb, s)
+	}
+	for _, s := range res.Skipped {
+		fmt.Printf("skipped: %s\n", s)
+	}
+	if len(res.Nudged)+len(res.Skipped) == 0 {
+		fmt.Println("nudge: no stopped panes found")
 	}
 	return nil
 }
