@@ -60,8 +60,9 @@ type Result struct {
 	// tasks are on disk.
 	Matter []MatterResult
 
-	// Warnings are non-fatal oddities found in task frontmatter, also
-	// printed to stderr as they are found.
+	// Warnings are non-fatal problems found during the pass (bad task
+	// files, a task that failed to spawn or reap), also printed to
+	// stderr as they are found.
 	Warnings []string
 }
 
@@ -102,7 +103,7 @@ func Reconcile(cfg Config) (Result, error) {
 
 	matterRes := syncMatters(cfg.ProjectRoot)
 
-	metas, err := task.List(cfg.TasksDir)
+	metas, badTasks, err := scanTasks(cfg.TasksDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -139,6 +140,7 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 
 	res := Result{Matter: matterRes}
+	res.Warnings = append(res.Warnings, noticeBadTasks(cfg.ProjectRoot, badTasks)...)
 
 	// Reap first so freed slots count toward the cap on spawn.
 	// Sessions for tasks the operator paused or blocked are kept
@@ -152,7 +154,8 @@ func Reconcile(cfg Config) (Result, error) {
 			continue
 		}
 		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
-			return res, fmt.Errorf("reap %s: %w", slug, err)
+			res.warn(fmt.Sprintf("reap %s: %v", slug, err))
+			continue
 		}
 		res.Reaped = append(res.Reaped, slug)
 		delete(runningSet, slug)
@@ -206,9 +209,7 @@ func Reconcile(cfg Config) (Result, error) {
 		case m.Loop == task.LoopRole:
 			roleLooped[m.Slug] = true
 		case m.Loop != "" && m.Status == "active":
-			w := fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole)
-			fmt.Fprintln(os.Stderr, w)
-			res.Warnings = append(res.Warnings, w)
+			res.warn(fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole))
 		}
 	}
 
@@ -225,10 +226,12 @@ func Reconcile(cfg Config) (Result, error) {
 		}
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
-			return res, fmt.Errorf("assign agent %s: %w", slug, err)
+			res.warn(fmt.Sprintf("assign agent %s: %v", slug, err))
+			continue
 		}
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
-			return res, fmt.Errorf("ensure %s: %w", slug, err)
+			res.warn(fmt.Sprintf("ensure %s: %v", slug, err))
+			continue
 		}
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
@@ -264,6 +267,12 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
 	return res, nil
+}
+
+// warn records a per-task failure that must not abort the pass.
+func (r *Result) warn(w string) {
+	fmt.Fprintln(os.Stderr, w)
+	r.Warnings = append(r.Warnings, w)
 }
 
 // agentCountsFromMetas tallies the agent name carried in the
