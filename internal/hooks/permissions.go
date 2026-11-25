@@ -22,12 +22,14 @@ var kernelDeny = []string{"SendMessage"}
 // spore-with-secrets working. Rules are matched per subcommand of a
 // compound command and past leading env assignments. The Bash
 // credentials rule catches readers the Read rule does not know
-// (base64, grep, jq) by path substring; claude-code itself still
+// (base64, grep, jq) by path substring, and the Edit rule (which
+// also covers Write) stops an agent logging the host out; claude-code itself still
 // reads the file, outside its own tools.
 var defaultDeny = []string{
 	"Read(~/.config/spore/**/secrets.env)",
 	"Read(~/.config/spore/**/*.pem)",
 	"Read(~/.claude/.credentials.json)",
+	"Edit(~/.claude/.credentials.json)",
 	"Bash(*.claude/.credentials.json*)",
 	"Bash(git push --force *)",
 	"Bash(git push -f *)",

@@ -115,8 +115,10 @@ func bashRuleMatches(rule, cmd string) bool {
 
 func TestDefaultDeny_ClaudeCredentials(t *testing.T) {
 	deny := DefaultDeny()
-	if !slices.Contains(deny, "Read(~/.claude/.credentials.json)") {
-		t.Fatalf("deny lacks the Read rule for ~/.claude/.credentials.json: %q", deny)
+	for _, rule := range []string{"Read(~/.claude/.credentials.json)", "Edit(~/.claude/.credentials.json)"} {
+		if !slices.Contains(deny, rule) {
+			t.Fatalf("deny lacks %s: %q", rule, deny)
+		}
 	}
 	denied := func(cmd string) bool {
 		for _, r := range deny {
@@ -129,7 +131,7 @@ func TestDefaultDeny_ClaudeCredentials(t *testing.T) {
 	for _, cmd := range []string{
 		"cat ~/.claude/.credentials.json",
 		"base64 ~/.claude/.credentials.json",
-		"grep . /home/spore/.claude/.credentials.json",
+		"grep . /home/user/.claude/.credentials.json",
 		"jq .claudeAiOauth $HOME/.claude/.credentials.json",
 		"cp ~/.claude/.credentials.json /tmp/c",
 		"tar czf x.tgz ~/.claude/.credentials.json*",

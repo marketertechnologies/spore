@@ -70,7 +70,7 @@ if [ -f "$DROPIN" ]; then
   done
   [ "$missing" = 0 ] && pass "every $SW path in the drop-in exists"
   deny="$(jq -r '.permissions.deny[]?' "$DROPIN")"
-  for rule in SendMessage 'Read(~/.config/spore/**/secrets.env)' 'Read(~/.claude/.credentials.json)' 'Bash(git push --force *)'; do
+  for rule in SendMessage 'Read(~/.config/spore/**/secrets.env)' 'Read(~/.claude/.credentials.json)' 'Edit(~/.claude/.credentials.json)' 'Bash(*.claude/.credentials.json*)' 'Bash(git push --force *)'; do
     grep -qxF "$rule" <<<"$deny" || fail "drop-in deny lacks $rule"
   done
   for cmd in 'hooks pretooluse' 'hooks engineer-check' 'hooks watch-inbox' 'load-state-md.pl' 'block-bg-bash.pl'; do

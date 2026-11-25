@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Credentials deny (0.40.9): the default `permissions.deny` set gains `Read(~/.claude/.credentials.json)` and `Bash(*.claude/.credentials.json*)`, so an agent's Read tool and Bash commands that name the Claude login file (`cat`, `base64`, `grep`, `jq`, `cp`) are denied. Claude Code still reads the file itself; the rules are a speed bump like the `secrets.env` ones. Rendered into the project settings, the managed drop-in and the handover `settings.json`.
+- Credentials deny (0.40.9): the default `permissions.deny` set gains `Read(~/.claude/.credentials.json)`, `Edit(~/.claude/.credentials.json)` and `Bash(*.claude/.credentials.json*)`, so an agent's Read, Edit and Write tools and Bash commands that name the Claude login file (`cat`, `base64`, `grep`, `jq`, `cp`) are denied. Claude Code still reads the file itself; the rules are a speed bump like the `secrets.env` ones. Rendered into the project settings, the managed drop-in and the handover `settings.json`.
 - Role-loop fixes (0.40.4): with `[fleet.roles.engineer] check` set, the draft-PR mirror holds the push and PR reply for an engineer round until its check passes at HEAD; `spore task done` and `spore task merge` kill the task's `spore-role/...` panes; `spore task done` counts unmerged commits against the task's `base:` (local or `origin/<base>`) instead of main; concurrent `spore hooks engineer-check` runs on one round are serialised by a lock and the waiter reuses the first run's result; `spore task status` prints `review-A (held: check)` while the check is pending.
 - Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
   mode, and a 200-line root target, following Claude Code's current

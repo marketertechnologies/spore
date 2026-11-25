@@ -12,7 +12,8 @@ Claude Code evaluates `permissions.deny` in every mode, including `bypassPermiss
 | `Read(~/.config/spore/**/secrets.env)` | Keeps layered secrets out of the transcript. |
 | `Read(~/.config/spore/**/*.pem)` | Keeps GitHub App private keys out of the transcript. |
 | `Read(~/.claude/.credentials.json)` | Keeps Claude's own OAuth login out of the transcript. |
-| `Bash(*.claude/.credentials.json*)` | Same file, for any Bash command whose text names it (`base64`, `grep`, `jq`, `cp`), which the Read rule does not recognize. Matches the path text, so `/home/<user>/.claude/...` and `$HOME/.claude/...` are covered too. A command that only mentions the path (`rg '.claude/.credentials.json' docs/`) is denied as well. |
+| `Edit(~/.claude/.credentials.json)` | Stops the Edit and Write tools overwriting the login, which would log out every Claude Code session on the host. Claude Code's own token refresh writes the file outside its tools. |
+| `Bash(*.claude/.credentials.json*)` | Same file, for any Bash command whose text names it (`base64`, `grep`, `jq`, `cp`), which the Read rule does not recognize. Matches the path text, so `/home/<user>/.claude/...` and `$HOME/.claude/...` are covered too. A command that only mentions the path is denied as well: `rg '.claude/.credentials.json' docs/`, a `git commit -m` naming the file, a `sed` edit of a doc that names it, or `AGENT_BUDGET_CREDS=~/.claude/.credentials.json spore budget refresh` (plain `spore budget refresh` uses that path by default and passes). Reword the command or drop the explicit path. |
 | `Bash(git push --force *)`, `Bash(git push -f *)` | Force push with the flag first. |
 | `Bash(git push * --force)`, `Bash(git push * --force *)`, `Bash(git push * -f)`, `Bash(git push * -f *)` | Force push with the flag after the remote or refspec. |
 

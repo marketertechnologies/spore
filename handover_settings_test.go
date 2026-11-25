@@ -35,7 +35,7 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 	if !reflect.DeepEqual(settings.Permissions.Deny, hooks.DefaultDeny()) {
 		t.Fatalf("handover permissions.deny drifted from hooks.DefaultDeny():\ngot  %q\nwant %q", settings.Permissions.Deny, hooks.DefaultDeny())
 	}
-	for _, rule := range []string{"Read(~/.claude/.credentials.json)", "Bash(*.claude/.credentials.json*)"} {
+	for _, rule := range []string{"Read(~/.claude/.credentials.json)", "Edit(~/.claude/.credentials.json)", "Bash(*.claude/.credentials.json*)"} {
 		if !slices.Contains(settings.Permissions.Deny, rule) {
 			t.Fatalf("handover permissions.deny lacks %s", rule)
 		}
