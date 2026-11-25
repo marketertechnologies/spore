@@ -710,3 +710,48 @@ func TestGitHubMirrorPRDescriptionFailureStillMarksReady(t *testing.T) {
 		t.Errorf("coordinator not told about the failed edit")
 	}
 }
+
+// With an engineer check configured, an engineer round reaches GitHub
+// (push and PR reply) only once its pass marker exists for the
+// worktree HEAD; a give-up or a stale pass keeps the round off GitHub.
+func TestGitHubMirrorHoldsEngineerRoundUntilCheckPasses(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	if err := os.WriteFile(filepath.Join(f.root, "spore.toml"), []byte("[fleet.roles.engineer]\ncheck = \"just check\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	if c := f.calls(t); c != nil {
+		t.Fatalf("round 1 mirrored before its check passed: %v", c)
+	}
+	if _, err := exec.Command("git", "-C", f.bare, "rev-parse", "--verify", "-q", "refs/heads/wt/demo").Output(); err == nil {
+		t.Fatal("branch pushed before the check passed")
+	}
+	head1 := runGit(t, f.wt, "rev-parse", "HEAD")
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 1, head1))
+	f.tick(t)
+	if f.bareHead(t) != head1 || f.state(t).PRNumber != 12 {
+		t.Fatalf("round 1 not mirrored after the check passed: %v", f.calls(t))
+	}
+
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	f.tick(t)
+	before := len(f.calls(t))
+	writeEng(2)(t, f.root, f.slug)
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 2, head1))
+	head2 := f.commit(t, "two")
+	f.tick(t)
+	touchMarker(t, task.CheckFailedPath(f.root, f.slug, 2, head2))
+	f.tick(t)
+	if got := f.calls(t); len(got) != before || f.bareHead(t) != head1 {
+		t.Fatalf("round 2 mirrored without a pass at HEAD: %v", got[before:])
+	}
+	if st := f.state(t); st.posted("engineer-round-2.json") {
+		t.Fatal("round 2 marked posted while held")
+	}
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 2, head2))
+	f.tick(t)
+	if got := f.calls(t); len(got) != before+1 || got[before] != "pr comment 12 --body-file -" || f.bareHead(t) != head2 {
+		t.Fatalf("round 2 after pass: calls %v, head %s", got[before:], f.bareHead(t))
+	}
+}

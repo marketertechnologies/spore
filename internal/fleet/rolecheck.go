@@ -76,3 +76,38 @@ func readCheckGate(projectRoot, slug string, snap *Snapshot) error {
 	snap.Check, err = task.ReadCheckState(projectRoot, slug, snap.EngineerRound, sha)
 	return err
 }
+
+// holdForCheck cuts pending at the latest engineer round's event while
+// the engineer check is configured and that round has no pass marker
+// at the worktree HEAD, so neither the push nor the PR reply (nor
+// anything after them) reaches GitHub before the check is green. A
+// give-up (check-failed) keeps holding: the round lands once a later
+// round passes. PhaseDone releases the hold, since the engineer pane
+// is gone and nothing would ever record a pass.
+func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) ([]mirrorEvent, error) {
+	if snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
+		return pending, nil
+	}
+	cut := -1
+	for i, e := range pending {
+		if e.kind == eventEngineer && e.round == snap.EngineerRound {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return pending, nil
+	}
+	sha, err := task.HeadSHA(task.TaskWorktree(projectRoot, slug))
+	if err != nil {
+		sha = ""
+	}
+	state, err := task.ReadCheckState(projectRoot, slug, snap.EngineerRound, sha)
+	if err != nil {
+		return nil, err
+	}
+	if state == task.CheckPassed {
+		return pending, nil
+	}
+	return pending[:cut], nil
+}
