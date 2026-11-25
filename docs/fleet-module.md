@@ -205,6 +205,18 @@ stock NixOS tmux module does not reset scrollback to 2000.
 
 The full option reference lives in `nixosModules/spore-fleet.nix`.
 
+## Reconcile pass resilience
+
+One bad task, one crashing agent or one hung call must not stop the fleet. Each pass:
+
+- **Counts agents against `max_workers`.** A worker session takes one slot; a `loop: role` task with any live pane (engineer plus reviewers) takes one slot too. Running units keep their slot; new ones fill free slots in task order and the rest are listed as skipped. Paused and blocked tasks whose session is still alive keep counting.
+- **Caps crash loops.** A worker or coordinator that dies before any pass saw it alive for 60s is a fast death. After 3 in a row the pass stops respawning it, lists it as crash-looped, and tells the coordinator inbox once. A healthy run resets the count. To retry a worker, pause the task and start it again; to retry the coordinator, start it by hand (`spore coordinator start`) or run a pass with the fleet disabled. Records live under `<state dir>/<project>/fleet/`. Role panes use their per-round cap (see `docs/role-loop.md`); a role session that vanishes before it ran 60s counts toward it.
+- **Sees through a greet shell.** A coordinator session whose first pane is dead, or is an idle shell with no child process after 30s (a launcher that fell back to its greet shell), is killed and respawned under the same cap. A launcher that runs the agent as a child is alive.
+- **Skips bad task files.** A `tasks/*.md` with no frontmatter, no `slug`, a slug that does not match the file name, or a slug that cannot name `wt/<slug>` is skipped with one coordinator notice per file and reason. A task that fails to spawn or reap is a warning. Neither aborts the pass, and a coordinator that fails to spawn does not either.
+- **Time-boxes calls.** Each git, tmux and matter call gets `SPORE_FLEET_CALL_TIMEOUT` (default `2m`) and is killed with its process group past it. The whole pass gets `SPORE_FLEET_PASS_TIMEOUT` (default `10m`); past it in-flight calls are killed and `spore fleet reconcile` exits non-zero. The module sets `TimeoutStartSec=15min` on each reconcile oneshot as the outer bound; raise `SPORE_FLEET_PASS_TIMEOUT` through `extraEnv` only together with it.
+
+`spore fleet replenish-hook` (the coordinator Stop hook) reconciles only when the cwd's repo is the session's own project (`$SPORE_PROJECT_ROOT`, else a repo named `$WT_PROJECT`), so an agent started from a coordinator pane in another repo does not spawn a stray coordinator there.
+
 ## Horizontal Scale
 
 Capacity scales additively by enabling the module on multiple hosts
