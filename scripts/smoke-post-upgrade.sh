@@ -84,8 +84,15 @@ fi
 would_prune() {
   local src="$1" copy="$tmp/prune-$RANDOM.json" out
   cp "$src" "$copy"
-  out="$("$SW/bin/spore" hooks prune-settings --file "$copy" --managed-file "$DROPIN" 2>&1)"
-  grep -F 'removed' <<<"$out" | sed "s|$copy|$src|"
+  if ! out="$("$SW/bin/spore" hooks prune-settings --file "$copy" --managed-file "$DROPIN" 2>&1)"; then
+    printf 'prune-settings failed: %s\n' "$out"
+    return 1
+  fi
+  if grep -qF 'left as is' <<<"$out"; then
+    printf 'prune-settings skipped it: %s\n' "$out"
+    return 1
+  fi
+  grep -F 'removed' <<<"$out" | sed "s|$copy|$src|" || true
 }
 
 # 3. User settings: migration 004 backed up and pruned.
@@ -98,8 +105,8 @@ fi
 if [ -L "$us" ]; then
   warn "$us is a symlink; prune its source by hand"
 elif [ -f "$us" ] && [ -f "$DROPIN" ] && [ -x "$SW/bin/spore" ]; then
-  left="$(would_prune "$us")"
-  if [ -z "$left" ]; then pass "$us carries nothing the drop-in provides"; else fail "$us still duplicates:"$'\n'"$left"; fi
+  if ! left="$(would_prune "$us")"; then fail "$us: $left"
+  elif [ -z "$left" ]; then pass "$us carries nothing the drop-in provides"; else fail "$us still duplicates:"$'\n'"$left"; fi
 fi
 
 # 4. Repo settings: duplicated hooks run twice.
@@ -107,8 +114,8 @@ if [ "$#" -gt 0 ]; then repos=("$@"); else repos=("$HOME"/*/); fi
 for r in "${repos[@]}"; do
   f="${r%/}/.claude/settings.json"
   [ -f "$f" ] && [ -f "$DROPIN" ] && [ -x "$SW/bin/spore" ] || continue
-  left="$(would_prune "$f")"
-  if [ -z "$left" ]; then pass "$f: no duplicated hooks"; else fail "$f duplicates (run 'spore hooks prune-settings --file $f'):"$'\n'"$left"; fi
+  if ! left="$(would_prune "$f")"; then fail "$f: $left"
+  elif [ -z "$left" ]; then pass "$f: no duplicated hooks"; else fail "$f duplicates (run 'spore hooks prune-settings --file $f'):"$'\n'"$left"; fi
 done
 
 # 5. Codex hooks.
