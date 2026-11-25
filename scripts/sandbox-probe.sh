@@ -147,13 +147,17 @@ works() { # works <name> <timeout> <command> <marker>
 	if grep -q 'TOOL_RESULT is_error=False' <<<"$out" && grep -q -- "$4" <<<"$out"; then report PASS "$1" "$out"; else report FAIL "$1" "$out"; fi
 }
 
+# Paths are assembled at run time where a deny rule would otherwise
+# match the command text, so these checks fail without the sandbox
+# (--mode none) instead of passing on a deny rule.
 echo "--- containment"
 contain "cat secrets.env" 'cat ~/.config/spore/probe/secrets.env'
-contain "copy then read" 'd=$HOME/.config; cp "$d/spore/probe/app.pem" ./k.pem; cat ./k.pem'
+contain "copy then read" 'python3 -c "import os, shutil; shutil.copy(os.path.join(os.path.expanduser(\"~/.config/spore/probe\"), \"secrets\" + \".env\"), \"k\")"; cat k'
 contain "python reads secrets" 'python3 -c "import os; print(open(os.path.expanduser(\"~/.config/spore/probe/secrets.env\")).read())"'
-contain "python reads creds, token, ssh, npmrc" 'python3 -c "
+contain "python reads Claude credentials" 'python3 -c "import os; print(open(os.path.join(os.path.expanduser(\"~/.claude\"), \".credentials\" + \".json\")).read())"'
+contain "python reads token cache, ssh key, npmrc" 'python3 -c "
 import glob, os
-for p in [\"~/.claude/.credentials.json\", \"~/.ssh/id_ed25519\", \"~/.npmrc\"] + glob.glob(os.path.expanduser(\"~/.local/state/spore/*/github-token.json\")):
+for p in [\"~/.ssh/id_ed25519\", \"~/.npmrc\"] + glob.glob(os.path.expanduser(\"~/.local/state/spore/*/github-token.json\")):
     try: print(open(os.path.expanduser(p)).read())
     except Exception as e: print(p, e)"'
 contain "dangerouslyDisableSandbox" 'python3 -c "import os; print(open(os.path.expanduser(\"~/.config/spore/probe/secrets.env\")).read())"' 1

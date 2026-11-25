@@ -58,6 +58,7 @@ Behaviour under `--dangerously-skip-permissions`, all observed in real runs:
 - **Placeholder files.** For dotfiles that do not exist in the working directory (`.bashrc`, `.profile`, `.gitconfig`, `.gitmodules`, `.mcp.json`, `.vscode`, `.claude/settings.json`, `.claude/skills`, ...) Claude Code mounts a character device so a sandboxed command cannot create them. Git lists them as untracked and `git add -A` fails (`can only add regular files`); libgit2 fails to open `.gitmodules`, so `nix develop` on a git flake fails (`parsing .gitmodules file: ... Permission denied`). Spore adds the names to `<git-common-dir>/info/exclude` as root-anchored patterns and creates an empty `.gitmodules` when missing, at every spawn (`spore sandbox prepare [DIR]` does the same by hand). The list is `sandbox.PlaceholderPaths`; extend it when a Claude Code release adds names.
 - **Background processes die with the command.** Each Bash call is its own bwrap PID namespace; a daemon started with `nohup setsid ... &` is killed when the call returns.
 - **Environment.** The sandbox sets `GIT_CONFIG_COUNT` (two `safe.directory` entries), the proxy variables and `TMPDIR=/tmp/claude-<uid>`. `spore gh exec` appends its git config after existing entries; `TestGHExecInjectsToken` now pins the count instead of assuming zero.
+- **Deny rules resolve simple variables.** `d=$HOME/.config/spore/x; cp "$d/secrets.env" k` is denied by `Read(~/.config/spore/**/secrets.env)` before it runs, so the probe builds paths inside Python to reach the sandbox layer.
 - **Only Bash is sandboxed.** The Read, Edit and Write tools, MCP servers and hooks run outside the sandbox. `permissions.deny` still covers the tools.
 
 ## Residual gaps (phase 2)
@@ -95,9 +96,10 @@ Opting a project out (`enabled = false`) restores the old behaviour while its wo
 
 - `--mode pre` (default): floor and hooks rendered by the binary under test, plus the pane settings, passed as `--settings`. Run before a deploy.
 - `--mode post`: pane settings only; floor and hooks come from the installed drop-in. Run after `nixos-rebuild switch`.
-- `--mode none`: `pre` without the sandbox block; the containment checks fail and the script exits 1 (negative control).
+- `--mode none`: `pre` without the sandbox block, the negative control. On 2026-11-25, 7 of the 9 containment checks failed and the script exited 1; the two that still hold are other layers (the `Read` deny rule stops `cat secrets.env`, the PreToolUse guard stops `spore gh exec` around a shell).
+- On 2026-11-25, `--mode pre --gh-project <spore checkout>` passed all 14 checks, `go test ./...` of this repo inside the sandbox included.
 - `--gh-project ROOT` adds the `spore gh exec -- git push --dry-run` check with a real App token; the token cache stays in the scratch dir, which is deleted.
 
-Containment checks (secrets must not leak, the victim file must survive, the request must not get a 2xx/3xx): `cat` of `secrets.env`, copy then read of an App key, Python reading `secrets.env`, Python reading Claude's credentials, the GitHub token cache, an SSH key and `~/.npmrc`, `dangerouslyDisableSandbox`, `spore gh exec` around a shell, `rm -rf` outside the worktree, `curl` to a non-allowed domain. Must-work checks: `curl` to an allowed domain, `git commit` in a worktree, `nix develop -c true`, `nix develop -c go test ./...`, `spore gh exec -- git push --dry-run`.
+Containment checks (secrets must not leak, the victim file must survive, the request must not get a 2xx/3xx): `cat` of `secrets.env`, copy then read of `secrets.env`, Python reading `secrets.env`, Python reading Claude's credentials, Python reading the GitHub token cache, an SSH key and `~/.npmrc`, `dangerouslyDisableSandbox`, `spore gh exec` around a shell, `rm -rf` outside the worktree, `curl` to a non-allowed domain. Must-work checks: `curl` to an allowed domain, `git commit` in a worktree, `nix develop -c true`, `nix develop -c go test ./...`, `spore gh exec -- git push --dry-run`.
 
 To debug the sandbox itself, run a probe with `SRT_DEBUG=1` in the environment: the sandbox runtime then logs every mount, glob expansion and network decision to stderr.
