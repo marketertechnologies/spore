@@ -43,7 +43,7 @@ func runLint(args []string) int {
 			bad = true
 			continue
 		}
-		warnOnly := l.Name() == "task-evidence" && taskEvidenceWarnOnly
+		warnOnly := lints.Advisory(l) || (l.Name() == "task-evidence" && taskEvidenceWarnOnly)
 		for _, i := range issues {
 			line := prefix(l.Name(), i.String())
 			if warnOnly {

@@ -34,6 +34,13 @@ type Lint interface {
 	Run(root string) ([]Issue, error)
 }
 
+// Advisory reports whether l's findings are warnings that never fail
+// a run. A lint opts in with an `Advisory() bool` method.
+func Advisory(l Lint) bool {
+	a, ok := l.(interface{ Advisory() bool })
+	return ok && a.Advisory()
+}
+
 // Default returns the lint set spore runs by default.
 func Default() []Lint {
 	return []Lint{
@@ -42,6 +49,7 @@ func Default() []Lint {
 		CommentNoise{},
 		Decoration{},
 		ClaudeDrift{ConsumersDir: "rules/consumers", RulesDir: "rules"},
+		ConsumerDefaults{ConsumersDir: "rules/consumers"},
 		ClaudeTotalSize{},
 		AgentMirror{},
 		TaskEvidence{TasksDir: "tasks"},

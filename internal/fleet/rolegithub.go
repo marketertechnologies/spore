@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,6 +39,10 @@ type githubState struct {
 	// the mirror was failing at PhaseDone.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
+	// Body is the PR body the loop last wrote, structure splices
+	// included; empty for an adopted PR. The ready-time refresh only
+	// replaces a body still equal to it.
+	Body string `json:"body,omitempty"`
 	// BodyStructure is the structure block last spliced into (or
 	// skipped for) the PR body; a differing latest block triggers one
 	// sync attempt.
@@ -288,35 +291,45 @@ func (m *githubMirror) run(snap Snapshot) error {
 // outside the loop) or no longer carries the previous block verbatim
 // (the operator edited it); either way the block is recorded so the
 // next tick does not retry. A body that changes between the read and
-// the edit is left for the next tick.
+// the edit is left for the next tick. A splice into the body the loop
+// last wrote moves state.Body along, so the ready-time refresh does
+// not mistake it for a human edit.
 func (m *githubMirror) syncBody() error {
 	if m.state.PRNumber == 0 || m.structure == m.state.BodyStructure {
 		return nil
 	}
-	num := strconv.Itoa(m.state.PRNumber)
-	view := func() (string, error) {
-		out, err := m.runRaw("gh", "", "pr", "view", num, "--json", "body", "-q", ".body")
-		return strings.ReplaceAll(strings.TrimSuffix(out, "\n"), "\r\n", "\n"), err
-	}
-	body, err := view()
+	body, err := m.viewBody()
 	if err != nil {
 		return err
 	}
 	if next, ok := spliceStructure(body, m.state.BodyStructure, m.structure); ok && next != body {
-		again, err := view()
+		again, err := m.viewBody()
 		if err != nil {
 			return err
 		}
 		if again != body {
 			return nil
 		}
-		if _, err := m.gh(next, "pr", "edit", num, "--body-file", "-"); err != nil {
+		if _, err := m.gh(next, "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-"); err != nil {
 			return err
+		}
+		if m.state.Body != "" && sameBody(body, m.state.Body) {
+			m.state.Body = next
 		}
 	}
 	m.state.BodyStructure = m.structure
 	m.save()
 	return nil
+}
+
+// viewBody is the live PR body, LF-normalized, trailing newline cut.
+func (m *githubMirror) viewBody() (string, error) {
+	out, err := m.runRaw("gh", "", "pr", "view", strconv.Itoa(m.state.PRNumber), "--json", "body", "-q", ".body")
+	return strings.ReplaceAll(strings.TrimSuffix(out, "\n"), "\r\n", "\n"), err
+}
+
+func sameBody(a, b string) bool {
+	return strings.TrimSpace(a) == strings.TrimSpace(b)
 }
 
 const prFooterMarker = "Opened by spore's role loop"
@@ -394,6 +407,9 @@ func (m *githubMirror) apply(e mirrorEvent) error {
 		return m.prComment(fmt.Sprintf("**Role loop escalated.** %s requested changes at round %d, the cap of %d rounds per reviewer. The PR stays draft until the operator decides.",
 			reviewLabel(e.instance), e.round, MaxReviewerRounds))
 	case eventReady:
+		if err := m.refreshPRBody(); err != nil {
+			fmt.Fprintf(os.Stderr, "role-loop github mirror %s: refresh PR body: %v\n", m.slug, err)
+		}
 		if _, err := m.gh("", "pr", "ready", strconv.Itoa(m.state.PRNumber)); err != nil {
 			return err
 		}
@@ -507,20 +523,17 @@ func (m *githubMirror) ensurePR() error {
 	if err != nil {
 		return err
 	}
-	base := meta.Extra["base"]
-	if base == "" {
-		head, err := m.git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-		if err != nil {
-			return fmt.Errorf("no PR base: set `base:` in tasks/%s.md or run `git remote set-head origin --auto`", m.slug)
-		}
-		base = strings.TrimPrefix(head, "origin/")
-	}
-	title := prTitle(meta.Title, m.slug)
-	out, err = m.gh(m.prBody(title), "pr", "create", "--draft", "--base", base, "--head", branch,
-		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	base, err := m.prBase(meta)
 	if err != nil {
 		return err
 	}
+	body := m.prBody(meta, base)
+	out, err = m.gh(body, "pr", "create", "--draft", "--base", base, "--head", branch,
+		"--title", prTitle(meta.Title, m.slug), "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
+	if err != nil {
+		return err
+	}
+	m.state.Body = body
 	url := lastLine(out)
 	n, err := strconv.Atoi(url[strings.LastIndexByte(url, '/')+1:])
 	if err != nil {
@@ -539,23 +552,6 @@ func prTitle(title, slug string) string {
 	return title
 }
 
-// prBody is the brief's summary paragraph, the engineer's structure
-// block, and a fixed footer. The rest of spec.md stays off the PR:
-// briefs carry host paths and coordinator-only notes. A summary naming
-// an absolute path falls back to the task title.
-func (m *githubMirror) prBody(title string) string {
-	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
-	summary := specSummary(string(spec))
-	if summary == "" || absPathRE.MatchString(summary) {
-		summary = title
-	}
-	if m.structure != "" {
-		summary += "\n\n" + m.structure
-	}
-	return fmt.Sprintf("%s\n\nDispatched by @%s. "+prFooterMarker+": reviews arrive as `Review #1` / `Review #2` comments, and the PR leaves draft when both reviewers approve. @%s gives the only approval and merges.\n",
-		summary, m.cfg.OperatorLogin, m.cfg.OperatorLogin)
-}
-
 // prStructure is latestStructure with the summary's absolute-path
 // guard applied per line, diff markers stripped: a block naming a host
 // path is dropped.
@@ -570,21 +566,6 @@ func prStructure(projectRoot, slug string) (string, error) {
 		}
 	}
 	return s, nil
-}
-
-var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")
-
-// specSummary returns the spec's first prose paragraph, skipping
-// headings and the **Status** line.
-func specSummary(spec string) string {
-	for _, para := range strings.Split(spec, "\n\n") {
-		p := strings.TrimSpace(para)
-		if p == "" || strings.HasPrefix(p, "#") || strings.HasPrefix(p, "**Status**") || strings.HasPrefix(p, "```") {
-			continue
-		}
-		return p
-	}
-	return ""
 }
 
 func lastLine(s string) string {
