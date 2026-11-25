@@ -165,14 +165,24 @@ func managedKey(event, matcher, command string) string {
 	return event + "\x00" + matcher + "\x00" + NormalizeCommand(command)
 }
 
-// NormalizeCommand reduces a hook command to its program base name and
-// arguments.
+// NormalizeCommand reduces every program in a hook command to its base
+// name, keeping arguments. A program is the first word or any word
+// after `;`, `|`, `||`, `&&` or `exec`, so compound commands such as
+// engineerCheckCommand compare equal across spore paths.
 func NormalizeCommand(command string) string {
 	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return ""
+	cmdPos := true
+	for i, f := range fields {
+		if cmdPos {
+			fields[i] = filepath.Base(f)
+		}
+		switch f {
+		case "|", "||", "&&", "exec":
+			cmdPos = true
+		default:
+			cmdPos = strings.HasSuffix(f, ";")
+		}
 	}
-	fields[0] = filepath.Base(fields[0])
 	return strings.Join(fields, " ")
 }
 

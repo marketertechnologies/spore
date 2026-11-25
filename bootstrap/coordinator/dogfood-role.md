@@ -34,12 +34,10 @@ Never archive a block the active objective still references.
   pick up on the next release. Call out the consumer impact in the
   PR description; consider whether marketer & crm-gateway will need
   matching adjustments.
-- **Built-in token-monitor.** The per-project `.claude/settings.json`
-  already wires `spore coordinator token-monitor`, `spore worker
-  token-monitor`, `spore fleet replenish-hook`, and `spore hooks
-  watch-inbox`. No `bin/dev/spore-token-monitor` shim is needed
-  (unlike marketer & crm-gateway, which run bash scripts gated by
-  transcript path).
+- **Host-wide hooks.** The token monitors, `fleet replenish-hook`,
+  `hooks engineer-check` and `hooks watch-inbox` come from the managed
+  drop-in `/etc/claude-code/managed-settings.d/50-spore.json`. Do not
+  repeat them in `.claude/settings.json`: they would run twice.
 - **Release flow.** `just release X.Y.Z` bumps `VERSION`, commits,
   and tags `vX.Y.Z`. It does NOT push -- operator inspects the
   commit and tag, then pushes both. Aborts on a dirty tree, an
