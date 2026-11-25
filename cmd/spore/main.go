@@ -107,7 +107,13 @@ Subcommands:
                          Emit the user-level Codex hooks.json
                          ($CODEX_HOME/hooks.json) to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
-                              With no slug, reads $SPORE_TASK_INBOX.
+                              With no slug, reads $SPORE_TASK_INBOX. Also
+                              acks the last turn's messages and clears
+                              this pane's usage-limit/login alert.
+  stop-failure                StopFailure hook (a turn ended in an API
+                              error): put the turn's inbox messages back
+                              and, on a usage limit or expired login,
+                              alert the coordinator and the operator once.
   watch-inbox --codex [--pid N]
                               Long-running sidecar: deliver $SPORE_TASK_INBOX
                               envelopes to this session's codex thread via

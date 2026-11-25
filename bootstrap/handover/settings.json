@@ -75,6 +75,18 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/run/current-system/sw/bin/spore hooks stop-failure",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "permissions": {
