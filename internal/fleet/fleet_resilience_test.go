@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/versality/spore/internal/task"
 )
@@ -108,5 +109,85 @@ func TestValidBranchName(t *testing.T) {
 		if got := validBranchName(name); got != want {
 			t.Errorf("validBranchName(%q) = %v, want %v", name, got, want)
 		}
+	}
+}
+
+func fakeClock(t *testing.T) *time.Time {
+	t.Helper()
+	now := time.Unix(1_800_000_000, 0)
+	prev := nowFunc
+	nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { nowFunc = prev })
+	return &now
+}
+
+func waitNoSession(t *testing.T, name string) {
+	t.Helper()
+	for range 50 {
+		if !hasSession(name) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session %s still alive", name)
+}
+
+// A worker that dies right after spawn is respawned MaxFastDeaths
+// times, then left down with one coordinator notice. Pausing the task
+// re-arms the cap, and a healthy run resets the count.
+func TestReconcileCapsWorkerCrashLoop(t *testing.T) {
+	requireToolchain(t)
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 300")
+	t.Setenv("SPORE_AGENT_BINARY", "true")
+	now := fakeClock(t)
+	writeTask(t, dirs.tasks, "crashy", "active")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+	project, _ := task.ProjectName(dirs.project)
+	session := fmt.Sprintf("spore/%s/crashy", project)
+
+	pass := func() Result {
+		t.Helper()
+		r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3})
+		if err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		waitNoSession(t, session)
+		*now = now.Add(5 * time.Second)
+		return r
+	}
+	var spawns int
+	var last Result
+	for range 6 {
+		last = pass()
+		spawns += len(last.Spawned)
+	}
+	if spawns != MaxFastDeaths {
+		t.Errorf("spawns = %d, want %d", spawns, MaxFastDeaths)
+	}
+	if !equalSlices(last.Crashed, []string{"crashy"}) {
+		t.Errorf("Crashed = %v, want [crashy]", last.Crashed)
+	}
+	if n := fleetNotices(t, dirs.project); len(n) != 1 || !strings.Contains(n[0], "crashy") {
+		t.Errorf("notices = %q, want one crash-loop notice", n)
+	}
+
+	flipStatus(t, dirs.tasks, "crashy", "paused")
+	pass()
+	flipStatus(t, dirs.tasks, "crashy", "active")
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3})
+	if err != nil || !equalSlices(r.Spawned, []string{"crashy"}) {
+		t.Fatalf("after pause: Spawned = %v, err %v; want respawn", r.Spawned, err)
+	}
+	*now = now.Add(FastDeathWindow)
+	if _, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3}); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := fleetStateDir(dirs.project, "workers")
+	if g := loadGuard(filepath.Join(dir, "crashy.json")); g.Pending || g.Deaths != 0 {
+		t.Errorf("after healthy run: guard = %+v, want judged healthy with 0 deaths", g)
 	}
 }

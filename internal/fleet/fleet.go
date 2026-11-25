@@ -40,8 +40,8 @@ type Config struct {
 }
 
 // Result is the outcome of one reconcile pass. Slug lists are
-// sorted; sets are disjoint by construction (a slug appears in
-// exactly one of Spawned / Kept / Skipped).
+// sorted; sets are disjoint by construction (a slug appears in at most
+// one of Spawned / Kept / Skipped / Crashed).
 type Result struct {
 	// Disabled is true when the kill-switch flag is missing and
 	// Reconcile short-circuited. The slug lists are empty in that
@@ -53,6 +53,10 @@ type Result struct {
 	Reaped  []string
 	Kept    []string
 	Skipped []string
+	// Crashed lists active tasks whose worker died fast MaxFastDeaths
+	// times in a row; they are not respawned until a healthy run or
+	// the task leaves active.
+	Crashed []string
 
 	// Matter is the per-matter sync outcome from the prelude pass.
 	// Empty when no matters are configured. Errors do not abort
@@ -213,13 +217,30 @@ func Reconcile(cfg Config) (Result, error) {
 		}
 	}
 
+	guards := workerGuards(cfg.ProjectRoot, activeSet)
+	now := nowFunc()
 	for _, slug := range actives {
-		if runningSet[slug] {
-			continue
-		}
 		if roleLooped[slug] {
 			continue
 		}
+		g := guards(slug)
+		if runningSet[slug] {
+			g.alive(now)
+			saveGuard(g)
+			continue
+		}
+		g.dead()
+		if !g.mayRespawn() {
+			if g.capOnce() {
+				notifyFleet(cfg.ProjectRoot, fmt.Sprintf(
+					"%s: worker died within %s of spawn %d times in a row; respawn stopped. Inspect the task, then pause and restart it to retry.",
+					slug, FastDeathWindow, g.Deaths))
+			}
+			saveGuard(g)
+			res.Crashed = append(res.Crashed, slug)
+			continue
+		}
+		saveGuard(g)
 		if len(runningSet) >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
@@ -239,6 +260,8 @@ func Reconcile(cfg Config) (Result, error) {
 		// Progress flip). Errors from a matter push do not roll
 		// back the spawn; the worker is real, the kanban catches
 		// up on the next reconcile pass.
+		g.spawned(now)
+		saveGuard(g)
 		task.NotifyMatterSpawn(cfg.ProjectRoot, cfg.TasksDir, slug, os.Stderr)
 		res.Spawned = append(res.Spawned, slug)
 		runningSet[slug] = true
@@ -266,7 +289,35 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
+	sort.Strings(res.Crashed)
 	return res, nil
+}
+
+// workerGuards returns a loader for per-slug crash-loop records under
+// the project state dir, after dropping the records of tasks that are
+// no longer active (pausing a task re-arms its cap).
+func workerGuards(projectRoot string, active map[string]bool) func(string) *spawnGuard {
+	dir, err := fleetStateDir(projectRoot, "workers")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: worker crash records: %v\n", err)
+		return func(string) *spawnGuard { return &spawnGuard{} }
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if slug, ok := strings.CutSuffix(e.Name(), ".json"); !ok || !active[slug] {
+			clearGuard(filepath.Join(dir, e.Name()))
+		}
+	}
+	return func(slug string) *spawnGuard { return loadGuard(filepath.Join(dir, slug+".json")) }
+}
+
+func saveGuard(g *spawnGuard) {
+	if g.path == "" {
+		return
+	}
+	if err := g.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: crash record: %v\n", err)
+	}
 }
 
 // warn records a per-task failure that must not abort the pass.

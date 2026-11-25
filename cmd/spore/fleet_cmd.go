@@ -140,6 +140,9 @@ func runFleetReconcile(args []string) error {
 	if len(res.Skipped) > 0 {
 		fmt.Printf("  skipped: %s (max-workers=%d)\n", strings.Join(res.Skipped, ", "), resolved)
 	}
+	if len(res.Crashed) > 0 {
+		fmt.Printf("  crash-looped (respawn stopped): %s\n", strings.Join(res.Crashed, ", "))
+	}
 	for _, m := range res.Matter {
 		if m.Err != nil {
 			fmt.Fprintf(os.Stderr, "  matter %s: %v\n", m.Name, m.Err)
