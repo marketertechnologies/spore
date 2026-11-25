@@ -25,14 +25,17 @@ const fakeGH = `#!/bin/sh
 log="$FAKE_GH_LOG"
 { printf 'ARGS:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\nTOKEN: %s\nREPO: %s\n' "$GH_TOKEN" "$GH_REPO"; } >> "$log"
 for a in "$@"; do
-  if [ "$a" = "--body-file" ]; then printf 'BODY:\n' >> "$log"; cat >> "$log"; printf 'END\n' >> "$log"; fi
+  if [ "$a" = "--body-file" ]; then cat > "$log.in"; printf 'BODY:\n' >> "$log"; cat "$log.in" >> "$log"; printf 'END\n' >> "$log"; fi
 done
 if [ -e "$FAKE_GH_FAIL.sleep" ]; then sleep 30; fi
 if [ -e "$FAKE_GH_FAIL" ]; then echo "gh exploded, request id $$" >&2; exit 1; fi
 case "$1 $2" in
   "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
-  "pr create") echo "https://github.com/acme/widget/pull/12" ;;
+  "pr create") cp "$log.in" "$log.body"; echo "https://github.com/acme/widget/pull/12" ;;
+  "pr edit") if [ -e "$log.in" ]; then mv "$log.in" "$log.body"; fi ;;
+  "pr view") cat "$log.body" ;;
 esac
+rm -f "$log.in"
 `
 
 type mirrorFixture struct {
@@ -252,6 +255,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		"pr comment 12 --body-file -",
 		"pr review 12 --comment --body-file -",
 		"pr review 12 --comment --body-file -",
+		"pr view 12 --json body --jq .body",
 		"pr edit 12 --body-file -",
 		"pr ready 12",
 	)
@@ -483,6 +487,59 @@ func TestGitHubMirrorDoneNoticeWhileFailing(t *testing.T) {
 	envs := readInboxEnvelopes(t, f.inbox)
 	if len(envs) != 3 || !strings.HasPrefix(envs[2].Body, "demo: done, PR #12 ready") {
 		t.Fatalf("after recovery envelopes = %+v", envs)
+	}
+}
+
+// approveAll drives the task to PhaseDone with both reviewers approving
+// round 1.
+func (f *mirrorFixture) approveAll(t *testing.T) {
+	t.Helper()
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ok"})
+	for range 3 {
+		f.tick(t)
+	}
+}
+
+func TestGitHubMirrorKeepsEditedBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	if err := os.WriteFile(f.ghLog+".body", []byte("Hand-written by the operator.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, "two")
+	f.approveAll(t)
+	for _, c := range f.calls(t) {
+		if strings.HasPrefix(c, "pr edit 12 --body-file") {
+			t.Fatalf("edited body was overwritten: %q", f.calls(t))
+		}
+	}
+	if !f.state(t).Ready {
+		t.Fatal("PR not marked ready")
+	}
+}
+
+func TestGitHubMirrorKeepsAdoptedBody(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	t.Setenv("FAKE_GH_OPEN_PR", `[{"number":7,"url":"https://github.com/acme/widget/pull/7"}]`)
+	writeEng(1)(t, f.root, f.slug)
+	f.tick(t)
+	f.approveAll(t)
+	for _, c := range f.calls(t) {
+		if strings.HasPrefix(c, "pr view") || strings.HasPrefix(c, "pr edit 7 --body-file") {
+			t.Fatalf("adopted PR body touched: %q", f.calls(t))
+		}
+	}
+	if !f.state(t).Ready {
+		t.Fatal("PR not marked ready")
+	}
+}
+
+func TestTicketLineGitHub(t *testing.T) {
+	m := frontmatter.Meta{Extra: map[string]string{"matter": "github", "matter_id": "#4", "matter_url": "https://g/4"}}
+	if got := ticketLine(m); got != "Issue: [#4](https://g/4)" {
+		t.Fatalf("ticketLine = %q", got)
 	}
 }
 

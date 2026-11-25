@@ -58,29 +58,54 @@ func (m *githubMirror) prBody(meta frontmatter.Meta, base string) string {
 }
 
 // refreshPRBody rewrites the body from the final branch before the PR
-// leaves draft, so the bullets cover fix-round commits too.
+// leaves draft, so the bullets cover fix-round commits too. It leaves
+// alone an adopted PR's body, a body someone edited since the loop
+// wrote it, and any body once the task file is gone (its ticket link
+// and base would be lost).
 func (m *githubMirror) refreshPRBody() error {
+	if m.state.Body == "" {
+		return nil
+	}
 	meta, err := readRoleTaskMeta(m.tasksDir, m.slug)
+	if err != nil || meta.Slug == "" {
+		return err
+	}
+	current, err := m.gh("", "pr", "view", strconv.Itoa(m.state.PRNumber), "--json", "body", "--jq", ".body")
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(current) != strings.TrimSpace(m.state.Body) {
+		return nil
 	}
 	base, err := m.prBase(meta)
 	if err != nil {
 		return err
 	}
-	_, err = m.gh(m.prBody(meta, base), "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
-	return err
+	body := m.prBody(meta, base)
+	if body == m.state.Body {
+		return nil
+	}
+	if _, err := m.gh(body, "pr", "edit", strconv.Itoa(m.state.PRNumber), "--body-file", "-"); err != nil {
+		return err
+	}
+	m.state.Body = body
+	m.save()
+	return nil
 }
 
 // ticketLine is "<Tracker>: [<ID>](<url>)" from the matter keys a
-// tracker adapter stamps, or "" for a task with no ticket.
+// tracker adapter stamps, or "" for a task with no ticket. GitHub
+// issues read "Issue:", per rules/core/pr-description.md.
 func ticketLine(meta frontmatter.Meta) string {
 	id, url := meta.Extra[matter.MatterIDKey], meta.Extra[matter.MatterURLKey]
 	if id == "" {
 		return ""
 	}
 	label := "Ticket"
-	if src := meta.Extra[matter.MatterKey]; src != "" {
+	switch src := meta.Extra[matter.MatterKey]; {
+	case strings.EqualFold(src, "github"):
+		label = "Issue"
+	case src != "":
 		label = strings.ToUpper(src[:1]) + src[1:]
 	}
 	if url == "" {

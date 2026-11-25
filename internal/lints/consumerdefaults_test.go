@@ -15,12 +15,17 @@ func TestConsumerDefaults(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	full := "core/x\n" + strings.Join(composer.DefaultCore, "\n") + "\n"
+	full := "# target: CLAUDE.md\ncore/x\n" + strings.Join(composer.DefaultCore, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte(full), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "old.txt"), []byte("core/x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "old.txt"), []byte("# target: AGENTS.md\ncore/x\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"sub.txt": "# target: web/AGENTS.md\ncore/x\n", "bare.txt": "core/x\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	issues, err := ConsumerDefaults{}.Run(root)

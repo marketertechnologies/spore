@@ -39,6 +39,9 @@ type githubState struct {
 	// the mirror was failing at PhaseDone.
 	DoneNotified bool   `json:"done_notified,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
+	// Body is the PR body the loop last wrote; empty for an adopted
+	// PR. The ready-time refresh only replaces a body still equal to it.
+	Body string `json:"body,omitempty"`
 }
 
 func (s *githubState) posted(name string) bool {
@@ -428,11 +431,13 @@ func (m *githubMirror) ensurePR() error {
 	if title == "" {
 		title = m.slug
 	}
-	out, err = m.gh(m.prBody(meta, base), "pr", "create", "--draft", "--base", base, "--head", branch,
+	body := m.prBody(meta, base)
+	out, err = m.gh(body, "pr", "create", "--draft", "--base", base, "--head", branch,
 		"--title", title, "--body-file", "-", "--assignee", m.cfg.OperatorLogin)
 	if err != nil {
 		return err
 	}
+	m.state.Body = body
 	url := lastLine(out)
 	n, err := strconv.Atoi(url[strings.LastIndexByte(url, '/')+1:])
 	if err != nil {

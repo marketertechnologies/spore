@@ -9,10 +9,12 @@ import (
 	"github.com/versality/spore/internal/composer"
 )
 
-// ConsumerDefaults flags a consumer list that does not name every
-// composer.DefaultCore fragment, so a new default reaches existing
-// projects on their next lint. Warn-only: the fix is the project's own
-// commit, made via `spore compose --add-defaults`.
+// ConsumerDefaults flags a root consumer list (one targeting CLAUDE.md
+// or AGENTS.md) that does not name every composer.DefaultCore
+// fragment, so a new default reaches existing projects on their next
+// lint. Subdir lists are skipped: the defaults are project-wide.
+// Warn-only: the fix is the project's own commit, made via
+// `spore compose --add-defaults`.
 type ConsumerDefaults struct {
 	ConsumersDir string
 }
@@ -38,7 +40,15 @@ func (l ConsumerDefaults) Run(root string) ([]Issue, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
 			continue
 		}
-		missing, err := composer.MissingDefaults(filepath.Join(root, dir, e.Name()))
+		path := filepath.Join(root, dir, e.Name())
+		targets, err := composer.Targets(path)
+		if err != nil {
+			return nil, err
+		}
+		if !targetsRoot(targets) {
+			continue
+		}
+		missing, err := composer.MissingDefaults(path)
 		if err != nil {
 			return nil, err
 		}
@@ -46,9 +56,18 @@ func (l ConsumerDefaults) Run(root string) ([]Issue, error) {
 		for _, id := range missing {
 			issues = append(issues, Issue{
 				Path:    filepath.ToSlash(filepath.Join(dir, e.Name())),
-				Message: fmt.Sprintf("missing default core fragment %q; run `spore compose --consumer %s --add-defaults`", id, name),
+				Message: fmt.Sprintf("missing default core fragment %q; run `spore compose --consumer %s --add-defaults` (rewrites the list's targets)", id, name),
 			})
 		}
 	}
 	return issues, nil
+}
+
+func targetsRoot(targets []string) bool {
+	for _, t := range targets {
+		if t == "CLAUDE.md" || t == "AGENTS.md" {
+			return true
+		}
+	}
+	return false
 }

@@ -1,7 +1,6 @@
 package composer
 
 import (
-	"bufio"
 	"fmt"
 	"io/fs"
 	"os"
@@ -79,25 +78,7 @@ func ensureFragment(rulesDir, id string, bundled fs.FS) error {
 }
 
 func listedIDs(consumerPath string) (map[string]bool, error) {
-	f, err := os.Open(consumerPath)
-	if err != nil {
-		return nil, fmt.Errorf("composer: open consumer %q: %w", consumerPath, err)
-	}
-	defer f.Close()
 	ids := map[string]bool{}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "?") {
-			if _, rule, ok := splitPredicate(line); ok {
-				ids[rule] = true
-			}
-			continue
-		}
-		ids[line] = true
-	}
-	return ids, scanner.Err()
+	err := eachEntry(consumerPath, func(_, id string) { ids[id] = true })
+	return ids, err
 }

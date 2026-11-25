@@ -192,7 +192,7 @@ func runCompose(args []string) error {
 	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
 	consumer := fs.String("consumer", "", "consumer name (file under <rules>/consumers/<name>.txt)")
 	rulesDir := fs.String("rules", "rules", "rule pool directory")
-	addDefaults := fs.Bool("add-defaults", false, "append missing default core fragments to the consumer list (and copy them into the pool) before rendering")
+	addDefaults := fs.Bool("add-defaults", false, "append missing default core fragments to the consumer list, copy them into the pool, and rewrite the list's `# target:` files")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -225,6 +225,21 @@ func runCompose(args []string) error {
 	out, err := composer.Compose(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err
+	}
+	if *addDefaults {
+		targets, err := composer.Targets(consumerPath)
+		if err != nil {
+			return err
+		}
+		if len(targets) > 0 {
+			for _, t := range targets {
+				if err := os.WriteFile(filepath.Join(root, t), []byte(out), 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "spore compose: rendered %s\n", t)
+			}
+			return nil
+		}
 	}
 	_, err = os.Stdout.WriteString(out)
 	return err
