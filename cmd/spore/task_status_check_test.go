@@ -45,3 +45,19 @@ func TestPrintRoleSnapshotCheckLine(t *testing.T) {
 		t.Errorf("gate off still prints a check line:\n%s", out)
 	}
 }
+
+func TestPrintRoleSnapshotPhaseShowsCheckHold(t *testing.T) {
+	snap := fleet.Snapshot{
+		Slug: "demo", Phase: fleet.PhaseReviewA, EngineerRound: 1,
+		CurrentReviewer: task.ReviewerA, Check: task.CheckPending,
+	}
+	if out := captureRoleSnapshot(t, snap); !strings.Contains(out, "phase:    review-A (held: check)\n") {
+		t.Errorf("pending check not shown on the phase line:\n%s", out)
+	}
+	for _, c := range []task.CheckState{task.CheckOff, task.CheckPassed, task.CheckFailed} {
+		snap.Check = c
+		if out := captureRoleSnapshot(t, snap); !strings.Contains(out, "phase:    review-A\n") {
+			t.Errorf("check %q: phase line changed:\n%s", c, out)
+		}
+	}
+}
