@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 
 let
   cfg = config.services.spore-fleet;
@@ -132,7 +132,8 @@ let
     );
 
   # Rendered by the spore CLI itself so the binding set has one source
-  # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
+  # (internal/hooks/codexconfig.go). Hook commands call the system
+  # profile spore, not cfg.package, so a long-lived session survives GC.
   codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
     ${cfg.package}/bin/spore hooks codex-config --spore /run/current-system/sw/bin/spore > $out
   '';
@@ -440,7 +441,9 @@ in
         description = ''
           Absolute path to the post-activation script. Drop into
           colmena's `deployment.postActivation` to re-enable the
-          fleet kill-switch after a successful deploy.
+          fleet kill-switch after a successful deploy. Local
+          activation runs it from spore-fleet-graceful-post.service
+          once the new system is current; running both is harmless.
         '';
       };
     };
@@ -631,6 +634,15 @@ in
       # is nothing to drain on a fresh boot, and disabling the flag
       # there would leave the reconciler paused until the next deploy.
       #
+      # The post step must not run inside activation: activation
+      # scripts run before the activate script repoints
+      # /run/current-system, so a coordinator respawned there starts
+      # against managed-settings hooks under /run/current-system/sw
+      # that do not exist yet (exit 127, state.md never loads). The
+      # activation script only queues spore-fleet-graceful-post.service
+      # in /run/nixos/activation-restart-list; switch-to-configuration
+      # starts it after activation, once the new system is current.
+      #
       # spore-shims runs on every activation: it symlinks the six host
       # shims into /usr/local/bin/ and sweeps any non-symlink left over
       # from the original `install -m 0755` from `spore infect`.
@@ -679,12 +691,24 @@ in
             deps = [ "spore-fleet-pre" ];
             text = ''
               case "''${NIXOS_ACTION:-}" in
-                switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+                switch|test)
+                  install -d -m 0755 /run/nixos
+                  echo spore-fleet-graceful-post.service >> /run/nixos/activation-restart-list ;;
               esac
             '';
           };
         })
       ];
+
+      # No wantedBy: it runs only when spore-fleet-post queues it.
+      systemd.services.spore-fleet-graceful-post = lib.mkIf cfg.gracefulDeploy.enable {
+        description = "spore fleet: re-enable the kill-switch after a switch";
+        after = [ "home-manager-${utils.escapeSystemdPath cfg.user}.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${postScript}/bin/spore-fleet-graceful-post";
+        };
+      };
 
       home-manager.users.${cfg.user} = {
         systemd.user.services = lib.mapAttrs'
