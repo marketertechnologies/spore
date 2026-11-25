@@ -47,13 +47,14 @@ const IdleReapThreshold = 5 * time.Minute
 //   - wt-style "<icon> <project>/<slug>" or "<icon> <project>/<slug> [tag]"
 //   - any external spawner that recorded its own name in frontmatter
 //     and embedded "<project>/<slug>" in it
-//   - role-loop panes "spore-role/<project>/<slug>/<role>"
+//   - role-loop panes "spore-role/<project>/<slug>/<role>", only with
+//     withRoles (done/merge teardown; pause and block must keep them)
 //
 // Returns nil when tmux isn't running or no session matches. Pure
 // substring scan: the slug-end boundary is enforced by requiring the
 // next char to be end-of-string or a space (so slug "foo" doesn't
 // kill "foo-bar").
-func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
+func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []string {
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return nil
@@ -82,7 +83,9 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 			continue
 		}
 		if strings.HasPrefix(line, rolePrefix) {
-			add(line)
+			if withRoles {
+				add(line)
+			}
 			continue
 		}
 		i := strings.Index(line, needle)
@@ -107,7 +110,7 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 // source of truth. Pass-through no-op when tmux isn't running or
 // nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
-	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
+	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug, true) {
 		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
 				name, err, strings.TrimSpace(string(out)))
@@ -131,7 +134,7 @@ func reapIdleSlugSessions(tasksDir, slug string) {
 		}
 	}
 	now := time.Now()
-	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
+	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug, false) {
 		idle, ok := sessionIdle(name, now)
 		if !ok {
 			continue

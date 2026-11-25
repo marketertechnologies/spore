@@ -87,3 +87,39 @@ func TestMergeKillsRoleSessions(t *testing.T) {
 	}
 	assertRoleSessionsReaped(t, own, sibling)
 }
+
+// Pause and block reap only idle worker sessions; role panes keep
+// their conversation even when idle past the threshold.
+func TestPauseAndBlockKeepRolePanes(t *testing.T) {
+	for _, op := range []struct {
+		name string
+		fn   func(tasksDir, slug string) error
+	}{{"pause", Pause}, {"block", Block}} {
+		t.Run(op.name, func(t *testing.T) {
+			repo := t.TempDir()
+			t.Chdir(repo)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			t.Setenv("SPORE_IDLE_REAP_SECS", "0")
+			runGit(t, repo, "init", "-q", "-b", "main")
+			runGit(t, repo, "config", "user.email", "test@example.com")
+			runGit(t, repo, "config", "user.name", "Test")
+			runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+			tasksDir := filepath.Join(repo, "tasks")
+			if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(tasksDir, "demo.md"), []byte("---\nstatus: active\nslug: demo\ntitle: Demo\n---\nbody\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			own, _ := spawnRoleSessions(t, repo, "demo")
+			if err := op.fn(tasksDir, "demo"); err != nil {
+				t.Fatalf("%s: %v", op.name, err)
+			}
+			for _, name := range own {
+				if exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", "="+name).Run() != nil {
+					t.Errorf("%s killed role pane %q", op.name, name)
+				}
+			}
+		})
+	}
+}
