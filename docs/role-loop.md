@@ -328,7 +328,7 @@ round at the worktree HEAD, in review phases only:
   fresh reviewer) names the failed check and the marker holding its
   output, to treat as a finding.
 
-The draft-PR mirror holds the same gate on GitHub: while `check` is set, it does not push the branch or post the latest engineer round (nor any event after it) until `check-pass-N-<sha>` exists for the worktree HEAD. A failing run or a give-up (`check-failed`) leaves GitHub untouched for that round. While the latest round is held, every unposted engineer round is held with it, because each engineer event pushes the current HEAD; a gave-up round lands, with its verdict, once a later round passes at HEAD. `done` releases the hold, since the engineer pane is reaped and nothing would record a pass. With no `check` the mirror is unchanged.
+The draft-PR mirror holds the same gate on GitHub: while `check` is set, it does not push the branch or post the latest engineer round (nor any event after it) until `check-pass-N-<sha>` exists for the worktree HEAD. A failing run or a give-up (`check-failed`) leaves GitHub untouched for that round. While the latest round is held, every unposted engineer round is held with it, because each engineer event pushes the current HEAD; a gave-up round lands, with its verdict, once a later round passes at HEAD. `done` releases the hold, since the engineer pane is reaped and nothing would record a pass; so does a give-up at HEAD while `escalated`, since no later round will pass and the operator needs the PR current (a fix-pass commit moves HEAD and holds it again until that HEAD passes). With no `check` the mirror is unchanged.
 
 Engineer (`spore-role/<project>/<slug>/engineer`): reads the spec and
 the latest verdict, commits on the task branch, and ends each round

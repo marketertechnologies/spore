@@ -95,7 +95,9 @@ func readCheckGate(projectRoot, slug string, snap *Snapshot) error {
 // commits. Nothing after the cut reaches GitHub either. A gave-up
 // round lands once a later round passes at HEAD, so the push then
 // carries checked code. PhaseDone releases the hold, since the
-// engineer pane is gone and nothing would ever record a pass.
+// engineer pane is gone and nothing would ever record a pass; so does
+// a give-up at HEAD in PhaseEscalated, where no re-review (and so no
+// later passing round) follows and the operator needs the PR current.
 func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) ([]mirrorEvent, error) {
 	if snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
 		return pending, nil
@@ -118,7 +120,7 @@ func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent
 	if err != nil {
 		return nil, err
 	}
-	if state == task.CheckPassed {
+	if state == task.CheckPassed || (state == task.CheckFailed && snap.Phase == PhaseEscalated) {
 		return pending, nil
 	}
 	return pending[:cut], nil
