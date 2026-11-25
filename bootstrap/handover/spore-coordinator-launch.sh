@@ -30,6 +30,10 @@
 #   SPORE_COORDINATOR_SESSION      codex: key for the thread record the
 #                                  inbox sidecar reads (default: the
 #                                  pane's tmux session name).
+#   SPORE_COORDINATOR_REMOTE_CONTROL  claude: 0 drops --remote-control
+#                                  (default: on, named after the pane's
+#                                  tmux session, else
+#                                  spore-<cwd basename>-coordinator).
 set -euo pipefail
 
 # Ensure the nix-managed claude / codex / spore win over any
@@ -51,6 +55,15 @@ if [[ -n "$role" && -r "$role" && -s "$role" ]]; then
   payload+=$(cat "$role")
 fi
 
+tmux_session() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  local target=()
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    target=(-t "$TMUX_PANE")
+  fi
+  tmux display-message -p "${target[@]}" '#S' 2>/dev/null || true
+}
+
 prompt=()
 if [[ -n "$payload" ]]; then
   prompt=("$payload")
@@ -61,6 +74,12 @@ case "$provider" in
     args=(--dangerously-skip-permissions)
     if [[ -n "$model" ]]; then
       args+=(--model "$model")
+    fi
+    # The flag's name is optional, so a bare --remote-control would
+    # swallow the positional role prompt as the name.
+    if [[ "${SPORE_COORDINATOR_REMOTE_CONTROL:-1}" != 0 ]]; then
+      rc_name=$(tmux_session)
+      args+=(--remote-control "${rc_name:-spore-$(basename "$PWD")-coordinator}")
     fi
     claude "${args[@]}" "${prompt[@]}" || exec /usr/local/bin/spore-greet-coordinator
     ;;
@@ -82,12 +101,8 @@ case "$provider" in
     # in ~/.codex and is symlinked in; Codex writes through the links.
     # The sidecar delivers inbox envelopes to the thread the
     # SessionStart hook records under this session's key.
-    if [[ -z "${SPORE_COORDINATOR_SESSION:-}" && -n "${TMUX:-}" ]]; then
-      tmux_target=()
-      if [[ -n "${TMUX_PANE:-}" ]]; then
-        tmux_target=(-t "$TMUX_PANE")
-      fi
-      SPORE_COORDINATOR_SESSION=$(tmux display-message -p "${tmux_target[@]}" '#S' 2>/dev/null || true)
+    if [[ -z "${SPORE_COORDINATOR_SESSION:-}" ]]; then
+      SPORE_COORDINATOR_SESSION=$(tmux_session)
     fi
     export SPORE_COORDINATOR_SESSION="${SPORE_COORDINATOR_SESSION:-}"
     if [[ -n "${SPORE_TASK_INBOX:-}" && -n "$SPORE_COORDINATOR_SESSION" ]]; then

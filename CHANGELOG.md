@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `spore-coordinator-launch`: claude coordinators start with
+  `--remote-control <name>`, named after the pane's tmux session
+  (fallback `spore-<cwd basename>-coordinator`), so Remote Control
+  survives a wrap-up respawn. `SPORE_COORDINATOR_REMOTE_CONTROL=0`
+  opts out. Consumer impact: every claude coordinator on a host gets
+  Remote Control after the next rebuild plus its next respawn.
+
 - `spore eval`: reviewer regression suite. `candidates` detects
   reviewer misses (a slot approved, a later slot requested changes)
   and invalid comments (engineer pushback, `spore eval flag`) from
