@@ -72,3 +72,8 @@ func recordRoleProgress(projectRoot, slug string, snap Snapshot) {
 			"reviewer_round": strconv.Itoa(snap.ReviewerRound),
 		}})
 }
+
+func recordPROpened(projectRoot, slug, url, base string) {
+	task.RecordEvent(projectRoot, events.Event{Kind: events.PROpened, Slug: slug,
+		Fields: map[string]string{"url": url, "draft": "true", "base": base}})
+}

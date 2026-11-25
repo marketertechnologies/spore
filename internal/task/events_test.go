@@ -71,3 +71,13 @@ func TestLifecycleRecordsLedgerEvents(t *testing.T) {
 		t.Error("project root not noted")
 	}
 }
+
+func TestRecordEventIgnoresEmptyRoot(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	RecordEvent("", events.Event{Kind: events.ReconcileFailed})
+	RecordEventThrottled("", "k", time.Hour, events.Event{Kind: events.ReconcileSkipped})
+	if ps, _ := events.Projects(); len(ps) != 0 {
+		t.Fatalf("empty root filed events under %v", ps)
+	}
+}

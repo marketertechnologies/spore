@@ -49,6 +49,8 @@ Commands:
   show       Open <path>[:<line>[:<col>]] in the connected editor.
   code       Editor helpers (workspace: VS Code multi-root of all worktrees).
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
+  report     Morning digest: the events ledger plus live task and fleet state.
+  doctor     Drift checks (binary, managed settings, Claude Code, units, secrets).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -202,6 +204,10 @@ func main() {
 		}
 	case "install":
 		os.Exit(runInstall(args))
+	case "report":
+		os.Exit(runReportMain(args))
+	case "doctor":
+		os.Exit(runDoctorMain(args))
 	case "budget":
 		os.Exit(runBudget(args))
 	case "coordinator":

@@ -18,8 +18,13 @@ func recordEvent(tasksDir string, e events.Event) {
 }
 
 // RecordEvent appends e to projectRoot's ledger (keyed by the main
-// repo's basename) and notes the root for `spore report --all`.
+// repo's basename) and notes the root for `spore report --all`. An
+// empty projectRoot records nothing: resolving it from the cwd would
+// file the event under whatever repo the process happens to run in.
 func RecordEvent(projectRoot string, e events.Event) {
+	if projectRoot == "" {
+		return
+	}
 	root, err := MainRepoRoot(projectRoot)
 	if err != nil {
 		return
@@ -32,6 +37,9 @@ func RecordEvent(projectRoot string, e events.Event) {
 // RecordEventThrottled is RecordEvent at most once per every for key
 // (see events.RecordThrottled).
 func RecordEventThrottled(projectRoot, key string, every time.Duration, e events.Event) {
+	if projectRoot == "" {
+		return
+	}
 	root, err := MainRepoRoot(projectRoot)
 	if err != nil {
 		return

@@ -605,3 +605,22 @@ func Enabled() (bool, error) {
 	}
 	return true, nil
 }
+
+// LiveUnits lists projectRoot's live agent units for `spore report`:
+// worker sessions, role loops with any live pane, and whether the
+// coordinator session exists. Errors read as nothing running.
+func LiveUnits(projectRoot string) (workers, roleLoops []string, coordinator bool) {
+	slugs, _ := task.SpawnedSlugs(projectRoot)
+	for _, s := range slugs {
+		if s == CoordinatorSlug {
+			coordinator = true
+			continue
+		}
+		workers = append(workers, s)
+	}
+	for s := range runningRoleLoops(projectRoot) {
+		roleLoops = append(roleLoops, s)
+	}
+	sort.Strings(roleLoops)
+	return workers, roleLoops, coordinator
+}
