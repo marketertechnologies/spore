@@ -52,6 +52,9 @@ func HostEvents(spore, hooksDir string) map[string][]HookBin {
 			{Name: "load-state-md", BinPath: filepath.Join(hooksDir, "load-state-md.pl"), Timeout: 5},
 		},
 		"Stop": stop,
+		"StopFailure": {
+			{Name: "stop-failure", BinPath: spore + " hooks stop-failure", Timeout: 10},
+		},
 	}
 }
 

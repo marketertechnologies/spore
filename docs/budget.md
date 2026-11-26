@@ -89,12 +89,14 @@ than 30 minutes) flips into api mode.
 `refresh` reads `~/.claude/.credentials.json`, hits
 `https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer
 <accessToken>` and `anthropic-beta: oauth-2025-04-20`, and stores the
-returned utilization percent and `resets_at` per window. On a 401 with
-a refresh token present, the binary refreshes once via
-`https://platform.claude.com/v1/oauth/token` and retries; the rolled
-credentials are written back via mktemp+rename. Other HTTP failures
-keep the previous snapshot but flag it `Stale` so consumers can decide
-whether to trust it.
+returned utilization percent and `resets_at` per window. The probe is
+read-only: spore never refreshes the OAuth token and never writes the
+credentials file (or the per-account store files). Refresh tokens
+rotate, so a refresh from spore races Claude Code's own refresh and can
+leave every session on the host holding a dead token. A 401, like any
+other HTTP failure, keeps the previous snapshot but flags it `Stale` so
+consumers can decide whether to trust it; the budget recovers once
+Claude Code refreshes the login itself (or after `/login`).
 
 A freshness gate prevents hammering `/usage`: successive `refresh`
 calls within 60 seconds reuse the cached snapshot. Override with
