@@ -44,6 +44,8 @@ func TestMain(m *testing.M) {
 			_ = os.Unsetenv(k)
 		}
 	}
+	// Tests that want a broker start their own; the host's must stay unreachable.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	if err := os.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(tmpdir, "coordinator")); err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
