@@ -38,6 +38,7 @@ var schema = map[string][]string{
 	"agents.reviewer":      {"model", "effort"},
 	"agents.reviewer.A":    {"model", "effort"},
 	"agents.reviewer.B":    {"model", "effort"},
+	"sandbox":              {"enabled", "allow_domains", "allow_write", "excluded_commands"},
 }
 
 // Problem is one unknown section or key in a spore.toml.

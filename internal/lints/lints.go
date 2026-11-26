@@ -51,6 +51,7 @@ func Default() []Lint {
 		TaskEvidence{TasksDir: "tasks"},
 		TmuxSocketTest{},
 		SporeTOML{},
+		SandboxOff{},
 	}
 }
 

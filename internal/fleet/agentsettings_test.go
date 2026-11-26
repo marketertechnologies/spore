@@ -52,9 +52,9 @@ func TestRoleSpawnPassesAgentSettings(t *testing.T) {
 		spec RoleSpawnSpec
 		want string
 	}{
-		{EngineerSpec(root, "feature-x"), "exec claude --dangerously-skip-permissions '--model' 'opus' '--effort' 'high' -- "},
-		{ReviewerSpec(root, "feature-x", task.ReviewerA), "exec claude --dangerously-skip-permissions '--model' 'sonnet' -- "},
-		{ReviewerSpec(root, "feature-x", task.ReviewerB), "exec claude --dangerously-skip-permissions '--model' 'sonnet' '--effort' 'max' -- "},
+		{EngineerSpec(root, "feature-x"), "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} '--model' 'opus' '--effort' 'high' -- "},
+		{ReviewerSpec(root, "feature-x", task.ReviewerA), "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} '--model' 'sonnet' -- "},
+		{ReviewerSpec(root, "feature-x", task.ReviewerB), "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} '--model' 'sonnet' '--effort' 'max' -- "},
 	}
 	for _, c := range cases {
 		if cmd := roleCommand(t, c.spec); !strings.Contains(cmd, c.want) {
@@ -157,7 +157,7 @@ func TestCoordinatorAgentsTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(cmd, "exec claude --dangerously-skip-permissions '--model' 'opus' '--effort' 'xhigh' -- ") {
+	if !strings.Contains(cmd, "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} '--model' 'opus' '--effort' 'xhigh' -- ") {
 		t.Errorf("claude command = %q", cmd)
 	}
 	cmd, err = coordinatorShellCommand("codex", "/role.md", task.AgentSettings{Model: "gpt-5.5", Effort: "high"})

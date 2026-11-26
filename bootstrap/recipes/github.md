@@ -62,7 +62,8 @@ The org has one App and one installation, shared by every
 teammate; each teammate brings their own private key. App creation
 and teammate onboarding (key generation, finding the ids) live in
 `docs/github-app.md` in the spore repo. Once the ids and key are in
-hand:
+hand, the operator runs (from their own shell: inside a sandboxed
+pane the guard denies `config --set` and `token`):
 
 ```
 spore gh config --set app_id=<app id> \
@@ -97,6 +98,11 @@ token in a command line (`https://x-access-token:<token>@...`,
 `GH_TOKEN=<token> gh ...`): the token lands in the transcript.
 `exec` keeps it in the child's environment.
 
+`spore gh` runs outside the Claude Code sandbox (it reads the App
+key), so in agent panes the PreToolUse guard allows only
+`spore gh exec` around `git` or `gh` and read-only `spore gh config`
+(docs/sandbox.md in the spore repo).
+
 This is an installation token. Endpoints that need the App's own
 JWT (`GET /app`, anything under `/app/installations`) reject it with 401 "A JSON web token could not be
 decoded"; that is expected, not a broken setup.
@@ -109,7 +115,7 @@ decoded"; that is expected, not a broken setup.
 - Reach for `spore-with-secrets gh` when the action should carry
   the operator's identity, or when `spore gh config` is absent.
 - `pr_flow=draft` only turns on the role loop's draft-PR mirror.
-  Plain `spore gh exec` / `spore gh token` work without it.
+  Plain `spore gh exec` works without it.
 
 ### Policy caveat
 

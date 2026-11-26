@@ -33,6 +33,13 @@ codex = 1
 
 [fleet.reviewers.C]
 mode = "fleet"
+
+[sandbox]
+enabled = true
+allow_domains = ["example.org"]
+allow_write = ["~/x"]
+excluded_commands = ["docker *"]
+alow_write = []
 `
 	var got []string
 	for _, p := range Check(content) {
@@ -46,6 +53,7 @@ mode = "fleet"
 		`line 11: unknown key "root_line_limt" in [lint]`,
 		`line 15: unknown key "agnet" in [coordinator]`,
 		`line 23: unknown section [fleet.reviewers.C]`,
+		`line 31: unknown key "alow_write" in [sandbox]`,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d problems, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))

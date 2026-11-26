@@ -113,5 +113,48 @@
       "Bash(git push +*)",
       "Bash(git push * +*)"
     ]
+  },
+  "sandbox": {
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [
+      "spore gh *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "~/.cache",
+        "~/go",
+        "~/.local/state/spore"
+      ],
+      "denyRead": [
+        "~/.config/spore",
+        "~/.local/state/spore/*/github-token.json",
+        "~/.ssh",
+        "~/.claude/.credentials.json",
+        "~/.npmrc"
+      ],
+      "denyWrite": [
+        "~/.local/state/spore/*/github.toml"
+      ]
+    },
+    "network": {
+      "allowAllUnixSockets": true,
+      "allowedDomains": [
+        "api.anthropic.com",
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "proxy.golang.org",
+        "sum.golang.org",
+        "cache.nixos.org",
+        "channels.nixos.org",
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "rubygems.org",
+        "index.rubygems.org"
+      ],
+      "strictAllowlist": true
+    }
   }
 }

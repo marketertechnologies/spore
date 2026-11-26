@@ -30,6 +30,8 @@ issues.
 - `tmux-socket-test` - tests that call tmux pass `-L <socket>`.
 - `spore-toml` - unknown `spore.toml` sections and keys (warning
   only; `spore config check` fails on them).
+- `sandbox-off` - `spore.toml` `[sandbox] enabled = false` (warning)
+  or a `[sandbox]` section spore cannot parse (error).
 
 ## Exit criteria
 

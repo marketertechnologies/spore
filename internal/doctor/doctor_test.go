@@ -112,8 +112,8 @@ func TestCheckAllPassOnCleanHost(t *testing.T) {
 	if fails, warns := Counts(rs); fails != 0 || warns != 0 {
 		t.Fatalf("clean host: %d fail, %d warn: %+v", fails, warns, rs)
 	}
-	if r := find(t, rs, "managed settings: sandbox"); r.Status != Skip {
-		t.Errorf("sandbox = %+v, want skip while the binary renders none", r)
+	if r := find(t, rs, "managed settings: sandbox"); r.Status != Pass {
+		t.Errorf("sandbox = %+v, want pass: the drop-in carries the rendered sandbox floor", r)
 	}
 	if r := find(t, rs, "fleet units: p"); r.Status != Pass {
 		t.Errorf("units = %+v", r)
@@ -163,7 +163,7 @@ func TestCheckManagedSettingsDrift(t *testing.T) {
 		t.Errorf("deny = %+v", r)
 	}
 	if r := find(t, rs, "managed settings: sandbox"); r.Status != Fail {
-		t.Errorf("sandbox = %+v, want fail when the live file carries one the binary does not render", r)
+		t.Errorf("sandbox = %+v, want fail when the live block differs from the rendered floor", r)
 	}
 
 	_ = os.Remove(env.DropIn)

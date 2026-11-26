@@ -15,7 +15,9 @@ const canary = "CANARY-vuNfvrcKGX"
 func newTestRedactor(t *testing.T) (*Redactor, string) {
 	t.Helper()
 	cfg := t.TempDir()
-	home := t.TempDir()
+	// Fixed and outside /home and /Users: a TempDir under /home/runner (CI)
+	// would hit the generic home rule instead of the HOME-specific one.
+	home := "/srv/spore-redact-test-home"
 	t.Setenv("XDG_CONFIG_HOME", cfg)
 	t.Setenv("HOME", home)
 	root := filepath.Join(t.TempDir(), "demo-proj")

@@ -52,6 +52,7 @@ Commands:
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
   report     Morning digest: the events ledger plus live task and fleet state.
   doctor     Drift checks (binary, managed settings, Claude Code, units, secrets).
+  sandbox    Claude Code sandbox settings for spore panes (settings, prepare).
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -231,6 +232,8 @@ func main() {
 		os.Exit(runCode(args))
 	case "gh":
 		os.Exit(runGH(args))
+	case "sandbox":
+		os.Exit(runSandbox(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)

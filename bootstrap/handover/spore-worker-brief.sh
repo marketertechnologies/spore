@@ -34,6 +34,10 @@ brief="tasks/${slug}.md"
 note="${1:-}"
 
 flags=(--dangerously-skip-permissions)
+# Pane sandbox settings from the tmux session env (internal/sandbox).
+if [[ -n "${SPORE_SANDBOX_SETTINGS:-}" ]]; then
+  flags+=(--settings "$SPORE_SANDBOX_SETTINGS")
+fi
 if [[ -n "${SPORE_AGENT_MODEL:-}" ]]; then
   flags+=(--model "$SPORE_AGENT_MODEL")
 fi

@@ -79,6 +79,9 @@ func TestGHConfigSetAndPrint(t *testing.T) {
 
 func TestGHExecInjectsToken(t *testing.T) {
 	ghTestProject(t)
+	// The Claude Code sandbox pre-sets GIT_CONFIG_COUNT; Env appends
+	// after it, so pin the base for the KEY_1 check below.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
 	ok := runGH([]string{"exec", "--", "sh", "-c", `test "$GH_TOKEN" = ghs_cli && test "$GIT_CONFIG_KEY_1" = credential.helper`})
 	if ok != 0 {
 		t.Fatalf("exec exit %d, want 0", ok)

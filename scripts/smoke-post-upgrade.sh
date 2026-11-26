@@ -18,6 +18,7 @@
 #
 # Active probes (deny rules, force-push guard, role-loop end to end) are
 # not here; run the P0.1 / P0.5 probes and a throwaway role-loop task.
+# The sandbox probe is active too: scripts/sandbox-probe.sh --mode post.
 # SPORE_SMOKE_SW / SPORE_SMOKE_DROPIN override the system paths (testing).
 set -u
 
@@ -77,6 +78,14 @@ if [ -f "$DROPIN" ]; then
   done
   for cmd in 'hooks pretooluse' 'hooks engineer-check' 'hooks watch-inbox' 'load-state-md.pl' 'block-bg-bash.pl'; do
     grep -qF "$cmd" "$DROPIN" || fail "drop-in lacks hook: $cmd"
+  done
+  if jq -e '.sandbox.allowUnsandboxedCommands == false and .sandbox.network.strictAllowlist == true and (.sandbox.filesystem.denyRead | index("~/.config/spore"))' "$DROPIN" >/dev/null; then
+    pass "drop-in carries the sandbox floor"
+  else
+    fail "drop-in lacks the sandbox floor (docs/sandbox.md)"
+  fi
+  for bin in socat bwrap; do
+    [ -x "$SW/bin/$bin" ] || fail "$SW/bin/$bin missing (sandbox network bridge)"
   done
 else
   fail "drop-in missing: $DROPIN"
@@ -139,7 +148,7 @@ if [ -f "$DROPIN" ] && command -v tmux >/dev/null; then
   while read -r target pid; do
     start="$(date -d "$(ps -o lstart= -p "$pid" 2>/dev/null)" +%s 2>/dev/null)" || continue
     if [ "$start" -lt "$since" ]; then
-      warn "pane $target started before the drop-in; respawn it"
+      warn "pane $target started before the drop-in; recreate its session (the sandbox needs the new session env)"
       stale=1
     fi
   done < <(env -u TMUX tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_pid}' 2>/dev/null | grep '^spore')

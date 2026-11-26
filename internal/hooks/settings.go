@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/versality/spore/internal/sandbox"
 )
 
 // HookBin describes one hook binary entry for claude-code's
@@ -88,6 +90,7 @@ type settingsTop struct {
 	ExtraKnownMarketplaces map[string]marketplaceEntry `json:"extraKnownMarketplaces,omitempty"`
 	Hooks                  map[string][]hookGroup      `json:"hooks,omitempty"`
 	Permissions            *settingsPermissions        `json:"permissions,omitempty"`
+	Sandbox                *sandbox.Managed            `json:"sandbox,omitempty"`
 }
 
 type settingsPermissions struct {

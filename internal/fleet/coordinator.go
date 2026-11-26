@@ -11,6 +11,7 @@ import (
 	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/sandbox"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -175,7 +176,7 @@ func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg Coord
 	if v := coordinatorAutoConnectIDE(projectRoot); v != "" {
 		args = append(args, "-e", editor.AutoConnectIDEEnv+"="+v)
 	}
-	return args, nil
+	return append(args, task.SandboxSessionEnv(projectRoot, projectRoot)...), nil
 }
 
 // coordinatorAgent picks the binary the coordinator session execs.
@@ -327,7 +328,7 @@ func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
 // test stub) runs verbatim.
 func agentInvocations(agent string, st task.AgentSettings) (withBody, bare string, err error) {
 	if isClaudeAgent(agent) {
-		claude := agent + " --dangerously-skip-permissions" + shellArgs(task.ClaudeFlags(st))
+		claude := agent + ` --dangerously-skip-permissions ${` + sandbox.EnvVar + `:+--settings "$` + sandbox.EnvVar + `"}` + shellArgs(task.ClaudeFlags(st))
 		return claude + " --", claude, nil
 	}
 	if isCodexAgent(agent) {
