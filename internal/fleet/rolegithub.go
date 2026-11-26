@@ -180,6 +180,10 @@ type githubMirror struct {
 	// project is the name the broker knows this project by.
 	brokered bool
 	project  string
+	// checked is the commit the engineer check gate cleared this tick
+	// (see holdForCheck); gated is false when no gate applies.
+	checked string
+	gated   bool
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -267,7 +271,7 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
-	pending, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
+	pending, m.checked, m.gated, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
 	if err != nil {
 		return err
 	}
@@ -336,8 +340,16 @@ func (m *githubMirror) connectToken() error {
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
-	if e.kind == eventEngineer || e.kind == eventReady {
-		if err := m.push(); err != nil {
+	switch {
+	case e.kind == eventEngineer || e.kind == eventReady:
+		if err := m.push(m.checked); err != nil {
+			return err
+		}
+	case e.kind == eventReview && m.gated && m.checked != "":
+		// The reviewer read the checked commit, which can be past the
+		// last engineer push (a fix after a failed check); a later,
+		// unchecked HEAD stays local.
+		if err := m.pushForward(m.checked); err != nil {
 			return err
 		}
 	}
@@ -550,53 +562,6 @@ func (m *githubMirror) prComment(body string) error {
 	return err
 }
 
-// push sends the worktree HEAD to origin as the app. A branch whose
-// last pushed commit is no longer an ancestor of HEAD was rewritten
-// and goes up with --force-with-lease pinned to that commit.
-func (m *githubMirror) push() error {
-	sha, err := m.git("rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	if sha == m.state.PushedSHA {
-		return nil
-	}
-	branch, err := m.branch()
-	if err != nil {
-		return err
-	}
-	ref := "refs/heads/" + branch
-	lease := ""
-	if prev := m.state.PushedSHA; prev != "" {
-		if _, err := m.git("merge-base", "--is-ancestor", prev, "HEAD"); err != nil {
-			lease = prev
-		}
-	}
-	if m.brokered {
-		err = secrets.Push(m.project, m.worktree, branch, sha, lease, mirrorCallTimeout)
-	} else {
-		args := []string{"push", "--quiet", "origin", "HEAD:" + ref}
-		if lease != "" {
-			args = append(args, "--force-with-lease="+ref+":"+lease)
-		}
-		_, err = m.git(args...)
-	}
-	if err != nil {
-		return err
-	}
-	m.state.PushedSHA = sha
-	m.save()
-	return nil
-}
-
-func (m *githubMirror) branch() (string, error) {
-	b, err := m.git("symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("worktree HEAD is not on a branch: %w", err)
-	}
-	return b, nil
-}
-
 // ensurePR finds or opens the task's draft PR. An open PR for the
 // branch is adopted, so a lost github.json never opens a duplicate.
 func (m *githubMirror) ensurePR() error {
@@ -656,6 +621,7 @@ func (m *githubMirror) ensurePR() error {
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
 	m.save()
+	recordPROpened(m.projectRoot, m.slug, url, base)
 	return nil
 }
 

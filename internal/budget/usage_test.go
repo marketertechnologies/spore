@@ -35,15 +35,11 @@ func writeCredentials(t *testing.T, path string, accessToken, refreshToken strin
 	}
 }
 
-func swapURLs(t *testing.T, usage, token string) {
+func swapUsageURL(t *testing.T, usage string) {
 	t.Helper()
-	prevU, prevT := oauthUsageURL, oauthTokenURL
+	prev := oauthUsageURL
 	oauthUsageURL = usage
-	oauthTokenURL = token
-	t.Cleanup(func() {
-		oauthUsageURL = prevU
-		oauthTokenURL = prevT
-	})
+	t.Cleanup(func() { oauthUsageURL = prev })
 }
 
 func TestParseUsageTimestampMicroseconds(t *testing.T) {
@@ -98,10 +94,10 @@ func TestFetchUsageHappyPath(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"five_hour":{"utilization":7,"resets_at":"2026-04-26T17:00:00.000000+00:00"},"seven_day":{"utilization":42,"resets_at":"2026-04-26T20:00:00.000000+00:00"}}`)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 	t.Setenv("AGENT_BUDGET_CREDS", creds)
 
-	ur, err := fetchUsage(context.Background(), time.Now())
+	ur, err := fetchUsage(context.Background())
 	if err != nil {
 		t.Fatalf("fetchUsage: %v", err)
 	}
@@ -113,86 +109,10 @@ func TestFetchUsageHappyPath(t *testing.T) {
 	}
 }
 
-func TestFetchUsageRefreshOn401(t *testing.T) {
-	dir := t.TempDir()
-	creds := filepath.Join(dir, ".credentials.json")
-	expired := time.Now().Add(-1 * time.Hour).UnixMilli()
-	writeCredentials(t, creds, "at-stale", "rt-good", expired)
-
-	var usageCalls int32
-	usage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&usageCalls, 1)
-		auth := r.Header.Get("Authorization")
-		if n == 1 {
-			if auth != "Bearer at-stale" {
-				t.Errorf("first call auth: %q", auth)
-			}
-			http.Error(w, "expired", http.StatusUnauthorized)
-			return
-		}
-		if auth != "Bearer at-refreshed" {
-			t.Errorf("second call auth: %q", auth)
-		}
-		_, _ = fmt.Fprintln(w, `{"five_hour":{"utilization":11,"resets_at":"2026-04-26T17:00:00.000000+00:00"},"seven_day":{"utilization":33,"resets_at":"2026-04-26T20:00:00.000000+00:00"}}`)
-	}))
-	defer usage.Close()
-
-	var tokenCalls int32
-	token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&tokenCalls, 1)
-		var req map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req["grant_type"] != "refresh_token" || req["refresh_token"] != "rt-good" {
-			t.Errorf("unexpected refresh body: %v", req)
-		}
-		_, _ = fmt.Fprintln(w, `{"access_token":"at-refreshed","refresh_token":"rt-rolled","expires_in":3600,"scope":"user:profile user:inference"}`)
-	}))
-	defer token.Close()
-
-	swapURLs(t, usage.URL, token.URL)
-	t.Setenv("AGENT_BUDGET_CREDS", creds)
-
-	ur, err := fetchUsage(context.Background(), time.Now())
-	if err != nil {
-		t.Fatalf("fetchUsage: %v", err)
-	}
-	if math.Abs(ur.FiveHour.Utilization-11) > 1e-9 {
-		t.Errorf("five_hour.utilization: %v", ur.FiveHour.Utilization)
-	}
-	if got := atomic.LoadInt32(&usageCalls); got != 2 {
-		t.Errorf("usage call count: got %d want 2", got)
-	}
-	if got := atomic.LoadInt32(&tokenCalls); got != 1 {
-		t.Errorf("token call count: got %d want 1", got)
-	}
-
-	cf, err := loadCredentials(creds)
-	if err != nil {
-		t.Fatalf("reload creds: %v", err)
-	}
-	if cf.oauth.AccessToken != "at-refreshed" {
-		t.Errorf("access token not persisted: %q", cf.oauth.AccessToken)
-	}
-	if cf.oauth.RefreshToken != "rt-rolled" {
-		t.Errorf("refresh token not persisted: %q", cf.oauth.RefreshToken)
-	}
-	if _, ok := cf.raw["mcpOAuth"]; !ok {
-		t.Error("write-back lost mcpOAuth")
-	}
-
-	fi, err := os.Stat(creds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("creds mode: got %o want 600", fi.Mode().Perm())
-	}
-}
-
 func TestFetchUsageNoCreds(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AGENT_BUDGET_CREDS", filepath.Join(dir, "missing.json"))
-	if _, err := fetchUsage(context.Background(), time.Now()); err == nil {
+	if _, err := fetchUsage(context.Background()); err == nil {
 		t.Fatal("expected error for missing creds")
 	}
 }
@@ -218,7 +138,7 @@ func TestRefreshSubscriptionPrefersUsage(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"five_hour":{"utilization":82,"resets_at":"2026-04-26T17:00:00.000000+00:00"},"seven_day":{"utilization":40,"resets_at":"2026-04-26T20:00:00.000000+00:00"}}`)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", stateD)
@@ -273,7 +193,7 @@ func TestRefreshSubscriptionFallsBackToTranscript(t *testing.T) {
 		http.Error(w, "down", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	creds := filepath.Join(dir, ".credentials.json")
 	writeCredentials(t, creds, "at-fresh", "rt-fresh", time.Now().Add(2*time.Hour).UnixMilli())
@@ -324,7 +244,7 @@ func TestRefreshKeepsStaleSnapshotWhenUsageDown(t *testing.T) {
 		http.Error(w, "down", http.StatusBadGateway)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", stateD)
@@ -372,7 +292,7 @@ func TestRefreshThrottlesUsageHits(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"five_hour":{"utilization":12,"resets_at":"2026-04-26T17:00:00.000000+00:00"},"seven_day":{"utilization":34,"resets_at":"2026-04-26T20:00:00.000000+00:00"}}`)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", stateD)
@@ -466,7 +386,7 @@ func TestRefreshAPIModeSkipsUsage(t *testing.T) {
 		http.Error(w, "should not be called", http.StatusTeapot)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	creds := filepath.Join(dir, ".credentials.json")
 	writeCredentials(t, creds, "at-fresh", "rt-fresh", time.Now().Add(2*time.Hour).UnixMilli())
@@ -546,7 +466,7 @@ func TestRefreshMultiAccountAggregation(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects-empty"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", stateD)
@@ -607,7 +527,7 @@ func TestRefreshPopulatesTier(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	t.Setenv("AGENT_BUDGET_PROJECTS", filepath.Join(dir, "projects-empty"))
 	t.Setenv("AGENT_BUDGET_STATE_DIR", stateD)
@@ -727,7 +647,7 @@ func TestQueryAutoRefreshesStaleSnapshot(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"five_hour":{"utilization":50,"resets_at":"2099-01-01T00:00:00.000000+00:00"},"seven_day":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000000+00:00"}}`)
 	}))
 	defer srv.Close()
-	swapURLs(t, srv.URL, srv.URL+"/token-unused")
+	swapUsageURL(t, srv.URL)
 
 	creds := filepath.Join(dir, ".credentials.json")
 	writeCredentials(t, creds, "at-fresh", "rt-fresh", time.Now().Add(2*time.Hour).UnixMilli())

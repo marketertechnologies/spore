@@ -128,8 +128,9 @@ When a project also ships a skill of the same name:
 
 `services.spore-fleet.claudeManagedSettings.enable` (default true, active with `services.spore-fleet.enable`) writes `/etc/claude-code/managed-settings.d/50-spore.json`. Claude Code merges `managed-settings.json` and then every `*.json` in `managed-settings.d/` alphabetically, and managed settings sit above user and project settings (code.claude.com/docs/en/settings). The drop-in carries:
 
-- the host hooks: Notification `spore hooks notify-coordinator`, PreToolUse (`Bash`) `block-bg-bash.pl` and `spore hooks pretooluse` (force-push guard), SessionStart `load-state-md.pl`, and the five Stop hooks (`coordinator token-monitor`, `worker token-monitor`, `fleet replenish-hook`, the self-gated `hooks engineer-check`, `hooks watch-inbox`);
+- the host hooks: Notification `spore hooks notify-coordinator`, PreToolUse (`Bash`) `block-bg-bash.pl` and `spore hooks pretooluse` (force-push and `spore gh` guard), SessionStart `load-state-md.pl`, and the five Stop hooks (`coordinator token-monitor`, `worker token-monitor`, `fleet replenish-hook`, the self-gated `hooks engineer-check`, `hooks watch-inbox`);
 - `permissions.deny`: the default set from `hooks.DefaultDeny` (`SendMessage`, reads of `~/.config/spore/**/secrets.env`, `**/*.pem` and `~/.claude/.credentials.json`, edits of that credentials file, and the `git push` force rules). A project's `spore.toml` `[permissions] default_deny = false` cannot lift these: managed rules win over project settings.
+- `sandbox`: the Claude Code sandbox floor (`sandbox.ManagedBlock`: no unsandboxed escape, strict network allowlist, secret paths unreadable, tool caches writable). It leaves `sandbox.enabled` unset; spore turns the sandbox on per pane with `--settings`, so sessions spore did not launch are unaffected and `[sandbox] enabled = false` opts a project out. The option also puts `socat` and `bubblewrap` on the system profile for the sandbox's network bridge. See `docs/sandbox.md`.
 
 Commands run through the system profile: `/run/current-system/sw/bin/spore` and `/run/current-system/sw/share/spore/hooks/`. The option adds `services.spore-fleet.package` to `environment.systemPackages` and links `/share/spore/hooks` from `shimsPackage`, so every rebuild refreshes them. Store paths are avoided on purpose: Claude Code snapshots hooks at session start, and a coordinator that outlives a rebuild plus `nix-collect-garbage` would call deleted paths. Nothing under `~/.claude/hooks/` is read any more.
 
@@ -208,6 +209,19 @@ The block is merged with `lib.mkBefore`, so a host's own
 stock NixOS tmux module does not reset scrollback to 2000.
 
 The full option reference lives in `nixosModules/spore-fleet.nix`.
+
+## Reconcile pass resilience
+
+One bad task, one crashing agent or one hung call must not stop the fleet. Each pass:
+
+- **Counts agents against `max_workers`.** A worker session takes one slot; a `loop: role` task with any live pane (engineer plus reviewers) takes one slot too. Running units keep their slot; new ones fill free slots in task order and the rest are listed as skipped. Paused and blocked tasks whose session is still alive keep counting.
+- **Caps crash loops.** A worker or coordinator that dies before any pass saw it alive for 60s is a fast death. After 3 in a row the pass stops respawning it, lists it as crash-looped, and tells the coordinator inbox once. A healthy run resets the count. To retry a worker, pause the task and start it again; to retry the coordinator, start it by hand (`spore coordinator start`) or run a pass with the fleet disabled. Records live under `<state dir>/<project>/fleet/`. Role panes use their per-round cap (see `docs/role-loop.md`); a role session that vanishes before it ran 60s counts toward it.
+- **Sees through a greet shell.** A coordinator session whose first pane is dead, or is an idle shell with no child process after 30s (a launcher that fell back to its greet shell), is killed and respawned under the same cap. A launcher that runs the agent as a child is alive.
+- **Skips bad task files.** A `tasks/*.md` with no frontmatter, no `slug`, a slug that does not match the file name, or a slug that cannot name `wt/<slug>` is skipped with one coordinator notice per file and reason. A task that fails to spawn or reap is a warning. Neither aborts the pass, and a coordinator that fails to spawn does not either.
+- **Runs one at a time per project.** A pass takes a non-blocking lock at `<state dir>/<project>/fleet/reconcile.lock`; a pass that cannot take it (the timer, the `tasks/` path unit and the coordinator Stop hook can fire together) exits 0 and does nothing. `spore task start` holds the same lock from before its status flip until its session is up, waiting up to 2 minutes for a running pass, so the pass its own flip wakes cannot race it on `git worktree add`.
+- **Time-boxes calls.** Each git, tmux and matter call gets `SPORE_FLEET_CALL_TIMEOUT` (default `2m`) and is killed with its process group past it. The whole pass gets `SPORE_FLEET_PASS_TIMEOUT` (default `10m`); past it in-flight calls are killed and `spore fleet reconcile` exits non-zero. The module sets `TimeoutStartSec=15min` on each reconcile oneshot as the outer bound; raise `SPORE_FLEET_PASS_TIMEOUT` through `extraEnv` only together with it.
+
+`spore fleet replenish-hook` (the coordinator Stop hook) reconciles only when the cwd's repo is the session's own project (`$SPORE_PROJECT_ROOT`, else a repo named `$WT_PROJECT`), so an agent started from a coordinator pane in another repo does not spawn a stray coordinator there.
 
 ## Horizontal Scale
 

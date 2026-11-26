@@ -192,7 +192,7 @@ func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := coordinatorShellCommand("claude", body)
+	want := mustShellCommand(t, "claude", body)
 	if got := args[len(args)-1]; got != want {
 		t.Errorf("shell command = %q, want unchanged %q", got, want)
 	}
@@ -216,7 +216,7 @@ func TestRoleSpawnPreStartWrapsAgent(t *testing.T) {
 		marker := task.PreStartMarkerPath(root, "feature-x", roleKey(spec))
 		for _, want := range []string{
 			": > " + marker + " && flock " + lock + " timeout 900 sh -c 'bin/with-services up'",
-			"exec claude --dangerously-skip-permissions -- ",
+			"exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} -- ",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: missing %q in %s", spec.Role, want, got)
@@ -266,9 +266,9 @@ func TestRoleSpawnAgentResolution(t *testing.T) {
 		overlay  string
 		wantBody string
 	}{
-		{name: "kernel default", wantBody: "exec claude --dangerously-skip-permissions -- "},
+		{name: "kernel default", wantBody: "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} -- "},
 		{name: "overlay default", overlay: "codex", wantBody: "exec codex --dangerously-bypass-approvals-and-sandbox "},
-		{name: "frontmatter beats overlay", agent: "claude", overlay: "codex", wantBody: "exec claude --dangerously-skip-permissions -- "},
+		{name: "frontmatter beats overlay", agent: "claude", overlay: "codex", wantBody: "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} -- "},
 		{name: "frontmatter codex", agent: "codex", wantBody: "exec codex --dangerously-bypass-approvals-and-sandbox "},
 	}
 	for _, c := range cases {

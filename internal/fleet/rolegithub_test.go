@@ -23,6 +23,7 @@ import (
 const fakeGH = `#!/bin/sh
 log="$FAKE_GH_LOG"
 { printf 'ARGS:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\nTOKEN: %s\nREPO: %s\n' "$GH_TOKEN" "$GH_REPO"; } >> "$log"
+if [ -n "$FAKE_GH_REMOTE" ]; then printf 'REMOTE: %s\n' "$(git -C "$FAKE_GH_REMOTE" rev-parse -q --verify refs/heads/wt/demo)" >> "$log"; fi
 in="$log.in"; : > "$in"
 for a in "$@"; do
   if [ "$a" = "--body-file" ]; then printf 'BODY:\n' >> "$log"; cat >> "$log"; printf 'END\n' >> "$log"; fi

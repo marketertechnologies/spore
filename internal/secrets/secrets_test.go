@@ -367,6 +367,20 @@ func TestPushAndFetchThroughBundles(t *testing.T) {
 		t.Fatalf("origin has %s after leased push, want %s", got, rewritten)
 	}
 
+	// A checked commit behind the branch tip goes up alone.
+	git(t, work, "commit", "--quiet", "--allow-empty", "-m", "checked")
+	checked := git(t, work, "rev-parse", "HEAD")
+	git(t, work, "commit", "--quiet", "--allow-empty", "-m", "unchecked")
+	if err := Push("alpha", work, "wt/feature", checked, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, origin, "rev-parse", "refs/heads/wt/feature"); got != checked {
+		t.Fatalf("origin has %s, want the checked commit %s", got, checked)
+	}
+	if err := Push("alpha", work, "wt/feature", strings.Repeat("a", 40), "", 30*time.Second); err == nil {
+		t.Fatal("push of a commit outside the bundle accepted")
+	}
+
 	// A remote-tracking ref origin no longer has makes the thin bundle
 	// depend on a commit the broker cannot fetch: it asks for a full one.
 	git(t, work, "commit", "--quiet", "--allow-empty", "-m", "ghost")

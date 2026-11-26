@@ -45,9 +45,13 @@ func Default() []Lint {
 		Decoration{},
 		ClaudeDrift{ConsumersDir: "rules/consumers", RulesDir: "rules"},
 		ClaudeTotalSize{},
+		ClaudeSize{},
+		ClaudeSubdir{},
 		AgentMirror{},
 		TaskEvidence{TasksDir: "tasks"},
 		TmuxSocketTest{},
+		SporeTOML{},
+		SandboxOff{},
 	}
 }
 

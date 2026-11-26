@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/versality/spore/internal/hooks"
+	"github.com/versality/spore/internal/sandbox"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -21,9 +22,13 @@ func TestHandoverSettingsWireCommunicationHooks(t *testing.T) {
 		Permissions struct {
 			Deny []string `json:"deny"`
 		} `json:"permissions"`
+		Sandbox *sandbox.Managed `json:"sandbox"`
 	}
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("parse handover settings: %v", err)
+	}
+	if !reflect.DeepEqual(settings.Sandbox, sandbox.ManagedBlock()) {
+		t.Fatalf("handover sandbox block drifted from sandbox.ManagedBlock():\ngot  %+v\nwant %+v", settings.Sandbox, sandbox.ManagedBlock())
 	}
 
 	if !hasCommand(settings.Hooks["PreToolUse"], "/home/spore/.claude/hooks/block-bg-bash.pl") {

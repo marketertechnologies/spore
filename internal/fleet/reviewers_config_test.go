@@ -152,7 +152,7 @@ func TestRoleSpawnReviewerModes(t *testing.T) {
 		t.Fatalf("A TmuxArgs: %v", err)
 	}
 	cmdA := argsA[len(argsA)-1]
-	if !strings.Contains(cmdA, "exec claude --dangerously-skip-permissions -- ") {
+	if !strings.Contains(cmdA, "exec claude --dangerously-skip-permissions ${SPORE_SANDBOX_SETTINGS:+--settings \"$SPORE_SANDBOX_SETTINGS\"} -- ") {
 		t.Errorf("A command = %q, want claude", cmdA)
 	}
 	if !strings.Contains(cmdA, filepath.Join("bootstrap", "roles", "reviewer-code-review.md")) {

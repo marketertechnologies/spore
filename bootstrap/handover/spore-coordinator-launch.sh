@@ -24,7 +24,9 @@
 # Override knobs:
 #   SPORE_COORDINATOR_PROVIDER     claude or codex (default: claude)
 #   SPORE_COORDINATOR_MODEL        model to pass to the selected CLI
-#   SPORE_COORDINATOR_EFFORT       codex effort (default: high)
+#   SPORE_COORDINATOR_EFFORT       effort: claude --effort when set;
+#                                  codex model_reasoning_effort
+#                                  (default: high)
 #   SPORE_COORDINATOR_ROLE_SHARED  override shared role path; point at
 #                                  a non-existent file to disable.
 #   SPORE_COORDINATOR_SESSION      codex: key for the thread record the
@@ -38,7 +40,7 @@ export PATH="/run/current-system/sw/bin:${PATH}"
 
 provider="${SPORE_COORDINATOR_PROVIDER:-claude}"
 model="${SPORE_COORDINATOR_MODEL:-}"
-effort="${SPORE_COORDINATOR_EFFORT:-high}"
+effort="${SPORE_COORDINATOR_EFFORT:-}"
 role="${SPORE_COORDINATOR_ROLE:-}"
 shared="${SPORE_COORDINATOR_ROLE_SHARED:-${XDG_CONFIG_HOME:-$HOME/.config}/spore/coordinator-role.md}"
 
@@ -59,8 +61,14 @@ fi
 case "$provider" in
   claude)
     args=(--dangerously-skip-permissions)
+    if [[ -n "${SPORE_SANDBOX_SETTINGS:-}" ]]; then
+      args+=(--settings "$SPORE_SANDBOX_SETTINGS")
+    fi
     if [[ -n "$model" ]]; then
       args+=(--model "$model")
+    fi
+    if [[ -n "$effort" ]]; then
+      args+=(--effort "$effort")
     fi
     claude "${args[@]}" "${prompt[@]}" || exec /usr/local/bin/spore-greet-coordinator
     ;;
@@ -71,9 +79,7 @@ case "$provider" in
     if [[ -n "$model" ]]; then
       args+=(-m "$model")
     fi
-    if [[ -n "$effort" ]]; then
-      args+=(-c "model_reasoning_effort=\"$effort\"")
-    fi
+    args+=(-c "model_reasoning_effort=\"${effort:-high}\"")
     # Codex hooks cannot wake an idle thread; `codex queue` can, but
     # only through the per-CODEX_HOME app-server daemon the TUI attaches
     # to. Each coordinator session gets its own CODEX_HOME (own daemon,

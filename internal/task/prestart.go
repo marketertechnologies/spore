@@ -100,3 +100,45 @@ func workerShellCommand(prelude, agent string) string {
 	}
 	return fmt.Sprintf(`%sexec %s ${%s:+"$%[3]s"}`, prelude, agent, PreStartNoteVar)
 }
+
+// dirtyNoteMaxPaths caps the paths a dirty-worktree note lists.
+const dirtyNoteMaxPaths = 20
+
+// dirtyWorktreeNote describes uncommitted changes in a worktree a
+// worker is respawned onto, or "" when it is clean. The brief copy is
+// left out: spore writes it there and it is often untracked.
+func dirtyWorktreeNote(worktree, brief string) string {
+	out, err := gitCmd(worktree, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil {
+		return ""
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := line[3:]
+		if path == brief {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	shown := paths
+	more := ""
+	if len(paths) > dirtyNoteMaxPaths {
+		shown = paths[:dirtyNoteMaxPaths]
+		more = fmt.Sprintf(" (and %d more)", len(paths)-dirtyNoteMaxPaths)
+	}
+	return fmt.Sprintf("spore: this worktree has uncommitted changes from an earlier session (%d paths): %s%s. Inspect them (git status, git diff) before you go on; they may be unfinished work to keep.",
+		len(paths), strings.Join(shown, ", "), more)
+}
+
+// appendStartNote returns shell that appends note to PreStartNoteVar,
+// after any pre-start failure note, so both reach the agent's first
+// prompt.
+func appendStartNote(note string) string {
+	return fmt.Sprintf("%[1]s=\"${%[1]s:+$%[1]s\n\n}\"%[2]s; ", PreStartNoteVar, shellQuote(note))
+}

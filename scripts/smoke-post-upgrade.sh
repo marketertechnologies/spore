@@ -12,10 +12,13 @@
 # migration 004 backup present and the user settings already pruned,
 # repo settings free of duplicated hooks, Codex hooks.json path, and
 # spore tmux panes started before the drop-in (they still run the old
-# hooks until respawned). Nothing is modified: prune runs on copies.
+# hooks until respawned), then `spore doctor` (binary vs repo and flake,
+# Claude Code version, fleet units, secrets modes, kill switch). Nothing
+# is modified: prune runs on copies.
 #
 # Active probes (deny rules, force-push guard, role-loop end to end) are
 # not here; run the P0.1 / P0.5 probes and a throwaway role-loop task.
+# The sandbox probe is active too: scripts/sandbox-probe.sh --mode post.
 # SPORE_SMOKE_SW / SPORE_SMOKE_DROPIN override the system paths (testing).
 set -u
 
@@ -75,6 +78,14 @@ if [ -f "$DROPIN" ]; then
   done
   for cmd in 'hooks pretooluse' 'hooks engineer-check' 'hooks watch-inbox' 'load-state-md.pl' 'block-bg-bash.pl'; do
     grep -qF "$cmd" "$DROPIN" || fail "drop-in lacks hook: $cmd"
+  done
+  if jq -e '.sandbox.allowUnsandboxedCommands == false and .sandbox.network.strictAllowlist == true and (.sandbox.filesystem.denyRead | index("~/.config/spore"))' "$DROPIN" >/dev/null; then
+    pass "drop-in carries the sandbox floor"
+  else
+    fail "drop-in lacks the sandbox floor (docs/sandbox.md)"
+  fi
+  for bin in socat bwrap; do
+    [ -x "$SW/bin/$bin" ] || fail "$SW/bin/$bin missing (sandbox network bridge)"
   done
 else
   fail "drop-in missing: $DROPIN"
@@ -137,11 +148,25 @@ if [ -f "$DROPIN" ] && command -v tmux >/dev/null; then
   while read -r target pid; do
     start="$(date -d "$(ps -o lstart= -p "$pid" 2>/dev/null)" +%s 2>/dev/null)" || continue
     if [ "$start" -lt "$since" ]; then
-      warn "pane $target started before the drop-in; respawn it"
+      warn "pane $target started before the drop-in; recreate its session (the sandbox needs the new session env)"
       stale=1
     fi
   done < <(env -u TMUX tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_pid}' 2>/dev/null | grep '^spore')
   [ "$stale" = 0 ] && pass "every spore pane started after the drop-in"
+fi
+
+# 7. spore doctor: the binary's own drift checks.
+if [ -x "$SW/bin/spore" ]; then
+  if "$SW/bin/spore" --help 2>&1 | grep -q '^  doctor '; then
+    if out="$("$SW/bin/spore" doctor --sw "$SW" --dropin "$DROPIN" 2>&1)"; then
+      pass "spore doctor: $(tail -1 <<<"$out")"
+    else
+      fail "spore doctor: $(tail -1 <<<"$out")"
+    fi
+    grep -E '^(FAIL|WARN) ' <<<"$out" | sed 's/^/      doctor: /'
+  else
+    warn "spore doctor: $SW/bin/spore has no doctor command (older than 0.59.0)"
+  fi
 fi
 
 printf '\n%d fail, %d warn\n' "$fails" "$warns"

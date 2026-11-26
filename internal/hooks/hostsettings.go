@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/versality/spore/internal/sandbox"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -52,6 +53,9 @@ func HostEvents(spore, hooksDir string) map[string][]HookBin {
 			{Name: "load-state-md", BinPath: filepath.Join(hooksDir, "load-state-md.pl"), Timeout: 5},
 		},
 		"Stop": stop,
+		"StopFailure": {
+			{Name: "stop-failure", BinPath: spore + " hooks stop-failure", Timeout: 10},
+		},
 	}
 }
 
@@ -62,15 +66,18 @@ func engineerCheckCommand(spore string) string {
 	return `[ "$SPORE_ROLE" = engineer ] || exit 0; ` + spore + ` hooks 2>&1 | grep -q engineer-check || exit 0; exec ` + spore + ` hooks engineer-check`
 }
 
-// ManagedSettings renders the managed settings drop-in: HostEvents plus
-// the default permissions.deny set. A project's spore.toml
-// [permissions] cannot lift a managed deny rule. A non-empty marketplaceDir also registers that
-// directory as the "spore" marketplace and force-enables its plugin.
+// ManagedSettings renders the managed settings drop-in: HostEvents, the
+// default permissions.deny set and the sandbox floor
+// (sandbox.ManagedBlock). A project's spore.toml cannot lift a managed
+// deny rule or sandbox key. A non-empty marketplaceDir also registers
+// that directory as the "spore" marketplace and force-enables its
+// plugin.
 func ManagedSettings(spore, hooksDir, marketplaceDir string) ([]byte, error) {
 	top, err := buildTop(HostEvents(spore, hooksDir), DefaultPermissions())
 	if err != nil {
 		return nil, err
 	}
+	top.Sandbox = sandbox.ManagedBlock()
 	if marketplaceDir != "" {
 		top.ExtraKnownMarketplaces = map[string]marketplaceEntry{
 			PluginName: {Source: marketplaceSource{Source: "directory", Path: marketplaceDir}},

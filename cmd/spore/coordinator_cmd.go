@@ -6,27 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	spore "github.com/versality/spore"
-	"github.com/versality/spore/internal/coordinator/loopguard"
-	"github.com/versality/spore/internal/coordinator/statedebt"
 	"github.com/versality/spore/internal/coordinator/tokenmonitor"
-	"github.com/versality/spore/internal/coordinator/verify"
 	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/sporetoml"
 )
-
-// defaultCoordinatorStateDir resolves the coordinator state dir from
-// the SPORE_COORDINATOR_STATE_DIR env var, falling back to
-// $HOME/.local/state/spore/coordinator.
-func defaultCoordinatorStateDir() string {
-	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "spore", "coordinator")
-}
 
 const coordinatorUsage = `spore coordinator - coordinator support commands
 
@@ -42,11 +28,14 @@ Subcommands:
   agents          List swap drivers: current, available, or missing.
   role-brief      Render the coordinator role brief to stdout.
   state           List state.md blocks and archive done ones host-side.
-  state-debt      Scan state.md for prose lessons that should be lifted.
-  verify-done     Run the verify-done verdict for a slug.
-  loop-guard      Check the respawn circuit breaker.
-  token-monitor   Stop-hook: check coordinator context budget.
-  monitor         Boot-time verdict over the token-monitor ledger.
+  token-monitor   Stop-hook: check coordinator context budget. Caps
+                  (soft 250000, finish-unit 290000, force 300000)
+                  are overridable with $SPORE_COORDINATOR_TOKEN_SOFT,
+                  $SPORE_COORDINATOR_TOKEN_WRAP (finish-unit) and
+                  $SPORE_COORDINATOR_TOKEN_FORCE. The respawn command
+                  it prints relaunches the configured agent
+                  ($SPORE_COORDINATOR_AGENT, else [coordinator]
+                  driver).
 `
 
 func runCoordinator(args []string) int {
@@ -55,6 +44,12 @@ func runCoordinator(args []string) int {
 		return 2
 	}
 	sub, rest := args[0], args[1:]
+	switch sub {
+	case "start", "restart", "status", "swap":
+		if cwd, err := os.Getwd(); err == nil {
+			sporetoml.WarnUnknown(os.Stderr, "spore coordinator "+sub, cwd)
+		}
+	}
 	switch sub {
 	case "-h", "--help", "help":
 		fmt.Print(coordinatorUsage)
@@ -75,16 +70,8 @@ func runCoordinator(args []string) int {
 		return runCoordinatorRoleBrief(rest)
 	case "state":
 		return runCoordinatorState(rest)
-	case "state-debt":
-		return runCoordinatorStateDebt(rest)
-	case "verify-done":
-		return runCoordinatorVerifyDone(rest)
-	case "loop-guard":
-		return runCoordinatorLoopGuard(rest)
 	case "token-monitor":
 		return runCoordinatorTokenMonitor(rest)
-	case "monitor":
-		return runCoordinatorMonitor(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "spore coordinator: unknown subcommand %q\n\n%s", sub, coordinatorUsage)
 		return 2
@@ -222,7 +209,7 @@ func runCoordinatorStatus(args []string) int {
 		return 1
 	}
 	session := fleet.CoordinatorSessionName(root)
-	cfg, _ := fleet.LoadCoordinatorConfig(root)
+	cfg := fleet.LoadCoordinatorConfigWarn(root)
 	alive := fleet.CoordinatorAlive(root)
 
 	state := "down"
@@ -311,99 +298,6 @@ func trimTrailingNewlines(b []byte) []byte {
 	return b
 }
 
-func runCoordinatorStateDebt(args []string) int {
-	fs := flag.NewFlagSet("coordinator state-debt", flag.ContinueOnError)
-	verbose := fs.Bool("verbose", false, "print full classification table")
-	verboseShort := fs.Bool("v", false, "print full classification table")
-	stateFile := fs.String("state-file", "", "path to state.md (default: <main repo root>/state.md)")
-	project := fs.String("project", "", "project name or path whose state.md to scan")
-	ageDays := fs.Int("age-days", statedebt.DefaultAgeDays, "threshold in days")
-	help := fs.Bool("h", false, "show help")
-	helpLong := fs.Bool("help", false, "show help")
-	fs.SetOutput(io.Discard)
-	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
-		fmt.Fprintln(os.Stderr, "spore coordinator state-debt:", err)
-		return 2
-	}
-	if *help || *helpLong {
-		fmt.Println("spore coordinator state-debt - scan state.md for stale lessons")
-		fmt.Println("  --verbose, -v        print full classification table")
-		fmt.Println("  --project NAME|PATH  scan <main repo root>/state.md of this project")
-		fmt.Println("                       (default: the repo containing cwd; worktrees hop")
-		fmt.Println("                       to the main repo root)")
-		fmt.Println("  --state-file         path to state.md (overrides --project)")
-		fmt.Println("  --age-days N         threshold in days (default 14)")
-		return 0
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintf(os.Stderr, "spore coordinator state-debt: unexpected argument %q\n", fs.Arg(0))
-		return 2
-	}
-
-	cfg := statedebt.Config{AgeDays: *ageDays, StateFile: *stateFile}
-	if cfg.StateFile == "" {
-		root, err := resolveStateProjectRoot(*project)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "spore coordinator state-debt:", err)
-			return 1
-		}
-		cfg.StateFile = filepath.Join(root, "state.md")
-	}
-
-	result, err := statedebt.Scan(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "spore coordinator state-debt: %v\n", err)
-		return 1
-	}
-
-	if *verbose || *verboseShort {
-		fmt.Print(statedebt.FormatVerbose(result))
-	}
-
-	if result.StaleCount > 0 {
-		fmt.Println(statedebt.FormatSummary(result))
-		return 2
-	}
-	return 0
-}
-
-func runCoordinatorVerifyDone(args []string) int {
-	fs := flag.NewFlagSet("coordinator verify-done", flag.ContinueOnError)
-	root := fs.String("root", "", "project root (default: auto-detect)")
-	events := fs.String("events", "", "path to events.jsonl")
-	projects := fs.String("projects", "", "path to projects dir")
-	help := fs.Bool("h", false, "show help")
-	helpLong := fs.Bool("help", false, "show help")
-	fs.SetOutput(io.Discard)
-	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
-		fmt.Fprintln(os.Stderr, "spore coordinator verify-done:", err)
-		return 2
-	}
-	if *help || *helpLong {
-		fmt.Println("spore coordinator verify-done <slug> - run the verify-done verdict")
-		fmt.Println("  --root       project root")
-		fmt.Println("  --events     events.jsonl path")
-		fmt.Println("  --projects   claude projects dir")
-		return 0
-	}
-
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: spore coordinator verify-done <slug>")
-		return 2
-	}
-	slug := fs.Arg(0)
-
-	cfg := verify.Config{
-		ProjectRoot: *root,
-		EventsFile:  *events,
-		ProjectsDir: *projects,
-	}
-
-	result := verify.Verify(slug, cfg)
-	fmt.Print(result.Format())
-	return 0
-}
-
 func runCoordinatorTokenMonitor(_ []string) int {
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -416,8 +310,16 @@ func runCoordinatorTokenMonitor(_ []string) int {
 		return 0
 	}
 
+	root := os.Getenv("SPORE_PROJECT_ROOT")
+	if root == "" {
+		root, _ = os.Getwd()
+	}
 	cfg := tokenmonitor.Config{
-		Inbox: os.Getenv("SPORE_TASK_INBOX"),
+		Inbox:    os.Getenv("SPORE_TASK_INBOX"),
+		SoftCap:  envInt("SPORE_COORDINATOR_TOKEN_SOFT"),
+		HardCap:  envInt("SPORE_COORDINATOR_TOKEN_WRAP"),
+		ForceCap: envInt("SPORE_COORDINATOR_TOKEN_FORCE"),
+		Respawn:  fleet.CoordinatorRespawnShell(root),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)
@@ -425,89 +327,5 @@ func runCoordinatorTokenMonitor(_ []string) int {
 		fmt.Fprint(os.Stderr, result.Message)
 		return 2
 	}
-	return 0
-}
-
-func runCoordinatorMonitor(args []string) int {
-	fs := flag.NewFlagSet("coordinator monitor", flag.ContinueOnError)
-	threshold := fs.Int("threshold", 3, "consecutive-broken count")
-	help := fs.Bool("h", false, "show help")
-	helpLong := fs.Bool("help", false, "show help")
-	fs.SetOutput(io.Discard)
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "spore coordinator monitor:", err)
-		return 2
-	}
-	if *help || *helpLong {
-		fmt.Println("spore coordinator monitor - boot-time verdict over the token-monitor ledger")
-		fmt.Println("  --threshold N  consecutive-broken count (default 3)")
-		return 0
-	}
-
-	cfg := tokenmonitor.Config{Inbox: "self"}
-	cfg = cfg.Defaults()
-
-	broken, sessions := tokenmonitor.LedgerVerdict(cfg.LedgerFile, cfg.SoftCap, *threshold)
-	if broken {
-		fmt.Fprintf(os.Stderr, "broken-hook: %s\n", sessions)
-		return 2
-	}
-	fmt.Println("ok")
-	return 0
-}
-
-func runCoordinatorLoopGuard(args []string) int {
-	fs := flag.NewFlagSet("coordinator loop-guard", flag.ContinueOnError)
-	stateDir := fs.String("state-dir", "", "state directory")
-	maxRespawns := fs.Int("max-respawns", loopguard.DefaultMaxRespawns, "max respawns in window")
-	reset := fs.Bool("reset", false, "reset the trip marker")
-	help := fs.Bool("h", false, "show help")
-	helpLong := fs.Bool("help", false, "show help")
-	fs.SetOutput(io.Discard)
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "spore coordinator loop-guard:", err)
-		return 2
-	}
-	if *help || *helpLong {
-		fmt.Println("spore coordinator loop-guard - check respawn circuit breaker")
-		fmt.Println("  --state-dir       state directory")
-		fmt.Println("  --max-respawns N  max respawns in window (default 5)")
-		fmt.Println("  --reset           clear the trip marker")
-		return 0
-	}
-
-	dir := *stateDir
-	if dir == "" {
-		dir = defaultCoordinatorStateDir()
-	}
-
-	if *reset {
-		if err := loopguard.Reset(dir); err != nil {
-			if !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "spore coordinator loop-guard: %v\n", err)
-				return 1
-			}
-		}
-		fmt.Println("loop-guard: reset")
-		return 0
-	}
-
-	cfg := loopguard.Config{
-		StateDir:    dir,
-		MaxRespawns: *maxRespawns,
-	}
-	status, err := loopguard.Check(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "spore coordinator loop-guard: %v\n", err)
-		return 1
-	}
-
-	if status.Tripped {
-		fmt.Printf("loop-guard: TRIPPED (recent=%d, max=%d, cooldown=%s)\n",
-			status.RecentCount, status.MaxRespawns, status.CooldownLeft)
-		return 2
-	}
-	fmt.Printf("loop-guard: ok (recent=%d, max=%d)\n",
-		status.RecentCount, status.MaxRespawns)
 	return 0
 }

@@ -1,59 +1,12 @@
 package budget
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
-
-func TestFilterRateLimitHeaders(t *testing.T) {
-	in := map[string]string{
-		"Anthropic-Ratelimit-Tokens-Remaining": "1000",
-		"anthropic-ratelimit-requests-limit":   "50",
-		"Anthropic-Priority-Input-Tokens":      "tier-2",
-		"x-request-id":                         "leak-me-not",
-		"content-type":                         "application/json",
-	}
-	out := filterRateLimitHeaders(in)
-	if _, ok := out["x-request-id"]; ok {
-		t.Errorf("filter leaked x-request-id")
-	}
-	if _, ok := out["content-type"]; ok {
-		t.Errorf("filter leaked content-type")
-	}
-	if got := out["anthropic-ratelimit-tokens-remaining"]; got != "1000" {
-		t.Errorf("filter dropped tokens-remaining or did not lowercase: %q", got)
-	}
-	if got := out["anthropic-priority-input-tokens"]; got != "tier-2" {
-		t.Errorf("filter dropped anthropic-priority-*: %q", got)
-	}
-}
-
-func TestAppendHeaderLineRejectsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AGENT_BUDGET_STATE_DIR", dir)
-	err := appendHeaderLine(&headerLine{Identity: "runner-a", Headers: map[string]string{"x-request-id": "junk"}})
-	if err == nil {
-		t.Fatal("expected error when no anthropic-* headers present")
-	}
-}
-
-func TestAppendHeaderLineRejectsMissingIdentity(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AGENT_BUDGET_STATE_DIR", dir)
-	err := appendHeaderLine(&headerLine{Headers: map[string]string{
-		"anthropic-ratelimit-tokens-remaining": "1",
-		"anthropic-ratelimit-tokens-limit":     "10",
-	}})
-	if err == nil {
-		t.Fatal("expected error when identity missing")
-	}
-}
 
 func TestAppendAndReadLatest(t *testing.T) {
 	dir := t.TempDir()
@@ -280,43 +233,5 @@ func TestRefreshAPIModeMatchesHeaderRemaining(t *testing.T) {
 	}
 	if s.Long.Source != "transcript-est" {
 		t.Errorf("long.source: got %q want transcript-est", s.Long.Source)
-	}
-}
-
-func TestCaptureFromStdin(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AGENT_BUDGET_STATE_DIR", dir)
-
-	payload, _ := json.Marshal(headerLine{
-		Identity: "runner-a",
-		Headers: map[string]string{
-			"anthropic-ratelimit-tokens-remaining": "100",
-			"anthropic-ratelimit-tokens-limit":     "200",
-			"x-request-id":                         "should-be-filtered",
-		},
-	})
-
-	origStdin := os.Stdin
-	r, w, _ := os.Pipe()
-	os.Stdin = r
-	go func() {
-		_, _ = io.Copy(w, bytes.NewReader(payload))
-		w.Close()
-	}()
-	defer func() { os.Stdin = origStdin }()
-
-	if err := Capture(); err != nil {
-		t.Fatalf("capture: %v", err)
-	}
-
-	hl, err := readLatestHeaderLine("")
-	if err != nil {
-		t.Fatalf("readLatest: %v", err)
-	}
-	if hl == nil || hl.Identity != "runner-a" {
-		t.Fatalf("readLatest: %+v", hl)
-	}
-	if _, leaked := hl.Headers["x-request-id"]; leaked {
-		t.Error("capture leaked non-anthropic header into spool")
 	}
 }

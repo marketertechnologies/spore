@@ -38,6 +38,7 @@ Commands:
   align      Track and exit the pilot-agent alignment period.
   bootstrap  Walk a fresh project through the stage gates.
   install    Drop the spore skills into .claude/skills/ and .agents/skills/.
+  config     Check spore.toml for unknown sections and keys.
   infect     Bootstrap a fresh server with NixOS via nixos-anywhere.
   lint       Run portable lints over the working tree.
   hooks      Install or run claude-code / git hooks.
@@ -49,6 +50,9 @@ Commands:
   show       Open <path>[:<line>[:<col>]] in the connected editor.
   code       Editor helpers (workspace: VS Code multi-root of all worktrees).
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
+  report     Morning digest: the events ledger plus live task and fleet state.
+  doctor     Drift checks (binary, managed settings, Claude Code, units, secrets).
+  sandbox    Claude Code sandbox settings for spore panes (settings, prepare).
   secrets    Use project secrets through the secrets broker without reading them.
 `
 
@@ -108,7 +112,13 @@ Subcommands:
                          Emit the user-level Codex hooks.json
                          ($CODEX_HOME/hooks.json) to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
-                              With no slug, reads $SPORE_TASK_INBOX.
+                              With no slug, reads $SPORE_TASK_INBOX. Also
+                              acks the last turn's messages and clears
+                              this pane's usage-limit/login alert.
+  stop-failure                StopFailure hook (a turn ended in an API
+                              error): put the turn's inbox messages back
+                              and, on a usage limit or expired login,
+                              alert the coordinator and the operator once.
   watch-inbox --codex [--pid N]
                               Long-running sidecar: deliver $SPORE_TASK_INBOX
                               envelopes to this session's codex thread via
@@ -192,12 +202,22 @@ func main() {
 			os.Exit(1)
 		}
 	case "bootstrap":
-		if err := runBootstrap(args); err != nil {
+		err := runBootstrap(args)
+		if errors.Is(err, errBootstrapBlocked) {
+			os.Exit(exitBootstrapBlocked)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "spore bootstrap:", err)
 			os.Exit(1)
 		}
 	case "install":
 		os.Exit(runInstall(args))
+	case "report":
+		os.Exit(runReportMain(args))
+	case "doctor":
+		os.Exit(runDoctorMain(args))
+	case "config":
+		os.Exit(runConfig(args))
 	case "budget":
 		os.Exit(runBudget(args))
 	case "coordinator":
@@ -214,6 +234,8 @@ func main() {
 		os.Exit(runCode(args))
 	case "gh":
 		os.Exit(runGH(args))
+	case "sandbox":
+		os.Exit(runSandbox(args))
 	case "secrets":
 		os.Exit(runSecrets(args))
 	default:

@@ -319,8 +319,12 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
+	// The mirror pushes the commit the check gate cleared, which may
+	// trail the branch tip the bundle carries.
 	if got != req.SHA {
-		return Response{Error: fmt.Sprintf("bundle tip %s is not %s", got, req.SHA)}
+		if _, err := gitIn(ctx, dir, env, "merge-base", "--is-ancestor", req.SHA, incoming); err != nil {
+			return Response{Error: fmt.Sprintf("%s is not in the bundle (tip %s)", req.SHA, got)}
+		}
 	}
 	ref := "refs/heads/" + req.Branch
 	args := []string{"push", "--quiet", "--no-verify", s.remoteURL(repo), req.SHA + ":" + ref}

@@ -1,7 +1,6 @@
 package lints
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,105 +114,64 @@ const claudeSubdirMarker = "<!-- lint: scope-ok -->"
 var reBacktickPath = regexp.MustCompile("`([^`]*)`")
 
 func scanClaudeSubdir(path, rel, ownScope string, topDirs map[string]bool, scopeDirs []string, minPaths, floorPct int) ([]Issue, error) {
-	f, err := os.Open(path)
+	sections, err := readClaudeSections(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
-	type section struct {
-		name      string
-		startLine int
-		hasMarker bool
-		paths     map[string]bool
-	}
-
 	var issues []Issue
-	var cur *section
-
-	emitSection := func() {
-		if cur == nil || cur.hasMarker {
-			return
-		}
-		scopeCounts := map[string]int{}
-		total := 0
-		for p := range cur.paths {
-			first := p
-			if i := strings.IndexByte(p, '/'); i > 0 {
-				first = p[:i]
-			}
-			if !topDirs[first] {
-				continue
-			}
-			s := resolveScope(p, scopeDirs)
-			if s == "" {
-				continue
-			}
-			scopeCounts[s]++
-			total++
-		}
-		if total < minPaths {
-			return
-		}
-		bestScope := ""
-		bestCount := 0
-		for s, c := range scopeCounts {
-			if c > bestCount {
-				bestScope = s
-				bestCount = c
-			}
-		}
-		if bestScope == "" || bestScope == ownScope {
-			return
-		}
-		pct := bestCount * 100 / total
-		if pct >= floorPct {
-			issues = append(issues, Issue{
-				Path: rel,
-				Line: cur.startLine,
-				Message: fmt.Sprintf(
-					"section %q has %d/%d (%d%%) paths under %s/ - consider moving to %s/CLAUDE.md",
-					cur.name, bestCount, total, pct, bestScope, bestScope,
-				),
-			})
-		}
-	}
-
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Text()
-		if strings.HasPrefix(line, "# ") {
-			emitSection()
-			cur = &section{
-				name:      strings.TrimPrefix(line, "# "),
-				startLine: lineNo,
-				paths:     map[string]bool{},
-			}
+	for _, sec := range sections {
+		if strings.Contains(strings.Join(sec.body, "\n"), claudeSubdirMarker) {
 			continue
 		}
-		if cur == nil {
-			continue
-		}
-		if strings.Contains(line, claudeSubdirMarker) {
-			cur.hasMarker = true
-		}
-		for _, m := range reBacktickPath.FindAllStringSubmatch(line, -1) {
-			tok := m[1]
-			if !strings.Contains(tok, "/") {
-				continue
-			}
-			if i := strings.IndexByte(tok, '/'); i > 0 {
-				first := tok[:i]
-				if topDirs[first] {
-					cur.paths[tok] = true
+		paths := map[string]bool{}
+		for _, line := range sec.body {
+			for _, m := range reBacktickPath.FindAllStringSubmatch(line, -1) {
+				tok := m[1]
+				if i := strings.IndexByte(tok, '/'); i > 0 && topDirs[tok[:i]] {
+					paths[tok] = true
 				}
 			}
 		}
+		if iss, ok := dominantScope(rel, sec, paths, ownScope, scopeDirs, minPaths, floorPct); ok {
+			issues = append(issues, iss)
+		}
 	}
-	emitSection()
-	return issues, scanner.Err()
+	return issues, nil
+}
+
+func dominantScope(rel string, sec mdSection, paths map[string]bool, ownScope string, scopeDirs []string, minPaths, floorPct int) (Issue, bool) {
+	scopeCounts := map[string]int{}
+	total := 0
+	for p := range paths {
+		s := resolveScope(p, scopeDirs)
+		if s == "" {
+			continue
+		}
+		scopeCounts[s]++
+		total++
+	}
+	if total < minPaths {
+		return Issue{}, false
+	}
+	bestScope, bestCount := "", 0
+	for s, c := range scopeCounts {
+		if c > bestCount || (c == bestCount && s < bestScope) {
+			bestScope, bestCount = s, c
+		}
+	}
+	if bestScope == "" || bestScope == ownScope {
+		return Issue{}, false
+	}
+	pct := bestCount * 100 / total
+	if pct < floorPct {
+		return Issue{}, false
+	}
+	return Issue{
+		Path: rel,
+		Line: sec.start,
+		Message: fmt.Sprintf(
+			"section %q has %d/%d (%d%%) paths under %s/ - consider moving to %s/CLAUDE.md",
+			sec.name, bestCount, total, pct, bestScope, bestScope,
+		),
+	}, true
 }

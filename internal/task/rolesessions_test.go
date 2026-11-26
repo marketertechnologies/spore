@@ -88,8 +88,7 @@ func TestMergeKillsRoleSessions(t *testing.T) {
 	assertRoleSessionsReaped(t, own, sibling)
 }
 
-// Pause and block reap only idle worker sessions; role panes keep
-// their conversation even when idle past the threshold.
+// Pause and block keep role panes, like worker sessions.
 func TestPauseAndBlockKeepRolePanes(t *testing.T) {
 	for _, op := range []struct {
 		name string
@@ -99,7 +98,6 @@ func TestPauseAndBlockKeepRolePanes(t *testing.T) {
 			repo := t.TempDir()
 			t.Chdir(repo)
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			t.Setenv("SPORE_IDLE_REAP_SECS", "0")
 			runGit(t, repo, "init", "-q", "-b", "main")
 			runGit(t, repo, "config", "user.email", "test@example.com")
 			runGit(t, repo, "config", "user.name", "Test")

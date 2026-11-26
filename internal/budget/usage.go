@@ -19,16 +19,15 @@
 // per-app sub-buckets) are ignored - the consumer only cares about the
 // account-wide cap that drives 429s.
 //
-// Refresh strategy: read the current access token; if /usage returns
-// 401 and a refresh token is present, refresh once and retry. The
-// refreshed credentials are written back via mktemp+rename, the same
-// dance claude-code itself uses. Any other HTTP/network failure
-// short-circuits to the transcript fallback in Refresh.
+// The probe is read-only: spore never refreshes the OAuth token and
+// never writes the credentials file. Refresh tokens rotate, so a
+// refresh here races Claude Code's own refresh and can leave every
+// session on the host holding a dead token. A 401 (or any other
+// failure) marks the snapshot stale and falls back to transcripts.
 
 package budget
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,22 +43,15 @@ import (
 )
 
 const (
-	oauthClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	oauthScope       = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 	oauthBetaHeader  = "oauth-2025-04-20"
 	usageHTTPTimeout = 8 * time.Second
-	tokenHTTPTimeout = 15 * time.Second
 )
 
 // Overridable for tests.
-var (
-	oauthTokenURL = "https://platform.claude.com/v1/oauth/token"
-	oauthUsageURL = "https://api.anthropic.com/api/oauth/usage"
-)
+var oauthUsageURL = "https://api.anthropic.com/api/oauth/usage"
 
 type oauthBlock struct {
 	AccessToken      string   `json:"accessToken"`
-	RefreshToken     string   `json:"refreshToken,omitempty"`
 	ExpiresAt        int64    `json:"expiresAt,omitempty"`
 	Scopes           []string `json:"scopes,omitempty"`
 	SubscriptionType string   `json:"subscriptionType,omitempty"`
@@ -67,8 +59,6 @@ type oauthBlock struct {
 }
 
 type credentialsFile struct {
-	path  string
-	raw   map[string]json.RawMessage
 	oauth oauthBlock
 }
 
@@ -88,56 +78,19 @@ func loadCredentials(path string) (*credentialsFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw := map[string]json.RawMessage{}
-	if err := json.Unmarshal(b, &raw); err != nil {
+	var doc struct {
+		ClaudeAiOauth oauthBlock `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	cf := &credentialsFile{path: path, raw: raw}
-	if v, ok := raw["claudeAiOauth"]; ok {
-		if err := json.Unmarshal(v, &cf.oauth); err != nil {
-			return nil, fmt.Errorf("parse claudeAiOauth: %w", err)
-		}
-	}
-	return cf, nil
+	return &credentialsFile{oauth: doc.ClaudeAiOauth}, nil
 }
 
-// writeBack serialises cf back to disk via mktemp + rename, preserving
-// every other top-level key (mcpOAuth, ...) verbatim. 0600.
-func (cf *credentialsFile) writeBack() error {
-	enc, err := json.Marshal(cf.oauth)
-	if err != nil {
-		return err
-	}
-	cf.raw["claudeAiOauth"] = enc
-	out, err := json.MarshalIndent(cf.raw, "", "  ")
-	if err != nil {
-		return err
-	}
-	out = append(out, '\n')
-
-	dir := filepath.Dir(cf.path)
-	tmp, err := os.CreateTemp(dir, ".credentials.*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	return os.Rename(tmpName, cf.path)
-}
+// errUsageUnauthorized is the 401 from /usage: the access token
+// expired or Claude Code rotated it. The budget goes stale until
+// Claude Code refreshes the login itself.
+var errUsageUnauthorized = errors.New("usage: HTTP 401 (token expired or rotated; spore never refreshes the login, budget stale until Claude Code does)")
 
 type usageWindow struct {
 	Utilization float64 `json:"utilization"`
@@ -193,11 +146,10 @@ func ActiveTier() error {
 	return nil
 }
 
-// fetchUsage hits /usage, refreshing the access token once on a 401 if
-// a refresh token is available. Returns (nil, err) for any non-2xx
-// outcome the caller cannot recover from; that's the signal to fall
-// back to transcripts.
-func fetchUsage(ctx context.Context, now time.Time) (*usageResponse, error) {
+// fetchUsage hits /usage with the current access token. Returns
+// (nil, err) for any non-2xx outcome; that's the signal to fall back
+// to transcripts.
+func fetchUsage(ctx context.Context) (*usageResponse, error) {
 	path := oauthCredsPath()
 	if path == "" {
 		return nil, errors.New("oauth credentials path unresolved")
@@ -214,14 +166,8 @@ func fetchUsage(ctx context.Context, now time.Time) (*usageResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	if code == http.StatusUnauthorized && cf.oauth.RefreshToken != "" {
-		if rerr := refreshOAuthToken(ctx, cf, now); rerr != nil {
-			return nil, fmt.Errorf("oauth refresh after 401: %w", rerr)
-		}
-		body, code, err = callUsage(ctx, cf.oauth.AccessToken)
-		if err != nil {
-			return nil, err
-		}
+	if code == http.StatusUnauthorized {
+		return nil, errUsageUnauthorized
 	}
 	if code != http.StatusOK {
 		return nil, fmt.Errorf("usage: HTTP %d", code)
@@ -249,74 +195,6 @@ func callUsage(ctx context.Context, accessToken string) ([]byte, int, error) {
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	return b, resp.StatusCode, err
-}
-
-type tokenRefreshResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
-	Scope        string `json:"scope"`
-}
-
-// callTokenRefresh exchanges a refresh token for a new access token.
-// Shared by refreshOAuthToken (credentials file path) and
-// fetchUsageForFile (account store path).
-func callTokenRefresh(ctx context.Context, refreshToken string) (*tokenRefreshResponse, error) {
-	payload, err := json.Marshal(map[string]string{
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-		"client_id":     oauthClientID,
-		"scope":         oauthScope,
-	})
-	if err != nil {
-		return nil, err
-	}
-	c, cancel := context.WithTimeout(ctx, tokenHTTPTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(c, http.MethodPost, oauthTokenURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("oauth refresh POST: %w", err)
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if err != nil {
-		return nil, fmt.Errorf("oauth refresh read: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("oauth refresh: HTTP %d", resp.StatusCode)
-	}
-	var out tokenRefreshResponse
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, fmt.Errorf("oauth refresh decode: %w", err)
-	}
-	if out.AccessToken == "" || out.ExpiresIn <= 0 {
-		return nil, errors.New("oauth refresh: empty access_token or expires_in")
-	}
-	return &out, nil
-}
-
-func refreshOAuthToken(ctx context.Context, cf *credentialsFile, now time.Time) error {
-	if cf.oauth.RefreshToken == "" {
-		return errors.New("no refresh token")
-	}
-	out, err := callTokenRefresh(ctx, cf.oauth.RefreshToken)
-	if err != nil {
-		return err
-	}
-	cf.oauth.AccessToken = out.AccessToken
-	if out.RefreshToken != "" {
-		cf.oauth.RefreshToken = out.RefreshToken
-	}
-	cf.oauth.ExpiresAt = now.UnixMilli() + out.ExpiresIn*1000
-	if out.Scope != "" {
-		cf.oauth.Scopes = strings.Fields(out.Scope)
-	}
-	return cf.writeBack()
 }
 
 // usageWindowState materialises one /usage window into the on-disk
@@ -383,48 +261,15 @@ func hasAccountFiles(dir string) bool {
 	return false
 }
 
-// writeOAuthBlockToFile persists an updated oauthBlock back to a store
-// file (flat format, without the claudeAiOauth wrapper). Uses
-// mktemp + rename for atomicity; mode 0600.
-func writeOAuthBlockToFile(path string, block oauthBlock) error {
-	b, err := json.MarshalIndent(block, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".store.*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
-
 type accountUsageResult struct {
 	Usage *usageResponse
 	Tier  string
 }
 
 // fetchUsageForFile hits /usage using the OAuth token stored in a
-// per-account store file (flat oauthBlock JSON). On 401, refreshes
-// once and writes the new token back to the same file.
-func fetchUsageForFile(ctx context.Context, path string, now time.Time) (*accountUsageResult, error) {
+// per-account store file (flat oauthBlock JSON). Read-only like
+// fetchUsage: a 401 is an error, the store file is never rewritten.
+func fetchUsageForFile(ctx context.Context, path string) (*accountUsageResult, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -441,26 +286,8 @@ func fetchUsageForFile(ctx context.Context, path string, now time.Time) (*accoun
 	if err != nil {
 		return nil, err
 	}
-	if code == http.StatusUnauthorized && block.RefreshToken != "" {
-		out, rerr := callTokenRefresh(ctx, block.RefreshToken)
-		if rerr != nil {
-			return nil, fmt.Errorf("oauth refresh for %s: %w", filepath.Base(path), rerr)
-		}
-		block.AccessToken = out.AccessToken
-		if out.RefreshToken != "" {
-			block.RefreshToken = out.RefreshToken
-		}
-		block.ExpiresAt = now.UnixMilli() + out.ExpiresIn*1000
-		if out.Scope != "" {
-			block.Scopes = strings.Fields(out.Scope)
-		}
-		if werr := writeOAuthBlockToFile(path, block); werr != nil {
-			fmt.Fprintf(os.Stderr, "spore budget: refresh writeback for %s: %v\n", filepath.Base(path), werr)
-		}
-		body, code, err = callUsage(ctx, block.AccessToken)
-		if err != nil {
-			return nil, err
-		}
+	if code == http.StatusUnauthorized {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), errUsageUnauthorized)
 	}
 	if code != http.StatusOK {
 		return nil, fmt.Errorf("usage for %s: HTTP %d", filepath.Base(path), code)
@@ -527,7 +354,7 @@ func refreshAllAccountSnapshots(s *state, now time.Time, storeDir string) {
 		}
 
 		path := filepath.Join(storeDir, e.Name())
-		result, ferr := fetchUsageForFile(context.Background(), path, now)
+		result, ferr := fetchUsageForFile(context.Background(), path)
 		if ferr != nil {
 			fmt.Fprintf(os.Stderr, "spore budget: /usage for %s unavailable (%v)\n", name, ferr)
 			if existing != nil {
@@ -689,15 +516,6 @@ func DebugUsage() error {
 	body, code, err := callUsage(context.Background(), cf.oauth.AccessToken)
 	if err != nil {
 		return err
-	}
-	if code == http.StatusUnauthorized && cf.oauth.RefreshToken != "" {
-		if rerr := refreshOAuthToken(context.Background(), cf, now); rerr != nil {
-			return fmt.Errorf("oauth refresh after 401: %w", rerr)
-		}
-		body, code, err = callUsage(context.Background(), cf.oauth.AccessToken)
-		if err != nil {
-			return err
-		}
 	}
 	fmt.Printf("HTTP %d at %s\n", code, now.Format(time.RFC3339Nano))
 	fmt.Println("--- raw body ---")

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/ghapp"
 )
 
@@ -78,6 +79,9 @@ func TestGHConfigSetAndPrint(t *testing.T) {
 
 func TestGHExecInjectsToken(t *testing.T) {
 	ghTestProject(t)
+	// The Claude Code sandbox pre-sets GIT_CONFIG_COUNT; Env appends
+	// after it, so pin the base for the KEY_1 check below.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
 	ok := runGH([]string{"exec", "--", "sh", "-c", `test "$GH_TOKEN" = ghs_cli && test "$GIT_CONFIG_KEY_1" = credential.helper`})
 	if ok != 0 {
 		t.Fatalf("exec exit %d, want 0", ok)
@@ -96,6 +100,22 @@ func TestGHExecRefusesSSHRemote(t *testing.T) {
 	}
 	if code := runGH([]string{"exec", "--", "true"}); code != 1 {
 		t.Fatalf("exec with ssh origin exit %d, want 1", code)
+	}
+}
+
+func TestRecordPRCreateWritesLedger(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	recordPRCreate(root, []string{"gh", "pr", "list"}, "https://github.com/o/r/pull/1\n")
+	recordPRCreate(root, []string{"gh", "pr", "create", "--draft", "--title", "x"}, "Creating pull request\nhttps://github.com/o/r/pull/42\n")
+	recordPRCreate(root, []string{"gh", "pr", "create"}, "no url here\n")
+	evs, err := events.Read(filepath.Base(root), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != events.PROpened || evs[0].Fields["url"] != "https://github.com/o/r/pull/42" || evs[0].Fields["draft"] != "true" || evs[0].Slug != "demo" {
+		t.Fatalf("ledger = %+v", evs)
 	}
 }
 

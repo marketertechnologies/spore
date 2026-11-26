@@ -51,6 +51,22 @@ func RequireRoleLoop(tasksDir, slug string) error {
 	return nil
 }
 
+// RequireActiveRoleLoop is RequireRoleLoop plus `status: active`, the
+// only status the role loop may advance (spawn or respawn panes) in.
+func RequireActiveRoleLoop(tasksDir, slug string) error {
+	if err := RequireRoleLoop(tasksDir, slug); err != nil {
+		return err
+	}
+	m, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
+		return err
+	}
+	if m.Status != "active" {
+		return fmt.Errorf("task %s: status %q, the role loop only runs active tasks; set status: active (spore task start %s) first", slug, m.Status, slug)
+	}
+	return nil
+}
+
 // IsRoleLoop reports whether tasks/<slug>.md carries `loop: role`. A
 // missing file errors with fs.ErrNotExist.
 func IsRoleLoop(tasksDir, slug string) (bool, error) {
