@@ -279,6 +279,10 @@ func TestCheckGHArgs(t *testing.T) {
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
 		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate", "--jq", ".[]"},
 		{"api", "graphql", "--hostname", "github.com", "-f", "query=query { viewer { login } }", "-F", "number=7"},
+		{"pr", "checks", "7", "--required", "--json", "name,state"},
+		{"api", "repos/acme/alpha/commits/9cc70240d3c90179350720a9e322f60d70bf60a8/check-runs", "--jq", ".check_runs[].conclusion"},
+		{"api", "repos/acme/alpha/commits/9cc7024/status", "--method", "GET"},
+		{"api", "repos/acme/alpha/commits/9cc7024"},
 	}
 	for _, a := range ok {
 		if err := checkGHArgs(a, repo); err != nil {
@@ -297,6 +301,10 @@ func TestCheckGHArgs(t *testing.T) {
 		{"api", "graphql", "-f", "query=mutation { deleteRef }"},
 		{"api", "repos/acme/alpha/pulls/7", "--method", "DELETE"},
 		{"api", "repos/acme/alpha/pulls/7", "--hostname", "evil.example"},
+		{"api", "repos/acme/alpha/commits/9cc7024/statuses", "--method", "POST"},
+		{"api", "repos/acme/alpha/commits/9cc7024/check-runs", "-f", "name=fake"},
+		{"api", "repos/acme/alpha/commits/9cc7024/comments"},
+		{"api", "repos/acme/other/commits/9cc7024/status"},
 		{"auth", "token"},
 		{"repo", "clone", "acme/alpha"},
 	}

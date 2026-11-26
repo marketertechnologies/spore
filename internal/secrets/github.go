@@ -148,20 +148,24 @@ var ghFlags = map[string]bool{
 	"--body": true, "--body-file": true, "--draft": false, "--base": true,
 	"--method": true, "-X": true, "--input": true, "--paginate": false,
 	"--hostname": true, "-f": true, "--raw-field": true, "-F": true, "--field": true,
+	"--required": false,
 }
 
-var ghPRVerbs = map[string]bool{"list": true, "view": true, "ready": true, "edit": true, "create": true, "comment": true}
+var ghPRVerbs = map[string]bool{"list": true, "view": true, "ready": true, "edit": true, "create": true, "comment": true, "checks": true}
 
 var mutationRE = regexp.MustCompile(`(?i)\bmutation\b`)
 
 // checkGHArgs allows the shapes the role-loop mirror sends: `gh pr
-// list|view|ready|edit|create|comment` and `gh api` on the repo's own
-// pulls or issues, or a read-only GraphQL query.
+// list|view|ready|edit|create|comment`, plus `gh pr checks` and
+// `gh api` GETs of a commit's CI status for coordinators, and `gh api`
+// on the repo's own pulls or issues, or a read-only GraphQL query.
 func checkGHArgs(args []string, repo string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("needs a subcommand")
 	}
 	host, ownerRepo, _ := strings.Cut(repo, "/")
+	// CI status of a commit: read-only, so no body and no method but GET.
+	commit := false
 	switch args[0] {
 	case "pr":
 		if !ghPRVerbs[args[1]] {
@@ -169,7 +173,9 @@ func checkGHArgs(args []string, repo string) error {
 		}
 	case "api":
 		ep := args[1]
-		if ep != "graphql" && !regexp.MustCompile(`^repos/`+regexp.QuoteMeta(ownerRepo)+`/(pulls|issues)/[0-9]+(/[a-z_]+)?$`).MatchString(ep) {
+		prefix := `^repos/` + regexp.QuoteMeta(ownerRepo)
+		commit = regexp.MustCompile(prefix + `/commits/[0-9a-f]{7,40}(/(check-runs|check-suites|status|statuses))?$`).MatchString(ep)
+		if ep != "graphql" && !commit && !regexp.MustCompile(prefix+`/(pulls|issues)/[0-9]+(/[a-z_]+)?$`).MatchString(ep) {
 			return fmt.Errorf("api %s is not allowed", ep)
 		}
 	default:
@@ -217,9 +223,12 @@ func checkGHArgs(args []string, repo string) error {
 				return fmt.Errorf("--hostname %s is not the project's host", val)
 			}
 		case "--method", "-X":
-			if m := strings.ToUpper(val); m != "GET" && m != "POST" {
+			if m := strings.ToUpper(val); m != "GET" && (m != "POST" || commit) {
 				return fmt.Errorf("--method %s is not allowed", val)
 			}
+		}
+		if commit && (name == "-f" || name == "--raw-field" || name == "-F" || name == "--field" || name == "--input") {
+			return fmt.Errorf("api on commits is read-only: %s is not allowed", name)
 		}
 	}
 	if args[0] == "pr" && args[1] == "create" && !draft {
