@@ -251,14 +251,19 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 	}
 }
 
-// A token-monitor wrap kills its own session. Any number of those in
-// one round must respawn silently and leave the cap untouched.
-func TestEnsureRolePaneMissingSessionNeverCounts(t *testing.T) {
+// A token-monitor wrap kills its own session after a long run. Any
+// number of those in one round must respawn silently and leave the
+// cap untouched.
+func TestEnsureRolePaneMissingAfterHealthyRunNeverCounts(t *testing.T) {
 	root, inbox := livenessFixture(t)
 	f := stubPanes(t)
 	spec := EngineerSpec(root, "demo")
 	session, _ := spec.SessionName()
 	for range 2 * MaxRoleRespawns {
+		if err := ensureRolePane(spec, 0); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(FastDeathWindow)
 		if err := ensureRolePane(spec, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -283,6 +288,40 @@ func TestEnsureRolePaneMissingSessionNeverCounts(t *testing.T) {
 	bodies := envBodies(t, inbox)
 	if len(bodies) != 1 || !strings.Contains(bodies[0], "respawn 1/3") {
 		t.Errorf("notices = %q, want one respawn 1/3", bodies)
+	}
+}
+
+// With remain-on-exit off a crashing agent takes its session with it.
+// A session gone before it ever ran FastDeathWindow counts toward the
+// per-round cap; past the cap nothing is spawned and the coordinator
+// hears once.
+func TestEnsureRolePaneCountsFastMissingSession(t *testing.T) {
+	root, inbox := livenessFixture(t)
+	f := stubPanes(t)
+	spec := EngineerSpec(root, "demo")
+	session, _ := spec.SessionName()
+	for range 2 * MaxRoleRespawns {
+		if err := ensureRolePane(spec, 1); err != nil {
+			t.Fatal(err)
+		}
+		delete(f.panes, session)
+		f.now = f.now.Add(5 * time.Second)
+	}
+	if len(f.spawns) != 1+MaxRoleRespawns {
+		t.Errorf("spawns = %d, want %d", len(f.spawns), 1+MaxRoleRespawns)
+	}
+	bodies := envBodies(t, inbox)
+	var respawns, escalations int
+	for _, b := range bodies {
+		switch {
+		case strings.Contains(b, "respawned engineer (session gone"):
+			respawns++
+		case strings.Contains(b, "escalated: engineer agent died again after 3 respawns in round 2"):
+			escalations++
+		}
+	}
+	if respawns != MaxRoleRespawns || escalations != 1 || len(bodies) != MaxRoleRespawns+1 {
+		t.Errorf("notices = %q, want %d respawns and 1 escalation", bodies, MaxRoleRespawns)
 	}
 }
 

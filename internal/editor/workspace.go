@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 // WorkspaceRel is the multi-root VS Code workspace path relative to
@@ -149,7 +150,7 @@ func worktreeSlugs(root string) ([]string, error) {
 }
 
 func gitWorktrees(root string) (map[string]bool, error) {
-	cmd := exec.Command("git", "-C", root, "worktree", "list", "--porcelain")
+	cmd := callbudget.Command("git", "-C", root, "worktree", "list", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list in %s: %w", root, err)

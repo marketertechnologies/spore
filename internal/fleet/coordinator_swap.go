@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -16,7 +16,7 @@ import (
 // drive state.md without a live server or agent.
 var (
 	swapTmux = func(args ...string) ([]byte, error) {
-		out, err := exec.Command("tmux", args...).CombinedOutput()
+		out, err := callbudget.Command("tmux", args...).CombinedOutput()
 		if err != nil {
 			return out, fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
 		}
