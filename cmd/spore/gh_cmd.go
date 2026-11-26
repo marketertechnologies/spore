@@ -386,14 +386,18 @@ func readBodyFile(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxGHBody))
 }
 
-// bodyRoots are the cwd repo and $TMPDIR. TMPDIR counts only under
-// /tmp: the caller sets it, and this process runs unsandboxed.
+// bodyTmpRoot bounds which $TMPDIR counts as a body root: the caller
+// sets TMPDIR, and this process runs unsandboxed. Tests repoint it
+// because nix builds run with TMPDIR=/build.
+var bodyTmpRoot = "/tmp"
+
+// bodyRoots are the cwd repo and $TMPDIR (only under bodyTmpRoot).
 func bodyRoots() []string {
 	var roots []string
 	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
 		roots = append(roots, strings.TrimSpace(string(out)))
 	}
-	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && insideAny(tmp, []string{"/tmp"}) {
+	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && insideAny(tmp, []string{bodyTmpRoot}) {
 		roots = append(roots, tmp)
 	}
 	return roots

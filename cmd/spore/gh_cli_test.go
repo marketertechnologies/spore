@@ -235,7 +235,13 @@ func TestGHPRBodyFileReadByClient(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("TOKEN=x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TMPDIR", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if real, err := filepath.EvalSymlinks(tmp); err == nil {
+		prev := bodyTmpRoot
+		bodyTmpRoot = real
+		t.Cleanup(func() { bodyTmpRoot = prev })
+	}
 	root := ghTestProject(t)
 	gitOut(t, root, "init", "-q")
 	fakeBin(t, "gh", fakeGHScript)
