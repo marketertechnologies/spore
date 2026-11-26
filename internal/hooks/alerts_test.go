@@ -93,7 +93,7 @@ func TestStopFailure_LoginAlertCarriesRunbookAndRequeuesInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTell(t, filepath.Join(inbox, "100.json"), `{"body":"P1M-TELL"}`)
-	if _, err := claimInbox(inbox, "inflight"); err != nil {
+	if _, err := claimInbox(inbox, filepath.Join("inflight", noSession)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_TASK_INBOX", inbox)
@@ -124,7 +124,7 @@ func TestStopFailure_OtherErrorsRequeueWithoutAlert(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTell(t, filepath.Join(inbox, "100.json"), `{"body":"x"}`)
-	if _, err := claimInbox(inbox, "inflight"); err != nil {
+	if _, err := claimInbox(inbox, filepath.Join("inflight", noSession)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_TASK_INBOX", inbox)

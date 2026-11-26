@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,7 +233,7 @@ func TestDeliverCodexNoDoubleDelivery(t *testing.T) {
 		defer wg.Done()
 		deliverCodex(context.Background(), inbox, "b", testCodexOpts(q, nil, &bytes.Buffer{}))
 	}()
-	go func() { defer wg.Done(); drainInbox(inbox, "", &claude) }()
+	go func() { defer wg.Done(); drainInbox(inbox, "", &claude, io.Discard) }()
 	wg.Wait()
 
 	total := strings.Count(claude.String(), "\n")
