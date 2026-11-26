@@ -1,6 +1,6 @@
 # Claude Code sandbox
 
-Every spore pane runs `claude --dangerously-skip-permissions`, so `permissions.deny` and the PreToolUse guard (docs/permissions.md) only match command text: `cat` through a variable, a copied file or a script still reaches a secret. Since 0.52.0 spore also runs every agent Bash command inside Claude Code's own sandbox (bubblewrap plus a network proxy on Linux), which enforces at the OS level what the deny rules only ask for.
+Every spore pane runs `claude --dangerously-skip-permissions`, so `permissions.deny` and the PreToolUse guard (docs/permissions.md) only match command text: `cat` through a variable, a copied file or a script still reaches a secret. Since 0.60.0 spore also runs every agent Bash command inside Claude Code's own sandbox (bubblewrap plus a network proxy on Linux), which enforces at the OS level what the deny rules only ask for.
 
 Verified against Claude Code 2.1.329 (bubblewrap 0.13.1, socat 1.8.1.3, NixOS, Linux 6.18) on 2026-11-25, by reading the settings schema in the binary and by real `claude -p` runs (see "How it was verified"). Re-check this page when Claude Code changes minor version: several behaviours below are not in the public docs.
 

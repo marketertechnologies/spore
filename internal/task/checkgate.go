@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/sporetoml"
 )
 
@@ -116,7 +116,7 @@ func TaskWorktree(projectRoot, slug string) string {
 
 // HeadSHA returns the full commit id HEAD points at in dir.
 func HeadSHA(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	out, err := callbudget.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD in %s: %w", dir, err)
 	}
@@ -150,6 +150,36 @@ func ReadCheckState(projectRoot, slug string, round int, sha string) (CheckState
 		}
 	}
 	return CheckPending, nil
+}
+
+// LatestCheckedSHA returns the HEAD sha of the newest pass or give-up
+// marker for engineer round `round` written since its response, or ""
+// when the check has recorded no result for the round.
+func LatestCheckedSHA(projectRoot, slug string, round int) (string, error) {
+	resp, err := os.Stat(EngineerResponsePath(projectRoot, slug, round))
+	if err != nil {
+		return "", err
+	}
+	var best string
+	var bestMod time.Time
+	for _, kind := range []string{"pass", "failed"} {
+		prefix := fmt.Sprintf("check-%s-%d-", kind, round)
+		matches, err := filepath.Glob(checkMarker(projectRoot, slug, prefix+"*"))
+		if err != nil {
+			return "", err
+		}
+		for _, m := range matches {
+			st, err := os.Stat(m)
+			if err != nil {
+				return "", err
+			}
+			if st.ModTime().Before(resp.ModTime()) || (best != "" && !st.ModTime().After(bestMod)) {
+				continue
+			}
+			best, bestMod = strings.TrimPrefix(filepath.Base(m), prefix), st.ModTime()
+		}
+	}
+	return best, nil
 }
 
 // CountCheckAttempts counts the failing runs recorded for round and

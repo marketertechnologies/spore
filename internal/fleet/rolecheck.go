@@ -87,41 +87,42 @@ func readCheckGate(projectRoot, slug string, snap *Snapshot) error {
 	return err
 }
 
-// holdForCheck cuts pending at its first engineer event while the
-// engineer check is configured and the latest engineer round has no
-// pass marker at the worktree HEAD. Every engineer event pushes the
-// current HEAD, so an earlier unposted round (one the check gave up
-// on) is held too: posting it would push the latest, unchecked
-// commits. Nothing after the cut reaches GitHub either. A gave-up
-// round lands once a later round passes at HEAD, so the push then
-// carries checked code. PhaseDone releases the hold, since the
-// engineer pane is gone and nothing would ever record a pass; so does
-// a give-up at HEAD in PhaseEscalated, where no re-review (and so no
-// later passing round) follows and the operator needs the PR current.
-func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) ([]mirrorEvent, error) {
-	if snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
-		return pending, nil
+// holdForCheck applies the engineer check gate to the mirror's pending
+// events. With the gate on, an engineer round reaches GitHub only once
+// the check recorded a result (pass or give-up) for the latest round at
+// the worktree HEAD; until then pending is cut at its first engineer
+// event, since every engineer event pushes and an earlier round's push
+// would carry the latest, unchecked commits. Nothing after the cut is
+// posted either. gated reports the gate is on; sha is the commit the
+// reviewer read (HEAD once checked, else the newest checked commit of
+// the latest round that has one), which the mirror pushes instead of a
+// fresh HEAD. PhaseDone releases the hold ungated, since the engineer
+// pane is gone and nothing would ever record a result.
+func holdForCheck(projectRoot, slug string, snap Snapshot, pending []mirrorEvent) (out []mirrorEvent, sha string, gated bool, err error) {
+	if len(pending) == 0 || snap.Phase == PhaseDone || snap.EngineerRound < 1 || task.LoadEngineerCheck(projectRoot).Cmd == "" {
+		return pending, "", false, nil
 	}
-	cut := -1
+	head, err := task.HeadSHA(task.TaskWorktree(projectRoot, slug))
+	if err != nil {
+		head = ""
+	}
+	state, err := task.ReadCheckState(projectRoot, slug, snap.EngineerRound, head)
+	if err != nil {
+		return nil, "", true, err
+	}
+	if state == task.CheckPassed || state == task.CheckFailed {
+		return pending, head, true, nil
+	}
 	for i, e := range pending {
 		if e.kind == eventEngineer {
-			cut = i
+			pending = pending[:i]
 			break
 		}
 	}
-	if cut < 0 {
-		return pending, nil
+	for r := snap.EngineerRound; r >= 1 && sha == ""; r-- {
+		if sha, err = task.LatestCheckedSHA(projectRoot, slug, r); err != nil {
+			return nil, "", true, err
+		}
 	}
-	sha, err := task.HeadSHA(task.TaskWorktree(projectRoot, slug))
-	if err != nil {
-		sha = ""
-	}
-	state, err := task.ReadCheckState(projectRoot, slug, snap.EngineerRound, sha)
-	if err != nil {
-		return nil, err
-	}
-	if state == task.CheckPassed || (state == task.CheckFailed && snap.Phase == PhaseEscalated) {
-		return pending, nil
-	}
-	return pending[:cut], nil
+	return pending, sha, true, nil
 }

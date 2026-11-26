@@ -107,6 +107,14 @@ func waitOnHeldLock(t *testing.T, in EngineerCheckInput, round int, before, duri
 		t.Fatal(err)
 	}
 	before()
+	waiting := make(chan struct{}, 1)
+	onCheckLockBusy = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { onCheckLockBusy = nil })
 	done := make(chan EngineerCheckResult)
 	go func() {
 		res, err := EngineerCheck(in)
@@ -115,7 +123,11 @@ func waitOnHeldLock(t *testing.T, in EngineerCheckInput, round int, before, duri
 		}
 		done <- res
 	}()
-	time.Sleep(3 * checkLockPoll)
+	select {
+	case <-waiting:
+	case <-time.After(30 * time.Second):
+		t.Fatal("EngineerCheck never waited on the held lock")
+	}
 	during()
 	unlock()
 	return <-done

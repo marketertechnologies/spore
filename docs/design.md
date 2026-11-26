@@ -39,8 +39,10 @@ Drop-in substrate, generic enough to plant in any project repo.
 - Hook patterns. `Stop` (auto-commit on green), `PreToolUse`
   (forbidden-command guard), with a pluggable shape so each project
   adds its own.
-- Minimal lint set. drift, file-size, comment-noise, em-dash. These
-  are general; they apply to any source tree.
+- Portable lint set. em-dash, file-size, comment-noise, decoration,
+  instruction drift and size, agent mirrors, task evidence, tmux test
+  sockets, spore.toml keys. The full list with limits lives in
+  `bootstrap/stages/validation-green.md`.
 - Distribution. Vendored binaries via a single install script for
   non-Nix consumers; flake input or submodule for Nix consumers.
 

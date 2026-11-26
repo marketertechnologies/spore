@@ -1,8 +1,11 @@
 package fleet
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/versality/spore/internal/editor"
@@ -310,5 +313,35 @@ func TestCoordinatorSessionArgsRecordsExplicitAgent(t *testing.T) {
 	}
 	if got := envValue(args, CoordinatorAgentEnv); got != "/usr/local/bin/spore-coordinator-launch" {
 		t.Errorf("%s = %q", CoordinatorAgentEnv, got)
+	}
+}
+
+func TestLoadCoordinatorConfigUnknownKeyKeepsKnownKeys(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv(CoordinatorRoleEnv, "")
+	dir := t.TempDir()
+	body := "[coordinator]\nbrief = \"docs/helm.md\"\nagnet = \"codex\"\nmodel = \"opus\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "spore.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadCoordinatorConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), `line 3: unknown key "agnet" in [coordinator]`) {
+		t.Errorf("err = %v, want the unknown key reported", err)
+	}
+	if want := (CoordinatorConfig{Brief: "docs/helm.md", Model: "opus"}); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+
+	var buf bytes.Buffer
+	prev := coordinatorWarnOut
+	coordinatorWarnOut = &buf
+	t.Cleanup(func() { coordinatorWarnOut = prev })
+	coordinatorWarned = sync.Map{}
+	if p := CoordinatorRolePath(dir); p != filepath.Join(dir, "docs/helm.md") {
+		t.Errorf("CoordinatorRolePath = %s, want the spore.toml brief", p)
+	}
+	CoordinatorRolePath(dir)
+	if n := strings.Count(buf.String(), "agnet"); n != 1 {
+		t.Errorf("want one warning naming agnet, got %d:\n%s", n, buf.String())
 	}
 }

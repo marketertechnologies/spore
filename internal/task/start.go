@@ -1,11 +1,14 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/versality/spore/internal/callbudget"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -30,17 +33,32 @@ func ValidateAgent(agent string) error {
 // "spore/<project>/<slug>" running ${SPORE_AGENT_BINARY:-claude-code}
 // in the worktree, with SPORE_TASK_SLUG=<slug> in the session env.
 // Returns the tmux session name on success.
+// startLockWait bounds how long Start waits for a running reconcile
+// pass to release the project lock.
+var startLockWait = 2 * time.Minute
+
 func Start(tasksDir, slug string) (string, error) {
 	return StartWithOptions(tasksDir, slug, StartOptions{})
 }
 
 func StartWithOptions(tasksDir, slug string, opts StartOptions) (string, error) {
-	m, err := activate(tasksDir, slug, opts)
+	projectRoot, err := projectRootFromTasksDir(tasksDir)
 	if err != nil {
 		return "", err
 	}
+	// Held from before the status flip: the flip wakes the fleet's
+	// tasks/ path unit, whose pass then finds the lock taken and
+	// leaves the spawn to us instead of racing `git worktree add`.
+	unlock, err := LockReconcile(projectRoot, startLockWait)
+	if errors.Is(err, ErrLockHeld) {
+		return "", fmt.Errorf("start %s: a fleet reconcile pass is still running after %s; retry", slug, startLockWait)
+	}
+	if err != nil {
+		return "", fmt.Errorf("start %s: reconcile lock: %w", slug, err)
+	}
+	defer unlock()
 
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
+	m, err := activate(tasksDir, slug, opts)
 	if err != nil {
 		return "", err
 	}
@@ -48,11 +66,12 @@ func StartWithOptions(tasksDir, slug string, opts StartOptions) (string, error) 
 	// Pause leaves the session alive for the operator; Start
 	// replaces it so a resume gets a fresh agent and new-session
 	// does not collide on the name.
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 	out, err := ensureSession(tasksDir, slug)
 	if err != nil {
 		return "", err
 	}
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskStart, Slug: slug, Fields: map[string]string{"agent": m.Agent}})
 	notifyMatterSpawn(projectRoot, slug, m, os.Stderr)
 	return out, nil
 }

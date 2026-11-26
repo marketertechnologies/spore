@@ -62,6 +62,10 @@ You do not just observe. You drive the queue.
   brief's first prose paragraph becomes the public PR body: write it
   as a plain summary, free of host paths and coordinator-only notes
   (a paragraph naming an absolute path is replaced by the title).
+- A `spore-alert` notice (usage limit reached, login expired) means
+  every pane on the host stopped, you included. Relay it to the
+  operator once with its recovery line (`/login`, then
+  `spore fleet nudge`); do not respawn panes or retry tasks.
 - `spore coordinator swap --to claude|codex [--model m]` respawns
   this pane under another driver. From inside the pane, flush
   `state.md` first, then pass `--no-wrap`; the command dies with
@@ -178,7 +182,10 @@ Applies when `spore gh config` shows a GitHub App with
 `pr_flow = "draft"`. Without an App config, the operator pushes and
 opens PRs.
 
-- Run network git and gh through `spore gh exec -- <cmd>`.
+- Run network git and gh through `spore gh exec -- <cmd>`, e.g.
+  `spore gh exec -- git push -u origin <branch>`. Never run
+  `spore gh token` or put a token in a command line: it lands in
+  the transcript.
 - The driver pushes `wt/<slug>` and opens the draft PR after the
   engineer's first round. Keep `wt/<slug>` as the PR head: renaming
   the branch closes the PR.

@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -16,7 +16,7 @@ import (
 // drive state.md without a live server or agent.
 var (
 	swapTmux = func(args ...string) ([]byte, error) {
-		out, err := exec.Command("tmux", args...).CombinedOutput()
+		out, err := callbudget.Command("tmux", args...).CombinedOutput()
 		if err != nil {
 			return out, fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
 		}
@@ -26,8 +26,21 @@ var (
 	swapNow   = time.Now
 	// swapHostLauncher is the host coordinator launcher the NixOS module
 	// installs; the reconciler units point SPORE_COORDINATOR_AGENT at it.
+	// HostLauncherEnv overrides it.
 	swapHostLauncher = "/usr/local/bin/spore-coordinator-launch"
 )
+
+// HostLauncherEnv overrides the host launcher a swap falls back to when
+// no SPORE_COORDINATOR_AGENT is recorded. Set it to a path that does
+// not exist to turn the fallback off, as sandboxes and tests do.
+const HostLauncherEnv = "SPORE_COORDINATOR_HOST_LAUNCHER"
+
+func hostLauncher() string {
+	if v := os.Getenv(HostLauncherEnv); v != "" {
+		return v
+	}
+	return swapHostLauncher
+}
 
 // ErrWrapTimeout is returned when state.md did not advance before the
 // wrap deadline and the caller did not force the swap.
@@ -83,7 +96,7 @@ func SwapModel(cur CoordinatorConfig, to, model string, modelSet bool) string {
 // the session env first (it beats file config at spawn), then the host
 // driver override over spore.toml, then the kernel default driver.
 func runningConfig(root string, env map[string]string) CoordinatorConfig {
-	cfg, _ := LoadCoordinatorConfig(root)
+	cfg := LoadCoordinatorConfigWarn(root)
 	if v := env["SPORE_COORDINATOR_PROVIDER"]; v != "" {
 		cfg.Driver = v
 	}
@@ -168,6 +181,10 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 	if rolePath == "" {
 		rolePath = CoordinatorRolePath(root)
 	}
+	respawn, err := respawnCommand(pane, root, agent, rolePath, plan.cfg)
+	if err != nil {
+		return res, fmt.Errorf("coordinator swap: %w", err)
+	}
 
 	// Mutations run cheapest-to-undo first: session env, then the
 	// driver override, then the respawn. A failure undoes the earlier
@@ -184,7 +201,7 @@ func SwapCoordinator(spec SwapSpec) (SwapResult, error) {
 	}
 	logf("coordinator swap: %s driver=%s model=%s", plan.path, plan.cfg.Driver, displayModel(plan.cfg.Model))
 	logf("coordinator swap: respawning %s (%s) with %s", spec.Session, pane, agent)
-	if _, err := swapTmux(respawnCommand(pane, root, agent, rolePath)...); err != nil {
+	if _, err := swapTmux(respawn...); err != nil {
 		left := "driver override restored"
 		if rerr := plan.rollback(); rerr != nil {
 			left = fmt.Sprintf("driver override %s NOT restored (%v), still says driver=%s", plan.path, rerr, plan.cfg.Driver)
@@ -211,8 +228,8 @@ func swapAgent(session, global map[string]string, to string) (string, error) {
 		agent = strings.TrimSpace(global[CoordinatorAgentEnv])
 	}
 	if agent == "" {
-		if fi, err := os.Stat(swapHostLauncher); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-			return swapHostLauncher, nil
+		if l := hostLauncher(); isExecutable(l) {
+			return l, nil
 		}
 		return driverToBinary(to), nil
 	}
@@ -225,6 +242,11 @@ func swapAgent(session, global map[string]string, to string) (string, error) {
 	return agent, nil
 }
 
+func isExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
+}
+
 // exactSession turns a session name into a target that matches only
 // that name: a bare name falls back to prefix and fnmatch lookup, which
 // could hit spore/<p>/coordinator2.
@@ -232,30 +254,38 @@ func exactSession(session string) string {
 	return "=" + session
 }
 
-// swapEnvCommands sets provider and model in the session env, which
-// respawn-pane layers over the global env. A cleared model is marked -r
-// so a value inherited by the tmux server (e.g. from
-// /etc/spore/coordinator.env) cannot leak back in.
+// swapEnvCommands sets provider, model and effort in the session env,
+// which respawn-pane layers over the global env. A cleared model or
+// effort is marked -r so a value inherited by the tmux server (e.g.
+// from /etc/spore/coordinator.env) cannot leak back in.
 func swapEnvCommands(target string, cfg CoordinatorConfig) [][]string {
-	model := []string{"set-environment", "-t", target, "-r", "SPORE_COORDINATOR_MODEL"}
-	if cfg.Model != "" {
-		model = []string{"set-environment", "-t", target, "SPORE_COORDINATOR_MODEL", cfg.Model}
+	setOrRemove := func(k, v string) []string {
+		if v == "" {
+			return []string{"set-environment", "-t", target, "-r", k}
+		}
+		return []string{"set-environment", "-t", target, k, v}
 	}
 	return [][]string{
 		{"set-environment", "-t", target, "SPORE_COORDINATOR_PROVIDER", cfg.Driver},
-		model,
+		setOrRemove("SPORE_COORDINATOR_MODEL", cfg.Model),
+		setOrRemove(CoordinatorEffortEnv, task.NormalizeAgentEffort(cfg.Effort)),
 	}
 }
 
-func respawnCommand(pane, root, agent, rolePath string) []string {
-	return []string{"respawn-pane", "-k", "-t", pane, "-c", root, coordinatorShellCommand(agent, rolePath)}
+func respawnCommand(pane, root, agent, rolePath string, cfg CoordinatorConfig) ([]string, error) {
+	st := task.AgentSettings{Model: cfg.Model, Effort: task.NormalizeAgentEffort(cfg.Effort)}
+	cmd, err := coordinatorShellCommand(agent, rolePath, st)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"respawn-pane", "-k", "-t", pane, "-c", root, cmd}, nil
 }
 
 // restoreSwapEnv puts provider and model back as they were and returns
 // a description of the state left behind, for the error message.
 func restoreSwapEnv(target string, prev tmuxEnv, left string) string {
 	var failed []string
-	for _, k := range []string{"SPORE_COORDINATOR_PROVIDER", "SPORE_COORDINATOR_MODEL"} {
+	for _, k := range []string{"SPORE_COORDINATOR_PROVIDER", "SPORE_COORDINATOR_MODEL", CoordinatorEffortEnv} {
 		args := []string{"set-environment", "-t", target, "-u", k}
 		if v, ok := prev.vals[k]; ok {
 			args = []string{"set-environment", "-t", target, k, v}

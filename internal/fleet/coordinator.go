@@ -3,13 +3,13 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/versality/spore/codexpolicy"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/sandbox"
 	"github.com/versality/spore/internal/task"
@@ -70,7 +70,7 @@ func CoordinatorRolePath(projectRoot string) string {
 	if p := os.Getenv(CoordinatorRoleEnv); p != "" {
 		return p
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.Brief != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.Brief != "" {
 		if filepath.IsAbs(cfg.Brief) {
 			return cfg.Brief
 		}
@@ -97,7 +97,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return session, false, nil
 	}
 
-	tomlCfg, _ := LoadCoordinatorConfig(projectRoot)
+	tomlCfg := LoadCoordinatorConfigWarn(projectRoot)
 	if pat := tomlCfg.ExternalSessionPattern; pat != "" {
 		if name, ok := externalCoordinatorSession(pat); ok {
 			return name, false, nil
@@ -109,8 +109,12 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	args = append(args, coordinatorShellCommand(agent, rolePath))
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	cmd, err := coordinatorShellCommand(agent, rolePath, coordinatorSettings(tomlCfg))
+	if err != nil {
+		return "", false, err
+	}
+	args = append(args, cmd)
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -166,6 +170,9 @@ func coordinatorSessionArgs(projectRoot, session, rolePath string, tomlCfg Coord
 	if v := coordinatorModel(tomlCfg); v != "" {
 		args = append(args, "-e", "SPORE_COORDINATOR_MODEL="+v)
 	}
+	if v := coordinatorEffort(tomlCfg); v != "" {
+		args = append(args, "-e", CoordinatorEffortEnv+"="+v)
+	}
 	if v := coordinatorAutoConnectIDE(projectRoot); v != "" {
 		args = append(args, "-e", editor.AutoConnectIDEEnv+"="+v)
 	}
@@ -211,6 +218,26 @@ func coordinatorModel(cfg CoordinatorConfig) string {
 	return cfg.Model
 }
 
+// CoordinatorEffortEnv carries the coordinator's effort to launcher
+// scripts (spore-coordinator-launch).
+const CoordinatorEffortEnv = "SPORE_COORDINATOR_EFFORT"
+
+// coordinatorEffort returns the effort injected into the session env,
+// the very-high aliases folded to xhigh. Env wins over the configured
+// effort. Empty when neither source set it.
+func coordinatorEffort(cfg CoordinatorConfig) string {
+	if v := os.Getenv(CoordinatorEffortEnv); v != "" {
+		return v
+	}
+	return task.NormalizeAgentEffort(cfg.Effort)
+}
+
+// coordinatorSettings is the model and effort a claude- or
+// codex-shaped coordinator agent gets as flags.
+func coordinatorSettings(cfg CoordinatorConfig) task.AgentSettings {
+	return task.AgentSettings{Model: coordinatorModel(cfg), Effort: coordinatorEffort(cfg)}
+}
+
 // coordinatorAutoConnectIDE returns the CLAUDE_CODE_AUTO_CONNECT_IDE
 // value for the coordinator session. Env wins over spore.toml
 // [editor].auto_connect_ide. Empty when neither is set. A malformed
@@ -248,6 +275,27 @@ func driverToBinary(driver string) string {
 	}
 }
 
+// CoordinatorRespawnShell is the shell command that relaunches the
+// coordinator of projectRoot the way EnsureCoordinator spawned it: the
+// same agent precedence (SPORE_COORDINATOR_AGENT first, then config)
+// and the role file from SPORE_COORDINATOR_ROLE, which the session env
+// carries, else CoordinatorRolePath.
+func CoordinatorRespawnShell(projectRoot string) string {
+	rolePath := os.Getenv("SPORE_COORDINATOR_ROLE")
+	if rolePath == "" {
+		rolePath = CoordinatorRolePath(projectRoot)
+	}
+	cfg := LoadCoordinatorConfigWarn(projectRoot)
+	agent := coordinatorAgent(cfg)
+	cmd, err := coordinatorShellCommand(agent, rolePath, coordinatorSettings(cfg))
+	if err != nil {
+		// The spawn refused these settings too; respawn without them
+		// rather than print a command that cannot run.
+		cmd, _ = coordinatorShellCommand(agent, rolePath, task.AgentSettings{})
+	}
+	return cmd
+}
+
 // coordinatorShellCommand builds the shell snippet tmux runs for the
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers
@@ -258,9 +306,12 @@ func driverToBinary(driver string) string {
 // bootstrap/handover/spore-worker-brief.sh); we inject those flags
 // only for claude-shaped agents so a sleep-based test agent still
 // boots clean.
-func coordinatorShellCommand(agent, rolePath string) string {
-	cmdWithBody, cmdBare := agentInvocations(agent)
-	return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+func coordinatorShellCommand(agent, rolePath string, st task.AgentSettings) (string, error) {
+	cmdWithBody, cmdBare, err := agentInvocations(agent, st)
+	if err != nil {
+		return "", err
+	}
+	return bodyShellCommand(cmdWithBody, cmdBare, rolePath), nil
 }
 
 func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
@@ -272,17 +323,32 @@ func bodyShellCommand(cmdWithBody, cmdBare, rolePath string) string {
 
 // agentInvocations returns the agent command for a run with a prompt
 // body and for a bare run. Role bodies open with `---` frontmatter, so
-// the body run ends in `--` for both claude and codex.
-func agentInvocations(agent string) (withBody, bare string) {
+// the body run ends in `--` for both claude and codex. Model and effort
+// flags apply to claude and codex only; any other agent (a launcher, a
+// test stub) runs verbatim.
+func agentInvocations(agent string, st task.AgentSettings) (withBody, bare string, err error) {
 	if isClaudeAgent(agent) {
-		claude := agent + ` --dangerously-skip-permissions ${` + sandbox.EnvVar + `:+--settings "$` + sandbox.EnvVar + `"}`
-		return claude + " --", claude
+		claude := agent + ` --dangerously-skip-permissions ${` + sandbox.EnvVar + `:+--settings "$` + sandbox.EnvVar + `"}` + shellArgs(task.ClaudeFlags(st))
+		return claude + " --", claude, nil
 	}
 	if isCodexAgent(agent) {
-		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig)
-		return codex + " --", codex
+		flags, err := task.CodexFlags(st)
+		if err != nil {
+			return "", "", err
+		}
+		codex := agent + " -c " + shellSingleQuote(codexpolicy.ProjectDocFallbackConfig) + shellArgs(flags)
+		return codex + " --", codex, nil
 	}
-	return agent, agent
+	return agent, agent, nil
+}
+
+// shellArgs renders args single-quoted, each with a leading space.
+func shellArgs(args []string) string {
+	var b strings.Builder
+	for _, a := range args {
+		b.WriteString(" " + shellSingleQuote(a))
+	}
+	return b.String()
 }
 
 // isClaudeAgent reports whether the agent string resolves to the
@@ -318,7 +384,7 @@ func ReapCoordinator(projectRoot string) bool {
 	if !hasSession(session) {
 		return false
 	}
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 	return true
 }
 
@@ -330,7 +396,7 @@ func CoordinatorAlive(projectRoot string) bool {
 	if hasSession(CoordinatorSessionName(projectRoot)) {
 		return true
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.ExternalSessionPattern != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.ExternalSessionPattern != "" {
 		if _, ok := externalCoordinatorSession(cfg.ExternalSessionPattern); ok {
 			return true
 		}
@@ -349,7 +415,7 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return "", false
 	}
@@ -365,5 +431,5 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
 }

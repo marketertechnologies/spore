@@ -72,6 +72,17 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks stop-failure",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
     ]
   },
   "permissions": {

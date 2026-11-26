@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// A coordinator swap must not fall back to the host's launcher.
+	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	// Role spawns materialize bundled bodies under the state dir;
 	// keep them off the host's real one.
 	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {
@@ -32,6 +35,19 @@ func TestMain(m *testing.M) {
 	}
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+	// Run from an agent pane, the inherited SPORE_* / WT_* env names
+	// the live coordinator inbox, launcher and project; a test pass
+	// must never deliver to or spawn through them.
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(k, "SPORE_") || strings.HasPrefix(k, "WT_") {
+			_ = os.Unsetenv(k)
+		}
+	}
+	if err := os.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(tmpdir, "coordinator")); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
+		os.Exit(2)
+	}
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()

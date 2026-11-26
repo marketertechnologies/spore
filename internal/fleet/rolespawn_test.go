@@ -192,7 +192,7 @@ func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := coordinatorShellCommand("claude", body)
+	want := mustShellCommand(t, "claude", body)
 	if got := args[len(args)-1]; got != want {
 		t.Errorf("shell command = %q, want unchanged %q", got, want)
 	}

@@ -19,9 +19,15 @@ var ErrWake = errors.New("inbox drained")
 
 // WatchInbox is the Stop-hook implementation for inbox-based wakeup.
 // It watches $WT_STATE/<slug>/inbox/ for arriving .json files, drains
-// them into stdout (one line per message, see renderClaimed), moves claimed
-// files to inbox/read/, and returns ErrWake when files were drained.
-// Returns nil on timeout (no files), or a real error on failure.
+// them into stdout (one line per message, see renderClaimed), moves
+// claimed files to inbox/inflight/, and returns ErrWake when files were
+// drained. Returns nil on timeout (no files), or a real error on
+// failure.
+//
+// inflight/ holds the messages of the turn the drain woke. Claude Code
+// runs Stop hooks only after a turn that succeeded, so the next run
+// acks them into read/; a turn that ends in an API error fires
+// StopFailure instead, which puts them back (RequeueInflight).
 func WatchInbox(slug string) error {
 	return watchInboxAt(workerInbox(slug), os.Stdout, os.Stderr, defaultWatchOpts())
 }
@@ -66,6 +72,9 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 	if err := ensureInbox(inboxDir); err != nil {
 		return err
 	}
+	if err := moveInflight(inboxDir, "read", ""); err != nil {
+		return err
+	}
 
 	if n, err := drainInbox(inboxDir, stdout); err != nil {
 		return err
@@ -104,7 +113,7 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 // each one this caller claimed (see renderClaimed). Returns the
 // claim count.
 func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
-	claimed, err := claimInbox(inboxDir)
+	claimed, err := claimInbox(inboxDir, "inflight")
 	if err != nil || len(claimed) == 0 {
 		return 0, err
 	}
@@ -115,10 +124,10 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 }
 
 // claimInbox lists *.json at the top level of inboxDir and atomically
-// moves each to inboxDir/read/. The rename is the claim: concurrent
-// drains on one inbox never both get a file. Returns the claimed paths
-// under read/, in name order.
-func claimInbox(inboxDir string) ([]string, error) {
+// moves each to inboxDir/<sub>/. The rename is the claim: concurrent
+// drains on one inbox never both get a file. Returns the claimed paths,
+// in name order with redelivered files at their original place.
+func claimInbox(inboxDir, sub string) ([]string, error) {
 	entries, err := os.ReadDir(inboxDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -140,13 +149,18 @@ func claimInbox(inboxDir string) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		return strings.TrimPrefix(names[i], redeliverPrefix) < strings.TrimPrefix(names[j], redeliverPrefix)
+	})
 
-	readDir := filepath.Join(inboxDir, "read")
+	dstDir := filepath.Join(inboxDir, sub)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return nil, err
+	}
 	var claimed []string
 	for _, n := range names {
 		src := filepath.Join(inboxDir, n)
-		dst := filepath.Join(readDir, n)
+		dst := filepath.Join(dstDir, n)
 		if err := os.Rename(src, dst); err == nil {
 			claimed = append(claimed, dst)
 		}
@@ -154,8 +168,48 @@ func claimInbox(inboxDir string) ([]string, error) {
 	return claimed, nil
 }
 
+// redeliverPrefix marks a message put back by RequeueInflight.
+const redeliverPrefix = "redeliver-"
+
+// RequeueInflight puts the messages of a turn that ended in an API
+// error back into the inbox, so the next drain delivers them again.
+func RequeueInflight(inboxDir string) error {
+	return moveInflight(inboxDir, "", redeliverPrefix)
+}
+
+// moveInflight moves every file in inboxDir/inflight/ to inboxDir/<sub>,
+// adding prefix to names that do not carry it yet.
+func moveInflight(inboxDir, sub, prefix string) error {
+	src := filepath.Join(inboxDir, "inflight")
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	dstDir := filepath.Join(inboxDir, sub)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			name = prefix + name
+		}
+		if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dstDir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // inboxLine is one rendered message and where its file lives now:
-// inbox/read/ once claimed, inbox/quarantine/ if it did not parse.
+// inbox/inflight/ or inbox/read/ once claimed, inbox/quarantine/ if it
+// did not parse.
 type inboxLine struct {
 	path, text string
 }
@@ -179,7 +233,11 @@ func renderClaimed(claimed []string) []inboxLine {
 		if source == "" {
 			source = "none"
 		}
-		lines = append(lines, inboxLine{f, fmt.Sprintf("[%s] inbox (claimed source: %q, unverified): %s\n", stamp(ts), source, oneLine(body))})
+		note := ""
+		if strings.HasPrefix(filepath.Base(f), redeliverPrefix) {
+			note = ", redelivered: the turn that first got it ended in an API error"
+		}
+		lines = append(lines, inboxLine{f, fmt.Sprintf("[%s] inbox (claimed source: %q, unverified%s): %s\n", stamp(ts), source, note, oneLine(body))})
 	}
 	return lines
 }
@@ -209,7 +267,7 @@ func stamp(ts string) string {
 	return ts
 }
 
-// quarantine moves a claimed file from inbox/read/ to inbox/quarantine/
+// quarantine moves a claimed file to inbox/quarantine/
 // and returns where it now lives (the original path if the move fails).
 func quarantine(claimed string) string {
 	dir := filepath.Join(filepath.Dir(filepath.Dir(claimed)), "quarantine")

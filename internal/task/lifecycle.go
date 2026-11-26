@@ -1,19 +1,19 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -144,7 +144,7 @@ func Reap(tasksDir, projectRoot, slug string) error {
 // "spore/<project>/<slug>" pattern. Returns an empty slice (and a
 // nil error) when no tmux server is running.
 func SpawnedSlugs(projectRoot string) ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		// tmux exits non-zero with "no server running" or no
 		// sessions; treat both as empty.
@@ -163,11 +163,40 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
-// Pause flips an active task to paused. The worktree is left in
-// place; the tmux session is reaped only if it has been idle past
-// IdleReapThreshold (model exited, pane sitting at an empty prompt).
-// A mid-tool-call rower stays alive so the operator can attach and
-// finish a thought. Refuses when the inbox has unread messages.
+// SpawnedRoleSlugs lists the slugs that have at least one
+// "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
+// tmux server is running.
+func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, nil
+	}
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "spore-role/" + project + "/"
+	seen := map[string]bool{}
+	var slugs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		slug, _, ok := strings.Cut(rest, "/")
+		if !ok || slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
+}
+
+// Pause flips an active task to paused. The worktree and every tmux
+// session (worker and role panes) stay; the reconciler keeps paused
+// sessions too. Refuses when the inbox has unread messages.
 func Pause(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -175,13 +204,12 @@ func Pause(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "paused"); err != nil {
 		return err
 	}
-	reapIdleSlugSessions(tasksDir, slug)
+	recordEvent(tasksDir, events.Event{Kind: events.TaskPause, Slug: slug})
 	return nil
 }
 
-// Block flips an active task to blocked. Same idle-gated reap as
-// Pause: the worktree stays, the session is killed only if idle past
-// IdleReapThreshold. Refuses when the inbox has unread messages.
+// Block flips an active task to blocked. Like Pause, it tears
+// nothing down. Refuses when the inbox has unread messages.
 func Block(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -189,7 +217,7 @@ func Block(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "blocked"); err != nil {
 		return err
 	}
-	reapIdleSlugSessions(tasksDir, slug)
+	recordEvent(tasksDir, events.Event{Kind: events.TaskBlock, Slug: slug})
 	return nil
 }
 
@@ -279,6 +307,7 @@ func Done(tasksDir, slug string, force bool) error {
 		return err
 	}
 
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskDone, Slug: slug, Fields: map[string]string{"unmerged_discarded": discarded(unmerged)}})
 	notifyMatterDone(projectRoot, slug, m, os.Stderr)
 
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
@@ -350,7 +379,9 @@ func notifyMatterDone(projectRoot, slug string, m frontmatter.Meta, warnOut io.W
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnDone(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnDone(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore task done %s: matter %s OnDone: %v\n", slug, name, err)
 	}
 }
@@ -407,7 +438,9 @@ func notifyMatterSpawn(projectRoot, slug string, m frontmatter.Meta, warnOut io.
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnSpawn(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnSpawn(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore notify-matter-spawn %s: matter %s OnSpawn: %v\n", slug, name, err)
 	}
 }
@@ -509,6 +542,10 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, reused, err := existingWorktree(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
 	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
 	if err != nil {
 		return "", err
@@ -521,7 +558,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if hasSession(session) {
 		return session, nil
 	}
-	agent, err := workerAgentCommand(meta)
+	settings, err := WorkerAgentSettings(projectRoot, meta)
+	if err != nil {
+		return "", err
+	}
+	agent, err := workerAgentCommand(meta, settings)
 	if err != nil {
 		return "", err
 	}
@@ -529,13 +570,19 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	args = append(args, workerSettingsEnv(meta, settings)...)
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
+	if reused {
+		if note := dirtyWorktreeNote(worktree, briefRelPath(tasksDir, slug)); note != "" {
+			prelude += appendStartNote(note)
+		}
+	}
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
 	} else {
 		args = append(args, workerShellCommand(prelude, agent))
 	}
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -587,42 +634,6 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return m, nil
-}
-
-// workerAgentCommand returns the agent command for a worker. The
-// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
-// it is a claude launcher, so honouring it for codex would run claude.
-func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	switch m.Agent {
-	case "", "claude", "claude-code":
-		if override := os.Getenv(AgentBinaryEnv); override != "" {
-			return override, nil
-		}
-		return defaultAgentBinary, nil
-	case "codex":
-		return CodexAgentCommand(m)
-	default:
-		return m.Agent, nil
-	}
-}
-
-// CodexAgentCommand returns the interactive codex command line for a
-// task, without a prompt: effort and model from the frontmatter, the
-// model falling back to SPORE_CODEX_MODEL. Role panes share it.
-func CodexAgentCommand(m frontmatter.Meta) (string, error) {
-	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
-	if err != nil {
-		return "", err
-	}
-	model := m.Extra["model"]
-	if model == "" {
-		model = os.Getenv(CodexModelEnv)
-	}
-	args := codexpolicy.InteractiveArgs(model, effort)
-	if bin := os.Getenv(CodexBinEnv); bin != "" {
-		args[0] = bin
-	}
-	return shellJoin(args), nil
 }
 
 // briefRelPath is the brief's path relative to the worktree, where
@@ -754,4 +765,11 @@ func slugServicesDir(slug string) (string, error) {
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "spore", "services", slug), nil
+}
+
+func discarded(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
