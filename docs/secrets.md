@@ -149,6 +149,13 @@ sudo spore fleet enable
 
 Tokens that ever sat in transcripts (P0.4) should also be revoked; App installation tokens expire within an hour on their own.
 
+## Tests and sandboxes
+
+The broker socket has a default (`/run/spore-secrets/broker.sock`), so a private HOME, private XDG dirs and a cleared `SPORE_*` do not isolate a process from the live broker: `spore` still finds the host socket and acts through the real GitHub App for any project name the broker knows.
+
+- **Go tests.** A test binary never falls back to the default socket (`secrets.SocketPath` returns an absent path under `testing.Testing()`). A test that needs a broker starts its own and sets `SPORE_SECRETS_SOCKET`.
+- **Sandbox recipe.** A sandbox that runs the `spore` CLI (manual validation, `scripts/pr-before-after.sh`, `bootstrap/smoke.sh`) sets `SPORE_SECRETS_SOCKET` to a path that does not exist (for example `$sandbox/no-broker.sock`) and `TMPDIR` to a writable private dir. `env -i` drops `TMPDIR`, and under bwrap the fallback `/tmp` is read-only, so commands that stage temp files fail and some fall back to the broker.
+
 ## Verifying
 
 `nix build .#checks.x86_64-linux.nixosModules-spore-secrets` boots a VM with an agent user and a pilot and checks: the agent cannot read the secrets directory, the broker's environment or the audit log; `spore secrets run` returns redacted output and refuses other commands and arguments; agents cannot grant or re-enable the fleet; pilots can; `spore gh token` refuses; the audit log carries no value. `internal/secrets` tests cover the policy, the gh allowlist and push/fetch through bundles against a local origin.
