@@ -181,7 +181,7 @@ func TestGitHubMirrorReopenRedraftsAndLabelsCycle(t *testing.T) {
 	}
 
 	writeEng(1)(t, f.root, f.slug)
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "still there", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("remove it")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "still there", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("remove it")}})
 	writeEng(2)(t, f.root, f.slug)
 	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "gone", Prefix: "R"})
 	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictApprove, Summary: "ship it", Prefix: "C"})

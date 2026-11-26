@@ -59,7 +59,7 @@ func TestGitHubMirrorHoldsEngineerRoundUntilCheckPasses(t *testing.T) {
 		t.Fatalf("round 1 not mirrored after the check passed: %v", f.calls(t))
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	before := len(f.calls(t))
 	writeEng(2)(t, f.root, f.slug)
@@ -92,7 +92,7 @@ func TestGitHubMirrorPostsGaveUpRound(t *testing.T) {
 	if st := f.state(t); !st.posted("engineer-round-1.json") || st.PRNumber != 12 || f.bareHead(t) != head1 {
 		t.Fatalf("given-up round 1 not mirrored: posted %v, calls %v", st.Posted, f.calls(t))
 	}
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, reject)
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, reject)
 	f.tick(t)
 
 	head2 := f.commit(t, "two")
@@ -105,13 +105,13 @@ func TestGitHubMirrorPostsGaveUpRound(t *testing.T) {
 
 	// Round 3 gives up with no tick in between, then round 4 is
 	// written: both wait for round 4's result.
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 2, reject)
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 2, reject)
 	f.tick(t)
 	head3 := f.commit(t, "three")
 	writeEng(3)(t, f.root, f.slug)
 	touchMarker(t, task.CheckFailedPath(f.root, f.slug, 3, head3))
 	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 3, task.Review{Verdict: task.VerdictApprove, Summary: "ok", Prefix: "R"})
-	mustWriteReview(t, f.root, f.slug, task.ReviewerB, 1, reject)
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerB, 1, reject)
 	head4 := f.commit(t, "four")
 	writeEng(4)(t, f.root, f.slug)
 	f.tick(t)
@@ -148,7 +148,7 @@ func TestGitHubMirrorPushesReviewedCommitBeforeReview(t *testing.T) {
 		t.Fatalf("unchecked fix pushed")
 	}
 	touchMarker(t, task.CheckPassPath(f.root, f.slug, 1, fixed))
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.commit(t, "revision")
 	before := len(f.calls(t))
 	f.tick(t)
@@ -166,7 +166,7 @@ func TestGitHubMirrorNoCheckReviewDoesNotPush(t *testing.T) {
 	f.tick(t)
 	head1 := f.bareHead(t)
 	f.commit(t, "revision")
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	if st := f.state(t); !st.posted("A/round-1.json") || f.bareHead(t) != head1 {
 		t.Fatalf("posted %v, origin head %s, want %s", st.Posted, f.bareHead(t), head1)
@@ -189,7 +189,7 @@ func TestGitHubMirrorEscalatedGiveUpReleasesHold(t *testing.T) {
 			touchMarker(t, task.CheckFailedPath(f.root, f.slug, r, head))
 		}
 		f.tick(t)
-		mustWriteReview(t, f.root, f.slug, task.ReviewerA, r, reject)
+		writeLegacyReview(t, f.root, f.slug, task.ReviewerA, r, reject)
 	}
 	if snap := f.tick(t); snap.Phase != PhaseEscalated {
 		t.Fatalf("phase = %s, want escalated", snap.Phase)

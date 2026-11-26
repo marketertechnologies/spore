@@ -244,7 +244,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("state = %+v", s)
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	writeEng(2)(t, f.root, f.slug)
 	head2 := f.commit(t, "two")
@@ -358,7 +358,7 @@ func TestGitHubMirrorForcePushAfterRewrite(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	writeEng(1)(t, f.root, f.slug)
 	f.tick(t)
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "squash"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "squash", Comments: []task.ReviewComment{highBug}})
 	f.tick(t)
 	runGit(t, f.wt, "commit", "-q", "--amend", "-m", "one, amended")
 	amended := runGit(t, f.wt, "rev-parse", "HEAD")
@@ -376,7 +376,7 @@ func TestGitHubMirrorEscalationCommentsOnce(t *testing.T) {
 		if r > 1 {
 			writeEng(r)(t, f.root, f.slug)
 		}
-		mustWriteReview(t, f.root, f.slug, task.ReviewerA, r, task.Review{Verdict: task.VerdictRequestChanges, Summary: "no"})
+		mustWriteReview(t, f.root, f.slug, task.ReviewerA, r, task.Review{Verdict: task.VerdictRequestChanges, Summary: "no", Comments: []task.ReviewComment{highBug}})
 	}
 	if snap := f.tick(t); snap.Phase != PhaseEscalated {
 		t.Fatalf("phase = %s", snap.Phase)
@@ -540,10 +540,10 @@ func TestMirrorEventsOrder(t *testing.T) {
 	root := t.TempDir()
 	slug := "demo"
 	writeEng(1)(t, root, slug)
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x"})
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x", Comments: []task.ReviewComment{highBug}})
 	writeEng(2)(t, root, slug)
 	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "x"})
-	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x", Comments: []task.ReviewComment{highBug}})
 	snap, err := DeriveSnapshot(root, slug)
 	if err != nil {
 		t.Fatal(err)

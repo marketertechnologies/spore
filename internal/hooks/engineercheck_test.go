@@ -232,7 +232,8 @@ func TestEngineerCheckSkipsMidRevision(t *testing.T) {
 	if err := os.Chtimes(task.EngineerResponsePath(in.ProjectRoot, "demo", 1), earlier, earlier); err != nil {
 		t.Fatal(err)
 	}
-	if err := task.WriteReview(in.ProjectRoot, "demo", task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s"}); err != nil {
+	if err := task.WriteReview(in.ProjectRoot, "demo", task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s",
+		Comments: []task.ReviewComment{{Severity: task.SeverityHigh, Category: "correctness", Text: "x", Reason: "r", Trigger: "t"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if res := mustCheck(t, in); res.Code != 0 {

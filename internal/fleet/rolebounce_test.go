@@ -213,6 +213,59 @@ func TestBounceUnsortedVerdict(t *testing.T) {
 	}
 }
 
+// A request_changes with no comments, or with plain-string comments,
+// is bounced at every round of a strict tree and does not count.
+func TestBounceLooseRequestChanges(t *testing.T) {
+	cases := []struct {
+		name, comments, want string
+		round                int
+	}{
+		{"empty r1", ``, `with no comments`, 1},
+		{"empty r2", ``, `with no comments`, 2},
+		{"empty r3", ``, `with no comments`, 3},
+		{"strings r2", `"fix it"`, `is a plain string`, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newGitRepoFor(t, "demo-project")
+			t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+			slug := "demo"
+			for _, ensure := range []func(string, string) error{task.EnsureLegacyMarker, task.EnsureOrderExemptMarker, task.EnsureGradeExemptMarker} {
+				if err := ensure(root, slug); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for r := 1; r < tc.round; r++ {
+				if err := task.WriteEngineerResponse(root, slug, r, task.EngineerResponse{}); err != nil {
+					t.Fatal(err)
+				}
+				mustWriteReview(t, root, slug, task.ReviewerA, r, task.Review{Verdict: task.VerdictRequestChanges, Summary: "s", Prefix: "R",
+					Comments: []task.ReviewComment{{Severity: "high", Category: "correctness", Text: "x", Reason: "r", Trigger: "t"}}})
+			}
+			if err := task.WriteEngineerResponse(root, slug, tc.round, task.EngineerResponse{}); err != nil {
+				t.Fatal(err)
+			}
+			path := task.ReviewPath(root, slug, task.ReviewerA, tc.round)
+			writeRaw(t, path, `{"author":"A","verdict":"request_changes","summary":"s","prefix":"R","comments":[`+tc.comments+`]}`)
+			snap, err := DeriveSnapshot(root, slug)
+			if err != nil || snap.Phase != PhaseReviewA || snap.ReviewerRound != tc.round-1 {
+				t.Fatalf("snap = %+v, err %v: loose verdict must not count", snap, err)
+			}
+			outcome := wakeDelivered
+			calls := stubWakeRole(t, &outcome)
+			if err := bounceInvalidRoleFiles(root, slug); err != nil {
+				t.Fatal(err)
+			}
+			if len(*calls) != 1 || !strings.Contains((*calls)[0].msg, tc.want) {
+				t.Fatalf("wakes = %+v", *calls)
+			}
+			if _, err := os.Stat(path + task.InvalidSuffix); err != nil {
+				t.Errorf("loose verdict not moved aside: %v", err)
+			}
+		})
+	}
+}
+
 // The engineer wake names the reviewer by its display label and the
 // IDs it should cite.
 func TestWakeEngineerNamesReviewerAndIDs(t *testing.T) {

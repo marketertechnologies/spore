@@ -177,6 +177,22 @@ func (r Review) Counts() GradeCounts {
 	return n
 }
 
+// checkStrictGrades holds a strict review to the graded shape: every
+// comment is a graded object, and a request_changes names at least one
+// comment, so the engineer has something to fix and the round cap
+// cannot be burned on an empty verdict.
+func checkStrictGrades(r Review) error {
+	for i, c := range r.Comments {
+		if !c.IsGraded() {
+			return fmt.Errorf("comments[%d] is a plain string: write each comment as an object with severity, category and text", i)
+		}
+	}
+	if r.Verdict == VerdictRequestChanges && len(r.Comments) == 0 {
+		return fmt.Errorf("verdict %q with no comments: list what must change, or approve", VerdictRequestChanges)
+	}
+	return nil
+}
+
 // checkGrades validates every graded comment and, for a graded
 // review, that the verdict follows from the grades at this round:
 //

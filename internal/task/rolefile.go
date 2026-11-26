@@ -35,6 +35,13 @@ const legacyMarker = "legacy-files"
 // IDs already went out, and bouncing them would rewind the loop.
 const orderExemptMarker = "order-exempt-files"
 
+// gradeExemptMarker lists, like orderExemptMarker, the role files on
+// disk when a tree was first driven by a binary that rejects a
+// comment-less request_changes and plain-string comments in strict
+// reviews. Those files were already consumed; bouncing them would
+// rewind the loop.
+const gradeExemptMarker = "grade-exempt-files"
+
 // overrideMarker lists the review files `spore task force-approve`
 // rewrote, each with the sha256 of the content it wrote. Only that
 // exact content may carry `operator_override`: a reviewer that sets it
@@ -118,50 +125,75 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 		_, err = ParseEngineerResponse(f.Path, b, legacy)
 		return err
 	}
-	legacy, sorted, err := reviewStrictness(projectRoot, slug, f.Rel)
+	rules, err := reviewStrictness(projectRoot, slug, f.Rel)
 	if err != nil {
 		return err
 	}
-	override, err := overrideRecorded(projectRoot, slug, f.Rel, b)
-	if err != nil {
+	if rules.override, err = overrideRecorded(projectRoot, slug, f.Rel, b); err != nil {
 		return err
 	}
-	_, err = parseReview(f.Path, b, f.Instance, f.Round, legacy, sorted, override)
+	_, err = parseReview(f.Path, b, f.Instance, f.Round, rules)
 	return err
 }
 
-// reviewStrictness reports whether the review at rel is grandfathered
-// (legacy) and whether its comments must be sorted by severity.
-func reviewStrictness(projectRoot, slug, rel string) (legacy, sorted bool, err error) {
-	if legacy, err = isLegacyFile(projectRoot, slug, rel); err != nil || legacy {
-		return legacy, false, err
+// reviewRules is the checks a review file is held to beyond the
+// shared minimum. Each flag is off for files written before the binary
+// that introduced its check first drove the tree.
+type reviewRules struct {
+	legacy bool
+	// sorted requires comments in severity order.
+	sorted bool
+	// strictGrades rejects plain-string comments and a request_changes
+	// with no comments.
+	strictGrades bool
+	// override allows `operator_override`.
+	override bool
+}
+
+func strictRules() reviewRules { return reviewRules{sorted: true, strictGrades: true} }
+
+// reviewStrictness returns the rules the review at rel is held to.
+func reviewStrictness(projectRoot, slug, rel string) (reviewRules, error) {
+	legacy, err := isLegacyFile(projectRoot, slug, rel)
+	if err != nil || legacy {
+		return reviewRules{legacy: legacy}, err
 	}
-	exempt, err := listedInMarker(projectRoot, slug, orderExemptMarker, rel)
-	return false, !exempt, err
+	orderExempt, err := listedInMarker(projectRoot, slug, orderExemptMarker, rel)
+	if err != nil {
+		return reviewRules{}, err
+	}
+	gradeExempt, err := listedInMarker(projectRoot, slug, gradeExemptMarker, rel)
+	return reviewRules{sorted: !orderExempt, strictGrades: !gradeExempt}, err
 }
 
 // ParseReview decodes a reviewer verdict. Strict mode rejects unknown
 // keys, trailing data, a missing summary, an author other than the
 // reviewer instance, and graded comments out of severity order.
-// Legacy mode (grandfathered files) tolerates unknown keys, a missing
-// author, and any comment order. Both enforce the verdict enum, a
-// known `prefix`, the graded comment shape, and the grade-derived
-// verdict rule for round (the N in round-N.json). It rejects
-// `operator_override`: only a file recorded by RecordOperatorOverride
-// may carry one (see ReadReview).
+// Strict mode also rejects plain-string comments and a request_changes
+// with no comments. Legacy mode (grandfathered files) tolerates unknown
+// keys, a missing author, and any comment order. Both enforce the
+// verdict enum, a known `prefix`, the graded comment shape, and the
+// grade-derived verdict rule for round (the N in round-N.json). It
+// rejects `operator_override`: only a file recorded by
+// RecordOperatorOverride may carry one (see ReadReview).
 func ParseReview(path string, b []byte, instance ReviewerInstance, round int, legacy bool) (Review, error) {
-	return parseReview(path, b, instance, round, legacy, !legacy, false)
+	rules := strictRules()
+	if legacy {
+		rules = reviewRules{legacy: true}
+	}
+	return parseReview(path, b, instance, round, rules)
 }
 
-// parseReview is ParseReview with the severity-order check split from
-// legacy: a strict file written before the check existed is exempt
-// (see orderExemptMarker). override allows `operator_override`.
-func parseReview(path string, b []byte, instance ReviewerInstance, round int, legacy, sorted, override bool) (Review, error) {
+// parseReview is ParseReview with each strict check switched by rules:
+// a strict file written before a check existed is exempt from it (see
+// orderExemptMarker, gradeExemptMarker).
+func parseReview(path string, b []byte, instance ReviewerInstance, round int, rules reviewRules) (Review, error) {
+	legacy := rules.legacy
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
 		return r, invalid(path, err.Error())
 	}
-	if r.OperatorOverride != "" && !override {
+	if r.OperatorOverride != "" && !rules.override {
 		return r, invalid(path, "operator_override is written only by `spore task force-approve`; remove it")
 	}
 	if r.Verdict != VerdictApprove && r.Verdict != VerdictRequestChanges {
@@ -176,10 +208,15 @@ func parseReview(path string, b []byte, instance ReviewerInstance, round int, le
 	if r.Prefix != "" && !knownPrefix(r.Prefix) {
 		return r, invalid(path, fmt.Sprintf("prefix %q is not a reviewer ID prefix: copy $SPORE_REVIEWER_PREFIX", r.Prefix))
 	}
+	if rules.strictGrades {
+		if err := checkStrictGrades(r); err != nil {
+			return r, invalid(path, err.Error())
+		}
+	}
 	if err := checkGrades(r, round); err != nil {
 		return r, invalid(path, err.Error())
 	}
-	if sorted {
+	if rules.sorted {
 		if err := checkSeverityOrder(r); err != nil {
 			return r, invalid(path, err.Error())
 		}
@@ -264,6 +301,13 @@ func QuarantinePath(path string) (string, int) {
 // alone. A fresh tree records an empty list, so every file is strict.
 func EnsureLegacyMarker(projectRoot, slug string) error {
 	return ensureListMarker(projectRoot, slug, legacyMarker)
+}
+
+// EnsureGradeExemptMarker records the role files present on the first
+// drive by a binary that enforces strict grades; see gradeExemptMarker.
+// Idempotent like EnsureLegacyMarker.
+func EnsureGradeExemptMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, gradeExemptMarker)
 }
 
 // EnsureOrderExemptMarker records the role files present on the first
