@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/transcript"
 )
 
@@ -119,8 +120,8 @@ func defaultCoordinatorStateDir() string {
 	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
 		return d
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "spore", "coordinator")
+	base, _ := events.BaseDir()
+	return filepath.Join(base, "coordinator")
 }
 
 // IsRolePane returns true when the session is a role-loop pane. Only

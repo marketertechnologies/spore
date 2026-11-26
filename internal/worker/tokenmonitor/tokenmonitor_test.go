@@ -594,3 +594,13 @@ func TestCheckMissingTranscript(t *testing.T) {
 		t.Errorf("Level = %s, want skip", got.Level)
 	}
 }
+
+func TestCoordinatorStateDirHonorsXDGStateHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", xdg)
+	if got, want := defaultCoordinatorStateDir(), filepath.Join(xdg, "spore", "coordinator"); got != want {
+		t.Errorf("defaultCoordinatorStateDir() = %q, want %q", got, want)
+	}
+}

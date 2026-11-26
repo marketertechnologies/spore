@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"github.com/versality/spore/internal/task"
 )
 
 // NotifyCoordinator writes a poke file into the coordinator's project
-// inbox at $SPORE_COORDINATOR_STATE_DIR/<slug>/inbox/. The poke is a
+// inbox at <task.CoordinatorStateDir>/<slug>/inbox/. The poke is a
 // JSON file following the tell protocol ({ts, source, body}), written
 // atomically via .tmp.
 func NotifyCoordinator(slug string) error {
@@ -84,11 +86,6 @@ type tellEvent struct {
 }
 
 func coordinatorInbox(slug string) string {
-	root := os.Getenv("SPORE_COORDINATOR_STATE_DIR")
-	if root == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			root = filepath.Join(home, ".local", "state", "spore", "coordinator")
-		}
-	}
+	root, _ := task.CoordinatorStateDir()
 	return filepath.Join(root, slug, "inbox")
 }
