@@ -26,6 +26,18 @@ func joinsLocalState(src string) bool {
 	return false
 }
 
+// readsXDGStateHome reports a "XDG_STATE_HOME" literal outside a
+// comment (an os.Getenv or os.LookupEnv of it), so a file cannot pass
+// by only naming the variable in a comment.
+func readsXDGStateHome(src string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		if t := strings.TrimSpace(line); !strings.HasPrefix(t, "//") && strings.Contains(t, `"XDG_STATE_HOME"`) {
+			return true
+		}
+	}
+	return false
+}
+
 // Every spore state path falls back to ~/.local/state only when
 // XDG_STATE_HOME is unset. A file that joins ".local", "state" without
 // reading XDG_STATE_HOME builds a path a sandbox with a private
@@ -36,6 +48,7 @@ func TestStatePathsHonorXDGStateHome(t *testing.T) {
 		"internal/hooks/watchinbox.go": "WT_STATE (wt's layout) overrides it; wt does not read XDG_STATE_HOME",
 		"internal/sandbox/sandbox.go":  "the floor is rendered once into the host-wide managed drop-in, where no pane's XDG_STATE_HOME is known (see DefaultAllowWrite)",
 		"internal/infect/infect.go":    "provisions a fresh host's spore user, which has no XDG_STATE_HOME",
+		"cmd/spore/align_cmd.go":       "help text only; the path itself comes from align.Paths",
 	}
 	var bad []string
 	for _, root := range []string{"cmd", "internal"} {
@@ -48,7 +61,7 @@ func TestStatePathsHonorXDGStateHome(t *testing.T) {
 				return err
 			}
 			s := string(b)
-			if joinsLocalState(s) && !strings.Contains(s, "XDG_STATE_HOME") && notSpore[filepath.ToSlash(p)] == "" {
+			if joinsLocalState(s) && !readsXDGStateHome(s) && notSpore[filepath.ToSlash(p)] == "" {
 				bad = append(bad, p)
 			}
 			return nil
