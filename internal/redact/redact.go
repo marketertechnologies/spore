@@ -362,8 +362,13 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 // Record appends one redaction event per hit to the ledger of the
 // project at projectRoot. via names the path that posted ("mirror",
 // "spore-gh"); the event carries the gh call's verb, never its text.
+// gh takes flags before the verb or api path, so a flag in second
+// place (which may carry the secret) is not logged as the verb.
 func Record(projectRoot, slug, via string, args []string, hits []Hit) {
 	cmd := strings.Join(args[:min(2, len(args))], " ")
+	if len(args) > 1 && strings.HasPrefix(args[1], "-") {
+		cmd = args[0]
+	}
 	for _, h := range hits {
 		task.RecordEvent(projectRoot, events.Event{
 			Kind: events.Redaction, Slug: slug, Detail: cmd + " " + h.Where,

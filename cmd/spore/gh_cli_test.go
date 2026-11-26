@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -377,6 +378,9 @@ var ghRedactCases = []ghRedactCase{
 	{"api --input -", []string{"api", "repos/acme/proj/pulls/9/reviews", "--input", "-"}, `{"body":"` + ghCanary + `"}`, "stdin", true},
 	{"api --input=-", []string{"api", "repos/acme/proj/pulls/9/reviews", "--input=-"}, `{"body":"` + ghCanary + `"}`, "stdin", true},
 	{"body-file stdin", []string{"pr", "comment", "9", "--body-file", "-"}, "see " + ghCanary, "stdin", true},
+	{"api field before path", []string{"api", "-fbody=" + ghCanary, "repos/acme/proj/issues/9/comments"}, "", "field body", false},
+	{"api raw-field= before path", []string{"api", "--raw-field=body=" + ghCanary, "repos/acme/proj/issues/9/comments"}, "", "field body", false},
+	{"api -f before path", []string{"api", "-f", "body=" + ghCanary, "repos/acme/proj/issues/9/comments"}, "", "field body", false},
 }
 
 // checkGHRedacted runs c against a gh that echoes its args and stdin,
@@ -396,6 +400,9 @@ func checkGHRedacted(t *testing.T, root string, c ghRedactCase) {
 	hits := ghRedactionEvents(t, root)[before:]
 	if len(hits) != 1 {
 		t.Fatalf("new redaction events = %+v", hits)
+	}
+	if raw, _ := json.Marshal(hits[0]); strings.Contains(string(raw), ghCanary) {
+		t.Errorf("event carries the secret: %s", raw)
 	}
 	f := hits[0].Fields
 	if f["class"] != "secrets_env" || f["where"] != c.where || f["count"] != "1" || f["via"] != "spore-gh" || hits[0].Slug != "demo" {
