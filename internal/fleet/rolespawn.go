@@ -104,7 +104,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	withBody, bare, err := s.invocations(agent, meta, settings)
+	withBody, err := s.invocation(agent, meta, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	args = append(args, task.SandboxSessionEnv(s.ProjectRoot, cwd)...)
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
-	args = append(args, roleShellCommand(prelude, withBody, bare, rolePath))
+	args = append(args, roleShellCommand(prelude, withBody, rolePath))
 	return args, nil
 }
 
@@ -234,17 +234,19 @@ func (s RoleSpawnSpec) reviewerPrefix(slot ReviewerSlot) (string, error) {
 	return task.ReviewerPrefix(s.ReviewerInstance, modes[task.ReviewerA], modes[task.ReviewerB]), nil
 }
 
-// invocations returns the pane's agent command with and without a
-// role body (see agentInvocations) for the agent resolve picked.
-func (s RoleSpawnSpec) invocations(agent string, meta frontmatter.Meta, st task.AgentSettings) (withBody, bare string, err error) {
+// invocation returns the pane's agent command, ready for the role
+// body as its last argument (see agentInvocations), for the agent
+// resolve picked.
+func (s RoleSpawnSpec) invocation(agent string, meta frontmatter.Meta, st task.AgentSettings) (string, error) {
 	if s.Agent != "" || agent != "codex" {
-		return agentInvocations(agent, st)
+		withBody, _, err := agentInvocations(agent, st)
+		return withBody, err
 	}
 	cmd, err := task.CodexAgentCommand(meta, st)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	return cmd + " --", cmd, nil
+	return cmd + " --", nil
 }
 
 // settings returns the pane's model and effort: [agents.<role>]
@@ -329,18 +331,20 @@ func readRoleTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 	return m, nil
 }
 
-// roleShellCommand is coordinatorShellCommand behind the pre-start
-// prelude. On hook failure the note heads the role body; with no
-// role body the note alone is the first prompt.
-func roleShellCommand(prelude, cmdWithBody, cmdBare, rolePath string) string {
-	if prelude == "" {
-		return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+// roleShellCommand execs the agent with the role body as its first
+// prompt, behind the pre-start prelude when there is one; on hook
+// failure the note heads the body. A body that is unreadable or empty
+// at exec time fails the pane instead of starting a bare agent with no
+// role: the exit counts as a death, and the respawn's ResolveRoleBody
+// reports the cause.
+func roleShellCommand(prelude, cmdWithBody, rolePath string) string {
+	note := ""
+	if prelude != "" {
+		note = fmt.Sprintf("${%[1]s:+$%[1]s\n\n}", task.PreStartNoteVar)
 	}
 	return prelude + fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "${%[4]s:+$%[4]s
-
-}$(cat %[1]s)"; else exec %[3]s ${%[4]s:+"$%[4]s"}; fi`,
-		shellSingleQuote(rolePath), cmdWithBody, cmdBare, task.PreStartNoteVar,
+		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "%[3]s$(cat %[1]s)"; else echo "spore: role body "%[1]s" is unreadable or empty; not starting the agent without its role" >&2; exit 1; fi`,
+		shellSingleQuote(rolePath), cmdWithBody, note,
 	)
 }
 

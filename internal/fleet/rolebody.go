@@ -64,11 +64,23 @@ func ResolveRoleBody(projectRoot, name string) (string, error) {
 	return path, nil
 }
 
+// RoleBodyError is a project role body override that exists but
+// cannot be used. The spawn fails on it instead of falling back, and
+// the drive tells the coordinator (see notifyRoleBodyError).
+type RoleBodyError struct {
+	Path, Reason string
+}
+
+func (e *RoleBodyError) Error() string {
+	return fmt.Sprintf("rolespawn: project role body %s %s", e.Path, e.Reason)
+}
+
 // projectRoleBody returns the project override for name, or "" when
 // a path component is absent or a parent is not a directory. A
 // component that exists but is broken (dangling symlink, unreadable,
-// a body that is not a regular file) is an error, not an absence:
-// falling back would silently drop a customized body.
+// a body that is not a regular file or holds only whitespace) is a
+// *RoleBodyError, not an absence: falling back would silently drop a
+// customized body.
 func projectRoleBody(projectRoot, name string) (string, error) {
 	p := projectRoot
 	parts := []string{"bootstrap", "roles", name}
@@ -79,20 +91,29 @@ func projectRoleBody(projectRoot, name string) (string, error) {
 			return "", nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("rolespawn: project role body %s: %w", p, err)
+			return "", &RoleBodyError{p, err.Error()}
 		}
 		fi, err := os.Stat(p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return "", fmt.Errorf("rolespawn: project role body %s is a dangling symlink", p)
+			return "", &RoleBodyError{p, "is a dangling symlink"}
 		case err != nil:
-			return "", fmt.Errorf("rolespawn: project role body %s: %w", p, err)
+			return "", &RoleBodyError{p, err.Error()}
 		case i < len(parts)-1 && !fi.IsDir():
 			// e.g. an autotools-style ./bootstrap script: not an override.
 			return "", nil
 		case i == len(parts)-1 && !fi.Mode().IsRegular():
-			return "", fmt.Errorf("rolespawn: project role body %s: not a regular file", p)
+			return "", &RoleBodyError{p, "is not a regular file"}
 		}
+	}
+	// The pane reads the body with cat at exec time; reading it here
+	// turns a body the pane could not use into a spawn error.
+	body, err := os.ReadFile(p)
+	if err != nil {
+		return "", &RoleBodyError{p, "is unreadable: " + err.Error()}
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", &RoleBodyError{p, "is empty"}
 	}
 	return p, nil
 }

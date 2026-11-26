@@ -192,7 +192,11 @@ func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := mustShellCommand(t, "claude", body)
+	withBody, _, err := agentInvocations("claude", task.AgentSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := roleShellCommand("", withBody, body)
 	if got := args[len(args)-1]; got != want {
 		t.Errorf("shell command = %q, want unchanged %q", got, want)
 	}
@@ -231,29 +235,73 @@ func TestRoleShellCommandRuns(t *testing.T) {
 	}
 	failNote := "spore: pre-start hook failed (exit 2): exit 2. Services may be down."
 	cases := []struct {
-		name, cmd, body, want string
+		name, prelude, cmd, body, want string
 	}{
-		{"ok with body", "true", "role body", "role body"},
-		{"fail with body", "exit 2", "role body", failNote + "\n\nrole body"},
-		{"ok bare", "true", "", ""},
-		{"fail bare", "exit 2", "", failNote},
+		{"ok with body", "pre", "true", "role body", "role body"},
+		{"fail with body", "pre", "exit 2", "role body", failNote + "\n\nrole body"},
+		{"no prelude", "", "", "role body", "role body"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			root := t.TempDir()
 			rolePath := filepath.Join(root, "it's role.md")
-			if c.body != "" {
-				if err := os.WriteFile(rolePath, []byte(c.body), 0o644); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.WriteFile(rolePath, []byte(c.body), 0o644); err != nil {
+				t.Fatal(err)
 			}
-			script := roleShellCommand(task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer"), "printf %s", "printf %s", rolePath)
-			out, err := exec.Command("sh", "-c", script).CombinedOutput()
+			prelude := ""
+			if c.prelude != "" {
+				prelude = task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer")
+			}
+			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "printf %s", rolePath)).CombinedOutput()
 			if err != nil {
 				t.Fatalf("run: %v: %s", err, out)
 			}
 			if string(out) != c.want {
 				t.Errorf("agent got %q, want %q", out, c.want)
+			}
+		})
+	}
+}
+
+// A body that is missing, empty or unreadable when the pane execs
+// fails the pane; the agent never starts without its role.
+func TestRoleShellCommandRefusesBareAgent(t *testing.T) {
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock not on PATH")
+	}
+	for _, c := range []struct {
+		name    string
+		prelude bool
+		setup   func(path string) error
+	}{
+		{"missing", false, func(string) error { return nil }},
+		{"empty", false, func(p string) error { return os.WriteFile(p, nil, 0o644) }},
+		{"unreadable", false, func(p string) error { return os.WriteFile(p, []byte("body"), 0o000) }},
+		{"empty behind prelude", true, func(p string) error { return os.WriteFile(p, nil, 0o644) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			rolePath := filepath.Join(root, "it's role.md")
+			if err := c.setup(rolePath); err != nil {
+				t.Fatal(err)
+			}
+			if c.name == "unreadable" && os.Geteuid() == 0 {
+				t.Skip("root reads mode 000 files")
+			}
+			prelude := ""
+			if c.prelude {
+				prelude = task.PreStart{Cmd: "true"}.Prelude(root, "feat", "engineer")
+			}
+			marker := filepath.Join(root, "agent-ran")
+			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "touch "+shellSingleQuote(marker), rolePath)).CombinedOutput()
+			if err == nil {
+				t.Fatalf("pane exited 0: %s", out)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("agent started without its role body")
+			}
+			if !strings.Contains(string(out), "is unreadable or empty") {
+				t.Errorf("stderr = %q", out)
 			}
 		})
 	}

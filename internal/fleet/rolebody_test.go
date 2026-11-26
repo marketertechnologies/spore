@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/task"
 )
 
 func TestResolveRoleBodyProjectOverride(t *testing.T) {
@@ -126,6 +128,97 @@ func TestResolveRoleBodyNotRegular(t *testing.T) {
 	}
 	if _, err := ResolveRoleBody(root, "reviewer.md"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("err = %v, want not a regular file", err)
+	}
+}
+
+// An override that exists but is unreadable or empty fails the
+// resolve with a *RoleBodyError; it never falls back to the bundled
+// body or a bare agent.
+func TestResolveRoleBodyUnreadableOrEmpty(t *testing.T) {
+	for _, c := range []struct {
+		name, body, want string
+		mode             os.FileMode
+	}{
+		{"empty", "", "is empty", 0o644},
+		{"whitespace", " \n\t\n", "is empty", 0o644},
+		{"unreadable", "role body", "is unreadable", 0o000},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.mode == 0 && os.Geteuid() == 0 {
+				t.Skip("root reads mode 000 files")
+			}
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			root := newGitRepoFor(t, "demo-project")
+			dir := filepath.Join(root, "bootstrap", "roles")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "engineer.md"), []byte(c.body), c.mode); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ResolveRoleBody(root, "engineer.md")
+			var be *RoleBodyError
+			if !errors.As(err, &be) || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want *RoleBodyError containing %q", err, c.want)
+			}
+			if _, err := EngineerSpec(root, "x").TmuxArgs(); !errors.As(err, &be) {
+				t.Errorf("TmuxArgs err = %v, want the role body error", err)
+			}
+		})
+	}
+}
+
+// A drive whose engineer override is empty spawns nothing and tells
+// the coordinator once; fixing the body spawns the pane and re-arms
+// the notice.
+func TestDriveRoleLoopNotifiesBrokenRoleBody(t *testing.T) {
+	root := newGitRepoFor(t, "demo-project")
+	stateDir := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", stateDir)
+	slug := "demo"
+	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
+	body := filepath.Join(root, "bootstrap", "roles", "engineer.md")
+	if err := os.MkdirAll(filepath.Dir(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(body, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	panes := stubPanes(t)
+	spawnRole = func(spec RoleSpawnSpec) (string, bool, error) {
+		if _, err := spec.TmuxArgs(); err != nil {
+			return "", false, err
+		}
+		s, _ := spec.SessionName()
+		panes.spawns = append(panes.spawns, s)
+		panes.panes[s] = &paneProbe{Exists: true, Command: "claude", Created: panes.now}
+		return s, true, nil
+	}
+	inbox := filepath.Join(stateDir, "demo-project", "inbox")
+	for range 2 {
+		if _, err := DriveRoleLoop(root, tasksDir, slug); err == nil || !strings.Contains(err.Error(), "is empty") {
+			t.Fatalf("drive err = %v, want the role body error", err)
+		}
+	}
+	if len(panes.spawns) != 0 {
+		t.Fatalf("spawned %v with an empty role body", panes.spawns)
+	}
+	envs := readInboxEnvelopes(t, inbox)
+	if len(envs) != 1 || !strings.Contains(envs[0].Body, "demo: engineer not spawned") || !strings.Contains(envs[0].Body, "engineer.md is empty") {
+		t.Fatalf("envelopes = %+v, want one role body notice", envs)
+	}
+	if err := os.WriteFile(body, []byte("engineer body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DriveRoleLoop(root, tasksDir, slug); err != nil {
+		t.Fatal(err)
+	}
+	if len(panes.spawns) != 1 {
+		t.Fatalf("spawns after fix = %v", panes.spawns)
+	}
+	matches, _ := filepath.Glob(filepath.Join(task.RoleTaskDir(root, slug), "state", roleBodyNoticeStem+"*"))
+	if len(matches) != 0 {
+		t.Errorf("notice markers left after a clean spawn: %v", matches)
 	}
 }
 
