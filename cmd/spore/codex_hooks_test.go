@@ -258,3 +258,24 @@ func TestHooksWatchInboxCodexNeedsInbox(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q, want usage exit 2", code, stderr)
 	}
 }
+
+func TestCoordinatorTokenMonitorEnvCapsAndLauncher(t *testing.T) {
+	state := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
+	t.Setenv("SPORE_TASK_INBOX", filepath.Join(state, "proj", "inbox"))
+	t.Setenv("SPORE_PROJECT_ROOT", root)
+	t.Setenv("SPORE_COORDINATOR_ROLE", filepath.Join(root, "role.md"))
+	t.Setenv("SPORE_COORDINATOR_AGENT", "/opt/other/launcher")
+	t.Setenv("SPORE_COORDINATOR_TOKEN_WRAP", "1000")
+	path := writeCodexRollout(t, 5100)
+
+	code, _, stderr := captureHook(t, codexStopPayload(path), func() int { return runCoordinatorTokenMonitor(nil) })
+	assertCodexBlock(t, code, stderr, "context 5100 tokens >= finish-unit cap 1000")
+	if !strings.Contains(stderr, "exec /opt/other/launcher") {
+		t.Errorf("stderr = %q, want the respawn to exec the configured launcher", stderr)
+	}
+	if strings.Contains(stderr, "/usr/local/bin") {
+		t.Errorf("stderr = %q, names a hard-coded host path", stderr)
+	}
+}

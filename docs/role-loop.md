@@ -33,7 +33,7 @@ homogeneous worker. A task seeded by hand with only the dir needs
 
 `role-drive` is also the manual driver: each run advances the loop by
 one idempotent tick, and refuses a task whose frontmatter lacks
-`loop: role`. The reconciler calls the same drive for
+`loop: role` or whose status is not `active`. The reconciler calls the same drive for
 role-looped slugs on every pass, so an active task keeps moving
 without manual ticks.
 
@@ -116,18 +116,22 @@ Phase completion comes only from files; a pane exiting never advances
 or stalls the loop by itself. Each tick probes every pane the phase
 expects (tmux `pane_dead`, `pane_current_command`, `session_created`):
 
-- missing session: spawn it, silently. This covers a pane missing
-  after a phase transition and a token-monitor wrap (which kills its
-  own session on purpose); neither counts toward the respawn cap.
+- missing session: spawn it. A pane missing after a phase transition
+  or after a run of at least 60s (a token-monitor wrap kills its own
+  session on purpose) respawns silently. A session that vanished
+  before any tick saw it alive for 60s counts as a crash toward the
+  respawn cap: the launch line execs the agent, so with
+  `remain-on-exit off` a crash takes the session with it. The spawn
+  time lives in `state/spawn-<role>.json`.
 - agent gone (pane dead, or a shell in the foreground once the
   session is 30s old, e.g. a hand-started role whose agent exited):
   kill the session and spawn a fresh one.
 
-Each agent-gone respawn claims `state/respawn-<role>-r<round>-<n>`
+Each counted respawn claims `state/respawn-<role>-r<round>-<n>`
 and tells the coordinator (`<slug>: respawned <role> (<reason>; round
 R, respawn K/3)`). When the agent dies again after 3 respawns of one
-role in one round, the driver stops, leaves the dead pane for
-inspection, and tells the coordinator once (`<slug>: escalated:
+role in one round, the driver stops, leaves any dead pane for
+inspection (a vanished session is not spawned again), and tells the coordinator once (`<slug>: escalated:
 <role> agent died again ...`, marker
 `state/respawn-capped-<role>-r<round>`). The cap re-arms when the
 role's round advances; delete the role's `respawn-<role>-r<round>-*`
@@ -223,6 +227,10 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   spawn from the current config, like the task agent, and never from
   the worker ratio: a live pane keeps its agent, but a pane spawned
   after a config edit picks up the new one.
+- Model and agent CLI effort come from `[agents.engineer]`,
+  `[agents.reviewer]` and `[agents.reviewer.<A|B>]` (README "Model
+  and effort per role"); the slot `effort` above is only the
+  `/code-review` level.
 - Panes get `SPORE_REVIEWER_MODE`, `SPORE_REVIEWER_PREFIX`,
   `SPORE_REVIEWER_LABEL` (see "Comment IDs"), plus
   `SPORE_REVIEW_EFFORT` in code-review mode.
@@ -266,9 +274,9 @@ ignored.
 A non-zero exit (including a missing `flock`, or 124 on timeout) never stops the agent.
 The agent's first prompt gets one leading line: `spore: pre-start
 hook failed (exit N): <command>. Services may be down.` Role panes
-put it above the role body; a role pane with no role body, and a
-worker (which starts with no prompt), get that line alone as the
-prompt. Unset or empty leaves the spawn argv byte-identical to
+put it above the role body; a role pane with no role body gets that
+line alone as the prompt. A worker gets it as the agent's first
+argument, which `spore-worker-brief` puts above the brief. Unset or empty leaves the spawn argv byte-identical to
 before.
 
 ### Engineer check gate
@@ -593,7 +601,7 @@ Markers under `.spore/<slug>/state/`:
 - `order-exempt-files`: verdicts grandfathered from before the
   severity-order rule.
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
-  `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
+  `spawn-<role>.json`, `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
 - `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
   `check-failed-<round>-<sha>`: engineer check gate results

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -24,6 +25,8 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	_ = os.Unsetenv("TMUX")
+	// A coordinator swap must not fall back to the host's launcher.
+	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	_ = os.Unsetenv("TMUX_PANE")
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()

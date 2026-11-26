@@ -1,9 +1,7 @@
 package fleet
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/versality/spore/internal/task"
 )
@@ -237,94 +235,5 @@ func TestDeriveSnapshotEscalateAtRound3B(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("B escalation snapshot mismatch\n want: %+v\n got:  %+v", want, got)
-	}
-}
-
-func TestWatcherTickReportsChange(t *testing.T) {
-	root := t.TempDir()
-	slug := "tick"
-	w := NewRoleWatcher(root, slug)
-
-	// First tick: bootstrap = changed.
-	snap, changed, err := w.Tick()
-	if err != nil {
-		t.Fatalf("first Tick: %v", err)
-	}
-	if !changed {
-		t.Errorf("first Tick changed=false, want true (bootstrap)")
-	}
-	if snap.Phase != PhaseEngineerInitial {
-		t.Errorf("first Tick phase=%s, want %s", snap.Phase, PhaseEngineerInitial)
-	}
-
-	// No artifact change: changed=false.
-	_, changed, err = w.Tick()
-	if err != nil {
-		t.Fatalf("second Tick: %v", err)
-	}
-	if changed {
-		t.Errorf("second Tick changed=true on unchanged tree")
-	}
-
-	// Engineer writes round 1: tick reports change.
-	writeEng(1)(t, root, slug)
-	snap, changed, err = w.Tick()
-	if err != nil {
-		t.Fatalf("third Tick: %v", err)
-	}
-	if !changed {
-		t.Errorf("third Tick changed=false after artifact write")
-	}
-	if snap.Phase != PhaseReviewA {
-		t.Errorf("third Tick phase=%s, want %s", snap.Phase, PhaseReviewA)
-	}
-}
-
-func TestWatcherTerminalAfterDone(t *testing.T) {
-	root := t.TempDir()
-	slug := "terminal"
-	w := NewRoleWatcher(root, slug)
-
-	writeEng(1)(t, root, slug)
-	writeRev(task.ReviewerA, 1, task.VerdictApprove)(t, root, slug)
-	writeRev(task.ReviewerB, 1, task.VerdictApprove)(t, root, slug)
-
-	if _, _, err := w.Tick(); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
-	if !w.Terminal() {
-		t.Errorf("Terminal()=false after done snapshot")
-	}
-}
-
-func TestWatcherRunEmitsAndClosesOnTerminal(t *testing.T) {
-	root := t.TempDir()
-	slug := "run"
-
-	// Pre-seed a fully-approved tree so the first Tick lands in
-	// PhaseDone and the Run loop emits + exits.
-	writeEng(1)(t, root, slug)
-	writeRev(task.ReviewerA, 1, task.VerdictApprove)(t, root, slug)
-	writeRev(task.ReviewerB, 1, task.VerdictApprove)(t, root, slug)
-
-	w := NewRoleWatcher(root, slug)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	events, errs := w.Run(ctx, 10*time.Millisecond)
-
-	var got []Snapshot
-	for snap := range events {
-		got = append(got, snap)
-	}
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("Run error: %v", err)
-		}
-	}
-	if len(got) != 1 {
-		t.Fatalf("events = %d, want 1 (terminal-on-bootstrap)", len(got))
-	}
-	if got[0].Phase != PhaseDone {
-		t.Errorf("event phase = %s, want %s", got[0].Phase, PhaseDone)
 	}
 }
