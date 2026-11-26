@@ -306,9 +306,9 @@ func runHooksWatchInbox(args []string) int {
 			// the hook produces no stderr noise.
 			return 0
 		}
-		err = hooks.WatchInboxAt(inbox)
+		err = hooks.WatchInboxAt(inbox, hookSession())
 	case 1:
-		err = hooks.WatchInbox(args[0])
+		err = hooks.WatchInbox(args[0], hookSession())
 	default:
 		fmt.Fprintln(os.Stderr, "usage: spore hooks watch-inbox [slug]")
 		return 2
@@ -322,6 +322,32 @@ func runHooksWatchInbox(args []string) int {
 	}
 	return 0
 }
+
+// hookSession returns the session_id of the hook payload on stdin, or
+// "" when there is none: a terminal, an empty or non-JSON stdin, or a
+// writer that keeps stdin open past hookStdinWait.
+func hookSession() string {
+	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice != 0 {
+		return ""
+	}
+	got := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+		got <- b
+	}()
+	select {
+	case b := <-got:
+		var in struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(b, &in)
+		return in.SessionID
+	case <-time.After(hookStdinWait):
+		return ""
+	}
+}
+
+const hookStdinWait = 2 * time.Second
 
 func runHooksWatchInboxCodex(args []string) int {
 	fs := flag.NewFlagSet("watch-inbox --codex", flag.ContinueOnError)

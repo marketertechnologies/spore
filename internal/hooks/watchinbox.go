@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,8 +34,14 @@ var ErrWake = errors.New("inbox drained")
 // claims into a private claiming/<pid>-*/ dir and moves a message to
 // inflight/ only after printing it, so a concurrent watcher's ack never
 // takes a message that has not been delivered yet.
-func WatchInbox(slug string) error {
-	return watchInboxAt(workerInbox(slug), os.Stdout, os.Stderr, defaultWatchOpts())
+//
+// session is the hook payload's session_id. With one, the turn's
+// messages sit in inflight/<session>/, and only that session's Stop
+// acks them and only its StopFailure requeues them, so two agents (or
+// watchers) on one inbox never ack or requeue each other's turn.
+// Without one, inflight/ itself is the bucket.
+func WatchInbox(slug, session string) error {
+	return watchInboxAt(workerInbox(slug), os.Stdout, os.Stderr, defaultWatchOpts(session))
 }
 
 // WatchInboxAt is the env-driven Stop-hook entry point. It targets
@@ -42,11 +49,12 @@ func WatchInbox(slug string) error {
 // like `spore hooks watch-inbox` (no positional) can pass
 // $SPORE_TASK_INBOX, which the consumer harness sets per spawn (rower:
 // $WT_STATE/<slug>/inbox; coordinator: $SKYHELM_STATE_DIR/<project>/inbox).
-func WatchInboxAt(inboxDir string) error {
-	return watchInboxAt(inboxDir, os.Stdout, os.Stderr, defaultWatchOpts())
+func WatchInboxAt(inboxDir, session string) error {
+	return watchInboxAt(inboxDir, os.Stdout, os.Stderr, defaultWatchOpts(session))
 }
 
 type watchOpts struct {
+	session     string
 	timeout     time.Duration
 	settle      time.Duration
 	initWatcher func(dir string) (inboxWaiter, error)
@@ -60,8 +68,9 @@ type inboxWaiter interface {
 	Close() error
 }
 
-func defaultWatchOpts() watchOpts {
+func defaultWatchOpts(session string) watchOpts {
 	return watchOpts{
+		session:     session,
 		timeout:     envDurationSeconds("WATCH_TIMEOUT", 604800),
 		settle:      envDurationSeconds("WATCH_SETTLE", 1),
 		initWatcher: initPlatformWatcher,
@@ -80,11 +89,11 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 	if err := recoverClaims(inboxDir); err != nil {
 		return err
 	}
-	if err := moveInflight(inboxDir, "read", ""); err != nil {
+	if err := ackInflight(inboxDir, opts.session); err != nil {
 		return err
 	}
 
-	if n, err := drainInbox(inboxDir, stdout); err != nil {
+	if n, err := drainInbox(inboxDir, opts.session, stdout); err != nil {
 		return err
 	} else if n > 0 {
 		return ErrWake
@@ -95,7 +104,7 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 		fmt.Fprintf(stderr, "watch-inbox: inotifywait unavailable; sleeping %ds\n",
 			int(opts.timeout.Seconds()))
 		opts.sleep(opts.timeout)
-		if n, err := drainInbox(inboxDir, stdout); err != nil {
+		if n, err := drainInbox(inboxDir, opts.session, stdout); err != nil {
 			return err
 		} else if n > 0 {
 			return ErrWake
@@ -109,7 +118,7 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 		opts.sleep(opts.settle)
 	}
 
-	if n, err := drainInbox(inboxDir, stdout); err != nil {
+	if n, err := drainInbox(inboxDir, opts.session, stdout); err != nil {
 		return err
 	} else if n > 0 {
 		return ErrWake
@@ -119,8 +128,8 @@ func watchInboxAt(inboxDir string, stdout, stderr io.Writer, opts watchOpts) err
 
 // drainInbox claims every pending envelope in inboxDir into a private
 // claiming/<pid>-*/ dir, prints each one (see renderClaimed), then moves
-// the printed files to inflight/. Returns the claim count.
-func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
+// the printed files to session's inflight dir. Returns the claim count.
+func drainInbox(inboxDir, session string, stdout io.Writer) (int, error) {
 	claimRoot := filepath.Join(inboxDir, claimingDir)
 	if err := os.MkdirAll(claimRoot, 0o755); err != nil {
 		return 0, err
@@ -138,7 +147,7 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 	for _, l := range lines {
 		io.WriteString(stdout, l.text)
 	}
-	inflight := filepath.Join(inboxDir, "inflight")
+	inflight := inflightDir(inboxDir, session)
 	if err := os.MkdirAll(inflight, 0o755); err != nil {
 		return len(claimed), err
 	}
@@ -158,6 +167,10 @@ func drainInbox(inboxDir string, stdout io.Writer) (int, error) {
 // <pid>-<random>. Nothing but its owner touches a live one.
 const claimingDir = "claiming"
 
+// staleClaim bounds a live drain (claim, read, print, move): a claim
+// dir older than this is dead even if its pid was reused.
+const staleClaim = 10 * time.Minute
+
 // recoverClaims puts back into the inbox the messages of claiming/
 // subdirs whose owner process is gone (a watcher killed between its
 // claim and its print), so they are delivered by the next drain.
@@ -174,7 +187,10 @@ func recoverClaims(inboxDir string) error {
 	for _, d := range dirs {
 		pidStr, _, _ := strings.Cut(d.Name(), "-")
 		pid, err := strconv.Atoi(pidStr)
-		if !d.IsDir() || err != nil || processAlive(pid) {
+		if !d.IsDir() || err != nil {
+			continue
+		}
+		if info, ierr := d.Info(); processAlive(pid) && (ierr != nil || time.Since(info.ModTime()) < staleClaim) {
 			continue
 		}
 		dir := filepath.Join(root, d.Name())
@@ -249,16 +265,51 @@ func claimInbox(inboxDir, sub string) ([]string, error) {
 // redeliverPrefix marks a message put back by RequeueInflight.
 const redeliverPrefix = "redeliver-"
 
-// RequeueInflight puts the messages of a turn that ended in an API
-// error back into the inbox, so the next drain delivers them again.
-func RequeueInflight(inboxDir string) error {
-	return moveInflight(inboxDir, "", redeliverPrefix)
+// RequeueInflight puts the messages of session's turn that ended in an
+// API error back into the inbox, so the next drain delivers them again.
+func RequeueInflight(inboxDir, session string) error {
+	return moveFiles(inflightDir(inboxDir, session), inboxDir, redeliverPrefix)
 }
 
-// moveInflight moves every file in inboxDir/inflight/ to inboxDir/<sub>,
-// adding prefix to names that do not carry it yet.
-func moveInflight(inboxDir, sub, prefix string) error {
-	src := filepath.Join(inboxDir, "inflight")
+// ackInflight moves session's inflight messages into read/. A session
+// also acks loose files in inflight/ itself: those come from a build
+// that predates per-session dirs, or from a watcher run without a
+// session, and nothing else would ever ack them.
+func ackInflight(inboxDir, session string) error {
+	read := filepath.Join(inboxDir, "read")
+	if err := moveFiles(inflightDir(inboxDir, session), read, ""); err != nil {
+		return err
+	}
+	if session == "" {
+		return nil
+	}
+	return moveFiles(inflightDir(inboxDir, ""), read, "")
+}
+
+// inflightDir is inbox/inflight/<session>/, or inbox/inflight/ without
+// a session. A session id that is not a plain name is hashed so it
+// cannot point outside inflight/.
+func inflightDir(inboxDir, session string) string {
+	dir := filepath.Join(inboxDir, "inflight")
+	if session == "" {
+		return dir
+	}
+	if !safeSession(session) {
+		session = fmt.Sprintf("%x", sha256.Sum256([]byte(session)))[:32]
+	}
+	return filepath.Join(dir, session)
+}
+
+func safeSession(s string) bool {
+	if len(s) > 128 || strings.HasPrefix(s, ".") {
+		return false
+	}
+	return strings.Trim(s, "-_.0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" && s != ""
+}
+
+// moveFiles moves every regular file in src to dst, adding prefix to
+// names that do not carry it yet. Subdirs of src are left alone.
+func moveFiles(src, dst, prefix string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -266,8 +317,7 @@ func moveInflight(inboxDir, sub, prefix string) error {
 		}
 		return err
 	}
-	dstDir := filepath.Join(inboxDir, sub)
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
 	for _, e := range entries {
@@ -278,7 +328,7 @@ func moveInflight(inboxDir, sub, prefix string) error {
 		if !strings.HasPrefix(name, prefix) {
 			name = prefix + name
 		}
-		if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dstDir, name)); err != nil && !os.IsNotExist(err) {
+		if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dst, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

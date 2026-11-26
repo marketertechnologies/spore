@@ -220,3 +220,25 @@ func TestResetTime(t *testing.T) {
 		}
 	}
 }
+
+func TestStopFailure_RequeuesOnlyItsSession(t *testing.T) {
+	setupAlerts(t, "proj")
+	inbox := filepath.Join(t.TempDir(), "inbox")
+	for s, body := range map[string]string{"s1": "mine", "s2": "theirs"} {
+		dir := inflightDir(inbox, s)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTell(t, filepath.Join(dir, s+".json"), `{"body":"`+body+`"}`)
+	}
+	t.Setenv("SPORE_TASK_INBOX", inbox)
+	if err := StopFailure(StopFailureInput{SessionID: "s1", Error: "server_error"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingJSON(t, inbox); len(got) != 1 || filepath.Base(got[0]) != "redeliver-s1.json" {
+		t.Errorf("requeued: %v, want s1's message only", got)
+	}
+	if got := pendingJSON(t, inflightDir(inbox, "s2")); len(got) != 1 {
+		t.Errorf("s2's turn touched: %v", got)
+	}
+}
