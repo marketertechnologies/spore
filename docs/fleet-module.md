@@ -79,6 +79,10 @@ as MCP server keys or git-push tokens. It wires them through systemd
 `LoadCredential=` so values never enter Nix evaluation or the
 `/nix/store`.
 
+## Secrets broker
+
+`services.spore-fleet.secrets` (off by default) adds the `spore-secrets` user, the broker socket and service, and moves the kill-switch flag out of the agent's reach. See `docs/secrets.md`.
+
 ## Skills
 
 With `services.spore-fleet.enable`, home-manager links each skill the

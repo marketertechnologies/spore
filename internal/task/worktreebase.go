@@ -42,6 +42,17 @@ var ErrNoFetchAuth = errors.New("no fetch credentials configured")
 
 var fetchAuth FetchAuth
 
+// BrokerFetch updates refs/remotes/origin/<branch> in projectRoot
+// without handing this process a credential, or returns
+// ErrNoFetchAuth when no broker serves the project.
+type BrokerFetch func(projectRoot, branch string) error
+
+var brokerFetch BrokerFetch
+
+// SetBrokerFetch installs the secrets-broker fetch, tried before the
+// token and plain fetches. Call it once from main.
+func SetBrokerFetch(f BrokerFetch) { brokerFetch = f }
+
 // SetFetchAuth installs the base-fetch credential provider. Call it
 // once at startup, before any worktree is created.
 func SetFetchAuth(f FetchAuth) { fetchAuth = f }
@@ -191,15 +202,25 @@ func fetchBase(projectRoot, b string, warn io.Writer) {
 		fmt.Fprintf(warn, "spore: no origin remote; forking from last-known %s\n", b)
 		return
 	}
+	brokerNote := ""
+	if brokerFetch != nil {
+		err := brokerFetch(projectRoot, b)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrNoFetchAuth) {
+			brokerNote = fmt.Sprintf(" (secrets broker fetch failed: %v)", err)
+		}
+	}
 	key := gitCommonDir(projectRoot)
 	if until, ok := fetchMemo(key); ok {
 		fmt.Fprintf(warn, "spore: origin fetch timed out recently (retry after %s); forking from last-known %s\n", until.Format(time.TimeOnly), b)
 		return
 	}
 	env, authErr := fetchAuthEnv(projectRoot, originURL)
-	authNote := ""
+	authNote := brokerNote
 	if authErr != nil {
-		authNote = fmt.Sprintf(" (GitHub App token unavailable: %v; fetched without it)", authErr)
+		authNote += fmt.Sprintf(" (GitHub App token unavailable: %v; fetched without it)", authErr)
 	}
 
 	lockCtx, cancelLock := context.WithTimeout(context.Background(), fetchTimeout)

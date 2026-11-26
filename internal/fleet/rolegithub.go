@@ -14,6 +14,7 @@ import (
 
 	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/redact"
+	"github.com/versality/spore/internal/secrets"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -175,6 +176,10 @@ type githubMirror struct {
 	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
 	repo     string
 	redactor *redact.Redactor
+	// brokered routes token-bearing calls through the secrets broker;
+	// project is the name the broker knows this project by.
+	brokered bool
+	project  string
 	// checked is the commit the engineer check gate cleared this tick
 	// (see holdForCheck); gated is false when no gate applies.
 	checked string
@@ -286,24 +291,25 @@ func (m *githubMirror) run(snap Snapshot) error {
 	return nil
 }
 
-// connect loads github.toml, mints the app token and pins gh to
-// origin, so later git/gh calls act as the app. Returns the GH_REPO
-// value (HOST/OWNER/REPO).
+// connect loads github.toml, mints the app token (or defers to the
+// secrets broker) and pins gh to origin, so later git/gh calls act as
+// the app. Returns the GH_REPO value (HOST/OWNER/REPO).
 func (m *githubMirror) connect() (string, error) {
 	var err error
 	if m.cfg, err = ghapp.LoadConfig(m.projectRoot); err != nil {
 		return "", err
 	}
-	if err := m.cfg.Validate(); err != nil {
+	if m.brokered = secrets.Available(); m.brokered {
+		if err := m.cfg.ValidateFlow(); err != nil {
+			return "", err
+		}
+		if m.project, err = task.ProjectName(m.projectRoot); err != nil {
+			return "", err
+		}
+		m.env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	} else if err := m.connectToken(); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
-	if err != nil {
-		return "", err
-	}
-	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
 	remote, err := m.git("config", "--get", "remote.origin.url")
 	if err != nil {
 		return "", fmt.Errorf("no origin remote: %w", err)
@@ -315,6 +321,22 @@ func (m *githubMirror) connect() (string, error) {
 	m.env = append(m.env, "GH_REPO="+repo)
 	m.repo = repo
 	return repo, nil
+}
+
+// connectToken mints the app token in-process: the path for hosts
+// without the secrets broker.
+func (m *githubMirror) connectToken() error {
+	if err := m.cfg.Validate(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
+	defer cancel()
+	tok, err := ghapp.ProjectToken(ctx, m.projectRoot)
+	if err != nil {
+		return err
+	}
+	m.env = append(ghapp.Env(os.Environ(), tok.Token), "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1")
+	return nil
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
@@ -538,57 +560,6 @@ func (m *githubMirror) redraft() error {
 func (m *githubMirror) prComment(body string) error {
 	_, err := m.gh(body, "pr", "comment", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
 	return err
-}
-
-// push sends sha (HEAD when empty) to origin as the app. A branch
-// whose last pushed commit is no longer an ancestor of sha was
-// rewritten and goes up with --force-with-lease pinned to that commit.
-func (m *githubMirror) push(sha string) error {
-	if sha == "" {
-		var err error
-		if sha, err = m.git("rev-parse", "HEAD"); err != nil {
-			return err
-		}
-	}
-	if sha == m.state.PushedSHA {
-		return nil
-	}
-	branch, err := m.branch()
-	if err != nil {
-		return err
-	}
-	ref := "refs/heads/" + branch
-	args := []string{"push", "--quiet", "origin", sha + ":" + ref}
-	if prev := m.state.PushedSHA; prev != "" {
-		if _, err := m.git("merge-base", "--is-ancestor", prev, sha); err != nil {
-			args = append(args, "--force-with-lease="+ref+":"+prev)
-		}
-	}
-	if _, err := m.git(args...); err != nil {
-		return err
-	}
-	m.state.PushedSHA = sha
-	m.save()
-	return nil
-}
-
-// pushForward is push without moving origin back to an ancestor of the
-// last pushed commit.
-func (m *githubMirror) pushForward(sha string) error {
-	if prev := m.state.PushedSHA; prev != "" {
-		if _, err := m.git("merge-base", "--is-ancestor", sha, prev); err == nil {
-			return nil
-		}
-	}
-	return m.push(sha)
-}
-
-func (m *githubMirror) branch() (string, error) {
-	b, err := m.git("symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("worktree HEAD is not on a branch: %w", err)
-	}
-	return b, nil
 }
 
 // ensurePR finds or opens the task's draft PR. An open PR for the

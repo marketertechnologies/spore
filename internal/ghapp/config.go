@@ -94,6 +94,14 @@ func (c Config) Validate() error {
 	if c.PrivateKey == "" {
 		missing = append(missing, "private_key")
 	}
+	return c.missing(missing)
+}
+
+// ValidateFlow checks only the attribution keys: behind the secrets
+// broker the app keys live in the broker's own github.toml.
+func (c Config) ValidateFlow() error { return c.missing(nil) }
+
+func (c Config) missing(missing []string) error {
 	if c.Enabled() {
 		for k, v := range map[string]string{
 			"operator_login": c.OperatorLogin,

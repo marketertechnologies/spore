@@ -53,6 +53,7 @@ Commands:
   report     Morning digest: the events ledger plus live task and fleet state.
   doctor     Drift checks (binary, managed settings, Claude Code, units, secrets).
   sandbox    Claude Code sandbox settings for spore panes (settings, prepare).
+  secrets    Use project secrets through the secrets broker without reading them.
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -160,6 +161,7 @@ freshly provisioned VM that has no data worth keeping.
 
 func main() {
 	task.SetFetchAuth(ghapp.FetchEnv)
+	task.SetBrokerFetch(brokerFetch)
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -234,6 +236,8 @@ func main() {
 		os.Exit(runGH(args))
 	case "sandbox":
 		os.Exit(runSandbox(args))
+	case "secrets":
+		os.Exit(runSecrets(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)

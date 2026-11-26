@@ -67,8 +67,14 @@ func SecretsFiles(projectRoot string) []string {
 // New loads the secrets layered for projectRoot. Missing or unreadable
 // files are skipped: redaction never blocks a post.
 func New(projectRoot string) *Redactor {
+	return NewFromFiles(SecretsFiles(projectRoot))
+}
+
+// NewFromFiles loads the secrets in files, skipping missing or
+// unreadable ones.
+func NewFromFiles(files []string) *Redactor {
 	r := &Redactor{}
-	for _, f := range SecretsFiles(projectRoot) {
+	for _, f := range files {
 		if b, err := os.ReadFile(f); err == nil {
 			r.secrets = append(r.secrets, parseEnv(b)...)
 		}
@@ -85,10 +91,11 @@ func New(projectRoot string) *Redactor {
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// parseEnv reads the KEY=value lines a shell would source. Quotes
-// around a value are stripped; an unquoted value ends at whitespace.
-func parseEnv(b []byte) []secret {
-	var out []secret
+// ParseEnv returns every KEY=value pair a shell would source, in file
+// order. Quotes around a value are stripped; an unquoted value ends at
+// whitespace.
+func ParseEnv(b []byte) [][2]string {
+	var out [][2]string
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -105,8 +112,16 @@ func parseEnv(b []byte) []secret {
 		} else if i := strings.IndexAny(v, " \t"); i >= 0 {
 			v = v[:i]
 		}
-		if len(v) >= MinSecretLen {
-			out = append(out, secret{k, v})
+		out = append(out, [2]string{k, v})
+	}
+	return out
+}
+
+func parseEnv(b []byte) []secret {
+	var out []secret
+	for _, kv := range ParseEnv(b) {
+		if len(kv[1]) >= MinSecretLen {
+			out = append(out, secret{kv[0], kv[1]})
 		}
 	}
 	return out
@@ -162,4 +177,25 @@ func (r *Redactor) walk(v any) any {
 		}
 	}
 	return v
+}
+
+// GHCall redacts what a gh call posts: stdin (JSON-aware after
+// `--input -`) and the values of --title and --body. Other args are
+// left alone, since they carry refs, logins and repo names that a
+// secrets.env value could collide with.
+func (r *Redactor) GHCall(stdin string, args []string) (string, []string) {
+	args = append([]string(nil), args...)
+	jsonInput := false
+	for i := 1; i < len(args); i++ {
+		switch args[i-1] {
+		case "--title", "--body":
+			args[i] = r.String(args[i])
+		case "--input":
+			jsonInput = args[i] == "-"
+		}
+	}
+	if jsonInput {
+		return r.JSON(stdin), args
+	}
+	return r.String(stdin), args
 }

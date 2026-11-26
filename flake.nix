@@ -238,6 +238,9 @@
               touch $out
             '';
           } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            nixosModules-spore-secrets = pkgs.testers.runNixOSTest
+              (import ./nixosModules/tests/secrets-broker.nix { inherit self home-manager; });
+
             nixosModules-spore-fleet = pkgs.testers.runNixOSTest {
               name = "spore-fleet-module";
               nodes.machine = { config, lib, pkgs, ... }: {

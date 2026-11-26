@@ -26,6 +26,7 @@ import (
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/secrets"
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -522,11 +523,15 @@ func LoadMaxWorkers(projectRoot string) (n int, set bool, err error) {
 	return DefaultMaxWorkers, false, nil
 }
 
-// FlagPath returns the kill-switch path:
-// `<XDG_STATE_HOME>/spore/fleet-enabled`, falling back to
+// FlagPath returns the kill-switch path: $SPORE_FLEET_FLAG when set
+// (the NixOS module points it at a flag the agent user cannot write),
+// else `<XDG_STATE_HOME>/spore/fleet-enabled`, falling back to
 // `$HOME/.local/state/spore/fleet-enabled` when XDG_STATE_HOME is
 // unset. Reconcile short-circuits when this path is missing.
 func FlagPath() (string, error) {
+	if p := os.Getenv("SPORE_FLEET_FLAG"); p != "" {
+		return p, nil
+	}
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
 		home := os.Getenv("HOME")
@@ -539,33 +544,43 @@ func FlagPath() (string, error) {
 }
 
 // Enable creates the kill-switch flag (along with parent dirs).
-// Idempotent.
+// Idempotent. A flag this user cannot write is asked of the secrets
+// broker, which only lets root or a pilot re-enable.
 func Enable() error {
 	p, err := FlagPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+	err = os.MkdirAll(filepath.Dir(p), 0o755)
+	if err == nil {
+		var f *os.File
+		if f, err = os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			return f.Close()
+		}
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
+	return viaBroker(err, true)
 }
 
 // Disable removes the kill-switch flag. Idempotent (missing flag is
-// a no-op).
+// a no-op). Any agent may stop the fleet, through the broker when
+// the flag is not its own.
 func Disable() error {
 	p, err := FlagPath()
 	if err != nil {
 		return err
 	}
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return err
+		return viaBroker(err, false)
 	}
 	return nil
+}
+
+func viaBroker(err error, enable bool) error {
+	if !errors.Is(err, os.ErrPermission) || !secrets.Available() {
+		return err
+	}
+	_, _, berr := secrets.Call(secrets.Request{Op: secrets.OpFleet, Enable: enable}, nil, 30*time.Second)
+	return berr
 }
 
 // Enabled reports whether the kill-switch flag is present.
