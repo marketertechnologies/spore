@@ -66,10 +66,10 @@ in {
     sporeShims
   ];
 
-  # Symlink the six host shims into /usr/local/bin/ so the kernel's
-  # hard-coded path (e.g. tokenmonitor.Check's respawn-pane
-  # message) and the /etc/spore/coordinator.env entries written by
-  # `spore infect` keep resolving. Sweeps the install-mode files
+  # Symlink the six host shims into /usr/local/bin/ so the
+  # coordinator swap's host-launcher fallback and the
+  # /etc/spore/coordinator.env entries written by `spore infect`
+  # keep resolving. Sweeps the install-mode files
   # left over from the original infect.
   system.activationScripts.spore-shims = ''
     install -d -m 0755 /usr/local/bin

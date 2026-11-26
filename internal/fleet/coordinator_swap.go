@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -16,7 +16,7 @@ import (
 // drive state.md without a live server or agent.
 var (
 	swapTmux = func(args ...string) ([]byte, error) {
-		out, err := exec.Command("tmux", args...).CombinedOutput()
+		out, err := callbudget.Command("tmux", args...).CombinedOutput()
 		if err != nil {
 			return out, fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
 		}
@@ -26,8 +26,21 @@ var (
 	swapNow   = time.Now
 	// swapHostLauncher is the host coordinator launcher the NixOS module
 	// installs; the reconciler units point SPORE_COORDINATOR_AGENT at it.
+	// HostLauncherEnv overrides it.
 	swapHostLauncher = "/usr/local/bin/spore-coordinator-launch"
 )
+
+// HostLauncherEnv overrides the host launcher a swap falls back to when
+// no SPORE_COORDINATOR_AGENT is recorded. Set it to a path that does
+// not exist to turn the fallback off, as sandboxes and tests do.
+const HostLauncherEnv = "SPORE_COORDINATOR_HOST_LAUNCHER"
+
+func hostLauncher() string {
+	if v := os.Getenv(HostLauncherEnv); v != "" {
+		return v
+	}
+	return swapHostLauncher
+}
 
 // ErrWrapTimeout is returned when state.md did not advance before the
 // wrap deadline and the caller did not force the swap.
@@ -83,7 +96,7 @@ func SwapModel(cur CoordinatorConfig, to, model string, modelSet bool) string {
 // the session env first (it beats file config at spawn), then the host
 // driver override over spore.toml, then the kernel default driver.
 func runningConfig(root string, env map[string]string) CoordinatorConfig {
-	cfg, _ := LoadCoordinatorConfig(root)
+	cfg := LoadCoordinatorConfigWarn(root)
 	if v := env["SPORE_COORDINATOR_PROVIDER"]; v != "" {
 		cfg.Driver = v
 	}
@@ -215,8 +228,8 @@ func swapAgent(session, global map[string]string, to string) (string, error) {
 		agent = strings.TrimSpace(global[CoordinatorAgentEnv])
 	}
 	if agent == "" {
-		if fi, err := os.Stat(swapHostLauncher); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-			return swapHostLauncher, nil
+		if l := hostLauncher(); isExecutable(l) {
+			return l, nil
 		}
 		return driverToBinary(to), nil
 	}
@@ -227,6 +240,11 @@ func swapAgent(session, global map[string]string, to string) (string, error) {
 		return "", fmt.Errorf("coordinator swap: %s=%q runs %s, not %s; point it at a launcher that reads SPORE_COORDINATOR_PROVIDER (spore-coordinator-launch)", CoordinatorAgentEnv, agent, base, to)
 	}
 	return agent, nil
+}
+
+func isExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
 }
 
 // exactSession turns a session name into a target that matches only

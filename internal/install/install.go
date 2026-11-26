@@ -7,12 +7,16 @@ package install
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // Result records what a single Install call did.
@@ -23,7 +27,22 @@ type Result struct {
 	// Skipped is the list of destination files whose contents already
 	// matched the embedded copy, so no write was needed.
 	Skipped []string
+	// Kept is the list of destination files left alone because their
+	// content matches neither the embedded copy nor any bundled version
+	// installed before: a local edit. Options.Force overwrites them.
+	Kept []string
 }
+
+// Options tunes Install. Force overwrites locally edited skill files.
+type Options struct {
+	Force bool
+}
+
+// ManifestName is the file Install keeps in each skill dir: one
+// `<sha256>  <path>` line per bundled file it installed, so the next
+// run can tell an untouched old copy (safe to replace) from a local
+// edit (kept).
+const ManifestName = ".spore-install.sha256"
 
 // SkillDirs are the project-relative skill roots Install fills:
 // claude-code reads .claude/skills, Codex reads .agents/skills in every
@@ -38,17 +57,30 @@ var SkillDirs = []string{".claude/skills", ".agents/skills"}
 // dropped (they exist only to keep the source tree tidy).
 //
 // Install is idempotent: re-running it with no source changes is a
-// no-op. If a destination file exists with different content, Install
-// overwrites it.
-func Install(root string, src embed.FS, prefix string) (Result, error) {
+// no-op. A destination file with different content is replaced when it
+// matches the bundled version recorded in the dir's ManifestName, or
+// any version spore shipped before the manifest existed; otherwise it
+// is a local edit and lands in Result.Kept unless opts.Force is set.
+func Install(root string, src embed.FS, prefix string, opts Options) (Result, error) {
 	if root == "" {
 		return Result{}, errors.New("install: root is empty")
 	}
-	dests := make([]string, len(SkillDirs))
-	for i, dir := range SkillDirs {
-		dests[i] = filepath.Join(root, dir)
+	var res Result
+	for _, dir := range SkillDirs {
+		dest := filepath.Join(root, dir)
+		prior, err := readManifest(dest)
+		if err != nil {
+			return res, err
+		}
+		w := &writer{res: &res, protect: !opts.Force, prior: prior, next: map[string]string{}}
+		if err := w.installInto(dest, src, prefix); err != nil {
+			return res, err
+		}
+		if err := writeManifest(dest, w.next); err != nil {
+			return res, err
+		}
 	}
-	return installInto(dests, src, prefix)
+	return res, nil
 }
 
 // InstallDir copies every embedded skill under <prefix>/<name>/ into
@@ -59,7 +91,9 @@ func InstallDir(dest string, src embed.FS, prefix string) (Result, error) {
 	if dest == "" {
 		return Result{}, errors.New("install: dest is empty")
 	}
-	return installInto([]string{dest}, src, prefix)
+	var res Result
+	err := (&writer{res: &res}).installInto(dest, src, prefix)
+	return res, err
 }
 
 // HostScopeDirs are the home-relative user skill scopes the spore-fleet
@@ -96,9 +130,18 @@ func HostProvides(home string, src embed.FS, prefix string) bool {
 	return found
 }
 
-func installInto(dests []string, src embed.FS, prefix string) (Result, error) {
-	var res Result
-	err := fs.WalkDir(src, prefix, func(p string, d fs.DirEntry, err error) error {
+// writer installs one skill tree. With protect set it keeps files that
+// match neither the new body, prior[rel] nor a legacy bundled version,
+// and records each bundled file's hash in next for the manifest.
+type writer struct {
+	res     *Result
+	protect bool
+	prior   map[string]string
+	next    map[string]string
+}
+
+func (w *writer) installInto(dest string, src embed.FS, prefix string) error {
+	return fs.WalkDir(src, prefix, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -120,24 +163,26 @@ func installInto(dests []string, src embed.FS, prefix string) (Result, error) {
 		if bytes.HasPrefix(body, []byte("#!")) {
 			mode = 0o755
 		}
-		for _, dest := range dests {
-			if err := writeSkillFile(&res, filepath.Join(dest, rel), body, mode); err != nil {
-				return err
-			}
-		}
-		return nil
+		return w.writeSkillFile(filepath.ToSlash(rel), filepath.Join(dest, rel), body, mode)
 	})
-	if err != nil {
-		return res, err
-	}
-	return res, nil
 }
 
-func writeSkillFile(res *Result, dest string, body []byte, mode os.FileMode) error {
-	if existing, err := os.ReadFile(dest); err == nil && bytes.Equal(existing, body) {
-		res.Skipped = append(res.Skipped, dest)
+func (w *writer) writeSkillFile(rel, dest string, body []byte, mode os.FileMode) error {
+	existing, err := os.ReadFile(dest)
+	if err == nil && bytes.Equal(existing, body) {
+		w.res.Skipped = append(w.res.Skipped, dest)
+		if w.next != nil {
+			w.next[rel] = sha256Hex(body)
+		}
 		if err := os.Chmod(dest, mode); err != nil {
 			return fmt.Errorf("chmod %s: %w", dest, err)
+		}
+		return nil
+	}
+	if err == nil && w.protect && localEdit(rel, sha256Hex(existing), w.prior[rel]) {
+		w.res.Kept = append(w.res.Kept, dest)
+		if prev, ok := w.prior[rel]; ok {
+			w.next[rel] = prev
 		}
 		return nil
 	}
@@ -147,6 +192,66 @@ func writeSkillFile(res *Result, dest string, body []byte, mode os.FileMode) err
 	if err := os.WriteFile(dest, body, mode); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
-	res.Written = append(res.Written, dest)
+	if w.next != nil {
+		w.next[rel] = sha256Hex(body)
+	}
+	w.res.Written = append(w.res.Written, dest)
+	return nil
+}
+
+func localEdit(rel, have, prior string) bool {
+	if have == prior {
+		return false
+	}
+	for _, h := range legacyBundled[rel] {
+		if have == h {
+			return false
+		}
+	}
+	return true
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func readManifest(dir string) (map[string]string, error) {
+	out := map[string]string{}
+	b, err := os.ReadFile(filepath.Join(dir, ManifestName))
+	if os.IsNotExist(err) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if hash, rel, ok := strings.Cut(line, "  "); ok {
+			out[rel] = hash
+		}
+	}
+	return out, nil
+}
+
+func writeManifest(dir string, hashes map[string]string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	rels := make([]string, 0, len(hashes))
+	for rel := range hashes {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	var b strings.Builder
+	for _, rel := range rels {
+		fmt.Fprintf(&b, "%s  %s\n", hashes[rel], rel)
+	}
+	path := filepath.Join(dir, ManifestName)
+	if old, err := os.ReadFile(path); err == nil && string(old) == b.String() {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
 	return nil
 }

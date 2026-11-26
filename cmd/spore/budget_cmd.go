@@ -13,9 +13,6 @@ Usage:
   spore budget refresh       recompute state from the configured collection mode
   spore budget query         print state.json with a fresh advice band
   spore budget summary       human one-liner (default)
-  spore budget capture       read one JSON header line from stdin, append to spool
-  spore budget stop-hook     Stop-hook helper: exit 2 + stderr reminder on a
-                             fresh band crossing, exit 0 otherwise
   spore budget tier           print account tier map as JSON (reads from account store)
   spore budget active-tier   print the live credential's tier (max|pro|team|free)
   spore budget debug-usage   hit /usage once and print raw + parsed response
@@ -24,7 +21,7 @@ Usage:
 Env (AGENT_BUDGET_* names preserved verbatim so spore and the basecamp
 binary can shadow-soak against the same state file):
   AGENT_BUDGET_MODE          force "subscription" or "api" (default: auto-detect)
-  AGENT_BUDGET_IDENTITY      identity tag used for capture and api-mode read filtering
+  AGENT_BUDGET_IDENTITY      identity tag for api-mode spool read filtering
   AGENT_BUDGET_SHORT_CAP     USD cap for the rolling 5h transcript window (default 250)
   AGENT_BUDGET_LONG_CAP      USD cap for the rolling 7d transcript window (default 2000)
   AGENT_BUDGET_ACCOUNTS_DIR  account store directory (default
@@ -39,8 +36,7 @@ binary can shadow-soak against the same state file):
 
 Files (mode 0600):
   $AGENT_BUDGET_STATE_DIR/state.json         tracker state
-  $AGENT_BUDGET_STATE_DIR/api-headers.jsonl  per-response Anthropic ratelimit spool
-  $AGENT_BUDGET_STATE_DIR/markers/           per-window-per-band fresh-crossing markers
+  $AGENT_BUDGET_STATE_DIR/api-headers.jsonl  per-response Anthropic ratelimit spool (external producer)
 `
 
 func runBudget(args []string) int {
@@ -61,20 +57,12 @@ func runBudgetCmd(sub string, rest []string) int {
 		return budgetExec(budget.Query, "query", rest)
 	case "summary":
 		return budgetExec(budget.Summary, "summary", rest)
-	case "capture":
-		return budgetExec(budget.Capture, "capture", rest)
 	case "tier":
 		return budgetExec(budget.Tier, "tier", rest)
 	case "active-tier":
 		return budgetExec(budget.ActiveTier, "active-tier", rest)
 	case "debug-usage":
 		return budgetExec(budget.DebugUsage, "debug-usage", rest)
-	case "stop-hook":
-		if len(rest) != 0 {
-			fmt.Fprintln(os.Stderr, "spore budget stop-hook: takes no args")
-			return 2
-		}
-		return budget.StopHook()
 	default:
 		fmt.Fprintf(os.Stderr, "spore budget: unknown subcommand %q\n\n%s", sub, budgetUsage)
 		return 2

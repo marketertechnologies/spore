@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +67,18 @@ func TestListFiles_FiltersByExt(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("got[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestValidationGreenDocListsEveryDefaultLint(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "bootstrap", "stages", "validation-green.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range Default() {
+		if !strings.Contains(string(b), "- `"+l.Name()+"` - ") {
+			t.Errorf("bootstrap/stages/validation-green.md does not list the %s lint", l.Name())
 		}
 	}
 }

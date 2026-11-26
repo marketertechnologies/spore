@@ -406,6 +406,11 @@
                   user_wait("is-active spore-fleet-reconcile-flag-project.path")
                   user_wait("is-active spore-fleet-reconcile-tasks-project.path")
 
+                  # A hung pass must not hold the oneshot forever.
+                  timeout = machine.succeed(usercmd(
+                      "show spore-fleet-reconcile-project.service -p TimeoutStartUSec")).strip()
+                  assert timeout == "TimeoutStartUSec=15min", timeout
+
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect
                   # the rendered unit env directly so the wire format

@@ -79,6 +79,7 @@ func newSwapFixture(t *testing.T, toml, sessionEnvExtra string) *swapFixture {
 	// has neither of these, a worker shell has the worker launcher.
 	t.Setenv(CoordinatorAgentEnv, "/caller/agent")
 	t.Setenv("SPORE_AGENT_BINARY", "/caller/spore-worker-brief")
+	t.Setenv(HostLauncherEnv, "")
 	prevTmux, prevSleep, prevNow, prevLauncher := swapTmux, swapSleep, swapNow, swapHostLauncher
 	swapHostLauncher = filepath.Join(t.TempDir(), "absent-launcher")
 	swapTmux = f.tmux.run
@@ -461,5 +462,25 @@ func TestSwapCoordinatorLeavesProjectTreeAlone(t *testing.T) {
 	}
 	if got, want := f.readOverride(t), "[coordinator]\ndriver = \"codex\"\nmodel = \"gpt-5.5\"\n"; got != want {
 		t.Errorf("driver override = %q, want %q", got, want)
+	}
+}
+
+func TestSwapHostLauncherEnvOverride(t *testing.T) {
+	newSwapFixture(t, "", "")
+	swapHostLauncher = filepath.Join(t.TempDir(), "spore-coordinator-launch")
+	if err := os.WriteFile(swapHostLauncher, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(HostLauncherEnv, filepath.Join(t.TempDir(), "absent"))
+	if got, err := swapAgent(nil, nil, "codex"); err != nil || got != "codex" {
+		t.Errorf("absent override: got %q %v, want the driver binary, not %s", got, err, swapHostLauncher)
+	}
+	custom := filepath.Join(t.TempDir(), "launch")
+	if err := os.WriteFile(custom, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(HostLauncherEnv, custom)
+	if got, err := swapAgent(nil, nil, "codex"); err != nil || got != custom {
+		t.Errorf("override: got %q %v, want %s", got, err, custom)
 	}
 }

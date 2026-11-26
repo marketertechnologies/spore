@@ -1,17 +1,16 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -143,7 +142,7 @@ func Reap(tasksDir, projectRoot, slug string) error {
 // "spore/<project>/<slug>" pattern. Returns an empty slice (and a
 // nil error) when no tmux server is running.
 func SpawnedSlugs(projectRoot string) ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		// tmux exits non-zero with "no server running" or no
 		// sessions; treat both as empty.
@@ -162,34 +161,54 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
-// Pause flips an active task to paused. The worktree is left in
-// place; the tmux session is reaped only if it has been idle past
-// IdleReapThreshold (model exited, pane sitting at an empty prompt).
-// A mid-tool-call rower stays alive so the operator can attach and
-// finish a thought. Refuses when the inbox has unread messages.
+// SpawnedRoleSlugs lists the slugs that have at least one
+// "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
+// tmux server is running.
+func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, nil
+	}
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "spore-role/" + project + "/"
+	seen := map[string]bool{}
+	var slugs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		slug, _, ok := strings.Cut(rest, "/")
+		if !ok || slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
+}
+
+// Pause flips an active task to paused. The worktree and every tmux
+// session (worker and role panes) stay; the reconciler keeps paused
+// sessions too. Refuses when the inbox has unread messages.
 func Pause(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
 	}
-	if err := flipStatus(tasksDir, slug, "active", "paused"); err != nil {
-		return err
-	}
-	reapIdleSlugSessions(tasksDir, slug)
-	return nil
+	return flipStatus(tasksDir, slug, "active", "paused")
 }
 
-// Block flips an active task to blocked. Same idle-gated reap as
-// Pause: the worktree stays, the session is killed only if idle past
-// IdleReapThreshold. Refuses when the inbox has unread messages.
+// Block flips an active task to blocked. Like Pause, it tears
+// nothing down. Refuses when the inbox has unread messages.
 func Block(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
 	}
-	if err := flipStatus(tasksDir, slug, "active", "blocked"); err != nil {
-		return err
-	}
-	reapIdleSlugSessions(tasksDir, slug)
-	return nil
+	return flipStatus(tasksDir, slug, "active", "blocked")
 }
 
 // Verify reads tasks/<slug>.md and runs the structural evidence
@@ -349,7 +368,9 @@ func notifyMatterDone(projectRoot, slug string, m frontmatter.Meta, warnOut io.W
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnDone(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnDone(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore task done %s: matter %s OnDone: %v\n", slug, name, err)
 	}
 }
@@ -406,7 +427,9 @@ func notifyMatterSpawn(projectRoot, slug string, m frontmatter.Meta, warnOut io.
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnSpawn(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnSpawn(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore notify-matter-spawn %s: matter %s OnSpawn: %v\n", slug, name, err)
 	}
 }
@@ -508,6 +531,10 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, reused, err := existingWorktree(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
 	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
 	if err != nil {
 		return "", err
@@ -534,12 +561,17 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	}
 	args = append(args, workerSettingsEnv(meta, settings)...)
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
+	if reused {
+		if note := dirtyWorktreeNote(worktree, briefRelPath(tasksDir, slug)); note != "" {
+			prelude += appendStartNote(note)
+		}
+	}
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
 	} else {
 		args = append(args, workerShellCommand(prelude, agent))
 	}
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}

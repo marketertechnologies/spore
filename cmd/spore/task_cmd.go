@@ -62,7 +62,7 @@ Subcommands:
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
-                               on done.
+                               on done. Refuses a task that is not active.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
@@ -137,11 +137,11 @@ func runTaskEdit(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task edit <slug>")
 	}
-	return task.Edit("tasks", args[0])
+	return task.Edit(resolveTasksDir(), args[0])
 }
 
 func runTaskPick(_ []string) error {
-	slug, err := task.Pick("tasks")
+	slug, err := task.Pick(resolveTasksDir())
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func runTaskMerge(args []string) error {
 	if slug == "" {
 		return fmt.Errorf("usage: spore task merge <slug> [--force-merge-red <reason>]")
 	}
-	err := task.MergeWithOptions("tasks", slug, task.MergeOptions{ForceMergeRed: force})
+	err := task.MergeWithOptions(resolveTasksDir(), slug, task.MergeOptions{ForceMergeRed: force})
 	if err != nil {
 		var gateErr *task.MergeGateError
 		if errors.As(err, &gateErr) {
@@ -230,7 +230,7 @@ func resolveProjectRoot() string {
 }
 
 func runTaskDrift(_ []string) error {
-	return task.AutoCommitDrift("tasks")
+	return task.AutoCommitDrift(resolveTasksDir())
 }
 
 func runTaskStatus(args []string) error {
@@ -390,7 +390,7 @@ func runTaskStart(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: spore task start <slug> [--agent claude|codex]")
 	}
-	session, err := task.StartWithOptions("tasks", fs.Arg(0), task.StartOptions{Agent: *agent})
+	session, err := task.StartWithOptions(resolveTasksDir(), fs.Arg(0), task.StartOptions{Agent: *agent})
 	if err != nil {
 		return err
 	}
@@ -402,14 +402,14 @@ func runTaskPause(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task pause <slug>")
 	}
-	return task.Pause("tasks", args[0])
+	return task.Pause(resolveTasksDir(), args[0])
 }
 
 func runTaskBlock(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task block <slug>")
 	}
-	return task.Block("tasks", args[0])
+	return task.Block(resolveTasksDir(), args[0])
 }
 
 func runTaskDone(args []string) error {
@@ -425,7 +425,7 @@ func runTaskDone(args []string) error {
 			return fmt.Errorf("spore task done: unknown flag: %s", a)
 		}
 	}
-	return task.Done("tasks", slug, force)
+	return task.Done(resolveTasksDir(), slug, force)
 }
 
 func runTaskTell(args []string) error {
@@ -458,7 +458,7 @@ func runTaskVerify(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task verify <slug>")
 	}
-	verdict, diags, err := task.Verify("tasks", args[0])
+	verdict, diags, err := task.Verify(resolveTasksDir(), args[0])
 	if err != nil {
 		return err
 	}
@@ -509,7 +509,7 @@ func runTaskNew(args []string) error {
 		return fmt.Errorf("title must not be empty")
 	}
 
-	tasksDir := "tasks"
+	tasksDir := resolveTasksDir()
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		return err
 	}
@@ -590,7 +590,7 @@ func runTaskLs(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional args: %v", fs.Args())
 	}
-	metas, err := task.List("tasks")
+	metas, err := task.List(resolveTasksDir())
 	if err != nil {
 		return err
 	}
@@ -607,7 +607,9 @@ func runTaskLs(args []string) error {
 	return nil
 }
 
-// resolveTasksDir returns an absolute tasks/ path. Priority:
+// resolveTasksDir returns an absolute tasks/ path; every task
+// subcommand uses it so a call from inside .worktrees/<slug> acts on
+// the main repo's task files, not the worktree copy. Priority:
 //  1. SPORE_TASKS_DIR env var (explicit override)
 //  2. git root from cwd (works when called from project root)
 //  3. first entry in ~/.config/wt/projects (fallback for waybar/systemd callers)
