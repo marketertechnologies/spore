@@ -9,8 +9,6 @@
 package tokenmonitor
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -227,93 +225,6 @@ func appendLedger(cfg Config, sessionID string, ctx int, softFired, hardFired, f
 		ts, sessionID, ctx, cfg.SoftCap, cfg.HardCap, cfg.ForceCap,
 		strconv.FormatBool(softFired), strconv.FormatBool(hardFired),
 		strconv.FormatBool(forceFired))
-}
-
-// LedgerVerdict reads the token-monitor ledger and returns whether
-// the trailing N signal-bearing sessions are all "broken" (crossed soft
-// cap but never fired any level). Rows written before the force band
-// existed lack force_cap / force_fired and decode with those false.
-// Returns (broken, sessionIDs).
-func LedgerVerdict(ledgerFile string, softCap int, threshold int) (bool, string) {
-	f, err := os.Open(ledgerFile)
-	if err != nil {
-		return false, ""
-	}
-	defer f.Close()
-
-	type sessionInfo struct {
-		peak     int
-		cap      int
-		anyFired bool
-	}
-
-	var order []string
-	sessions := make(map[string]*sessionInfo)
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
-	for scanner.Scan() {
-		var row struct {
-			SessionID  string `json:"session_id"`
-			Ctx        int    `json:"ctx"`
-			SoftCap    int    `json:"soft_cap"`
-			SoftFired  bool   `json:"soft_fired"`
-			HardFired  bool   `json:"hard_fired"`
-			ForceFired bool   `json:"force_fired"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &row) != nil || row.SessionID == "" {
-			continue
-		}
-		info, exists := sessions[row.SessionID]
-		if !exists {
-			info = &sessionInfo{}
-			sessions[row.SessionID] = info
-			order = append(order, row.SessionID)
-		}
-		if row.Ctx > info.peak {
-			info.peak = row.Ctx
-		}
-		if row.SoftCap > 0 {
-			info.cap = row.SoftCap
-		}
-		if row.SoftFired || row.HardFired || row.ForceFired {
-			info.anyFired = true
-		}
-	}
-
-	var signal []string
-	for _, sid := range order {
-		info := sessions[sid]
-		cap := info.cap
-		if cap <= 0 {
-			cap = softCap
-		}
-		if info.peak >= cap && cap > 0 {
-			signal = append(signal, sid)
-		}
-	}
-
-	run := 0
-	for i := len(signal) - 1; i >= 0; i-- {
-		if !sessions[signal[i]].anyFired {
-			run++
-		} else {
-			break
-		}
-	}
-
-	if run >= threshold {
-		start := len(signal) - run
-		broken := ""
-		for i := start; i < len(signal); i++ {
-			if broken != "" {
-				broken += " "
-			}
-			broken += signal[i]
-		}
-		return true, broken
-	}
-	return false, ""
 }
 
 func fileExists(path string) bool {
