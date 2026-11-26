@@ -33,7 +33,7 @@ homogeneous worker. A task seeded by hand with only the dir needs
 
 `role-drive` is also the manual driver: each run advances the loop by
 one idempotent tick, and refuses a task whose frontmatter lacks
-`loop: role`. The reconciler calls the same drive for
+`loop: role` or whose status is not `active`. The reconciler calls the same drive for
 role-looped slugs on every pass, so an active task keeps moving
 without manual ticks.
 
@@ -227,6 +227,10 @@ effort = "medium"       # code-review only: low|medium|high|xhigh|max (default m
   spawn from the current config, like the task agent, and never from
   the worker ratio: a live pane keeps its agent, but a pane spawned
   after a config edit picks up the new one.
+- Model and agent CLI effort come from `[agents.engineer]`,
+  `[agents.reviewer]` and `[agents.reviewer.<A|B>]` (README "Model
+  and effort per role"); the slot `effort` above is only the
+  `/code-review` level.
 - Panes get `SPORE_REVIEWER_MODE`, `SPORE_REVIEWER_PREFIX`,
   `SPORE_REVIEWER_LABEL` (see "Comment IDs"), plus
   `SPORE_REVIEW_EFFORT` in code-review mode.
@@ -270,9 +274,9 @@ ignored.
 A non-zero exit (including a missing `flock`, or 124 on timeout) never stops the agent.
 The agent's first prompt gets one leading line: `spore: pre-start
 hook failed (exit N): <command>. Services may be down.` Role panes
-put it above the role body; a role pane with no role body, and a
-worker (which starts with no prompt), get that line alone as the
-prompt. Unset or empty leaves the spawn argv byte-identical to
+put it above the role body; a role pane with no role body gets that
+line alone as the prompt. A worker gets it as the agent's first
+argument, which `spore-worker-brief` puts above the brief. Unset or empty leaves the spawn argv byte-identical to
 before.
 
 ### Engineer check gate

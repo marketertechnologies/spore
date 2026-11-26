@@ -38,6 +38,7 @@ Commands:
   align      Track and exit the pilot-agent alignment period.
   bootstrap  Walk a fresh project through the stage gates.
   install    Drop the spore skills into .claude/skills/ and .agents/skills/.
+  config     Check spore.toml for unknown sections and keys.
   infect     Bootstrap a fresh server with NixOS via nixos-anywhere.
   lint       Run portable lints over the working tree.
   hooks      Install or run claude-code / git hooks.
@@ -198,7 +199,11 @@ func main() {
 			os.Exit(1)
 		}
 	case "bootstrap":
-		if err := runBootstrap(args); err != nil {
+		err := runBootstrap(args)
+		if errors.Is(err, errBootstrapBlocked) {
+			os.Exit(exitBootstrapBlocked)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "spore bootstrap:", err)
 			os.Exit(1)
 		}
@@ -208,6 +213,8 @@ func main() {
 		os.Exit(runReportMain(args))
 	case "doctor":
 		os.Exit(runDoctorMain(args))
+	case "config":
+		os.Exit(runConfig(args))
 	case "budget":
 		os.Exit(runBudget(args))
 	case "coordinator":

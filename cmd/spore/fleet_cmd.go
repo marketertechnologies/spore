@@ -15,6 +15,7 @@ import (
 	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/hooks"
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 
 	// Linear is the first matter adapter; the side-effect import
@@ -74,7 +75,10 @@ Subcommands:
 
 Flags (reconcile):
   --max-workers N   Override concurrency cap (worker sessions plus live
-                    role loops, one slot each). Beats spore.toml.
+                    role loops, one slot each). Precedence: this flag,
+                    then spore.toml [fleet] max_workers, then
+                    $SPORE_FLEET_MAX_WORKERS (host default), then
+                    $WT_FLEET_FLOOR, then 3.
 
 Time budgets (Go durations): each git/tmux/matter call gets
 $SPORE_FLEET_CALL_TIMEOUT (default 2m); the whole pass gets
@@ -133,6 +137,7 @@ func runFleetReconcile(args []string) error {
 	if err != nil {
 		return err
 	}
+	sporetoml.WarnUnknown(os.Stderr, "spore fleet reconcile", root)
 	resolved, err := resolveMaxWorkers(*maxWorkers, root)
 	if err != nil {
 		return err
@@ -223,6 +228,11 @@ func runFleetStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	if line, err := fleet.CoordinatorAgentLine(root); err != nil {
+		fmt.Printf("coordinator: %v\n", err)
+	} else {
+		fmt.Printf("coordinator: %s\n", line)
+	}
 	slugs, err := task.SpawnedSlugs(root)
 	if err != nil {
 		return err
@@ -233,7 +243,7 @@ func runFleetStatus(args []string) error {
 	}
 	fmt.Println("sessions:")
 	for _, s := range slugs {
-		fmt.Printf("  %s\n", s)
+		fmt.Printf("  %s%s\n", s, sessionAgentSuffix(root, s))
 	}
 	return nil
 }
@@ -265,25 +275,54 @@ func runFleetNudge(args []string) error {
 	return nil
 }
 
+// sessionAgentSuffix renders a fleet session's resolved agent, model
+// and effort; a session whose task file is gone or unreadable gets
+// none.
+func sessionAgentSuffix(root, slug string) string {
+	var line fleet.AgentLine
+	if slug == fleet.CoordinatorSlug {
+		l, err := fleet.CoordinatorAgentLine(root)
+		if err != nil {
+			return ""
+		}
+		line = l
+	} else {
+		lines, err := fleet.TaskAgentLines(root, filepath.Join(root, "tasks"), slug)
+		if err != nil || len(lines) != 1 {
+			return ""
+		}
+		line = lines[0]
+	}
+	return "  (" + line.String() + ")"
+}
+
+// resolveMaxWorkers picks the concurrency cap: --max-workers, then
+// spore.toml [fleet] max_workers, then SPORE_FLEET_MAX_WORKERS (the
+// host default the NixOS module sets), then WT_FLEET_FLOOR, then
+// fleet.DefaultMaxWorkers.
 func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 	if flagVal > 0 {
 		return flagVal, nil
 	}
-	if env := os.Getenv("SPORE_FLEET_MAX_WORKERS"); env != "" {
-		n, err := strconv.Atoi(env)
-		if err != nil || n < 1 {
-			return 0, fmt.Errorf("SPORE_FLEET_MAX_WORKERS=%q: want positive integer", env)
-		}
+	n, set, err := fleet.LoadMaxWorkers(projectRoot)
+	if err != nil {
+		return 0, err
+	}
+	if set {
 		return n, nil
 	}
-	if env := os.Getenv("WT_FLEET_FLOOR"); env != "" {
-		n, err := strconv.Atoi(env)
-		if err != nil || n < 1 {
-			return 0, fmt.Errorf("WT_FLEET_FLOOR=%q: want positive integer", env)
+	for _, name := range []string{"SPORE_FLEET_MAX_WORKERS", "WT_FLEET_FLOOR"} {
+		env := os.Getenv(name)
+		if env == "" {
+			continue
 		}
-		return n, nil
+		v, err := strconv.Atoi(env)
+		if err != nil || v < 1 {
+			return 0, fmt.Errorf("%s=%q: want positive integer", name, env)
+		}
+		return v, nil
 	}
-	return fleet.LoadMaxWorkers(projectRoot)
+	return n, nil
 }
 
 // replenishReconcile is a test seam: the real Reconcile drives tmux.

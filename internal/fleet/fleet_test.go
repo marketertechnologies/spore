@@ -471,17 +471,17 @@ mechanical = "codex"
 
 func TestLoadMaxWorkersTOML(t *testing.T) {
 	root := t.TempDir()
-	if got, err := LoadMaxWorkers(root); err != nil || got != DefaultMaxWorkers {
-		t.Fatalf("missing toml: got %d err %v, want %d nil", got, err, DefaultMaxWorkers)
+	if got, set, err := LoadMaxWorkers(root); err != nil || got != DefaultMaxWorkers || set {
+		t.Fatalf("missing toml: got %d set=%v err %v, want %d unset nil", got, set, err, DefaultMaxWorkers)
 	}
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\nmax_workers = 7\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadMaxWorkers(root)
+	got, set, err := LoadMaxWorkers(root)
 	if err != nil {
 		t.Fatalf("LoadMaxWorkers: %v", err)
 	}
-	if got != 7 {
+	if got != 7 || !set {
 		t.Errorf("max_workers = %d, want 7", got)
 	}
 
@@ -491,7 +491,7 @@ func TestLoadMaxWorkersTOML(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte(mixed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err = LoadMaxWorkers(root)
+	got, _, err = LoadMaxWorkers(root)
 	if err != nil {
 		t.Fatalf("LoadMaxWorkers with account_tier: %v", err)
 	}
@@ -643,4 +643,54 @@ func equalSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestReconcileReapsRolePanesOfHandEditedDone pins that role panes of
+// a task set to done by editing its frontmatter (not via `task done`)
+// are reaped, while paused and blocked role tasks keep theirs.
+func TestReconcileReapsRolePanesOfHandEditedDone(t *testing.T) {
+	requireToolchain(t)
+
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_AGENT_BINARY", "sleep 30")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+
+	writeRoleLoopTask(t, dirs.tasks, "rl", "done")
+	writeRoleLoopTask(t, dirs.tasks, "rl-kept", "paused")
+	writeRoleLoopTask(t, dirs.tasks, "rl-blk", "blocked")
+	project := filepath.Base(dirs.project)
+	reaped := []string{
+		"spore-role/" + project + "/rl/engineer",
+		"spore-role/" + project + "/rl/reviewer-a",
+	}
+	kept := []string{
+		"spore-role/" + project + "/rl-kept/engineer",
+		"spore-role/" + project + "/rl-blk/engineer",
+	}
+	for _, name := range append(append([]string{}, reaped...), kept...) {
+		if out, err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", name, "sleep 30").CombinedOutput(); err != nil {
+			t.Fatalf("tmux new-session %q: %v: %s", name, err, out)
+		}
+		t.Cleanup(func() { _ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", "="+name).Run() })
+	}
+
+	r, err := Reconcile(Config{TasksDir: dirs.tasks, ProjectRoot: dirs.project, MaxWorkers: 3})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got, want := r.Reaped, []string{"rl"}; !equalSlices(got, want) {
+		t.Errorf("Reaped = %v, want %v", got, want)
+	}
+	for _, name := range reaped {
+		if exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", "="+name).Run() == nil {
+			t.Errorf("role pane %q of a done task survived reconcile", name)
+		}
+	}
+	for _, name := range kept {
+		if exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", "="+name).Run() != nil {
+			t.Errorf("role pane %q of a paused/blocked task was reaped", name)
+		}
+	}
 }

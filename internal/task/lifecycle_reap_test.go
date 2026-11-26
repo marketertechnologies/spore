@@ -151,46 +151,50 @@ func TestPauseLeavesActivelyUsedSessionAlive(t *testing.T) {
 	}
 }
 
-func TestPauseReapsIdleSession(t *testing.T) {
+// Pause and block keep the worker session even when it has been idle
+// for a long time: an idle worker is the normal state of a paused task.
+func TestPauseAndBlockKeepIdleWorkerSession(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not available: %v", err)
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skipf("tmux not available: %v", err)
 	}
+	for _, op := range []struct {
+		name string
+		fn   func(tasksDir, slug string) error
+	}{{"pause", Pause}, {"block", Block}} {
+		t.Run(op.name, func(t *testing.T) {
+			repo := t.TempDir()
+			t.Chdir(repo)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			// The retired idle-reap knob: zero made any session count as idle.
+			t.Setenv("SPORE_IDLE_REAP_SECS", "0")
+			runGit(t, repo, "init", "-q", "-b", "main")
+			runGit(t, repo, "config", "user.email", "test@example.com")
+			runGit(t, repo, "config", "user.name", "Test")
+			runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
 
-	repo := t.TempDir()
-	t.Chdir(repo)
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+			tasksDir := filepath.Join(repo, "tasks")
+			if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			slug := "demo"
+			session := "spore/" + filepath.Base(repo) + "/" + slug
+			if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), []byte("---\nstatus: active\nslug: demo\ntitle: Demo\n---\nbody\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", session, "sleep 30").CombinedOutput(); err != nil {
+				t.Fatalf("tmux new-session: %v: %s", err, out)
+			}
+			t.Cleanup(func() { _ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", "="+session).Run() })
 
-	tasksDir := filepath.Join(repo, "tasks")
-	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	slug := "demo"
-	project := filepath.Base(repo)
-	session := "X " + project + "/" + slug + " [opus]"
-	body := "---\nstatus: active\nslug: demo\ntitle: Demo\nsession: " + session + "\n---\nbody\n"
-	if err := os.WriteFile(filepath.Join(tasksDir, slug+".md"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if out, err := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", session, "sleep 30").CombinedOutput(); err != nil {
-		t.Fatalf("tmux new-session: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", session).Run() })
-
-	// Threshold 0 forces every matching session to count as "stale
-	// enough"; mirrors the >5min idle case without sleeping the test.
-	t.Setenv("SPORE_IDLE_REAP_SECS", "0")
-
-	if err := Pause(tasksDir, slug); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", session).Run(); err == nil {
-		t.Errorf("Pause did not reap idle session under threshold=0")
+			if err := op.fn(tasksDir, slug); err != nil {
+				t.Fatalf("%s: %v", op.name, err)
+			}
+			if err := exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", "="+session).Run(); err != nil {
+				t.Errorf("%s killed the idle worker session: %v", op.name, err)
+			}
+		})
 	}
 }

@@ -28,6 +28,8 @@ itself, see `internal/task/lifecycle.go`), and can write commits on
 exits, the tmux window closes, and `spore-fleet-reconcile.timer`
 respawns when the task is still active.
 
+A worker respawned onto an existing worktree that has uncommitted changes gets a leading note in its first prompt: `spore: this worktree has uncommitted changes from an earlier session (N paths): ...`, listing up to 20 paths (the brief copy excluded). It rides the same channel as the pre-start failure note (see `docs/role-loop.md`), and `spore-worker-brief` puts it above the brief.
+
 Worker branches are local implementation detail. The worker close
 path must not push `wt/<slug>` or feature branches to GitHub; only
 the landed `main` branch is published upstream.
@@ -100,15 +102,7 @@ Existing files in the worktree are never overwritten. Symlinks are recreated onl
 
 ## Merge Close Path
 
-`spore task merge <slug>` fast-forwards `wt/<slug>` into the main
-checkout, runs the same inbox and evidence gates as a done flip, then
-commits `tasks/<slug>: status -> done`. It then runs exactly
-`git push origin main:main` and verifies that `origin`'s
-`refs/heads/main` matches local `main` before removing the worktree,
-branch, and tmux session. It does not push `wt/<slug>`, feature
-branches, or any other local branch. If a close or push gate fails,
-the branch and worktree stay in place so the worker can fix the
-evidence, drain the inbox, or retry the upstream push.
+`spore task merge <slug>` runs every refusal first: the `just check` gate below, then the same inbox and evidence gates as a done flip. Only then does it fast-forward `wt/<slug>` into the main checkout and commit `tasks/<slug>: status -> done`. When `tasks/` is gitignored the status flip stays a file edit and nothing is committed for it. It then runs exactly `git push origin main:main` and verifies that `origin`'s `refs/heads/main` matches local `main` before removing the worktree, branch, and tmux session. It does not push `wt/<slug>`, feature branches, or any other local branch. A refused merge leaves `main` untouched. A failed push resets local `main` with `git reset --keep` to where it was and restores the task file, so a retry starts clean; the branch and worktree stay in place so the worker can fix the evidence, drain the inbox, or retry the upstream push. Run from a worktree, every `spore task` subcommand acts on the main checkout's `tasks/`.
 
 Before the fast-forward, `spore task merge` runs `just check` from
 the worktree as a gate. The gate skips silently when the worktree

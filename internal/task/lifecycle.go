@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
@@ -164,11 +163,40 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
-// Pause flips an active task to paused. The worktree is left in
-// place; the tmux session is reaped only if it has been idle past
-// IdleReapThreshold (model exited, pane sitting at an empty prompt).
-// A mid-tool-call rower stays alive so the operator can attach and
-// finish a thought. Refuses when the inbox has unread messages.
+// SpawnedRoleSlugs lists the slugs that have at least one
+// "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
+// tmux server is running.
+func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, nil
+	}
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "spore-role/" + project + "/"
+	seen := map[string]bool{}
+	var slugs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		slug, _, ok := strings.Cut(rest, "/")
+		if !ok || slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
+}
+
+// Pause flips an active task to paused. The worktree and every tmux
+// session (worker and role panes) stay; the reconciler keeps paused
+// sessions too. Refuses when the inbox has unread messages.
 func Pause(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -177,13 +205,11 @@ func Pause(tasksDir, slug string) error {
 		return err
 	}
 	recordEvent(tasksDir, events.Event{Kind: events.TaskPause, Slug: slug})
-	reapIdleSlugSessions(tasksDir, slug)
 	return nil
 }
 
-// Block flips an active task to blocked. Same idle-gated reap as
-// Pause: the worktree stays, the session is killed only if idle past
-// IdleReapThreshold. Refuses when the inbox has unread messages.
+// Block flips an active task to blocked. Like Pause, it tears
+// nothing down. Refuses when the inbox has unread messages.
 func Block(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -192,7 +218,6 @@ func Block(tasksDir, slug string) error {
 		return err
 	}
 	recordEvent(tasksDir, events.Event{Kind: events.TaskBlock, Slug: slug})
-	reapIdleSlugSessions(tasksDir, slug)
 	return nil
 }
 
@@ -517,6 +542,10 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, reused, err := existingWorktree(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
 	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
 	if err != nil {
 		return "", err
@@ -529,7 +558,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if hasSession(session) {
 		return session, nil
 	}
-	agent, err := workerAgentCommand(meta)
+	settings, err := WorkerAgentSettings(projectRoot, meta)
+	if err != nil {
+		return "", err
+	}
+	agent, err := workerAgentCommand(meta, settings)
 	if err != nil {
 		return "", err
 	}
@@ -537,7 +570,13 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	args = append(args, workerSettingsEnv(meta, settings)...)
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
+	if reused {
+		if note := dirtyWorktreeNote(worktree, briefRelPath(tasksDir, slug)); note != "" {
+			prelude += appendStartNote(note)
+		}
+	}
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
 	} else {
@@ -595,42 +634,6 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return m, nil
-}
-
-// workerAgentCommand returns the agent command for a worker. The
-// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
-// it is a claude launcher, so honouring it for codex would run claude.
-func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	switch m.Agent {
-	case "", "claude", "claude-code":
-		if override := os.Getenv(AgentBinaryEnv); override != "" {
-			return override, nil
-		}
-		return defaultAgentBinary, nil
-	case "codex":
-		return CodexAgentCommand(m)
-	default:
-		return m.Agent, nil
-	}
-}
-
-// CodexAgentCommand returns the interactive codex command line for a
-// task, without a prompt: effort and model from the frontmatter, the
-// model falling back to SPORE_CODEX_MODEL. Role panes share it.
-func CodexAgentCommand(m frontmatter.Meta) (string, error) {
-	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
-	if err != nil {
-		return "", err
-	}
-	model := m.Extra["model"]
-	if model == "" {
-		model = os.Getenv(CodexModelEnv)
-	}
-	args := codexpolicy.InteractiveArgs(model, effort)
-	if bin := os.Getenv(CodexBinEnv); bin != "" {
-		args[0] = bin
-	}
-	return shellJoin(args), nil
 }
 
 // briefRelPath is the brief's path relative to the worktree, where

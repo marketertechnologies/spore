@@ -156,7 +156,7 @@ if [ -x "$SW/bin/spore" ]; then
     fi
     grep -E '^(FAIL|WARN) ' <<<"$out" | sed 's/^/      doctor: /'
   else
-    warn "spore doctor: $SW/bin/spore has no doctor command (older than 0.54.0)"
+    warn "spore doctor: $SW/bin/spore has no doctor command (older than 0.59.0)"
   fi
 fi
 

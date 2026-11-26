@@ -9,8 +9,6 @@
 package tokenmonitor
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,16 +27,9 @@ const (
 	// the monitor demands an immediate wrap even mid-unit.
 	DefaultForceCap = 300000
 
-	// coordinatorRespawnCommand is the tmux command surfaced to the
-	// coordinator agent on soft/hard cap. respawn-pane -k re-execs the
-	// pane's command without tearing down the session, so an
-	// SSH-attached operator stays connected while the agent process is
-	// replaced. The session-name expression resolves to the current
-	// session, so an external_session_pattern coordinator (running
-	// under a non-spore session name) respawns itself in place too.
-	// The exec target is the host shim that spore infect installs;
-	// keep this in sync with internal/infect/infect.go install paths.
-	coordinatorRespawnCommand = `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /usr/local/bin/spore-coordinator-launch'`
+	// defaultRespawn is the pane command when Config.Respawn is empty:
+	// the kernel's default coordinator agent.
+	defaultRespawn = "exec claude --dangerously-skip-permissions"
 )
 
 type Config struct {
@@ -48,6 +39,23 @@ type Config struct {
 	StateDir   string
 	LedgerFile string
 	Inbox      string
+	// Respawn is the shell command the respawned pane runs: the same
+	// launch command the coordinator was spawned with.
+	Respawn string
+}
+
+// RespawnCommand is the tmux command surfaced to the coordinator agent
+// at each cap. respawn-pane -k re-execs the pane without tearing down
+// the session, so an SSH-attached operator stays connected while the
+// agent process is replaced. The session-name expression resolves to
+// the current session, so an external_session_pattern coordinator
+// (running under a non-spore session name) respawns itself in place.
+func (c Config) RespawnCommand() string {
+	return `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" ` + shellSingleQuote(c.Respawn)
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 type CheckResult struct {
@@ -80,6 +88,9 @@ func (c Config) Defaults() Config {
 	}
 	if c.LedgerFile == "" {
 		c.LedgerFile = filepath.Join(c.StateDir, "token-monitor.jsonl")
+	}
+	if c.Respawn == "" {
+		c.Respawn = defaultRespawn
 	}
 	return c
 }
@@ -155,7 +166,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"  3. Run: %s\n"+
 				"respawn-pane preserves the tmux session and any attached SSH client;\n"+
 				"only the agent process is replaced. The reconciler is not involved.",
-			ctx, cfg.ForceCap, coordinatorRespawnCommand)
+			ctx, cfg.ForceCap, cfg.RespawnCommand())
 		appendLedger(cfg, sid, ctx, false, false, true)
 		return result
 	}
@@ -174,7 +185,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"only the agent process is replaced. The reconciler is not involved.\n"+
 				"This reminder fires on every Stop past the cap. Force cap is %d;\n"+
 				"crossing it demands an immediate wrap even mid-unit.",
-			ctx, cfg.HardCap, coordinatorRespawnCommand, cfg.ForceCap)
+			ctx, cfg.HardCap, cfg.RespawnCommand(), cfg.ForceCap)
 		appendLedger(cfg, sid, ctx, false, true, false)
 		return result
 	}
@@ -189,7 +200,7 @@ func Check(cfg Config, payload HookPayload) CheckResult {
 				"  %s\n"+
 				"Finish-unit cap is %d (past it, finish the in-flight unit and wrap;\n"+
 				"a reminder fires on every Stop). Force cap is %d (immediate wrap).",
-			ctx, cfg.SoftCap, coordinatorRespawnCommand, cfg.HardCap, cfg.ForceCap)
+			ctx, cfg.SoftCap, cfg.RespawnCommand(), cfg.HardCap, cfg.ForceCap)
 		appendLedger(cfg, sid, ctx, true, false, false)
 		return result
 	}
@@ -214,93 +225,6 @@ func appendLedger(cfg Config, sessionID string, ctx int, softFired, hardFired, f
 		ts, sessionID, ctx, cfg.SoftCap, cfg.HardCap, cfg.ForceCap,
 		strconv.FormatBool(softFired), strconv.FormatBool(hardFired),
 		strconv.FormatBool(forceFired))
-}
-
-// LedgerVerdict reads the token-monitor ledger and returns whether
-// the trailing N signal-bearing sessions are all "broken" (crossed soft
-// cap but never fired any level). Rows written before the force band
-// existed lack force_cap / force_fired and decode with those false.
-// Returns (broken, sessionIDs).
-func LedgerVerdict(ledgerFile string, softCap int, threshold int) (bool, string) {
-	f, err := os.Open(ledgerFile)
-	if err != nil {
-		return false, ""
-	}
-	defer f.Close()
-
-	type sessionInfo struct {
-		peak     int
-		cap      int
-		anyFired bool
-	}
-
-	var order []string
-	sessions := make(map[string]*sessionInfo)
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
-	for scanner.Scan() {
-		var row struct {
-			SessionID  string `json:"session_id"`
-			Ctx        int    `json:"ctx"`
-			SoftCap    int    `json:"soft_cap"`
-			SoftFired  bool   `json:"soft_fired"`
-			HardFired  bool   `json:"hard_fired"`
-			ForceFired bool   `json:"force_fired"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &row) != nil || row.SessionID == "" {
-			continue
-		}
-		info, exists := sessions[row.SessionID]
-		if !exists {
-			info = &sessionInfo{}
-			sessions[row.SessionID] = info
-			order = append(order, row.SessionID)
-		}
-		if row.Ctx > info.peak {
-			info.peak = row.Ctx
-		}
-		if row.SoftCap > 0 {
-			info.cap = row.SoftCap
-		}
-		if row.SoftFired || row.HardFired || row.ForceFired {
-			info.anyFired = true
-		}
-	}
-
-	var signal []string
-	for _, sid := range order {
-		info := sessions[sid]
-		cap := info.cap
-		if cap <= 0 {
-			cap = softCap
-		}
-		if info.peak >= cap && cap > 0 {
-			signal = append(signal, sid)
-		}
-	}
-
-	run := 0
-	for i := len(signal) - 1; i >= 0; i-- {
-		if !sessions[signal[i]].anyFired {
-			run++
-		} else {
-			break
-		}
-	}
-
-	if run >= threshold {
-		start := len(signal) - run
-		broken := ""
-		for i := start; i < len(signal); i++ {
-			if broken != "" {
-				broken += " "
-			}
-			broken += signal[i]
-		}
-		return true, broken
-	}
-	return false, ""
 }
 
 func fileExists(path string) bool {

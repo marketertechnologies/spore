@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,14 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/versality/spore/internal/ghapp"
+	"github.com/versality/spore/internal/redact"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -176,7 +173,8 @@ type githubMirror struct {
 	state                       githubState
 	env                         []string
 	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
-	repo string
+	repo     string
+	redactor *redact.Redactor
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -638,7 +636,7 @@ func (m *githubMirror) ensurePR() error {
 func (m *githubMirror) prBody(title string) string {
 	spec, _ := os.ReadFile(filepath.Join(task.RoleTaskDir(m.projectRoot, m.slug), "spec.md"))
 	summary := specSummary(string(spec))
-	if summary == "" || absPathRE.MatchString(summary) {
+	if summary == "" || redact.AbsPathRE.MatchString(summary) {
 		summary = title
 	}
 	return summary + "\n\n" + m.prFooter()
@@ -731,8 +729,6 @@ func reviewOutcomeLine(projectRoot, slug string) string {
 	return strings.Join(parts, " ")
 }
 
-var absPathRE = regexp.MustCompile("(^|[\\s(`'\"])~?/[^\\s/]+/")
-
 // specSummary returns the spec's first prose paragraph, skipping
 // headings and the **Status** line.
 func specSummary(spec string) string {
@@ -749,51 +745,4 @@ func specSummary(spec string) string {
 func lastLine(s string) string {
 	s = strings.TrimSpace(s)
 	return strings.TrimSpace(s[strings.LastIndexByte(s, '\n')+1:])
-}
-
-func (m *githubMirror) git(args ...string) (string, error) {
-	return m.run1("git", "", args...)
-}
-
-func (m *githubMirror) gh(stdin string, args ...string) (string, error) {
-	return m.run1("gh", stdin, args...)
-}
-
-// mirrorCallTimeout bounds every git/gh call and the token mint: the
-// mirror runs inline in the fleet reconcile, so a hung call would stall
-// every task's role loop.
-var mirrorCallTimeout = 60 * time.Second
-
-// cmdError is a failed git/gh call. key drops stderr, which often
-// carries request ids, so a persistent failure notifies once.
-type cmdError struct {
-	key, stderr string
-}
-
-func (e *cmdError) Error() string { return e.key + ": " + e.stderr }
-
-// run1 runs name in the worktree as the app and returns trimmed
-// stdout; a failure carries stderr.
-func (m *githubMirror) run1(name, stdin string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), mirrorCallTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.WaitDelay = time.Second
-	cmd.Dir = m.worktree
-	cmd.Env = m.env
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			err = fmt.Errorf("timed out after %s", mirrorCallTimeout)
-		}
-		return "", &cmdError{
-			key:    fmt.Sprintf("%s %s: %v", name, strings.Join(args[:min(2, len(args))], " "), err),
-			stderr: strings.TrimSpace(stderr.String()),
-		}
-	}
-	return strings.TrimSpace(stdout.String()), nil
 }

@@ -1,9 +1,13 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
@@ -26,6 +30,11 @@ type CoordinatorConfig struct {
 	// SPORE_COORDINATOR_MODEL in the session env.
 	Model string
 
+	// Effort is the reasoning effort from [agents.coordinator]
+	// (claude --effort <e>, codex model_reasoning_effort). Surfaced as
+	// SPORE_COORDINATOR_EFFORT in the session env.
+	Effort string
+
 	// Brief is the role-file path. Mirrors SPORE_COORDINATOR_ROLE_FILE;
 	// relative paths resolve against projectRoot.
 	Brief string
@@ -43,33 +52,58 @@ type CoordinatorConfig struct {
 // LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml,
 // then layers the host-side driver override (see DriverOverridePath) on
 // top. A missing file returns a zero CoordinatorConfig with no error so
-// callers can treat absent config as "use defaults". On an override
-// error the spore.toml config is still returned alongside it.
+// callers can treat absent config as "use defaults". An unknown key or
+// an override error comes back alongside the config built from the
+// rest, so one typo does not zero the section.
 func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
 	entries, err := sporetoml.ReadSection(projectRoot, "coordinator")
 	if err != nil {
 		return CoordinatorConfig{}, fmt.Errorf("coordinator: %w", err)
 	}
-	cfg, err := coordinatorFromEntries(entries)
-	if err != nil {
+	cfg, keyErr := coordinatorFromEntries(entries)
+	if keyErr != nil {
+		keyErr = fmt.Errorf("coordinator: spore.toml %w", keyErr)
+	}
+	if cfg, err = withAgentsTable(projectRoot, cfg); err != nil {
 		return CoordinatorConfig{}, err
 	}
 	path, err := DriverOverridePath(projectRoot)
 	if err != nil {
-		return cfg, nil
+		return cfg, keyErr
 	}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, nil
+		return cfg, keyErr
 	}
 	if err != nil {
-		return cfg, fmt.Errorf("coordinator: read %s: %w", path, err)
+		return cfg, errors.Join(keyErr, fmt.Errorf("coordinator: read %s: %w", path, err))
 	}
 	ov, err := parseDriverOverride(string(b))
 	if err != nil {
-		return cfg, fmt.Errorf("coordinator: %s: %w", path, err)
+		return cfg, errors.Join(keyErr, fmt.Errorf("coordinator: %s: %w", path, err))
 	}
-	return applyDriverOverride(cfg, ov), nil
+	return applyDriverOverride(cfg, ov), keyErr
+}
+
+// coordinatorWarnOut receives LoadCoordinatorConfigWarn's warnings.
+var (
+	coordinatorWarnOut io.Writer = os.Stderr
+	coordinatorWarned  sync.Map
+)
+
+// LoadCoordinatorConfigWarn is LoadCoordinatorConfig for callers that
+// carry on with whatever config loaded: the error goes to stderr, once
+// per process per message, since one reconcile loads the config several
+// times.
+func LoadCoordinatorConfigWarn(projectRoot string) CoordinatorConfig {
+	cfg, err := LoadCoordinatorConfig(projectRoot)
+	if err != nil {
+		msg := strings.ReplaceAll(err.Error(), "\n", "; ")
+		if _, dup := coordinatorWarned.LoadOrStore(msg, true); !dup {
+			fmt.Fprintf(coordinatorWarnOut, "spore: warning: %s\n", msg)
+		}
+	}
+	return cfg
 }
 
 // DriverOverridePath is the host-side file `spore coordinator swap`
@@ -105,13 +139,38 @@ func parseDriverOverride(content string) (CoordinatorConfig, error) {
 	return ov, nil
 }
 
+// withAgentsTable layers [agents.coordinator] over [coordinator]:
+// its model wins over [coordinator].model, and it alone sets effort.
+func withAgentsTable(projectRoot string, cfg CoordinatorConfig) (CoordinatorConfig, error) {
+	agents, err := task.LoadAgentsConfig(projectRoot)
+	if err != nil {
+		return cfg, fmt.Errorf("coordinator: %w", err)
+	}
+	s := agents.For(task.AgentRoleCoordinator, "")
+	if s.Model != "" {
+		cfg.Model = s.Model
+	}
+	cfg.Effort = s.Effort
+	return cfg, nil
+}
+
 // applyDriverOverride replaces driver and model together: an override
 // driver without a model means the agent's default, as after a swap,
 // so a spore.toml model for the other provider must not leak through.
+// Effort survives only when the override keeps the configured driver;
+// the effort vocabularies differ (codex has no max).
 func applyDriverOverride(cfg, ov CoordinatorConfig) CoordinatorConfig {
-	if ov.Driver != "" {
-		cfg.Driver, cfg.Model = ov.Driver, ov.Model
+	if ov.Driver == "" {
+		return cfg
 	}
+	base := cfg.Driver
+	if base == "" {
+		base = "claude"
+	}
+	if ov.Driver != base {
+		cfg.Effort = ""
+	}
+	cfg.Driver, cfg.Model = ov.Driver, ov.Model
 	return cfg
 }
 
@@ -125,8 +184,11 @@ func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
 	return coordinatorFromEntries(entries)
 }
 
+// coordinatorFromEntries builds the config from the known keys and
+// reports the unknown ones in one error.
 func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error) {
 	var cfg CoordinatorConfig
+	var unknown []error
 	for _, e := range entries {
 		switch e.Key {
 		case "driver":
@@ -138,10 +200,10 @@ func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error
 		case "external_session_pattern":
 			cfg.ExternalSessionPattern = e.Value
 		default:
-			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key)
+			unknown = append(unknown, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key))
 		}
 	}
-	return cfg, nil
+	return cfg, errors.Join(unknown...)
 }
 
 // driverPlan is a pending rewrite of the host-side driver override,
@@ -166,6 +228,9 @@ func planCoordinatorDriver(projectRoot, driver, model string) (driverPlan, error
 	base, err := coordinatorFromEntries(entries)
 	if err != nil {
 		return p, fmt.Errorf("coordinator: spore.toml: %w", err)
+	}
+	if base, err = withAgentsTable(projectRoot, base); err != nil {
+		return p, err
 	}
 	if p.path, err = DriverOverridePath(projectRoot); err != nil {
 		return p, fmt.Errorf("coordinator: %w", err)
