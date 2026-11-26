@@ -151,4 +151,6 @@ Tokens that ever sat in transcripts (P0.4) should also be revoked; App installat
 
 ## Verifying
 
+`spore secrets check [--config <path>]` validates a broker config the way `spore secrets serve` does at start (names, regexps, `${VAR}` references, known projects) without serving; run it on a rendered config before a rebuild, since an invalid config keeps the broker from starting and fails every broker call on the host. With no `--config` it checks the deployed `/etc/spore/secrets-broker.json`.
+
 `nix build .#checks.x86_64-linux.nixosModules-spore-secrets` boots a VM with an agent user and a pilot and checks: the agent cannot read the secrets directory, the broker's environment or the audit log; `spore secrets run` returns redacted output and refuses other commands and arguments; agents cannot grant or re-enable the fleet; pilots can; `spore gh token` refuses; the audit log carries no value. `internal/secrets` tests cover the policy, the gh allowlist and push/fetch through bundles against a local origin.
