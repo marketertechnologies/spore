@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -594,6 +595,23 @@ func checkSecrets(env Env) Result {
 // npmrcAuthKeys are the .npmrc keys whose value is a credential.
 var npmrcAuthKeys = []string{"_authToken", "_auth", "_password"}
 
+// npmrcEnvRef is a value npm and yarn expand from the environment
+// (`${VAR}`, or npm's optional `${VAR?}`).
+var npmrcEnvRef = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\??\}$`)
+
+// npmrcValue unquotes a quoted value and, like npm's ini parser, cuts an
+// unquoted one at the first ';' or '#'.
+func npmrcValue(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
+	}
+	if i := strings.IndexAny(v, ";#"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
 // npmrcLiteralAuth returns the 1-based line numbers of auth keys set to
 // a literal value. A value that is entirely a ${VAR} reference is
 // expanded by npm and yarn at run time and holds no secret itself.
@@ -612,8 +630,8 @@ func npmrcLiteralAuth(data []byte) []int {
 		if j := strings.LastIndex(k, ":"); j >= 0 {
 			k = k[j+1:]
 		}
-		v = strings.Trim(strings.TrimSpace(v), `"'`)
-		if v == "" || (strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") && strings.Count(v, "${") == 1) {
+		v = npmrcValue(v)
+		if v == "" || npmrcEnvRef.MatchString(v) {
 			continue
 		}
 		for _, a := range npmrcAuthKeys {
@@ -650,7 +668,7 @@ func checkNpmrc(env Env) Result {
 	for i, n := range lines {
 		ls[i] = strconv.Itoa(n)
 	}
-	return Result{name, Warn, fmt.Sprintf("%s line %s holds a literal auth token readable by sandboxed agents; move it to a file named by NPM_CONFIG_USERCONFIG (see docs/sandbox.md)", env.Npmrc, strings.Join(ls, ", "))}
+	return Result{name, Warn, fmt.Sprintf("%s line %s holds a literal auth token readable by sandboxed agents; use a ${VAR} reference, or a narrowly scoped token in a file named by NPM_CONFIG_USERCONFIG, which sandboxed agents can read too (see docs/sandbox.md)", env.Npmrc, strings.Join(ls, ", "))}
 }
 
 func checkKillSwitch(env Env) Result {

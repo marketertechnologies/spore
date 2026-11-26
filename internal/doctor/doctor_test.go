@@ -229,10 +229,15 @@ func TestCheckNpmrc(t *testing.T) {
 	if r := find(t, Check(env), "npmrc tokens"); r.Status != Pass {
 		t.Errorf("absent = %+v", r)
 	}
-	_ = os.MkdirAll(filepath.Dir(env.Npmrc), 0o755)
+	if err := os.MkdirAll(filepath.Dir(env.Npmrc), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	clean := "registry=https://registry.npmjs.org/\n" +
 		"//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}\n" +
 		"# _authToken=CANARY-COMMENT\n" +
+		"//r.example/:_authToken=${CI_TOKEN} # ci\n" +
+		"//q.example/:_authToken=${Q_TOKEN?} ; optional\n" +
+		"//s.example/:_password=\"${S_PW}\"\n" +
 		"always-auth=true\n"
 	if err := os.WriteFile(env.Npmrc, []byte(clean), 0o644); err != nil {
 		t.Fatal(err)
@@ -245,6 +250,8 @@ func TestCheckNpmrc(t *testing.T) {
 		{"registry=https://r.example/\n//r.example/:_auth = \"CANARY-B64\"\n", "line 2 "},
 		{"_password=CANARY-PW\n", "line 1 "},
 		{"//r.example/:_authToken=pre${X}CANARY\n", "line 1 "},
+		{"//r.example/:_authToken=${X}CANARY}\n", "line 1 "},
+		{"//r.example/:_authToken=\"CANARY#x\"\n", "line 1 "},
 	} {
 		if err := os.WriteFile(env.Npmrc, []byte(tc.body), 0o644); err != nil {
 			t.Fatal(err)
