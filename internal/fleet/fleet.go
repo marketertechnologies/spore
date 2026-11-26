@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -183,6 +184,25 @@ func Reconcile(cfg Config) (Result, error) {
 		}
 		res.Reaped = append(res.Reaped, slug)
 		delete(runningSet, slug)
+	}
+	// Role panes live under spore-role/, outside SpawnedSlugs. Reap
+	// them by the same status rule so a task flipped to done by hand
+	// (not through `spore task done`) does not leak its panes.
+	roleSlugs, err := task.SpawnedRoleSlugs(cfg.ProjectRoot)
+	if err != nil {
+		return res, err
+	}
+	for _, slug := range roleSlugs {
+		switch statusBySlug[slug] {
+		case "active", "paused", "blocked":
+			continue
+		}
+		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
+			return res, fmt.Errorf("reap %s: %w", slug, err)
+		}
+		if !slices.Contains(res.Reaped, slug) {
+			res.Reaped = append(res.Reaped, slug)
+		}
 	}
 
 	// Stable iteration: sort by matter_sort_order ascending (lower
