@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/events"
@@ -155,9 +156,8 @@ func runGHConfig(args []string) error {
 }
 
 // errBrokered refuses token and exec on a host whose App key is held
-// by the secrets broker: the role loop pushes through the broker, and
-// agents never push by hand.
-var errBrokered = errors.New("the GitHub App key is held by the secrets broker on this host; the role loop pushes and opens PRs through it, and agents do not push by hand (docs/secrets.md)")
+// by the secrets broker.
+var errBrokered = errors.New("the GitHub App key is held by the secrets broker on this host: push and act on PRs with the pr, api and push subcommands, which go through it (docs/secrets.md)")
 
 func runGHToken(args []string) error {
 	if len(args) > 0 {
@@ -196,7 +196,6 @@ func runGHExec(args []string) (int, error) {
 // when the call has no redirect, pipe or chain.
 const errSandboxedKey = "this spore gh call ran inside the Claude Code sandbox, which cannot read the App key: run it as one command with no redirect, pipe or `cd ... &&` (pass a body with --body-file <path>)"
 
-// runAsApp runs args with the App token injected, stdin from stdin.
 func runAsApp(args []string, stdin io.Reader) (int, error) {
 	if out, err := exec.Command("git", "config", "--get", "remote.origin.url").Output(); err == nil {
 		if err := ghapp.CheckHTTPSRemote(strings.TrimSpace(string(out))); err != nil {
@@ -253,6 +252,9 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 	}
 	stdin := string(body)
 	if body == nil && readsStdin(ghArgs) {
+		if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return 2, fmt.Errorf("--body-file - reads stdin, which is a terminal: pass --body-file <path>")
+		}
 		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxGHBody+1))
 		if err != nil {
 			return 0, err
@@ -292,9 +294,19 @@ func inlineBodyFile(args []string) ([]string, []byte, error) {
 	out := append([]string(nil), args...)
 	var body []byte
 	for i := 1; i < len(out); i++ {
-		name, path, inline := strings.Cut(out[i], "=")
+		a := out[i]
+		if field, ok := fieldValue(out, i); ok {
+			if _, v, _ := strings.Cut(field, "="); strings.HasPrefix(v, "@") {
+				return nil, nil, fmt.Errorf("%s: a field must not read a file", a)
+			}
+			continue
+		}
+		name, path, inline := strings.Cut(a, "=")
 		switch {
-		case name == "--body-file" || name == "--input" || (name == "-F" && !inline && out[0] == "pr"):
+		case name == "--body-file" || name == "--input":
+		case out[0] == "pr" && a == "-F":
+		case out[0] == "pr" && strings.HasPrefix(a, "-F"):
+			return nil, nil, fmt.Errorf("%s: pass the body file as --body-file <path>", a)
 		default:
 			continue
 		}
@@ -325,6 +337,29 @@ func inlineBodyFile(args []string) ([]string, []byte, error) {
 	return out, body, nil
 }
 
+// fieldValue returns the key=value of a gh api -F/--field at args[i],
+// in any spelling; gh reads `@path` values from disk.
+func fieldValue(args []string, i int) (string, bool) {
+	if args[0] != "api" {
+		return "", false
+	}
+	a := args[i]
+	switch {
+	case a == "-F" || a == "--field":
+		if i+1 < len(args) {
+			return args[i+1], true
+		}
+		return "", true
+	case strings.HasPrefix(a, "--field="):
+		return strings.TrimPrefix(a, "--field="), true
+	case strings.HasPrefix(a, "-F"):
+		return a[2:], true
+	}
+	return "", false
+}
+
+// readBodyFile opens the resolved path once with O_NOFOLLOW and checks
+// the open file, so nothing can be swapped in between check and read.
 func readBodyFile(path string) ([]byte, error) {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -333,30 +368,48 @@ func readBodyFile(path string) ([]byte, error) {
 	if real, err = filepath.Abs(real); err != nil {
 		return nil, err
 	}
-	var roots []string
-	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		roots = append(roots, strings.TrimSpace(string(out)))
-	}
-	roots = append(roots, os.TempDir())
-	ok := false
-	for _, r := range roots {
-		if rr, err := filepath.EvalSymlinks(r); err == nil {
-			if rel, err := filepath.Rel(rr, real); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-				ok = true
-			}
-		}
-	}
-	if !ok {
+	if !insideAny(real, bodyRoots()) {
 		return nil, fmt.Errorf("body file %s: must be inside the repo or $TMPDIR", path)
 	}
-	fi, err := os.Stat(real)
+	f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("body file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("body file: %w", err)
 	}
 	if !fi.Mode().IsRegular() || fi.Size() > maxGHBody {
 		return nil, fmt.Errorf("body file %s: want a regular file up to 4 MiB", path)
 	}
-	return os.ReadFile(real)
+	return io.ReadAll(io.LimitReader(f, maxGHBody))
+}
+
+// bodyRoots are the cwd repo and $TMPDIR. TMPDIR counts only under
+// /tmp: the caller sets it, and this process runs unsandboxed.
+func bodyRoots() []string {
+	var roots []string
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		roots = append(roots, strings.TrimSpace(string(out)))
+	}
+	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil && insideAny(tmp, []string{"/tmp"}) {
+		roots = append(roots, tmp)
+	}
+	return roots
+}
+
+func insideAny(path string, roots []string) bool {
+	for _, r := range roots {
+		rr, err := filepath.EvalSymlinks(r)
+		if err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(rr, path); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return true
+		}
+	}
+	return false
 }
 
 // readsStdin reports whether gh args take a body from stdin, the only
@@ -421,6 +474,9 @@ func runGHPush(args []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if dirRoot, err := task.MainRepoRoot(dir); err != nil || !sameDir(dirRoot, root) {
+		return 0, fmt.Errorf("the cwd repo %s is not the project %s ($SPORE_PROJECT_ROOT): the broker would push it to that project's repo", dir, root)
+	}
 	name, err := task.ProjectName(root)
 	if err != nil {
 		return 0, err
@@ -473,4 +529,10 @@ func recordPRCreate(root string, args []string, stdout string) {
 
 func isPRCreate(args []string) bool {
 	return len(args) >= 3 && filepath.Base(args[0]) == "gh" && args[1] == "pr" && args[2] == "create"
+}
+
+func sameDir(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }

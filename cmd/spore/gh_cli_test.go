@@ -14,7 +14,6 @@ import (
 	"github.com/versality/spore/internal/secrets"
 )
 
-// fakeBin puts an executable script named name on PATH.
 func fakeBin(t *testing.T, name, body string) {
 	t.Helper()
 	bin := t.TempDir()
@@ -286,6 +285,61 @@ func TestGHUnreadableKeyInSandboxExplains(t *testing.T) {
 	t.Setenv("SANDBOX_RUNTIME", "1")
 	code, _, errOut := captureFn(t, func() int { return runGH([]string{"pr", "view", "9"}) })
 	if code != 1 || !strings.Contains(errOut, "no redirect, pipe") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+}
+
+func TestGHRefusesFileReadingFlagsWithoutBroker(t *testing.T) {
+	ghTestProject(t)
+	noBroker(t)
+	log := filepath.Join(t.TempDir(), "gh.log")
+	fakeBin(t, "gh", `echo "$*" >> `+log+"\n")
+	for _, args := range [][]string{
+		{"api", "repos/o/r/issues/1/comments", "-F", "body=@/etc/passwd"},
+		{"api", "repos/o/r/issues/1/comments", "--field", "body=@/etc/passwd"},
+		{"api", "repos/o/r/issues/1/comments", "--field=body=@/etc/passwd"},
+		{"api", "repos/o/r/issues/1/comments", "-Fbody=@/etc/passwd"},
+		{"pr", "comment", "9", "-F=/etc/passwd"},
+		{"pr", "comment", "9", "-F/etc/passwd"},
+	} {
+		if code := runGH(args); code == 0 {
+			t.Errorf("%q: exit 0", args)
+		}
+	}
+	if b, _ := os.ReadFile(log); len(b) > 0 {
+		t.Fatalf("a refused call reached gh:\n%s", b)
+	}
+}
+
+func TestGHBodyFileIgnoresTMPDIROutsideTmp(t *testing.T) {
+	home := t.TempDir()
+	secret := filepath.Join(home, "secrets.env")
+	if err := os.WriteFile(secret, []byte("TOKEN=x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(home, "/tmp/") {
+		t.Skip("test temp dir is not under /tmp")
+	}
+	if _, err := readBodyFile(secret); err != nil {
+		t.Fatalf("file under a /tmp TMPDIR refused: %v", err)
+	}
+	t.Chdir("/")
+	t.Setenv("TMPDIR", "/etc")
+	if _, err := readBodyFile("/etc/passwd"); err == nil {
+		t.Fatal("TMPDIR=/etc made /etc/passwd a body file")
+	}
+}
+
+func TestGHPushRefusesOtherProjectRepo(t *testing.T) {
+	root := ghTestProject(t)
+	startTestBroker(t, root)
+	other := filepath.Join(t.TempDir(), "other")
+	gitOut(t, t.TempDir(), "init", "-q", "-b", "main", other)
+	gitOut(t, other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+	gitOut(t, other, "checkout", "-q", "-b", "wt/x")
+	t.Chdir(other)
+	code, _, errOut := captureFn(t, func() int { return runGH([]string{"push", "wt/x"}) })
+	if code != 1 || !strings.Contains(errOut, "is not the project") {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 }
