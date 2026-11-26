@@ -175,6 +175,10 @@ type githubMirror struct {
 	// repo is origin as HOST/OWNER/REPO (GH_REPO form).
 	repo     string
 	redactor *redact.Redactor
+	// checked is the commit the engineer check gate cleared this tick
+	// (see holdForCheck); gated is false when no gate applies.
+	checked string
+	gated   bool
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -262,7 +266,7 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
-	pending, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
+	pending, m.checked, m.gated, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
 	if err != nil {
 		return err
 	}
@@ -314,8 +318,16 @@ func (m *githubMirror) connect() (string, error) {
 }
 
 func (m *githubMirror) apply(e mirrorEvent) error {
-	if e.kind == eventEngineer || e.kind == eventReady {
-		if err := m.push(); err != nil {
+	switch {
+	case e.kind == eventEngineer || e.kind == eventReady:
+		if err := m.push(m.checked); err != nil {
+			return err
+		}
+	case e.kind == eventReview && m.gated && m.checked != "":
+		// The reviewer read the checked commit, which can be past the
+		// last engineer push (a fix after a failed check); a later,
+		// unchecked HEAD stays local.
+		if err := m.pushForward(m.checked); err != nil {
 			return err
 		}
 	}
@@ -528,13 +540,15 @@ func (m *githubMirror) prComment(body string) error {
 	return err
 }
 
-// push sends the worktree HEAD to origin as the app. A branch whose
-// last pushed commit is no longer an ancestor of HEAD was rewritten
-// and goes up with --force-with-lease pinned to that commit.
-func (m *githubMirror) push() error {
-	sha, err := m.git("rev-parse", "HEAD")
-	if err != nil {
-		return err
+// push sends sha (HEAD when empty) to origin as the app. A branch
+// whose last pushed commit is no longer an ancestor of sha was
+// rewritten and goes up with --force-with-lease pinned to that commit.
+func (m *githubMirror) push(sha string) error {
+	if sha == "" {
+		var err error
+		if sha, err = m.git("rev-parse", "HEAD"); err != nil {
+			return err
+		}
 	}
 	if sha == m.state.PushedSHA {
 		return nil
@@ -544,9 +558,9 @@ func (m *githubMirror) push() error {
 		return err
 	}
 	ref := "refs/heads/" + branch
-	args := []string{"push", "--quiet", "origin", "HEAD:" + ref}
+	args := []string{"push", "--quiet", "origin", sha + ":" + ref}
 	if prev := m.state.PushedSHA; prev != "" {
-		if _, err := m.git("merge-base", "--is-ancestor", prev, "HEAD"); err != nil {
+		if _, err := m.git("merge-base", "--is-ancestor", prev, sha); err != nil {
 			args = append(args, "--force-with-lease="+ref+":"+prev)
 		}
 	}
@@ -556,6 +570,17 @@ func (m *githubMirror) push() error {
 	m.state.PushedSHA = sha
 	m.save()
 	return nil
+}
+
+// pushForward is push without moving origin back to an ancestor of the
+// last pushed commit.
+func (m *githubMirror) pushForward(sha string) error {
+	if prev := m.state.PushedSHA; prev != "" {
+		if _, err := m.git("merge-base", "--is-ancestor", sha, prev); err == nil {
+			return nil
+		}
+	}
+	return m.push(sha)
 }
 
 func (m *githubMirror) branch() (string, error) {
