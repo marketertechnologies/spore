@@ -215,7 +215,7 @@ func TestNotifyCoordinatorEnv_ForwardsOtherTypes(t *testing.T) {
 	}
 }
 
-func TestNotifyCoordinatorEnv_DedupsBurstPerSlugAndType(t *testing.T) {
+func TestNotifyCoordinatorEnv_DedupsBurstPerSlugTypeAndMessage(t *testing.T) {
 	inbox := setWorkerEnv(t)
 
 	for i := 0; i < 3; i++ {
@@ -224,37 +224,92 @@ func TestNotifyCoordinatorEnv_DedupsBurstPerSlugAndType(t *testing.T) {
 		}
 	}
 	if n := len(inboxEvents(t, inbox)); n != 1 {
-		t.Fatalf("burst of 3 permission prompts: got %d messages, want 1", n)
+		t.Fatalf("burst of 3 identical permission prompts: got %d messages, want 1", n)
+	}
+
+	otherPrompt := `{"message":"Claude needs your permission to use Edit","notification_type":"permission_prompt"}`
+	if err := NotifyCoordinatorEnv(strings.NewReader(otherPrompt)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inboxEvents(t, inbox)); n != 2 {
+		t.Fatalf("a different permission prompt must pass: got %d messages, want 2", n)
 	}
 
 	other := `{"message":"Server wants input","notification_type":"elicitation_dialog"}`
 	if err := NotifyCoordinatorEnv(strings.NewReader(other)); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(inboxEvents(t, inbox)); n != 2 {
-		t.Fatalf("a different type must pass: got %d messages, want 2", n)
+	if n := len(inboxEvents(t, inbox)); n != 3 {
+		t.Fatalf("a different type must pass: got %d messages, want 3", n)
 	}
 
 	t.Setenv("SPORE_TASK_SLUG", "other-task")
 	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(inboxEvents(t, inbox)); n != 3 {
-		t.Fatalf("a different worker must pass: got %d messages, want 3", n)
+	if n := len(inboxEvents(t, inbox)); n != 4 {
+		t.Fatalf("a different worker must pass: got %d messages, want 4", n)
 	}
 }
 
-func TestClaimNotifySlot_WindowExpires(t *testing.T) {
+func TestNotifyCoordinatorEnv_FailedWriteDoesNotStamp(t *testing.T) {
+	inbox := setWorkerEnv(t)
+	if err := os.MkdirAll(filepath.Dir(inbox), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inbox, []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err == nil {
+		t.Fatal("expected an error writing into a file-shaped inbox")
+	}
+	if err := os.Remove(inbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inboxEvents(t, inbox)); n != 1 {
+		t.Fatalf("retry after a failed write: got %d messages, want 1", n)
+	}
+}
+
+func TestNotifyCoordinatorEnv_NilStdinIsNoop(t *testing.T) {
+	inbox := setWorkerEnv(t)
+	if err := NotifyCoordinatorEnv(nil); err != nil {
+		t.Fatal(err)
+	}
+	if evs := inboxEvents(t, inbox); len(evs) != 0 {
+		t.Errorf("nil stdin forwarded: %+v", evs)
+	}
+}
+
+func TestNotifyStamp_WindowExpiresAndPrunes(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	if !claimNotifySlot(dir, "w", "permission_prompt", now) {
-		t.Fatal("first claim refused")
+	stamp := notifyStamp(dir, "w", "permission_prompt", "msg")
+	if sentRecently(stamp, now) {
+		t.Fatal("unsent stamp reported recent")
 	}
-	if claimNotifySlot(dir, "w", "permission_prompt", now.Add(NotifyDedupWindow-time.Second)) {
-		t.Fatal("claim inside the window allowed")
+	markSent(stamp, now)
+	if !sentRecently(stamp, now.Add(NotifyDedupWindow-time.Second)) {
+		t.Fatal("send inside the window not suppressed")
 	}
-	if !claimNotifySlot(dir, "w", "permission_prompt", now.Add(NotifyDedupWindow+time.Second)) {
-		t.Fatal("claim after the window refused")
+	if sentRecently(stamp, now.Add(NotifyDedupWindow+time.Second)) {
+		t.Fatal("send after the window suppressed")
+	}
+	if notifyStamp(dir, "w", "permission_prompt", "other") == stamp {
+		t.Fatal("different messages share a stamp")
+	}
+
+	later := now.Add(notifyStampMaxAge + time.Minute)
+	fresh := notifyStamp(dir, "w", "permission_prompt", "other")
+	markSent(fresh, later)
+	if _, err := os.Stat(stamp); !os.IsNotExist(err) {
+		t.Errorf("stale stamp not pruned (err=%v)", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh stamp missing: %v", err)
 	}
 }
 

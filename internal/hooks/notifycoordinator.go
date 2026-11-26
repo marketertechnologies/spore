@@ -1,6 +1,8 @@
 package hooks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,8 +31,8 @@ func NotifyCoordinatorEvent(project, source, body string) error {
 	return notifyCoordinatorAt(coordinatorInbox(project), source, body)
 }
 
-// NotifyDedupWindow is how long one worker's notification of one type
-// suppresses repeats of that type.
+// NotifyDedupWindow is how long one worker's notification suppresses
+// repeats with the same type and message.
 const NotifyDedupWindow = 5 * time.Minute
 
 // NotificationInput is the part of the Claude Code Notification hook
@@ -71,8 +73,8 @@ var idleMessage = regexp.MustCompile(`(?i)^claude is waiting for your input\.?$`
 //     itself);
 //   - the plain idle reminder and other info-only types (infoOnlyTypes),
 //     or an empty payload;
-//   - a repeat of the same type from the same worker within
-//     NotifyDedupWindow.
+//   - a repeat of the same type and message from the same worker within
+//     NotifyDedupWindow (recorded only after the inbox write succeeds).
 func NotifyCoordinatorEnv(stdin io.Reader) error {
 	project := os.Getenv("WT_PROJECT")
 	if project == "" || os.Getenv("SPORE_ROLE") != "" {
@@ -97,14 +99,20 @@ func NotifyCoordinatorEnv(stdin io.Reader) error {
 		kind = "notification"
 	}
 	slug := notifySenderSlug()
-	if !claimNotifySlot(filepath.Dir(inbox), slug, kind, time.Now()) {
+	stamp := notifyStamp(filepath.Dir(inbox), slug, kind, in.Message)
+	now := time.Now()
+	if sentRecently(stamp, now) {
 		return nil
 	}
 	body := fmt.Sprintf("worker %s: %s", slug, kind)
 	if in.Message != "" {
 		body += ": " + in.Message
 	}
-	return notifyCoordinatorAt(inbox, "notification", body)
+	if err := notifyCoordinatorAt(inbox, "notification", body); err != nil {
+		return err
+	}
+	markSent(stamp, now)
+	return nil
 }
 
 func needsAttention(in NotificationInput) bool {
@@ -129,26 +137,49 @@ func notifySenderSlug() string {
 
 var unsafeStampChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
-// claimNotifySlot reports whether slug may send a notification of kind
-// now, and if so records the send. The stamp's mtime is the last send;
-// two hooks racing inside one window can both pass, which is fine for
-// a rate limit that only has to collapse bursts.
-func claimNotifySlot(projectState, slug, kind string, now time.Time) bool {
-	dir := filepath.Join(projectState, "notify-stamps")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return true
+// notifyStamp names the dedup stamp for one worker, type and message.
+// The message is part of the key so an identical burst collapses but a
+// second, different prompt (another tool's approval) still gets through.
+func notifyStamp(projectState, slug, kind, message string) string {
+	sum := sha256.Sum256([]byte(message))
+	name := unsafeStampChars.ReplaceAllString(slug+"."+kind, "_") + "." + hex.EncodeToString(sum[:6])
+	return filepath.Join(projectState, "notify-stamps", name)
+}
+
+// sentRecently reports whether stamp records a send within
+// NotifyDedupWindow of now. Two hooks racing inside one window can both
+// pass, which is fine for a rate limit that only has to collapse bursts.
+func sentRecently(stamp string, now time.Time) bool {
+	fi, err := os.Stat(stamp)
+	if err != nil {
+		return false
 	}
-	name := unsafeStampChars.ReplaceAllString(slug+"."+kind, "_")
-	stamp := filepath.Join(dir, name)
-	if fi, err := os.Stat(stamp); err == nil {
-		if age := now.Sub(fi.ModTime()); age >= 0 && age < NotifyDedupWindow {
-			return false
-		}
+	age := now.Sub(fi.ModTime())
+	return age >= 0 && age < NotifyDedupWindow
+}
+
+// notifyStampMaxAge bounds how long stale stamps stay on disk.
+const notifyStampMaxAge = time.Hour
+
+// markSent records a send at now and prunes stamps past
+// notifyStampMaxAge. Failures only weaken the dedup, so they are ignored.
+func markSent(stamp string, now time.Time) {
+	dir := filepath.Dir(stamp)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
 	}
 	if err := os.WriteFile(stamp, nil, 0o600); err == nil {
 		_ = os.Chtimes(stamp, now, now)
 	}
-	return true
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > notifyStampMaxAge {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func notifyCoordinatorAt(inbox, source, body string) error {

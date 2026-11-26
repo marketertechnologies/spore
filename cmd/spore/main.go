@@ -131,7 +131,8 @@ Subcommands:
                               With no project (the Notification hook), reads
                               $WT_PROJECT and the hook payload on stdin, and
                               forwards only a worker notification that needs
-                              attention, at most one per type per 5 minutes.
+                              attention, collapsing repeats of the same type
+                              and message within 5 minutes.
 `
 
 const infectUsage = `spore infect - bootstrap a fresh server with NixOS via nixos-anywhere
