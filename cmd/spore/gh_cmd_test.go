@@ -120,7 +120,7 @@ func TestRecordPRCreateWritesLedger(t *testing.T) {
 }
 
 func TestGHTokenHelpWarnsAboutTranscripts(t *testing.T) {
-	if !strings.Contains(ghUsage, "token lands in its transcript") || !strings.Contains(ghUsage, "spore gh exec -- git push") {
+	if !strings.Contains(ghUsage, "token lands in its transcript") || !strings.Contains(ghUsage, "spore gh push <branch>") {
 		t.Fatalf("spore gh token help lacks the transcript warning:\n%s", ghUsage)
 	}
 }

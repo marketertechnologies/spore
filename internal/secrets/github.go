@@ -201,6 +201,10 @@ func checkGHArgs(args []string, repo string) error {
 				return fmt.Errorf("%s must be - (stdin)", name)
 			}
 		case "-F", "--field":
+			// Under pr, -F is --body-file.
+			if args[0] == "pr" && val != "-" {
+				return fmt.Errorf("pr -F must be - (stdin)")
+			}
 			if _, v, _ := strings.Cut(val, "="); strings.HasPrefix(v, "@") {
 				return fmt.Errorf("%s must not read a file", name)
 			}

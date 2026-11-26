@@ -31,7 +31,7 @@ Content rules: no prompt text, no model output, no secret values. `detail` and `
 | `alert` | `spore hooks stop-failure` | any Claude Code `StopFailure` (`fields.error` is the kind) |
 | `reconcile.skipped` | reconcile pass, replenish hook | lock held, fleet disabled, or budget advice; at most once per hour per reason |
 | `reconcile.failed` | `spore fleet reconcile`, replenish hook | the pass returned an error or blew its time budget |
-| `pr.opened` | role-loop PR mirror, `spore gh exec -- gh pr create` | a PR was created (`fields.url`) |
+| `pr.opened` | role-loop PR mirror, `spore gh pr create`, `spore gh exec -- gh pr create` | a PR was created (`fields.url`) |
 
 ## `spore report`
 

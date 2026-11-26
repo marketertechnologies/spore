@@ -29,6 +29,7 @@
         enable = true;
         pilots = [ "pilot" ];
         projects.alpha.repo = "github.com/acme/alpha";
+        projects.alpha.pushBranch = "^(wt|feature)/[A-Za-z0-9._-]+$";
         profiles.alpha-db = {
           project = "alpha";
           description = "read-only database";
@@ -91,6 +92,24 @@
       # The App token path is closed to agents.
       out = machine.fail(agent(f"{spore} gh token 2>&1"))
       assert "held by the secrets broker" in out, out
+
+      # pr, api and push reach the broker, which applies its allowlist
+      # before it needs a token.
+      machine.succeed("grep -qF '\"push_branch\":\"^(wt|feature)/' /etc/spore/secrets-broker.json")
+      out = machine.fail(agent(f"{spore} gh pr create --title t 2>&1"))
+      assert "must be --draft" in out, out
+      out = machine.fail(agent(f"{spore} gh pr merge 1 2>&1"))
+      assert "pr merge is not allowed" in out, out
+      out = machine.fail(agent(f"{spore} gh api repos/acme/other/pulls/1 2>&1"))
+      assert "is not allowed" in out, out
+      machine.succeed(
+          "runuser -u agent -- git -C /home/agent/alpha -c user.name=t -c user.email=t@t commit -q --allow-empty -m base",
+          "runuser -u agent -- git -C /home/agent/alpha branch -q hotfix/x",
+      )
+      out = machine.fail(agent(f"{spore} gh push hotfix/x 2>&1"))
+      assert "push_branch" in out, out
+      out = machine.fail(agent(f"{spore} gh push hotfix/x --force 2>&1"))
+      assert "refused" in out, out
 
       # Kill switch: only root or a pilot re-enables; agents may stop.
       flag = "/var/lib/spore-fleet/fleet-enabled"
