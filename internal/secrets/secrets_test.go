@@ -620,3 +620,43 @@ func TestPushLazyFetchFollowsRepoURL(t *testing.T) {
 		t.Fatalf("moved origin has %s, want %s", got, f.sha)
 	}
 }
+
+// A mirror behind origin answers a thin bundle it cannot verify with
+// one batched fetch of its branches. Checking for the missing
+// prerequisites must not lazy-fetch them with no haves instead.
+func TestPushStaleMirrorFetchesOnce(t *testing.T) {
+	f := newBloblessFixture(t)
+	git(t, f.work, "checkout", "--quiet", "main")
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b", "c"} {
+		writeFile(t, filepath.Join(f.work, n+".txt"), n+"\n")
+		git(t, f.work, "add", n+".txt")
+		git(t, f.work, "commit", "--quiet", "-m", n)
+	}
+	git(t, f.work, "push", "--quiet", "origin", "main")
+	git(t, f.work, "fetch", "--quiet", "origin")
+	git(t, f.work, "checkout", "--quiet", "-b", "wt/stale")
+	writeFile(t, filepath.Join(f.work, "d.txt"), "d\n")
+	git(t, f.work, "add", "d.txt")
+	git(t, f.work, "commit", "--quiet", "-m", "d")
+	sha := git(t, f.work, "rev-parse", "HEAD")
+
+	count := filepath.Join(f.tmp, "uploads")
+	wrap := filepath.Join(f.tmp, "upload-pack")
+	if err := os.WriteFile(wrap, []byte("#!/bin/sh\necho x >> '"+count+"'\nexec git-upload-pack \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.mirror(), "config", "remote.origin.uploadpack", wrap)
+	if err := Push("alpha", f.work, "wt/stale", sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(count)
+	if n := bytes.Count(b, []byte("x")); n != 1 {
+		t.Fatalf("mirror ran upload-pack %d times, want 1 batched fetch", n)
+	}
+	if got, want := git(t, f.mirror(), "rev-parse", "refs/remotes/origin/main"), git(t, f.origin, "rev-parse", "main"); got != want {
+		t.Fatalf("mirror origin/main is %s, want %s: a lazy fetch stood in for the batched one", got, want)
+	}
+}

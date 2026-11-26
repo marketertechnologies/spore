@@ -268,8 +268,8 @@ func (s *Server) remoteURL(repo string) string {
 }
 
 // promisor makes the mirror a blobless partial clone of origin. A cold
-// full fetch of a large history (marketer-frontend: 24 GB of blobs)
-// outruns githubTimeout; commits and trees stay small, and git fetches
+// full fetch of a history with tens of GB of blobs outruns
+// githubTimeout; commits and trees stay small, and git fetches
 // the few blobs a thin bundle or a push needs on demand from origin
 // with the App credentials in env. Existing full mirrors keep their
 // objects.
@@ -286,6 +286,14 @@ func (s *Server) promisor(ctx context.Context, dir string, env []string, repo st
 		}
 	}
 	return nil
+}
+
+// noLazy is env for a check that reads only commits, which a blobless
+// mirror holds once fetched. A commit it lacks must fail fast: a lazy
+// fetch sends origin no haves, so it pulls every commit and tree
+// behind that commit, ahead of the single batched fetch that follows.
+func noLazy(env []string) []string {
+	return append(env[:len(env):len(env)], "GIT_NO_LAZY_FETCH=1")
 }
 
 func gitIn(ctx context.Context, dir string, env []string, args ...string) (string, error) {
@@ -340,11 +348,11 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	if err := s.promisor(ctx, dir, env, repo); err != nil {
 		return Response{Error: err.Error()}
 	}
-	if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
+	if _, err := gitIn(ctx, dir, noLazy(env), "bundle", "verify", "--quiet", bpath); err != nil {
 		if _, ferr := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); ferr != nil {
 			return Response{Error: s.redactor(req.Project).String(ferr.Error())}
 		}
-		if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
+		if _, err := gitIn(ctx, dir, noLazy(env), "bundle", "verify", "--quiet", bpath); err != nil {
 			return Response{Error: "bundle prerequisites missing", NeedFull: true}
 		}
 	}
@@ -359,7 +367,7 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	// The mirror pushes the commit the check gate cleared, which may
 	// trail the branch tip the bundle carries.
 	if got != req.SHA {
-		if _, err := gitIn(ctx, dir, env, "merge-base", "--is-ancestor", req.SHA, incoming); err != nil {
+		if _, err := gitIn(ctx, dir, noLazy(env), "merge-base", "--is-ancestor", req.SHA, incoming); err != nil {
 			return Response{Error: fmt.Sprintf("%s is not in the bundle (tip %s)", req.SHA, got)}
 		}
 	}
@@ -419,7 +427,7 @@ func (s *Server) fetch(c Caller, req Request) (Response, []byte) {
 	}
 	args := []string{"bundle", "create", "--quiet", filepath.Join(home, "fetch.bundle"), ref}
 	if shaRE.MatchString(req.Have) {
-		if _, err := gitIn(ctx, dir, env, "merge-base", "--is-ancestor", req.Have, tip); err == nil {
+		if _, err := gitIn(ctx, dir, noLazy(env), "merge-base", "--is-ancestor", req.Have, tip); err == nil {
 			args = append(args, "^"+req.Have)
 		}
 	}
