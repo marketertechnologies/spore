@@ -542,3 +542,112 @@ func TestDrainInbox_ConcurrentTellsDeliverExactlyOnce(t *testing.T) {
 		t.Errorf("distinct messages = %d, want %d", len(seen), writers*perWriter)
 	}
 }
+
+// P1.13: N Stop-hook watchers (each acks inflight/ on start, then
+// drains) race M parallel tells at settle 0. A watcher's ack must never
+// take a message another watcher claimed but has not printed yet.
+func TestWatchInbox_ConcurrentWatchersAckOnlyDelivered(t *testing.T) {
+	_, _, inbox := setupInbox(t)
+	const watchers, tells = 4, 400
+	opts := watchOpts{
+		timeout: 0, settle: 0,
+		initWatcher: func(string) (inboxWaiter, error) { return nil, errors.New("no inotify in test") },
+		sleep:       func(time.Duration) {},
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	outs := make([]bytes.Buffer, watchers)
+	for w := 0; w < watchers; w++ {
+		wg.Add(1)
+		go func(buf *bytes.Buffer) {
+			defer wg.Done()
+			for last := false; !last; {
+				select {
+				case <-done:
+					last = true
+				default:
+				}
+				if err := watchInboxAt(inbox, buf, io.Discard, opts); err != nil && !errors.Is(err, ErrWake) {
+					t.Error(err)
+					return
+				}
+			}
+		}(&outs[w])
+	}
+	var tw sync.WaitGroup
+	for i := 0; i < tells; i++ {
+		tw.Add(1)
+		go func(i int) {
+			defer tw.Done()
+			if err := task.TellDir(inbox, "x", fmt.Sprintf("m-%d-%s", i, strings.Repeat("b", 2048))); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	tw.Wait()
+	close(done)
+	wg.Wait()
+
+	seen := map[string]int{}
+	for i := range outs {
+		for _, line := range strings.Split(strings.TrimRight(outs[i].String(), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			_, body, ok := strings.Cut(line, "unverified): ")
+			if !ok || body == "" {
+				t.Errorf("bad line: %.200q", line)
+				continue
+			}
+			seen[body]++
+		}
+	}
+	for i := 0; i < tells; i++ {
+		if m := fmt.Sprintf("m-%d-%s", i, strings.Repeat("b", 2048)); seen[m] != 1 {
+			t.Errorf("m-%d delivered %d times", i, seen[m])
+		}
+	}
+	if left := pendingJSON(t, inbox); len(left) != 0 {
+		t.Errorf("undelivered: %v", left)
+	}
+	if left, _ := os.ReadDir(filepath.Join(inbox, claimingDir)); len(left) != 0 {
+		t.Errorf("claim dirs left behind: %d", len(left))
+	}
+}
+
+// A watcher killed between its claim and its print leaves a claim dir
+// whose pid is gone; the next watcher puts those messages back and
+// delivers them.
+func TestWatchInbox_RecoversDeadWatcherClaim(t *testing.T) {
+	_, _, inbox := setupInbox(t)
+	dead := filepath.Join(inbox, claimingDir, "999999999-abc")
+	if err := os.MkdirAll(dead, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTell(t, filepath.Join(dead, "100.json"), `{"body":"stranded"}`)
+	live := filepath.Join(inbox, claimingDir, fmt.Sprintf("%d-abc", os.Getpid()))
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTell(t, filepath.Join(live, "200.json"), `{"body":"mid-claim"}`)
+
+	opts := watchOpts{
+		timeout: 0, settle: 0,
+		initWatcher: func(string) (inboxWaiter, error) { return nil, errors.New("no inotify in test") },
+		sleep:       func(time.Duration) {},
+	}
+	var out bytes.Buffer
+	if err := watchInboxAt(inbox, &out, io.Discard, opts); !errors.Is(err, ErrWake) {
+		t.Fatalf("err=%v, want ErrWake", err)
+	}
+	if !strings.Contains(out.String(), "stranded") || strings.Contains(out.String(), "mid-claim") {
+		t.Errorf("out = %q, want the dead claim only", out.String())
+	}
+	if _, err := os.Stat(dead); !os.IsNotExist(err) {
+		t.Errorf("dead claim dir kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(live, "200.json")); err != nil {
+		t.Errorf("live claim touched: %v", err)
+	}
+}
