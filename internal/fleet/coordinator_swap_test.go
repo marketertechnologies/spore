@@ -162,8 +162,9 @@ func TestSwapCoordinatorToCodexClearsModel(t *testing.T) {
 	want := [][]string{
 		{"set-environment", "-t", exact, "SPORE_COORDINATOR_PROVIDER", "codex"},
 		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_MODEL"},
+		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_EFFORT"},
 		{"respawn-pane", "-k", "-t", "%7", "-c", f.root,
-			coordinatorShellCommand("/usr/local/bin/spore-coordinator-launch", "/r/role.md")},
+			mustShellCommand(t, "/usr/local/bin/spore-coordinator-launch", "/r/role.md")},
 	}
 	if got := f.tmux.mutations(); !reflect.DeepEqual(got, want) {
 		t.Errorf("tmux sequence:\n%q\nwant:\n%q", got, want)
@@ -248,7 +249,7 @@ func TestSwapCoordinatorWrapWaitsForStateMD(t *testing.T) {
 	if !strings.Contains(string(body), "codex coordinator") || !strings.Contains(string(body), "state.md") {
 		t.Errorf("wrap envelope = %s", body)
 	}
-	if len(f.tmux.mutations()) != 3 {
+	if len(f.tmux.mutations()) != 4 {
 		t.Errorf("tmux mutations = %q", f.tmux.mutations())
 	}
 }
@@ -277,7 +278,7 @@ func TestSwapCoordinatorWrapTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Wrapped || res.Config.Driver != "codex" || len(f.tmux.mutations()) != 3 {
+	if res.Wrapped || res.Config.Driver != "codex" || len(f.tmux.mutations()) != 4 {
 		t.Errorf("forced swap: res %+v, mutations %q", res, f.tmux.mutations())
 	}
 }
@@ -384,7 +385,7 @@ func TestSwapAgentPrecedence(t *testing.T) {
 				t.Fatal(err)
 			}
 			muts := f.tmux.mutations()
-			if got := muts[len(muts)-1][len(muts[len(muts)-1])-1]; got != coordinatorShellCommand(c.want, "/r/role.md") {
+			if got := muts[len(muts)-1][len(muts[len(muts)-1])-1]; got != mustShellCommand(t, c.want, "/r/role.md") {
 				t.Errorf("respawn command = %q, want agent %q", got, c.want)
 			}
 		})
@@ -397,6 +398,7 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 	restore := [][]string{
 		{"set-environment", "-t", exact, "SPORE_COORDINATOR_PROVIDER", "claude"},
 		{"set-environment", "-t", exact, "-r", "SPORE_COORDINATOR_MODEL"},
+		{"set-environment", "-t", exact, "-u", "SPORE_COORDINATOR_EFFORT"},
 	}
 	const prior = "# swapped earlier\n[coordinator]\ndriver = \"claude\"\n"
 	cases := []struct {
@@ -406,9 +408,9 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 		wantInErr string
 		wantMuts  int
 	}{
-		{"respawn fails", "respawn-pane", "", "driver override restored, pane untouched, session env restored", 5},
-		{"respawn fails over a prior override", "respawn-pane", prior, "driver override restored, pane untouched, session env restored", 5},
-		{"set-environment fails", "set-environment", "", "driver override and the pane untouched", 3},
+		{"respawn fails", "respawn-pane", "", "driver override restored, pane untouched, session env restored", 7},
+		{"respawn fails over a prior override", "respawn-pane", prior, "driver override restored, pane untouched, session env restored", 7},
+		{"set-environment fails", "set-environment", "", "driver override and the pane untouched", 4},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -442,8 +444,8 @@ func TestSwapCoordinatorRollsBackOnTmuxFailure(t *testing.T) {
 			if len(muts) != c.wantMuts {
 				t.Fatalf("mutations = %q", muts)
 			}
-			if !reflect.DeepEqual(muts[len(muts)-2:], restore) {
-				t.Errorf("restore commands = %q, want %q", muts[len(muts)-2:], restore)
+			if !reflect.DeepEqual(muts[len(muts)-3:], restore) {
+				t.Errorf("restore commands = %q, want %q", muts[len(muts)-3:], restore)
 			}
 		})
 	}

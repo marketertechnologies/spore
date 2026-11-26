@@ -19,6 +19,9 @@
 #
 # Override knobs:
 #   SPORE_WORKER_AGENT     binary to exec (default: claude)
+#   SPORE_AGENT_MODEL      --model for claude (set by spore from
+#                          [agents.worker] / task `model:`)
+#   SPORE_AGENT_EFFORT     --effort for claude (same sources, `effort:`)
 set -euo pipefail
 
 # Ensure the nix-managed claude wins over any /usr/local/bin/ shadow
@@ -30,11 +33,19 @@ agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
 note="${1:-}"
 
+flags=(--dangerously-skip-permissions)
+if [[ -n "${SPORE_AGENT_MODEL:-}" ]]; then
+  flags+=(--model "$SPORE_AGENT_MODEL")
+fi
+if [[ -n "${SPORE_AGENT_EFFORT:-}" ]]; then
+  flags+=(--effort "$SPORE_AGENT_EFFORT")
+fi
+
 no_brief() {
   if [[ -n "$note" ]]; then
-    exec "$agent" --dangerously-skip-permissions -- "$note"
+    exec "$agent" "${flags[@]}" -- "$note"
   fi
-  exec "$agent" --dangerously-skip-permissions
+  exec "$agent" "${flags[@]}"
 }
 
 if [[ -z "$slug" ]]; then
@@ -58,4 +69,4 @@ prompt="$(cat "$brief")"
 if [[ -n "$note" ]]; then
   prompt="${note}"$'\n\n'"${prompt}"
 fi
-exec "$agent" --dangerously-skip-permissions -- "$prompt"
+exec "$agent" "${flags[@]}" -- "$prompt"

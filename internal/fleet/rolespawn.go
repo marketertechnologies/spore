@@ -100,7 +100,11 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if cwd == "" {
 		cwd = filepath.Join(s.ProjectRoot, ".worktrees", s.Slug)
 	}
-	withBody, bare, err := s.invocations(agent, meta)
+	settings, err := s.settings(agent, meta)
+	if err != nil {
+		return nil, err
+	}
+	withBody, bare, err := s.invocations(agent, meta, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -231,16 +235,60 @@ func (s RoleSpawnSpec) reviewerPrefix(slot ReviewerSlot) (string, error) {
 
 // invocations returns the pane's agent command with and without a
 // role body (see agentInvocations) for the agent resolve picked.
-func (s RoleSpawnSpec) invocations(agent string, meta frontmatter.Meta) (withBody, bare string, err error) {
+func (s RoleSpawnSpec) invocations(agent string, meta frontmatter.Meta, st task.AgentSettings) (withBody, bare string, err error) {
 	if s.Agent != "" || agent != "codex" {
-		withBody, bare = agentInvocations(agent)
-		return withBody, bare, nil
+		return agentInvocations(agent, st)
 	}
-	cmd, err := task.CodexAgentCommand(meta)
+	cmd, err := task.CodexAgentCommand(meta, st)
 	if err != nil {
 		return "", "", err
 	}
 	return cmd + " --", cmd, nil
+}
+
+// settings returns the pane's model and effort: [agents.<role>]
+// (reviewers overlaid by [agents.reviewer.<instance>]), then the task
+// frontmatter when the pane runs the task's own agent.
+func (s RoleSpawnSpec) settings(agent string, meta frontmatter.Meta) (task.AgentSettings, error) {
+	cfg, err := task.LoadAgentsConfig(s.ProjectRoot)
+	if err != nil {
+		return task.AgentSettings{}, err
+	}
+	instance := ""
+	if s.Role == "reviewer" {
+		instance = string(s.ReviewerInstance)
+	}
+	withTask := false
+	if s.Agent == "" {
+		taskAgent, err := roleAgent(s.ProjectRoot, meta)
+		if err != nil {
+			return task.AgentSettings{}, err
+		}
+		withTask = sameAgent(agent, taskAgent)
+	}
+	return task.ResolveAgentSettings(cfg, s.Role, instance, meta, withTask), nil
+}
+
+func sameAgent(a, b string) bool {
+	return a == b || isClaudeAgent(a) && isClaudeAgent(b)
+}
+
+// ResolvedAgent returns the agent the pane would run and the model and
+// effort it would get, codex defaults filled in (see
+// task.CodexEffective). For status output.
+func (s RoleSpawnSpec) ResolvedAgent() (string, task.AgentSettings, error) {
+	_, meta, agent, err := s.resolve()
+	if err != nil {
+		return "", task.AgentSettings{}, err
+	}
+	st, err := s.settings(agent, meta)
+	if err != nil {
+		return "", task.AgentSettings{}, err
+	}
+	if s.Agent == "" && agent == "codex" {
+		st, err = task.CodexEffective(meta, st)
+	}
+	return agent, st, err
 }
 
 // roleAgent picks the agent for a task's role panes: the task's

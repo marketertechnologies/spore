@@ -32,6 +32,12 @@ var schema = map[string][]string{
 	"editor":               {"auto_connect_ide"},
 	"permissions":          {"default_deny", "deny"},
 	"matter.":              {anyKey},
+	"agents.coordinator":   {"model", "effort"},
+	"agents.worker":        {"model", "effort"},
+	"agents.engineer":      {"model", "effort"},
+	"agents.reviewer":      {"model", "effort"},
+	"agents.reviewer.A":    {"model", "effort"},
+	"agents.reviewer.B":    {"model", "effort"},
 }
 
 // Problem is one unknown section or key in a spore.toml.

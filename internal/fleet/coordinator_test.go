@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/versality/spore/codexpolicy"
+	"github.com/versality/spore/internal/task"
 )
 
 func TestReconcileSpawnsCoordinatorSingleton(t *testing.T) {
@@ -255,7 +256,7 @@ func TestEnsureCoordinatorPatternNoMatchSpawnsKernel(t *testing.T) {
 }
 
 func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
-	got := coordinatorShellCommand("claude", "/tmp/role.md")
+	got := mustShellCommand(t, "claude", "/tmp/role.md")
 	if !strings.Contains(got, "exec claude --dangerously-skip-permissions -- \"$(cat") {
 		t.Errorf("claude command missing flag injection: %s", got)
 	}
@@ -265,14 +266,14 @@ func TestCoordinatorShellCommandInjectsClaudeFlags(t *testing.T) {
 }
 
 func TestCoordinatorShellCommandLeavesNonClaudeAlone(t *testing.T) {
-	got := coordinatorShellCommand("sleep 30", "/tmp/role.md")
+	got := mustShellCommand(t, "sleep 30", "/tmp/role.md")
 	if strings.Contains(got, "dangerously-skip-permissions") {
 		t.Errorf("sleep agent should not get claude flags: %s", got)
 	}
 }
 
 func TestCoordinatorShellCommandCodexReadsClaudeMD(t *testing.T) {
-	got := coordinatorShellCommand("/run/current-system/sw/bin/codex", "/tmp/role.md")
+	got := mustShellCommand(t, "/run/current-system/sw/bin/codex", "/tmp/role.md")
 	flag := `-c 'project_doc_fallback_filenames=["CLAUDE.md"]'`
 	if !strings.Contains(got, "exec /run/current-system/sw/bin/codex "+flag+` -- "$(cat`) {
 		t.Errorf("codex command missing CLAUDE.md fallback: %s", got)
@@ -347,4 +348,13 @@ func TestEnsureCoordinatorUsesDriverOverride(t *testing.T) {
 	if !strings.Contains(env, "SPORE_COORDINATOR_PROVIDER=codex\n") || strings.Contains(env, "SPORE_COORDINATOR_MODEL=") {
 		t.Errorf("session env = %s; want provider codex and no model", env)
 	}
+}
+
+func mustShellCommand(t *testing.T, agent, rolePath string) string {
+	t.Helper()
+	cmd, err := coordinatorShellCommand(agent, rolePath, task.AgentSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cmd
 }
