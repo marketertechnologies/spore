@@ -16,6 +16,19 @@ func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
 	t.Setenv("WT_PROJECT", "project")
 	t.Setenv("SPORE_TASK_INBOX", filepath.Join(t.TempDir(), "worker", "inbox"))
+	t.Setenv("SPORE_ROLE", "")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := w.WriteString(`{"message":"Claude needs your permission","notification_type":"permission_prompt"}`); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	orig := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = orig }()
 
 	if code := runHooksNotifyCoordinator(nil); code != 0 {
 		t.Fatalf("runHooksNotifyCoordinator(nil) = %d, want 0", code)

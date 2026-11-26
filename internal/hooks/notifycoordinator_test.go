@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNotifyCoordinator_WritesPoke(t *testing.T) {
@@ -92,13 +93,53 @@ func TestNotifyCoordinator_CreatesInboxDirs(t *testing.T) {
 	}
 }
 
+const permissionPayload = `{"session_id":"abc","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}`
+
+func setWorkerEnv(t *testing.T) string {
+	t.Helper()
+	state := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
+	t.Setenv("WT_PROJECT", "myproject")
+	t.Setenv("SPORE_ROLE", "")
+	t.Setenv("SPORE_TASK_SLUG", "fix-thing")
+	t.Setenv("SPORE_TASK_INBOX", filepath.Join(t.TempDir(), "fix-thing", "inbox"))
+	return filepath.Join(state, "myproject", "inbox")
+}
+
+func inboxEvents(t *testing.T, inbox string) []tellEvent {
+	t.Helper()
+	entries, err := os.ReadDir(inbox)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read inbox: %v", err)
+	}
+	var out []tellEvent
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(inbox, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ev tellEvent
+		if err := json.Unmarshal(b, &ev); err != nil {
+			t.Fatalf("unmarshal %s: %v", e.Name(), err)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
 func TestNotifyCoordinatorEnv_NoProjectIsNoop(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
 	t.Setenv("WT_PROJECT", "")
 	t.Setenv("SPORE_TASK_INBOX", "")
 
-	if err := NotifyCoordinatorEnv(); err != nil {
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
 		t.Fatalf("NotifyCoordinatorEnv: %v", err)
 	}
 	entries, _ := os.ReadDir(state)
@@ -107,28 +148,113 @@ func TestNotifyCoordinatorEnv_NoProjectIsNoop(t *testing.T) {
 	}
 }
 
-func TestNotifyCoordinatorEnv_PokesProjectInbox(t *testing.T) {
-	state := t.TempDir()
-	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
-	t.Setenv("WT_PROJECT", "myproject")
-	t.Setenv("SPORE_TASK_INBOX", filepath.Join(t.TempDir(), "rower-slug", "inbox"))
+func TestNotifyCoordinatorEnv_WorkerPermissionPromptForwarded(t *testing.T) {
+	inbox := setWorkerEnv(t)
 
-	if err := NotifyCoordinatorEnv(); err != nil {
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
 		t.Fatalf("NotifyCoordinatorEnv: %v", err)
 	}
-	inbox := filepath.Join(state, "myproject", "inbox")
-	entries, err := os.ReadDir(inbox)
-	if err != nil {
-		t.Fatalf("read inbox: %v", err)
+	evs := inboxEvents(t, inbox)
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(evs))
 	}
-	var jsonFiles []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-			jsonFiles = append(jsonFiles, e.Name())
+	want := "worker fix-thing: permission_prompt: Claude needs your permission to use Bash"
+	if evs[0].Source != "notification" || evs[0].Body != want {
+		t.Errorf("got source=%q body=%q, want notification / %q", evs[0].Source, evs[0].Body, want)
+	}
+}
+
+func TestNotifyCoordinatorEnv_RolePaneIsNoop(t *testing.T) {
+	inbox := setWorkerEnv(t)
+	t.Setenv("SPORE_ROLE", "engineer")
+
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+		t.Fatalf("NotifyCoordinatorEnv: %v", err)
+	}
+	if _, err := os.Stat(inbox); !os.IsNotExist(err) {
+		t.Errorf("role pane wrote to the coordinator inbox (err=%v)", err)
+	}
+}
+
+func TestNotifyCoordinatorEnv_SkipsInfoOnly(t *testing.T) {
+	for _, payload := range []string{
+		`{"message":"Claude is waiting for your input","notification_type":"idle_prompt"}`,
+		`{"message":"Login successful","notification_type":"auth_success"}`,
+		`{"message":"Claude is waiting for your input"}`,
+		``,
+		`not json`,
+		`{}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			inbox := setWorkerEnv(t)
+			if err := NotifyCoordinatorEnv(strings.NewReader(payload)); err != nil {
+				t.Fatalf("NotifyCoordinatorEnv: %v", err)
+			}
+			if evs := inboxEvents(t, inbox); len(evs) != 0 {
+				t.Errorf("payload %q forwarded: %+v", payload, evs)
+			}
+		})
+	}
+}
+
+func TestNotifyCoordinatorEnv_ForwardsOtherTypes(t *testing.T) {
+	for _, payload := range []string{
+		`{"message":"Server wants input","notification_type":"elicitation_dialog"}`,
+		`{"message":"something new","notification_type":"brand_new_type"}`,
+		`{"message":"Claude needs your permission"}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			inbox := setWorkerEnv(t)
+			if err := NotifyCoordinatorEnv(strings.NewReader(payload)); err != nil {
+				t.Fatalf("NotifyCoordinatorEnv: %v", err)
+			}
+			if evs := inboxEvents(t, inbox); len(evs) != 1 {
+				t.Errorf("payload %q: got %d messages, want 1", payload, len(evs))
+			}
+		})
+	}
+}
+
+func TestNotifyCoordinatorEnv_DedupsBurstPerSlugAndType(t *testing.T) {
+	inbox := setWorkerEnv(t)
+
+	for i := 0; i < 3; i++ {
+		if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if len(jsonFiles) != 1 {
-		t.Fatalf("expected 1 json file, got %d", len(jsonFiles))
+	if n := len(inboxEvents(t, inbox)); n != 1 {
+		t.Fatalf("burst of 3 permission prompts: got %d messages, want 1", n)
+	}
+
+	other := `{"message":"Server wants input","notification_type":"elicitation_dialog"}`
+	if err := NotifyCoordinatorEnv(strings.NewReader(other)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inboxEvents(t, inbox)); n != 2 {
+		t.Fatalf("a different type must pass: got %d messages, want 2", n)
+	}
+
+	t.Setenv("SPORE_TASK_SLUG", "other-task")
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inboxEvents(t, inbox)); n != 3 {
+		t.Fatalf("a different worker must pass: got %d messages, want 3", n)
+	}
+}
+
+func TestClaimNotifySlot_WindowExpires(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	if !claimNotifySlot(dir, "w", "permission_prompt", now) {
+		t.Fatal("first claim refused")
+	}
+	if claimNotifySlot(dir, "w", "permission_prompt", now.Add(NotifyDedupWindow-time.Second)) {
+		t.Fatal("claim inside the window allowed")
+	}
+	if !claimNotifySlot(dir, "w", "permission_prompt", now.Add(NotifyDedupWindow+time.Second)) {
+		t.Fatal("claim after the window refused")
 	}
 }
 
@@ -136,10 +262,11 @@ func TestNotifyCoordinatorEnv_SelfPokeIsNoop(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
 	t.Setenv("WT_PROJECT", "myproject")
+	t.Setenv("SPORE_ROLE", "")
 	inbox := filepath.Join(state, "myproject", "inbox")
 	t.Setenv("SPORE_TASK_INBOX", inbox)
 
-	if err := NotifyCoordinatorEnv(); err != nil {
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
 		t.Fatalf("NotifyCoordinatorEnv: %v", err)
 	}
 	if _, err := os.Stat(inbox); !os.IsNotExist(err) {

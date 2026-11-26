@@ -395,7 +395,7 @@ func runHooksStopFailure() int {
 func runHooksNotifyCoordinator(args []string) int {
 	switch len(args) {
 	case 0:
-		if err := hooks.NotifyCoordinatorEnv(); err != nil {
+		if err := hooks.NotifyCoordinatorEnv(os.Stdin); err != nil {
 			fmt.Fprintln(os.Stderr, "spore hooks notify-coordinator:", err)
 			return 1
 		}
