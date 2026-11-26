@@ -383,3 +383,38 @@ func TestFleetStatusAndStop(t *testing.T) {
 		t.Error("fleet still enabled after stop")
 	}
 }
+
+// Stop run from the coordinator kills its own session last, which
+// ends the process: an error (the flag stayed) must reach stderr
+// before that kill, not after.
+func TestReportStopPrintsErrorBeforeSelfKill(t *testing.T) {
+	var stdout, stderr strings.Builder
+	var atKill string
+	kill := func(string) error { atKill = stderr.String(); return nil }
+	res := fleet.StopResult{Killed: []string{"spore/p/w1"}, Self: "spore/p/coordinator"}
+	flagErr := errors.New("kill-switch flag not removed (the reconciler may respawn): read-only")
+	_ = reportStop(res, flagErr, kill, &stdout, &stderr)
+	if !strings.Contains(atKill, "flag not removed") {
+		t.Errorf("stderr at self-kill = %q; want the flag error", atKill)
+	}
+	if strings.Contains(stdout.String(), "fleet: disabled") {
+		t.Errorf("stdout claims disabled:\n%s", stdout.String())
+	}
+}
+
+// The disabled line follows the flag, not the whole Stop: a listing
+// failure after the flag went still says the fleet is disabled.
+func TestReportStopDisabledDespiteListingError(t *testing.T) {
+	var stdout, stderr strings.Builder
+	res := fleet.StopResult{Disabled: true}
+	err := reportStop(res, errors.New("tmux list-sessions: exit status 1"), func(string) error { return nil }, &stdout, &stderr)
+	if err == nil {
+		t.Error("listing error dropped")
+	}
+	if !strings.Contains(stdout.String(), "fleet: disabled") {
+		t.Errorf("stdout missing the disabled line:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "killed: none") {
+		t.Errorf("claims nothing ran after a failed listing:\n%s", stdout.String())
+	}
+}

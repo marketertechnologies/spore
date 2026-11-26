@@ -447,10 +447,8 @@ func sessionExists(name string) (bool, error) {
 		return true, nil
 	}
 	msg := strings.TrimSpace(stderr.String())
-	for _, absent := range []string{"can't find session", "no server running", "error connecting to"} {
-		if strings.Contains(msg, absent) {
-			return false, nil
-		}
+	if strings.Contains(msg, "can't find session") || task.TmuxNoServer(msg) {
+		return false, nil
 	}
 	if msg != "" {
 		return false, fmt.Errorf("tmux has-session %s: %w: %s", name, err, msg)

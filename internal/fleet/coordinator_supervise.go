@@ -65,6 +65,11 @@ func superviseCoordinator(projectRoot string, alive bool) string {
 		}
 	}
 
+	// The pass checked the flag before this; a `spore fleet stop` since
+	// must not be undone by a respawn.
+	if on, ferr := Enabled(); ferr == nil && !on {
+		return ""
+	}
 	_, spawned, err := EnsureCoordinator(projectRoot)
 	if spawned || err != nil {
 		guard.spawned(now)

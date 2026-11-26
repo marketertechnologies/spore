@@ -97,15 +97,13 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) ([
 }
 
 // killAllSlugSessions tears down every tmux session matching slug
-// for the project. Errors are surfaced to stderr so a broken kill is
-// visible; this is best-effort cleanup and the status flip stays the
-// source of truth. Pass-through no-op when tmux isn't running or
-// nothing matches.
-func killAllSlugSessions(tasksDir, projectRoot, slug string) {
+// for the project. Kill errors are surfaced to stderr so a broken
+// kill is visible; a failed listing is returned, since nothing was
+// killed. No-op when tmux isn't running or nothing matches.
+func killAllSlugSessions(tasksDir, projectRoot, slug string) error {
 	names, err := matchingSlugSessions(tasksDir, projectRoot, slug, true)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spore: %s sessions left running: %v\n", slug, err)
-		return
+		return fmt.Errorf("%s sessions left running: %w", slug, err)
 	}
 	for _, name := range names {
 		if out, err := callbudget.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
@@ -113,10 +111,25 @@ func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 				name, err, strings.TrimSpace(string(out)))
 		}
 	}
+	return nil
 }
 
 func hasSession(name string) bool {
 	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+// TmuxNoServer reports whether a tmux client's stderr says no server
+// is listening: none was started, or its socket is gone or stale. A
+// socket the caller cannot reach (EACCES from a sandbox, a foreign
+// uid) is not "no server": the sessions may all be running.
+func TmuxNoServer(stderr string) bool {
+	if strings.Contains(stderr, "no server running") {
+		return true
+	}
+	if !strings.Contains(stderr, "error connecting to") {
+		return false
+	}
+	return strings.Contains(stderr, "(No such file or directory)") || strings.Contains(stderr, "(Connection refused)")
 }
 
 // ListSessions returns every tmux session name. No server (or a stale
@@ -129,7 +142,7 @@ func ListSessions() ([]string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") {
+		if TmuxNoServer(msg) {
 			return nil, nil
 		}
 		if msg != "" {

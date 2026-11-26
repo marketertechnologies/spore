@@ -391,3 +391,77 @@ func TestStopLeavesOwnSessionForLast(t *testing.T) {
 		t.Error("own session killed by Stop")
 	}
 }
+
+// A managed-looking session Stop cannot inspect is reported, not
+// silently left running.
+func TestStopReportsUninspectableSession(t *testing.T) {
+	mustEnable(t)
+	prevList, prevEnv := stopListSessions, stopSessionEnv
+	stopListSessions = func() ([]string, error) { return []string{"spore/stope/w1", "spore/other/w1", "spore/pilot/op"}, nil }
+	stopSessionEnv = func(string) (map[string]string, error) { return nil, errors.New("exit status 1") }
+	t.Cleanup(func() { stopListSessions, stopSessionEnv = prevList, prevEnv })
+
+	res, err := Stop("stope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Failed) != 1 || !strings.HasPrefix(res.Failed[0], "spore/stope/w1: ") {
+		t.Errorf("Failed = %q; want spore/stope/w1 only", res.Failed)
+	}
+	if !res.Disabled {
+		t.Error("Disabled = false after the flag was removed")
+	}
+}
+
+// A worker started from a linked worktree is named after the
+// worktree's base name, while WT_PROJECT is the main repo's.
+func TestStopTargetLinkedWorktreeWorker(t *testing.T) {
+	prev := stopSessionEnv
+	stopSessionEnv = func(string) (map[string]string, error) {
+		return map[string]string{"SPORE_TASK_SLUG": "w1", "WT_PROJECT": "main", "SPORE_PROJECT_ROOT": "/src/main/.worktrees/wt"}, nil
+	}
+	t.Cleanup(func() { stopSessionEnv = prev })
+	for project, want := range map[string]bool{"": true, "main": true, "wt": true, "other": false} {
+		if got, err := stopTarget("spore/wt/w1", project); err != nil || got != want {
+			t.Errorf("stopTarget(spore/wt/w1, %q) = %v, %v; want %v", project, got, err, want)
+		}
+	}
+	if got, _ := stopTarget("spore/elsewhere/w1", ""); got {
+		t.Error("matched a session whose name ties to neither project")
+	}
+}
+
+// A stop that lands after the pass's own flag check must not be
+// undone by a coordinator respawn later in the same pass.
+func TestSuperviseCoordinatorRereadsFlag(t *testing.T) {
+	requireToolchain(t)
+	dirs := newTestDirs(t)
+	gitInit(t, dirs.project)
+	mustEnable(t)
+	t.Setenv("SPORE_COORDINATOR_AGENT", "sleep 300")
+	t.Cleanup(func() { killSporeSessions(dirs.project) })
+	if err := Disable(); err != nil {
+		t.Fatal(err)
+	}
+	superviseCoordinator(dirs.project, false)
+	if hasSession(CoordinatorSessionName(dirs.project)) {
+		t.Error("coordinator spawned with the fleet disabled")
+	}
+}
+
+// A socket the caller cannot reach is not "no session".
+func TestSessionExistsPermissionDenied(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	bin := t.TempDir()
+	shim := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = has-session ]; then echo 'error connecting to /tmp/tmux-1000/default (Permission denied)' >&2; exit 1; fi\nexec %s \"$@\"\n", realTmux)
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if ok, err := sessionExists("x"); err == nil {
+		t.Errorf("sessionExists = %v, nil; want an error", ok)
+	}
+}

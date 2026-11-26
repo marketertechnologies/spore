@@ -232,31 +232,49 @@ func runFleetStop(args []string) error {
 		return fmt.Errorf("usage: spore fleet stop [--project NAME]")
 	}
 	res, err := fleet.Stop(*project)
-	if err == nil {
+	return reportStop(res, err, fleet.KillSession, os.Stdout, os.Stderr)
+}
+
+// reportStop prints a Stop result and, last, kills the caller's own
+// session when Stop left it (killing it ends this process, so
+// anything left to say goes out first).
+func reportStop(res fleet.StopResult, err error, kill func(string) error, stdout, stderr io.Writer) error {
+	if res.Disabled {
 		p, _ := fleet.FlagPath()
-		fmt.Printf("fleet: disabled (%s removed)\n", p)
+		fmt.Fprintf(stdout, "fleet: disabled (%s removed)\n", p)
 	}
 	for _, s := range res.Killed {
-		fmt.Printf("killed: %s\n", s)
+		fmt.Fprintf(stdout, "killed: %s\n", s)
 	}
 	for _, s := range res.Failed {
-		fmt.Fprintf(os.Stderr, "not killed: %s\n", s)
+		fmt.Fprintf(stderr, "not killed: %s\n", s)
 	}
-	if len(res.Killed)+len(res.Failed) == 0 && res.Self == "" {
-		fmt.Println("killed: none (no spore agent sessions running)")
+	if len(res.Killed)+len(res.Failed) == 0 && res.Self == "" && err == nil {
+		fmt.Fprintln(stdout, "killed: none (no spore agent sessions running)")
 	}
-	if err == nil && len(res.Failed) > 0 {
-		err = fmt.Errorf("%d session(s) not killed", len(res.Failed))
+	if len(res.Failed) > 0 {
+		err = errors.Join(err, fmt.Errorf("%d session(s) not killed", len(res.Failed)))
 	}
-	if res.Self != "" {
-		// Last: killing it ends this process.
-		fmt.Printf("killed: %s (this session)\n", res.Self)
-		_ = os.Stdout.Sync()
-		if kerr := fleet.KillSession(res.Self); kerr != nil {
-			err = errors.Join(err, fmt.Errorf("own session %s: %w", res.Self, kerr))
-		}
+	if res.Self == "" {
+		return err
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "spore: %v\n", err)
+	}
+	fmt.Fprintf(stdout, "killed: %s (this session)\n", res.Self)
+	syncWriter(stdout)
+	syncWriter(stderr)
+	// err is already on stderr: a failed kill reports only itself.
+	if kerr := kill(res.Self); kerr != nil {
+		return fmt.Errorf("own session %s: %w", res.Self, kerr)
 	}
 	return err
+}
+
+func syncWriter(w io.Writer) {
+	if f, ok := w.(*os.File); ok {
+		_ = f.Sync()
+	}
 }
 
 func runFleetStatus(args []string) error {

@@ -136,8 +136,7 @@ func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error
 // and branch are left untouched. Used by the fleet reconciler when a
 // task leaves active.
 func Reap(tasksDir, projectRoot, slug string) error {
-	killAllSlugSessions(tasksDir, projectRoot, slug)
-	return nil
+	return killAllSlugSessions(tasksDir, projectRoot, slug)
 }
 
 // SpawnedSlugs lists slugs of every tmux session that matches the
@@ -310,7 +309,9 @@ func Done(tasksDir, slug string, force bool) error {
 
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 
-	killAllSlugSessions(tasksDir, projectRoot, slug)
+	if err := killAllSlugSessions(tasksDir, projectRoot, slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done: %v\n", err)
+	}
 	if _, statErr := os.Stat(worktree); statErr == nil {
 		if out, err := gitCmd(projectRoot, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore task done %s: git worktree remove %s: %v: %s\n",

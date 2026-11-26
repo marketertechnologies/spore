@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,14 +14,16 @@ import (
 )
 
 // StopResult lists the sessions `spore fleet stop` killed, and the
-// ones it tried to kill but could not ("<name>: <error>"). Self is
+// ones it tried to kill or inspect but could not ("<name>: <error>").
+// Disabled is true once the kill-switch flag is removed. Self is
 // the caller's own session when it is a target (a coordinator asked
 // to stop the fleet): Stop leaves it for the caller to kill last with
 // KillSession, after it has reported.
 type StopResult struct {
-	Killed []string
-	Failed []string
-	Self   string
+	Disabled bool
+	Killed   []string
+	Failed   []string
+	Self     string
 }
 
 // Seams for tests.
@@ -60,11 +63,15 @@ func currentSession() string {
 // spore/pilot/* shells and anything spore did not spawn survive. The
 // caller's own session is not killed but returned as Self. The
 // sessions are killed even when the flag cannot be removed; the
-// returned error then says so. A second sweep catches a session a
-// pass already past its flag check spawned meanwhile.
+// returned error then says so. A pass re-reads the flag before each
+// spawn, and the second sweep catches a session one already past that
+// check spawned during the first. It is not a lock: a spawn that
+// passed its check and lands after both sweeps survives until the
+// next `stop`.
 func Stop(project string) (StopResult, error) {
 	var res StopResult
 	disableErr := Disable()
+	res.Disabled = disableErr == nil
 	self := stopSelf()
 	seen := map[string]bool{}
 	for range 2 {
@@ -73,7 +80,16 @@ func Stop(project string) (StopResult, error) {
 			return res, errors.Join(disableErr, err)
 		}
 		for _, name := range names {
-			if seen[name] || !stopTarget(name, project) {
+			if seen[name] {
+				continue
+			}
+			target, err := stopTarget(name, project)
+			if err != nil {
+				seen[name] = true
+				res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
+				continue
+			}
+			if !target {
 				continue
 			}
 			seen[name] = true
@@ -97,17 +113,27 @@ func Stop(project string) (StopResult, error) {
 // stopTarget is ManagedSession plus the session's own environment:
 // every spore spawn sets SPORE_TASK_SLUG and WT_PROJECT with
 // `new-session -e`, so a hand-made session that only borrows the name
-// shape is left alone.
-func stopTarget(name, project string) bool {
-	proj, slug, ok := ManagedSession(name, project)
+// shape is left alone. A worker started from a linked worktree is
+// named after the worktree's base name while WT_PROJECT is the main
+// repo's; its SPORE_PROJECT_ROOT ties the two together. An error means
+// a session that may be an agent could not be inspected.
+func stopTarget(name, project string) (bool, error) {
+	proj, slug, ok := ManagedSession(name, "")
 	if !ok {
-		return false
+		return false, nil
 	}
 	env, err := stopSessionEnv(name)
 	if err != nil {
-		return false
+		if project != "" && proj != project {
+			return false, nil
+		}
+		return false, fmt.Errorf("show-environment: %w", err)
 	}
-	return env["SPORE_TASK_SLUG"] == slug && env["WT_PROJECT"] == proj
+	wt := env["WT_PROJECT"]
+	if env["SPORE_TASK_SLUG"] != slug || (wt != proj && filepath.Base(env["SPORE_PROJECT_ROOT"]) != proj) {
+		return false, nil
+	}
+	return project == "" || proj == project || wt == project, nil
 }
 
 // sessionPart is the character set of a project name, task slug or
