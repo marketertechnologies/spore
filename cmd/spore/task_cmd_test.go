@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,4 +204,83 @@ func inboxMessages(t *testing.T, dir string) int {
 		}
 	}
 	return n
+}
+
+func TestTaskCommandsFromWorktreeActOnMainRepo(t *testing.T) {
+	root := t.TempDir()
+	git := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git(root, "init", "-q", "-b", "main")
+	git(root, "config", "user.email", "test@example.com")
+	git(root, "config", "user.name", "Test")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_TASKS_DIR", "")
+	writeTask := func(dir, slug, status string) {
+		t.Helper()
+		m := frontmatter.Meta{Status: status, Slug: slug, Title: slug}
+		if err := os.MkdirAll(filepath.Join(dir, "tasks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "tasks", slug+".md"), frontmatter.Write(m, []byte("body\n")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTask(root, "ax", "active")
+	writeTask(root, "bx", "active")
+	git(root, "add", ".")
+	git(root, "commit", "-q", "-m", "tasks")
+	wt := filepath.Join(root, ".worktrees", "ax")
+	git(root, "worktree", "add", "-q", "-b", "wt/ax", wt, "main")
+	writeTask(root, "late", "draft")
+	t.Chdir(wt)
+
+	status := func(dir, slug string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(dir, "tasks", slug+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := frontmatter.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Status
+	}
+
+	if err := runTaskPause([]string{"ax"}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := runTaskBlock([]string{"bx"}); err != nil {
+		t.Fatalf("block: %v", err)
+	}
+	if got := status(root, "ax"); got != "paused" {
+		t.Errorf("main ax status = %q, want paused", got)
+	}
+	if got := status(root, "bx"); got != "blocked" {
+		t.Errorf("main bx status = %q, want blocked", got)
+	}
+	if got := status(wt, "ax"); got != "active" {
+		t.Errorf("worktree copy of ax = %q, want untouched active", got)
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	lsErr := runTaskLs(nil)
+	os.Stdout = orig
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if lsErr != nil {
+		t.Fatalf("ls: %v", lsErr)
+	}
+	if !strings.Contains(string(out), "late\tdraft") {
+		t.Errorf("ls from worktree missed main-only task late:\n%s", out)
+	}
 }

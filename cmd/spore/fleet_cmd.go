@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/versality/spore/internal/budget"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
@@ -40,9 +43,11 @@ Subcommands:
                   exits 0 when there is nothing to do. Short-circuits when
                   the kill-switch flag is missing.
   replenish-hook  Stop-hook variant of reconcile: reads context from env
-                  ($SPORE_TASK_INBOX, $WT_PROJECT, $WT_FLEET_FLOOR), no-ops in
-                  non-coordinator sessions, skips when the budget advice
-                  is tighten/ration, and never propagates errors.
+                  ($SPORE_TASK_INBOX, $SPORE_PROJECT_ROOT, $WT_PROJECT,
+                  $WT_FLEET_FLOOR), no-ops in non-coordinator sessions and
+                  when the cwd repo is not $SPORE_PROJECT_ROOT (else a repo
+                  named $WT_PROJECT), skips when the budget advice is
+                  tighten/ration, and never propagates errors.
   enable          Create the kill-switch flag (the reconciler resumes
                   spawning on the next pass).
   disable         Remove the kill-switch flag (the reconciler stops
@@ -57,10 +62,16 @@ Subcommands:
                   else the cwd repo (a worktree resolves to its main repo).
 
 Flags (reconcile):
-  --max-workers N   Override concurrency cap. Precedence: this flag,
+  --max-workers N   Override concurrency cap (worker sessions plus live
+                    role loops, one slot each). Precedence: this flag,
                     then spore.toml [fleet] max_workers, then
                     $SPORE_FLEET_MAX_WORKERS (host default), then
                     $WT_FLEET_FLOOR, then 3.
+
+Time budgets (Go durations): each git/tmux/matter call gets
+$SPORE_FLEET_CALL_TIMEOUT (default 2m); the whole pass gets
+$SPORE_FLEET_PASS_TIMEOUT (default 10m), after which in-flight calls
+are killed and reconcile exits non-zero.
 `
 
 func runFleet(args []string) error {
@@ -118,13 +129,16 @@ func runFleetReconcile(args []string) error {
 		return err
 	}
 
-	res, err := replenishReconcile(fleet.Config{
+	res, err := reconcileBudgeted(fleet.Config{
 		TasksDir:    "tasks",
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
 	})
 	if err != nil {
 		return err
+	}
+	if res.Locked {
+		return nil
 	}
 	if res.Disabled {
 		flagPath, _ := fleet.FlagPath()
@@ -141,6 +155,9 @@ func runFleetReconcile(args []string) error {
 	}
 	if len(res.Skipped) > 0 {
 		fmt.Printf("  skipped: %s (max-workers=%d)\n", strings.Join(res.Skipped, ", "), resolved)
+	}
+	if len(res.Crashed) > 0 {
+		fmt.Printf("  crash-looped (respawn stopped): %s\n", strings.Join(res.Crashed, ", "))
 	}
 	for _, m := range res.Matter {
 		if m.Err != nil {
@@ -241,6 +258,58 @@ func resolveMaxWorkers(flagVal int, projectRoot string) (int, error) {
 // replenishReconcile is a test seam: the real Reconcile drives tmux.
 var replenishReconcile = fleet.Reconcile
 
+// passAbort is a test seam: the real one kills the abandoned pass's
+// calls and is permanent for the process.
+var passAbort = callbudget.Abort
+
+// PassTimeoutEnv overrides defaultPassTimeout with a Go duration.
+const PassTimeoutEnv = "SPORE_FLEET_PASS_TIMEOUT"
+
+// defaultPassTimeout bounds a whole reconcile pass. Each git/tmux call
+// has its own, shorter budget (callbudget); this one catches a pass
+// that is slow through many calls. Keep it under the NixOS module's
+// TimeoutStartSec so the pass reports before systemd kills it.
+const defaultPassTimeout = 10 * time.Minute
+
+func passTimeout() time.Duration {
+	if v := os.Getenv(PassTimeoutEnv); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		fmt.Fprintf(os.Stderr, "spore: %s=%q: want a positive Go duration; using %s\n", PassTimeoutEnv, v, defaultPassTimeout)
+	}
+	return defaultPassTimeout
+}
+
+// reconcileBudgeted runs one pass under passTimeout. Past the budget it
+// kills the pass's in-flight calls and returns an error; the caller
+// exits, so the next timer tick starts clean.
+func reconcileBudgeted(cfg fleet.Config) (fleet.Result, error) {
+	type outcome struct {
+		res fleet.Result
+		err error
+	}
+	budget := passTimeout()
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := replenishReconcile(cfg)
+		done <- outcome{res, err}
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case o := <-done:
+		return o.res, o.err
+	case <-timer.C:
+	}
+	passAbort()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+	return fleet.Result{}, fmt.Errorf("reconcile pass exceeded its %s budget (%s); in-flight calls killed", budget, PassTimeoutEnv)
+}
+
 // runFleetReplenishHook is the Stop-hook entry point for `spore fleet
 // replenish-hook`. It reads context entirely from the environment so a
 // settings.json hook entry can be a static string (no slug
@@ -274,9 +343,8 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	root, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "replenish-hook:", err)
+	root, ok := replenishProjectRoot()
+	if !ok {
 		return nil
 	}
 	resolved, err := resolveMaxWorkers(0, root)
@@ -285,8 +353,8 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	res, err := replenishReconcile(fleet.Config{
-		TasksDir:    "tasks",
+	res, err := reconcileBudgeted(fleet.Config{
+		TasksDir:    filepath.Join(root, "tasks"),
 		ProjectRoot: root,
 		MaxWorkers:  resolved,
 	})
@@ -294,12 +362,50 @@ func runFleetReplenishHook(args []string) error {
 		fmt.Fprintln(os.Stderr, "replenish-hook:", err)
 		return nil
 	}
-	if res.Disabled {
+	if res.Disabled || res.Locked {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "replenish-hook: active=%d spawned=%d kept=%d reaped=%d skipped=%d\n",
 		len(res.Active), len(res.Spawned), len(res.Kept), len(res.Reaped), len(res.Skipped))
 	return nil
+}
+
+// replenishProjectRoot returns the main repo root of the cwd when it
+// is the session's own project: $SPORE_PROJECT_ROOT's main repo, else
+// a repo named $WT_PROJECT. Any agent started from a coordinator pane
+// (`claude -p` in a scratch repo) inherits the coordinator env, so
+// without this check its Stop hook would reconcile, and spawn a
+// coordinator for, whatever directory it ran in.
+func replenishProjectRoot() (string, bool) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	root, err := task.MainRepoRoot(wd)
+	if err != nil {
+		return "", false
+	}
+	if want := os.Getenv("SPORE_PROJECT_ROOT"); want != "" {
+		wantRoot, err := task.MainRepoRoot(want)
+		if err != nil {
+			return "", false
+		}
+		return root, samePath(root, wantRoot)
+	}
+	if want := os.Getenv("WT_PROJECT"); want != "" {
+		return root, filepath.Base(root) == want
+	}
+	return "", false
+}
+
+func samePath(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
+	}
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // isCoordinatorSession reports whether $SPORE_TASK_INBOX points under the

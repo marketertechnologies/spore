@@ -13,6 +13,10 @@
 # Falls back to interactive claude with no brief when the slug or brief
 # is missing, so a misconfigured spawn does not strand the operator.
 #
+# An optional first argument is a spawn note from spore (pre-start hook
+# failure, uncommitted changes in a reused worktree). It heads the
+# prompt, or is the whole prompt when there is no brief.
+#
 # Override knobs:
 #   SPORE_WORKER_AGENT     binary to exec (default: claude)
 set -euo pipefail
@@ -24,10 +28,18 @@ export PATH="/run/current-system/sw/bin:${PATH}"
 slug="${SPORE_TASK_SLUG:-}"
 agent="${SPORE_WORKER_AGENT:-claude}"
 brief="tasks/${slug}.md"
+note="${1:-}"
+
+no_brief() {
+  if [[ -n "$note" ]]; then
+    exec "$agent" --dangerously-skip-permissions -- "$note"
+  fi
+  exec "$agent" --dangerously-skip-permissions
+}
 
 if [[ -z "$slug" ]]; then
   echo "spore-worker-brief: SPORE_TASK_SLUG not set; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  no_brief
 fi
 
 # Absorb the spawn race: tmux can open before the binary finishes
@@ -39,7 +51,11 @@ done
 
 if [[ ! -f "$brief" ]]; then
   echo "spore-worker-brief: no brief at $(pwd)/$brief after retry; dropping to interactive $agent" >&2
-  exec "$agent" --dangerously-skip-permissions
+  no_brief
 fi
 
-exec "$agent" --dangerously-skip-permissions -- "$(cat "$brief")"
+prompt="$(cat "$brief")"
+if [[ -n "$note" ]]; then
+  prompt="${note}"$'\n\n'"${prompt}"
+fi
+exec "$agent" --dangerously-skip-permissions -- "$prompt"

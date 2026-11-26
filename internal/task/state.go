@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 // StateDir returns "$XDG_STATE_HOME/spore/<project>" if XDG_STATE_HOME
@@ -243,5 +245,5 @@ func gitCmd(projectRoot string, args ...string) *exec.Cmd {
 		abs = projectRoot
 	}
 	full := append([]string{"-c", "safe.directory=" + abs, "-C", projectRoot}, args...)
-	return exec.Command("git", full...)
+	return callbudget.Command("git", full...)
 }

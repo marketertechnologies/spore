@@ -12,14 +12,16 @@
 package fleet
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/sporetoml"
@@ -35,23 +37,33 @@ const DefaultMaxWorkers = 3
 type Config struct {
 	TasksDir    string
 	ProjectRoot string
-	MaxWorkers  int
+	// MaxWorkers caps concurrent agent units: each worker session and
+	// each role loop with a live pane takes one slot.
+	MaxWorkers int
 }
 
 // Result is the outcome of one reconcile pass. Slug lists are
-// sorted; sets are disjoint by construction (a slug appears in
-// exactly one of Spawned / Kept / Skipped).
+// sorted; sets are disjoint by construction (a slug appears in at most
+// one of Spawned / Kept / Skipped / Crashed).
 type Result struct {
 	// Disabled is true when the kill-switch flag is missing and
 	// Reconcile short-circuited. The slug lists are empty in that
 	// case; the sessions already running (if any) are NOT reaped.
 	Disabled bool
 
+	// Locked is true when another pass or `spore task start` held the
+	// project's reconcile lock and this pass did nothing.
+	Locked bool
+
 	Active  []string
 	Spawned []string
 	Reaped  []string
 	Kept    []string
 	Skipped []string
+	// Crashed lists active tasks whose worker died fast MaxFastDeaths
+	// times in a row; they are not respawned until a healthy run or
+	// the task leaves active.
+	Crashed []string
 
 	// Matter is the per-matter sync outcome from the prelude pass.
 	// Empty when no matters are configured. Errors do not abort
@@ -59,8 +71,9 @@ type Result struct {
 	// tasks are on disk.
 	Matter []MatterResult
 
-	// Warnings are non-fatal oddities found in task frontmatter, also
-	// printed to stderr as they are found.
+	// Warnings are non-fatal problems found during the pass (bad task
+	// files, a task that failed to spawn or reap), also printed to
+	// stderr as they are found.
 	Warnings []string
 }
 
@@ -78,6 +91,18 @@ type MatterResult struct {
 // singleton coordinator session is ensured alongside the worker fleet
 // when the flag is on, and reaped when the flag goes off.
 func Reconcile(cfg Config) (Result, error) {
+	// Two passes (timer, tasks/ path unit, Stop hook) or a pass and
+	// `spore task start` racing on one task both run `git worktree
+	// add` for wt/<slug>; the loser fails. The holder covers it.
+	unlock, err := task.LockReconcile(cfg.ProjectRoot, 0)
+	if errors.Is(err, task.ErrLockHeld) {
+		return Result{Locked: true}, nil
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("reconcile lock: %w", err)
+	}
+	defer unlock()
+
 	enabled, err := Enabled()
 	if err != nil {
 		return Result{}, err
@@ -88,6 +113,7 @@ func Reconcile(cfg Config) (Result, error) {
 		// is a kernel singleton with no operator-attached state worth
 		// preserving, so we tear it down with the flag.
 		ReapCoordinator(cfg.ProjectRoot)
+		clearGuard(coordinatorGuardPath(cfg.ProjectRoot))
 		return Result{Disabled: true}, nil
 	}
 
@@ -95,13 +121,11 @@ func Reconcile(cfg Config) (Result, error) {
 		cfg.MaxWorkers = DefaultMaxWorkers
 	}
 
-	if _, _, err := EnsureCoordinator(cfg.ProjectRoot); err != nil {
-		return Result{}, fmt.Errorf("coordinator: %w", err)
-	}
+	coordinatorWarning := superviseCoordinator(cfg.ProjectRoot)
 
 	matterRes := syncMatters(cfg.ProjectRoot)
 
-	metas, err := task.List(cfg.TasksDir)
+	metas, badTasks, err := scanTasks(cfg.TasksDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -138,6 +162,10 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 
 	res := Result{Matter: matterRes}
+	if coordinatorWarning != "" {
+		res.warn(coordinatorWarning)
+	}
+	res.Warnings = append(res.Warnings, noticeBadTasks(cfg.ProjectRoot, badTasks)...)
 
 	// Reap first so freed slots count toward the cap on spawn.
 	// Sessions for tasks the operator paused or blocked are kept
@@ -151,10 +179,30 @@ func Reconcile(cfg Config) (Result, error) {
 			continue
 		}
 		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
-			return res, fmt.Errorf("reap %s: %w", slug, err)
+			res.warn(fmt.Sprintf("reap %s: %v", slug, err))
+			continue
 		}
 		res.Reaped = append(res.Reaped, slug)
 		delete(runningSet, slug)
+	}
+	// Role panes live under spore-role/, outside SpawnedSlugs. Reap
+	// them by the same status rule so a task flipped to done by hand
+	// (not through `spore task done`) does not leak its panes.
+	roleSlugs, err := task.SpawnedRoleSlugs(cfg.ProjectRoot)
+	if err != nil {
+		return res, err
+	}
+	for _, slug := range roleSlugs {
+		switch statusBySlug[slug] {
+		case "active", "paused", "blocked":
+			continue
+		}
+		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
+			return res, fmt.Errorf("reap %s: %w", slug, err)
+		}
+		if !slices.Contains(res.Reaped, slug) {
+			res.Reaped = append(res.Reaped, slug)
+		}
 	}
 
 	// Stable iteration: sort by matter_sort_order ascending (lower
@@ -205,30 +253,66 @@ func Reconcile(cfg Config) (Result, error) {
 		case m.Loop == task.LoopRole:
 			roleLooped[m.Slug] = true
 		case m.Loop != "" && m.Status == "active":
-			w := fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole)
-			fmt.Fprintln(os.Stderr, w)
-			res.Warnings = append(res.Warnings, w)
+			res.warn(fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole))
 		}
 	}
 
+	// One slot per agent unit: a worker session, or a role loop with
+	// any live pane (engineer plus reviewers count once). Running units
+	// hold their slot; new ones fill free slots in actives order.
+	roleRunning := runningRoleLoops(cfg.ProjectRoot)
+	used := len(runningSet) + len(roleRunning)
+	var drive []string
+
+	guards := workerGuards(cfg.ProjectRoot, activeSet)
+	now := nowFunc()
 	for _, slug := range actives {
-		if runningSet[slug] {
-			continue
-		}
 		if roleLooped[slug] {
+			switch {
+			case roleRunning[slug]:
+				drive = append(drive, slug)
+			case used >= cfg.MaxWorkers:
+				res.Skipped = append(res.Skipped, slug)
+			default:
+				drive = append(drive, slug)
+				used++
+			}
 			continue
 		}
-		if len(runningSet) >= cfg.MaxWorkers {
+		g := guards(slug)
+		if runningSet[slug] {
+			g.alive(now)
+			saveGuard(g)
+			continue
+		}
+		g.dead()
+		if !g.mayRespawn() {
+			if g.capOnce() {
+				notifyFleet(cfg.ProjectRoot, fmt.Sprintf(
+					"%s: worker died within %s of spawn %d times in a row; respawn stopped. Inspect the task, then pause and restart it to retry.",
+					slug, FastDeathWindow, g.Deaths))
+			}
+			saveGuard(g)
+			res.Crashed = append(res.Crashed, slug)
+			continue
+		}
+		saveGuard(g)
+		if used >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
-			return res, fmt.Errorf("assign agent %s: %w", slug, err)
+			res.warn(fmt.Sprintf("assign agent %s: %v", slug, err))
+			continue
 		}
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
-			return res, fmt.Errorf("ensure %s: %w", slug, err)
+			res.warn(fmt.Sprintf("ensure %s: %v", slug, err))
+			continue
 		}
+		g.spawned(now)
+		saveGuard(g)
+		used++
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
 		// "in progress" mirror to (e.g. Linear's Ready -> In
@@ -241,14 +325,12 @@ func Reconcile(cfg Config) (Result, error) {
 		agentCounts[picked]++
 	}
 
-	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
-	// precondition for these slugs (see the homogeneous-spawn skip
-	// above) and creates `.spore/<slug>/` itself on the first tick, so
-	// a task starts moving on the same pass that classified it.
-	for _, slug := range actives {
-		if !roleLooped[slug] {
-			continue
-		}
+	// Advance the role-looped tasks that hold a slot. DriveRoleLoop
+	// owns the worktree precondition for these slugs (see the
+	// homogeneous-spawn skip above) and creates `.spore/<slug>/` itself
+	// on the first tick, so a task starts moving on the same pass that
+	// classified it.
+	for _, slug := range drive {
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
 		}
@@ -262,7 +344,66 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
+	sort.Strings(res.Crashed)
 	return res, nil
+}
+
+// runningRoleLoops returns the slugs with at least one live role pane
+// (spore-role/<project>/<slug>/<role>).
+func runningRoleLoops(projectRoot string) map[string]bool {
+	out := map[string]bool{}
+	project, err := task.ProjectName(projectRoot)
+	if err != nil {
+		return out
+	}
+	lines, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return out
+	}
+	prefix := "spore-role/" + project + "/"
+	for _, line := range strings.Split(string(lines), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		if slug, _, ok := strings.Cut(rest, "/"); ok && slug != "" {
+			out[slug] = true
+		}
+	}
+	return out
+}
+
+// workerGuards returns a loader for per-slug crash-loop records under
+// the project state dir, after dropping the records of tasks that are
+// no longer active (pausing a task re-arms its cap).
+func workerGuards(projectRoot string, active map[string]bool) func(string) *spawnGuard {
+	dir, err := fleetStateDir(projectRoot, "workers")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: worker crash records: %v\n", err)
+		return func(string) *spawnGuard { return &spawnGuard{} }
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if slug, ok := strings.CutSuffix(e.Name(), ".json"); !ok || !active[slug] {
+			clearGuard(filepath.Join(dir, e.Name()))
+		}
+	}
+	return func(slug string) *spawnGuard { return loadGuard(filepath.Join(dir, slug+".json")) }
+}
+
+func saveGuard(g *spawnGuard) {
+	if g.path == "" {
+		return
+	}
+	if err := g.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: crash record: %v\n", err)
+	}
+}
+
+// warn records a per-task failure that must not abort the pass.
+func (r *Result) warn(w string) {
+	fmt.Fprintln(os.Stderr, w)
+	r.Warnings = append(r.Warnings, w)
 }
 
 // agentCountsFromMetas tallies the agent name carried in the
@@ -330,9 +471,10 @@ func syncMatters(projectRoot string) []MatterResult {
 		return nil
 	}
 	out := make([]MatterResult, 0, len(matters))
-	ctx := context.Background()
 	for _, m := range matters {
+		ctx, cancel := callbudget.Context()
 		c, u, err := m.Sync(ctx, projectRoot)
+		cancel()
 		out = append(out, MatterResult{Name: m.Name(), Created: c, Updated: u, Err: err})
 	}
 	return out
