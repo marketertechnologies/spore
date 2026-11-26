@@ -43,14 +43,16 @@ func tmuxSessionPrefix(projectRoot string) string {
 //   - role-loop panes "spore-role/<project>/<slug>/<role>", only with
 //     withRoles (done/merge teardown)
 //
-// Returns nil when tmux isn't running or no session matches. Pure
+// Returns nil when tmux isn't running or no session matches, and an
+// error when the listing fails, so a wedged server is not read as
+// nothing to kill. Pure
 // substring scan: the slug-end boundary is enforced by requiring the
 // next char to be end-of-string or a space (so slug "foo" doesn't
 // kill "foo-bar").
-func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []string {
-	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) ([]string, error) {
+	sessions, err := ListSessions()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	project := filepath.Base(projectRoot)
 	needle := project + "/" + slug
@@ -71,10 +73,7 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []
 		seen[name] = true
 		matches = append(matches, name)
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range sessions {
 		if strings.HasPrefix(line, rolePrefix) {
 			if withRoles {
 				add(line)
@@ -94,7 +93,7 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []
 	if recorded != "" && hasSession(recorded) {
 		add(recorded)
 	}
-	return matches
+	return matches, nil
 }
 
 // killAllSlugSessions tears down every tmux session matching slug
@@ -103,7 +102,12 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []
 // source of truth. Pass-through no-op when tmux isn't running or
 // nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
-	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug, true) {
+	names, err := matchingSlugSessions(tasksDir, projectRoot, slug, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spore: %s sessions left running: %v\n", slug, err)
+		return
+	}
+	for _, name := range names {
 		if out, err := callbudget.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
 				name, err, strings.TrimSpace(string(out)))

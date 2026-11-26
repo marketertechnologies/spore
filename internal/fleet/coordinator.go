@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -432,4 +433,27 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 
 func hasSession(name string) bool {
 	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+// sessionExists is hasSession with failures kept apart from absence:
+// no server or no such session is (false, nil); any other failure, a
+// call killed by its budget included, is an error.
+func sessionExists(name string) (bool, error) {
+	cmd := callbudget.Command("tmux", "has-session", "-t", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	msg := strings.TrimSpace(stderr.String())
+	for _, absent := range []string{"can't find session", "no server running", "error connecting to"} {
+		if strings.Contains(msg, absent) {
+			return false, nil
+		}
+	}
+	if msg != "" {
+		return false, fmt.Errorf("tmux has-session %s: %w: %s", name, err, msg)
+	}
+	return false, fmt.Errorf("tmux has-session %s: %w", name, err)
 }
