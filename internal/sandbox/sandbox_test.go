@@ -118,6 +118,12 @@ func TestManagedBlockShape(t *testing.T) {
 			t.Errorf("denyRead lacks %s", p)
 		}
 	}
+	// Claude Code bind-mounts /dev/null over a denied path even when it
+	// does not exist, and yarn 1 fails opening ~/.npmrc while walking the
+	// cwd's ancestors (docs/sandbox.md).
+	if strings.Contains(string(b), ".npmrc") {
+		t.Error("denyRead must not list ~/.npmrc: it breaks yarn 1 under $HOME")
+	}
 }
 
 func gitInit(t *testing.T) string {
