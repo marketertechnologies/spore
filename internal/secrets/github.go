@@ -258,6 +258,27 @@ func (s *Server) remoteURL(repo string) string {
 	return "https://" + repo + ".git"
 }
 
+// promisor makes the mirror a blobless partial clone of origin. A cold
+// full fetch of a large history (marketer-frontend: 24 GB of blobs)
+// outruns githubTimeout; commits and trees stay small, and git fetches
+// the few blobs a thin bundle or a push needs on demand from origin
+// with the App credentials in env. Existing full mirrors keep their
+// objects.
+func (s *Server) promisor(ctx context.Context, dir string, env []string, repo string) error {
+	for _, kv := range [][2]string{
+		{"core.repositoryformatversion", "1"},
+		{"extensions.partialClone", "origin"},
+		{"remote.origin.url", s.remoteURL(repo)},
+		{"remote.origin.promisor", "true"},
+		{"remote.origin.partialclonefilter", "blob:none"},
+	} {
+		if _, err := gitIn(ctx, dir, env, "config", kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func gitIn(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env, cmd.WaitDelay = env, 2*time.Second
@@ -307,8 +328,11 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	if err := os.WriteFile(bpath, bundle, 0o600); err != nil {
 		return Response{Error: err.Error()}
 	}
+	if err := s.promisor(ctx, dir, env, repo); err != nil {
+		return Response{Error: err.Error()}
+	}
 	if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
-		if _, ferr := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", s.remoteURL(repo), "+refs/heads/*:refs/remotes/origin/*"); ferr != nil {
+		if _, ferr := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); ferr != nil {
 			return Response{Error: s.redactor(req.Project).String(ferr.Error())}
 		}
 		if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
@@ -369,8 +393,11 @@ func (s *Server) fetch(c Caller, req Request) (Response, []byte) {
 	if err != nil {
 		return Response{Error: err.Error()}, nil
 	}
+	if err := s.promisor(ctx, dir, env, repo); err != nil {
+		return Response{Error: err.Error()}, nil
+	}
 	ref := "refs/remotes/origin/" + req.Branch
-	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", s.remoteURL(repo), "+refs/heads/"+req.Branch+":"+ref); err != nil {
+	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+req.Branch+":"+ref); err != nil {
 		return Response{Error: s.redactor(req.Project).String(err.Error())}, nil
 	}
 	tip, err := gitIn(ctx, dir, env, "rev-parse", ref)

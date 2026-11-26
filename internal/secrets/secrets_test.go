@@ -463,3 +463,54 @@ func TestListShowsNoValues(t *testing.T) {
 		t.Fatal("list leaked a value")
 	}
 }
+
+// A cold mirror fetches origin without blobs and pulls the delta bases
+// a thin bundle needs on demand, so a large history never moves.
+func TestPushColdMirrorIsBlobless(t *testing.T) {
+	c := testConfig(t)
+	s := startServer(t, c)
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	git(t, tmp, "init", "--quiet", "--bare", "-b", "main", origin)
+	git(t, origin, "config", "uploadpack.allowFilter", "true")
+	git(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	s.remote = func(string) string { return origin }
+	s.mint = func(context.Context, string) (string, error) { return "ghs_testtoken", nil }
+
+	work := filepath.Join(tmp, "work")
+	git(t, tmp, "init", "--quiet", "-b", "main", work)
+	big := filepath.Join(work, "big.txt")
+	body := strings.Repeat("line of history that compresses well\n", 4000)
+	if err := os.WriteFile(big, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", "big.txt")
+	git(t, work, "commit", "--quiet", "-m", "base")
+	old := git(t, work, "rev-parse", "HEAD:big.txt")
+	if err := os.WriteFile(big, []byte(body+"v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "--quiet", "-am", "v2")
+	git(t, work, "remote", "add", "origin", origin)
+	git(t, work, "push", "--quiet", "origin", "main")
+	git(t, work, "fetch", "--quiet", "origin")
+	git(t, work, "checkout", "--quiet", "-b", "wt/edit")
+	if err := os.WriteFile(big, []byte(body+"v2\nv3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "commit", "--quiet", "-am", "v3")
+	sha := git(t, work, "rev-parse", "HEAD")
+
+	if err := Push("alpha", work, "wt/edit", sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, origin, "rev-parse", "refs/heads/wt/edit"); got != sha {
+		t.Fatalf("origin has %s, want %s", got, sha)
+	}
+	mirror := filepath.Join(c.StateDir, "git", "alpha.git")
+	cmd := exec.Command("git", "-C", mirror, "cat-file", "-e", old)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if cmd.Run() == nil {
+		t.Fatalf("mirror holds the historical blob %s: the cold fetch was not blobless", old)
+	}
+}
