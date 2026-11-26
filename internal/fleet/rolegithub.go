@@ -43,6 +43,11 @@ type githubState struct {
 	// the PR twice.
 	PRDescription string `json:"pr_description,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
+	// Inflight is the event being posted, saved before the post. Still
+	// set on the next tick, the post may have landed before the save
+	// that records it (a crash, a kill): the mirror looks for the
+	// event's marker on the PR before posting again.
+	Inflight string `json:"inflight,omitempty"`
 	// Reopen is set by `spore task reopen` for the current cycle; the
 	// mirror then re-drafts the PR and labels its posts with the cycle.
 	Reopen *reopenState `json:"reopen,omitempty"`
@@ -184,6 +189,9 @@ type githubMirror struct {
 	// (see holdForCheck); gated is false when no gate applies.
 	checked string
 	gated   bool
+	// marker is the hidden tag of the event being applied; prComment
+	// and sendReview end every body with it.
+	marker string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -282,13 +290,59 @@ func (m *githubMirror) run(snap Snapshot) error {
 		return err
 	}
 	for _, e := range pending {
-		if err := m.apply(e); err != nil {
-			return fmt.Errorf("%s: %w", e.name, err)
+		m.marker = mirrorMarker(m.state.Reopen, e.name)
+		landed := false
+		if m.state.Inflight == e.name {
+			if landed, err = m.alreadyPosted(e); err != nil {
+				return fmt.Errorf("%s: %w", e.name, err)
+			}
+		}
+		if !landed {
+			m.state.Inflight = e.name
+			m.save()
+			if err := m.apply(e); err != nil {
+				return fmt.Errorf("%s: %w", e.name, err)
+			}
 		}
 		m.state.Posted = append(m.state.Posted, e.name)
+		m.state.Inflight = ""
 		m.save()
 	}
 	return nil
+}
+
+// mirrorMarker tags a post with its event so a repost after a lost
+// save can be detected. It renders as nothing on GitHub. The cycle
+// keeps a reopened loop's reused round names apart.
+func mirrorMarker(reopen *reopenState, name string) string {
+	cycle := 1
+	if reopen != nil {
+		cycle = reopen.Cycle
+	}
+	return fmt.Sprintf("<!-- spore-mirror: cycle %d %s -->", cycle, name)
+}
+
+// alreadyPosted reports whether e's post is on the PR: a review or
+// issue comment whose body carries the event's marker. Events that
+// post nothing (round 1, ready) are idempotent and report false.
+func (m *githubMirror) alreadyPosted(e mirrorEvent) (bool, error) {
+	if m.state.PRNumber == 0 {
+		return false, nil
+	}
+	list := "issues/%d/comments"
+	switch {
+	case e.kind == eventReview:
+		list = "pulls/%d/reviews"
+	case e.kind == eventReady, e.kind == eventEngineer && e.round == 1:
+		return false, nil
+	}
+	host, ownerRepo := m.repoParts()
+	out, err := m.gh("", "api", fmt.Sprintf("repos/%s/"+list, ownerRepo, m.state.PRNumber),
+		"--hostname", host, "--paginate", "--jq", ".[].body")
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(out, m.marker), nil
 }
 
 // connect loads github.toml, mints the app token (or defers to the
@@ -558,8 +612,15 @@ func (m *githubMirror) redraft() error {
 }
 
 func (m *githubMirror) prComment(body string) error {
-	_, err := m.gh(body, "pr", "comment", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
+	_, err := m.gh(withMarker(body, m.marker), "pr", "comment", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
 	return err
+}
+
+func withMarker(body, marker string) string {
+	if marker == "" {
+		return body
+	}
+	return strings.TrimRight(body, "\n") + "\n\n" + marker + "\n"
 }
 
 // ensurePR finds or opens the task's draft PR. An open PR for the

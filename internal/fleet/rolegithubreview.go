@@ -57,7 +57,7 @@ func (m *githubMirror) sendReview(inst task.ReviewerInstance, round int, rev tas
 		inline[a.idx] = true
 	}
 	body := strings.Replace(reviewBodyExcept(inst, round, rev, inline), "(round ", "("+m.cyclePrefix()+"round ", 1)
-	p := reviewPayload{Event: "COMMENT", Body: body, Comments: anchors}
+	p := reviewPayload{Event: "COMMENT", Body: withMarker(body, m.marker), Comments: anchors}
 	// A body-only review needs no commit, so a 422 caused by the commit
 	// itself (head moved outside the mirror) cannot block the fallback.
 	if len(anchors) > 0 {

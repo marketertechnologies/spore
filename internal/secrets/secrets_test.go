@@ -278,6 +278,8 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "view", "7", "--json", "isDraft", "--jq", ".isDraft"},
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
 		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate", "--jq", ".[]"},
+		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--paginate", "--jq", ".[].body"},
+		{"api", "repos/acme/alpha/issues/7/comments", "--hostname", "github.com", "--paginate", "--jq", ".[].body"},
 		{"api", "graphql", "--hostname", "github.com", "-f", "query=query { viewer { login } }", "-F", "number=7"},
 	}
 	for _, a := range ok {
