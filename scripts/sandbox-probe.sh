@@ -95,7 +95,7 @@ probe_env=()
 run_spec() { # run_spec <timeout> <spec json>
 	local spec
 	spec=$(python3 -I -c 'import base64,sys; print(base64.urlsafe_b64encode(sys.argv[1].encode()).decode())' "$2")
-	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 "${probe_env[@]}" \
+	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 ${probe_env[@]+"${probe_env[@]}"} \
 		__ETC_PROFILE_DONE=1 ANTHROPIC_API_KEY=sk-ant-sandbox-probe ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 \
 		timeout "$1" claude -p --dangerously-skip-permissions --model claude-haiku-5-5 \
@@ -183,14 +183,14 @@ json.dump(m, open(sys.argv[2], "w"))' "$work/managed.json" "$work/sandboxed.json
 	else
 		report FAIL "git init under the floor" "$out"
 	fi
-	while IFS=$'\t' read -r verdict rule; do
-		report "$verdict" "$rule" "$out"
-	done < <(python3 -I -c '
+	printf '%s\n' "$out" >"$work/srt.log"
+	local graded=0
+	if ! python3 -I -c '
 import json, os, sys
 deny = json.load(open(sys.argv[1]))["permissions"]["deny"]
 # A path with a Read deny as well is hidden by the read side instead.
 rules = [r[5:-1] for r in deny if r.startswith("Edit(") and "Read(" + r[5:] not in deny]
-log, home = sys.argv[2], sys.argv[3]
+log, home = open(sys.argv[2]).read(), sys.argv[3]
 for r in rules:
     p = r[1:] if r.startswith("//") else home + r[1:] if r.startswith("~/") else None
     if p is None:
@@ -202,7 +202,14 @@ for r in rules:
     else:
         lines = [l for l in log.splitlines() if "Read deny" not in l and (l.endswith(" " + p) or (" " + p + ":") in l)]
         ok = bool(lines) and all("read-only there" in l or "not within allowed paths" in l for l in lines)
-    print("%s\t%s" % ("PASS" if ok else "FAIL", "Edit(%s) %s" % (r, "skipped as a glob" if r.startswith("//") else "places no bind")))' "$work/managed.json" "$out" "$home")
+    print("%s\t%s" % ("PASS" if ok else "FAIL", "Edit(%s) %s" % (r, "skipped as a glob" if r.startswith("//") else "places no bind")))' "$work/managed.json" "$work/srt.log" "$home" >"$work/graded.tsv" 2>"$work/graded.err"; then
+		report FAIL "grade the sandbox log" "$(cat "$work/graded.err")"
+	fi
+	while IFS=$'\t' read -r verdict rule; do
+		report "$verdict" "$rule" "$out"
+		graded=$((graded + 1))
+	done <"$work/graded.tsv"
+	[ "$graded" -gt 0 ] || report FAIL "grade the sandbox log: no Edit rule graded" "$out"
 }
 
 if [ "$files_only" = 1 ]; then
