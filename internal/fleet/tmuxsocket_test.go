@@ -44,6 +44,8 @@ func TestMain(m *testing.M) {
 			_ = os.Unsetenv(k)
 		}
 	}
+	// Unset, the socket falls back to the host's live broker path.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	if err := os.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(tmpdir, "coordinator")); err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
