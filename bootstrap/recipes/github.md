@@ -80,18 +80,31 @@ own key.
 ### Use
 
 ```
-spore gh exec -- gh pr view <number>
-spore gh exec -- gh pr review <number> --comment --body "..."
-spore gh exec -- git push -u origin <feature-branch>
+spore gh push <feature-branch>
+spore gh pr create --draft --base <base> --head <feature-branch> --title "..." --body-file body.md
+spore gh pr view <number>
+spore gh pr comment <number> --body-file comment.md
+spore gh pr ready <number>
+spore gh api repos/<owner>/<repo>/pulls/<number>/comments
 ```
 
-`exec` sets `GH_TOKEN` to an installation token and injects a git
-credential helper, so both `gh` and `git push` over https act as
-the App. For raw API calls, use `gh api` under `exec`:
+`spore gh` reads `--body-file <path>` itself (the path must be in
+the cwd repo or `$TMPDIR`) and hands it to gh on stdin. Run each
+call as one command: Claude Code takes `spore gh` out of the sandbox
+only without a redirect, pipe or `cd ... &&` chain, and inside the
+sandbox it cannot read the App key on a host without the broker.
 
-```
-spore gh exec -- gh api repos/<owner>/<repo>/pulls
-```
+`push` sends the local branch from the cwd repo (worktrees too) and
+sets its upstream; a rewritten branch needs
+`--force-with-lease=<sha>` (the commit origin's branch is at), there
+is no bare force. `pr` and `api` run `gh pr` / `gh api` as the App.
+On a host with the secrets broker these go through it, limited to
+`pr list|view|ready|edit|create --draft|comment`, `api` on the
+repo's own pulls and issues, and branches matching the project's
+`push_branch` (default `^wt/...`); `spore gh exec` and `token`
+refuse there. Without the broker they inject the App token like
+`spore gh exec -- <cmd>`, which still works for anything else
+(`gh pr review`, other API paths).
 
 Never run `spore gh token` from an agent pane, and never put a
 token in a command line (`https://x-access-token:<token>@...`,
@@ -100,7 +113,8 @@ token in a command line (`https://x-access-token:<token>@...`,
 
 `spore gh` runs outside the Claude Code sandbox (it reads the App
 key), so in agent panes the PreToolUse guard allows only
-`spore gh exec` around `git` or `gh` and read-only `spore gh config`
+`spore gh pr|api|push`, `spore gh exec` around `git` or `gh`, and
+read-only `spore gh config`
 (docs/sandbox.md in the spore repo).
 
 This is an installation token. Endpoints that need the App's own
@@ -115,7 +129,7 @@ decoded"; that is expected, not a broken setup.
 - Reach for `spore-with-secrets gh` when the action should carry
   the operator's identity, or when `spore gh config` is absent.
 - `pr_flow=draft` only turns on the role loop's draft-PR mirror.
-  Plain `spore gh exec` works without it.
+  `spore gh pr|api|push` and `spore gh exec` work without it.
 
 ### Policy caveat
 

@@ -33,7 +33,7 @@ excluded_commands = ["spore-with-secrets *"]
 | Key | Value | Why |
 | --- | --- | --- |
 | `allowUnsandboxedCommands` | `false` | The model's `dangerouslyDisableSandbox: true` is ignored. Excluded commands still run outside (verified). |
-| `excludedCommands` | `spore gh *` | `spore gh` mints the GitHub App token from the key under `~/.config/spore`, which the sandbox cannot read. The PreToolUse guard limits it to `spore gh exec -- git|gh ...` and read-only `spore gh config`; `spore gh token`, `spore gh config --set` and `spore gh exec` around any other program are denied. |
+| `excludedCommands` | `spore gh *` | `spore gh` mints the GitHub App token from the key under `~/.config/spore`, which the sandbox cannot read. The PreToolUse guard limits it to `spore gh pr|api|push`, `spore gh exec -- git|gh ...` and read-only `spore gh config`; `spore gh token`, `spore gh config --set` and `spore gh exec` around any other program are denied. |
 | `filesystem.denyRead` | `~/.config/spore`, `~/.local/state/spore/*/github-token.json`, `~/.ssh`, `~/.claude/.credentials.json`, `~/.npmrc` | Secrets, App keys and tokens, SSH keys, Claude's login. The `Read(...)` deny rules are folded in as well. |
 | `filesystem.allowWrite` | `~/.cache`, `~/go`, `~/.local/state/spore` | Go build and module caches, the nix eval cache, inboxes and task state. |
 | `filesystem.denyWrite` | `~/.local/state/spore/*/github.toml` | The unsandboxed `spore gh` loads this file; a sandboxed command must not repoint its key. |

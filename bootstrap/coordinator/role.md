@@ -191,13 +191,27 @@ Applies when `spore gh config` shows a GitHub App with
 `pr_flow = "draft"`. Without an App config, the operator pushes and
 opens PRs.
 
-- Run network git and gh through `spore gh exec -- <cmd>`, e.g.
-  `spore gh exec -- git push -u origin <branch>`. Never run
+- Act on GitHub as the App with `spore gh push <branch>`,
+  `spore gh pr <verb> ...` and `spore gh api <path> ...`, not with
+  `spore gh exec` around git or gh. They work the same with or
+  without the secrets broker; behind it they go through the broker
+  (`docs/secrets.md`). Write a PR body to a file in the worktree or
+  `$TMPDIR` and pass `--body-file <path>`. Run each `spore gh` call
+  as one command: a redirect (`< body.md`), a pipe or a
+  `cd ... &&` chain keeps it in the sandbox, where it cannot read
+  the App key on a host without the broker. Never run
   `spore gh token` or put a token in a command line: it lands in
   the transcript.
-- On a host with the secrets broker, `spore gh token` and
-  `spore gh exec` refuse: the loop pushes and opens PRs through the
-  broker, and you do not push by hand (`docs/secrets.md`).
+- Open PRs as drafts (`spore gh pr create --draft ...`); mark one
+  ready with `spore gh pr ready <n>` once its reviewers approve. The
+  operator merges. A rewritten branch goes up with
+  `spore gh push <branch> --force-with-lease=<sha>`, the commit
+  origin's branch is at; there is no bare force.
+- Behind the broker, pushes are limited to the project's
+  `push_branch` (default `^wt/...`) and gh to `pr
+  list|view|ready|edit|create --draft|comment` and `api` on the
+  repo's own pulls and issues. `spore gh token` and `spore gh exec`
+  refuse there.
 - The driver pushes `wt/<slug>` and opens the draft PR after the
   engineer's first round. Keep `wt/<slug>` as the PR head: renaming
   the branch closes the PR.
