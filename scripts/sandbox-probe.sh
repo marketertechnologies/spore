@@ -5,6 +5,7 @@
 #
 #   scripts/sandbox-probe.sh [--mode pre|post|none] [--spore BIN]
 #                            [--gh-project ROOT] [--skip-go-test]
+#                            [--files-only]
 #
 # Modes:
 #   pre   (default) floor and hooks rendered by BIN (`hooks settings
@@ -21,6 +22,14 @@
 # App token (the cache lands in the scratch dir and is deleted).
 # Without it that check is skipped.
 #
+# The file-tool checks run Read then Write or Edit through a real pane
+# and grade the file on disk: the deny floor must keep the tools off
+# .git hooks and config and a stand-in ~/.bashrc, and leave memory,
+# state, source and .claude/rules writable. --files-only runs just
+# those against a scratch git repo with the rendered floor (pre mode,
+# sandbox off): the file tools never go through bwrap, so it also runs
+# from a sandboxed pane.
+#
 # Safety: scratch HOME under /tmp (outside the sandbox's writable
 # $TMPDIR), fake API key, never the real ~/.claude, no tmux.
 set -euo pipefail
@@ -28,17 +37,19 @@ unset TMUX TMUX_PANE
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
-mode=pre spore="" gh_project="" go_test=1
+mode=pre spore="" gh_project="" go_test=1 files_only=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--mode) mode=$2; shift 2 ;;
 	--spore) spore=$2; shift 2 ;;
 	--gh-project) gh_project=$2; shift 2 ;;
 	--skip-go-test) go_test=0; shift ;;
-	*) sed -n '2,25p' "$0" >&2; exit 2 ;;
+	--files-only) files_only=1; shift ;;
+	*) sed -n '2,34p' "$0" >&2; exit 2 ;;
 	esac
 done
 case "$mode" in pre | post | none) ;; *) echo "bad --mode $mode" >&2; exit 2 ;; esac
+[ "$files_only" = 0 ] || [ "$mode" = pre ] || { echo "--files-only runs in pre mode" >&2; exit 2; }
 spore=${spore:-$(command -v spore)}
 spore=$(realpath "$spore")
 for bin in claude python3 git; do
@@ -46,7 +57,11 @@ for bin in claude python3 git; do
 done
 echo "claude $(claude --version | head -1); spore $("$spore" version); mode $mode"
 
-work=$(mktemp -d /tmp/spore-sbprobe.XXXXXX)
+if [ "$files_only" = 1 ]; then
+	work=$(mktemp -d "${TMPDIR:-/tmp}/spore-fileprobe.XXXXXX")
+else
+	work=$(mktemp -d /tmp/spore-sbprobe.XXXXXX)
+fi
 stub_pid=""
 cleanup() {
 	[ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null
@@ -63,6 +78,95 @@ printf 'CANARY-SSH-KEY\n' >"$home/.ssh/id_ed25519"
 printf '{"claudeAiOauth":{"accessToken":"CANARY-CLAUDE-CREDS"}}\n' >"$home/.claude/.credentials.json"
 printf 'registry=https://registry.npmjs.org/\n; NPMRC-READABLE\n' >"$home/.npmrc"
 printf 'victim\n' >"$work/victim"
+
+start_stub() {
+	python3 -I "$here/sandbox-probe-stub.py" >"$work/stub.port" 2>"$work/stub.err" &
+	stub_pid=$!
+	for _ in $(seq 50); do [ -s "$work/stub.port" ] && break; sleep 0.1; done
+	port=$(head -1 "$work/stub.port")
+}
+
+# One scripted turn through a real claude pane: spec is the stub's JSON.
+# __ETC_PROFILE_DONE mirrors live panes: without it the sandbox's inner
+# bash re-sources /etc/profile and may lose socat (docs/sandbox.md).
+run_spec() { # run_spec <timeout> <spec json>
+	local spec
+	spec=$(python3 -I -c 'import base64,sys; print(base64.urlsafe_b64encode(sys.argv[1].encode()).decode())' "$2")
+	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 \
+		__ETC_PROFILE_DONE=1 ANTHROPIC_API_KEY=sk-ant-sandbox-probe ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
+		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 \
+		timeout "$1" claude -p --dangerously-skip-permissions --model claude-haiku-5-5 \
+		--settings "$settings" "SBPROBE:$spec" </dev/null 2>&1) || true
+}
+
+probe() { # probe <timeout> <disable 0|1> <command>
+	run_spec "$1" "$(python3 -I -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "disable": sys.argv[2] == "1"}))' "$3" "$2")"
+}
+
+fails=0
+report() { # report <PASS|FAIL|SKIP> <name> <output>
+	printf '%-4s %s\n' "$1" "$2"
+	if [ "$1" = FAIL ]; then
+		fails=$((fails + 1))
+		printf '%s\n' "$3" | head -8 | sed 's/^/     | /'
+	fi
+}
+
+render_floor() {
+	"$spore" hooks settings --managed --spore "$spore" --hooks-dir "$repo/bootstrap/handover/hooks" >"$work/managed.json"
+}
+
+# Read, then Write or Edit, through the file tools. Every target starts
+# as "ORIG"; the verdict comes from the file on disk.
+file_tool() { # file_tool <Write|Edit> <path>
+	run_spec 120 "$(python3 -I -c '
+import json, sys
+tool, path = sys.argv[1], sys.argv[2]
+if tool == "Write":
+    step = {"tool": "Write", "input": {"file_path": path, "content": "PROBE-WROTE\n"}}
+else:
+    step = {"tool": "Edit", "input": {"file_path": path, "old_string": "ORIG", "new_string": "PROBE-EDITED"}}
+print(json.dumps({"steps": [{"tool": "Read", "input": {"file_path": path}}, step]}))' "$1" "$2")"
+}
+file_checks() {
+	local gitdir out path tool
+	gitdir=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)
+	local denied=("$gitdir/hooks/pre-commit" "$gitdir/config" "$home/.bashrc")
+	local allowed=("$home/.claude/projects/-probe/memory/MEMORY.md" "$home/.local/state/spore/probe/note.txt" "$wt/probe-src.go" "$wt/.claude/rules/x.md")
+	for path in "${denied[@]}" "${allowed[@]}"; do
+		mkdir -p "$(dirname "$path")"
+	done
+	echo "--- file tools: denied"
+	for tool in Write Edit; do
+		for path in "${denied[@]}"; do
+			[ "$path" = "$gitdir/config" ] && cp "$work/git-config.orig" "$path" || printf 'ORIG\n' >"$path"
+			out=$(file_tool "$tool" "$path")
+			if grep -q 'TOOL_RESULT' <<<"$out" && ! grep -q PROBE- "$path"; then report PASS "$tool ${path#"$work"/}" "$out"; else report FAIL "$tool ${path#"$work"/}" "$out"; fi
+			printf '%s\n' "$out" | grep -m1 -iE 'denied|permission' | sed 's/^/     > /' || true
+		done
+	done
+	echo "--- file tools: allowed"
+	for tool in Write Edit; do
+		for path in "${allowed[@]}"; do
+			printf 'ORIG\n' >"$path"
+			out=$(file_tool "$tool" "$path")
+			if grep -q PROBE- "$path"; then report PASS "$tool ${path#"$work"/}" "$out"; else report FAIL "$tool ${path#"$work"/}" "$out"; fi
+		done
+	done
+}
+
+if [ "$files_only" = 1 ]; then
+	wt=$work/proj
+	git init -q "$wt"
+	{ cat "$wt/.git/config"; printf '# ORIG\n'; } >"$work/git-config.orig"
+	render_floor
+	settings=$work/managed.json
+	start_stub
+	file_checks
+	echo "--- $fails failing check(s), files only"
+	[ "$fails" -eq 0 ]
+	exit
+fi
 
 name=$(basename "$repo")
 clone=$work/$name
@@ -88,7 +192,7 @@ post)
 	printf '%s\n' "$pane" >"$settings"
 	;;
 pre | none)
-	"$spore" hooks settings --managed --spore "$spore" --hooks-dir "$repo/bootstrap/handover/hooks" >"$work/managed.json"
+	render_floor
 	python3 -I - "$work/managed.json" "$pane" "$mode" >"$settings" <<'EOF'
 import json, sys
 managed = json.load(open(sys.argv[1]))
@@ -110,32 +214,8 @@ EOF
 	;;
 esac
 
-python3 -I "$here/sandbox-probe-stub.py" >"$work/stub.port" 2>"$work/stub.err" &
-stub_pid=$!
-for _ in $(seq 50); do [ -s "$work/stub.port" ] && break; sleep 0.1; done
-port=$(head -1 "$work/stub.port")
+start_stub
 
-# One Bash call through a real claude pane. __ETC_PROFILE_DONE mirrors
-# live panes: without it the sandbox's inner bash re-sources
-# /etc/profile and may lose socat (docs/sandbox.md).
-probe() { # probe <timeout> <disable 0|1> <command>
-	local spec
-	spec=$(python3 -I -c 'import base64,json,sys; print(base64.urlsafe_b64encode(json.dumps({"command": sys.argv[1], "disable": sys.argv[2] == "1"}).encode()).decode())' "$3" "$2")
-	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 \
-		__ETC_PROFILE_DONE=1 ANTHROPIC_API_KEY=sk-ant-sandbox-probe ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
-		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 \
-		timeout "$1" claude -p --dangerously-skip-permissions --model claude-haiku-5-5 \
-		--settings "$settings" "SBPROBE:$spec" </dev/null 2>&1) || true
-}
-
-fails=0
-report() { # report <PASS|FAIL|SKIP> <name> <output>
-	printf '%-4s %s\n' "$1" "$2"
-	if [ "$1" = FAIL ]; then
-		fails=$((fails + 1))
-		printf '%s\n' "$3" | head -8 | sed 's/^/     | /'
-	fi
-}
 contain() { # contain <name> <command> [disable]: no canary may leak
 	local out
 	out=$(probe 120 "${3:-0}" "$2")
@@ -182,6 +262,9 @@ if [ -n "$gh_project" ]; then
 else
 	report SKIP "spore gh exec -- git push --dry-run (no --gh-project)" ""
 fi
+
+{ cat "$clone/.git/config"; printf '# ORIG\n'; } >"$work/git-config.orig"
+file_checks
 
 echo "--- $fails failing check(s), mode $mode"
 [ "$fails" -eq 0 ]
