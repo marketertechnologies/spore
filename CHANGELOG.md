@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Role loop review quality (0.66.0), from the 2026-11-24/25/26 validation runs (P3.2, P3.4, P3.6, P3.7).
+- Role loop review quality (0.67.0), from the 2026-11-24/25/26 validation runs (P3.2, P3.4, P3.6, P3.7).
   - **Broken role body overrides fail loudly.** A `bootstrap/roles/<role>.md` override that is unreadable or empty (or whitespace only) now fails the spawn like a dangling symlink already did: no pane starts, and the coordinator gets one `<slug>: <role> not spawned: ...` notice per distinct error. Before, the launch line's `[ -r ] && [ -s ]` test silently started a bare agent with no role. The launch line no longer has a bare-agent fallback at all: a body that breaks between spawn and exec fails the pane, which the respawn cap then handles.
   - **Strict grading.** A verdict of `request_changes` with no comments is bounced at every round (it used to be accepted, and at round 3 escalated on nothing), and a plain-string comment in a strict review is bounced instead of counting as an ungraded `medium`. A new `state/grade-exempt-files` marker, written on the first drive by this binary, grandfathers the files already on disk, so in-flight loops are not rewound. The reviewer bodies now say both rules.
   - **`spore task review-stats` counts archived cycles.** Reviews under `.spore/<slug>/cycles/<n>/` (moved there by `spore task reopen`) are tallied with that cycle's engineer outcomes and validated against that cycle's `state/` markers, `operator-overrides` included. Before, they were dropped silently.
