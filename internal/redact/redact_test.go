@@ -152,3 +152,95 @@ func TestAbsPathRE(t *testing.T) {
 		}
 	}
 }
+
+// TestGHCallEveryFlagForm: the canary is redacted in every spelling of
+// every flag that carries posted text, and the hit names the place.
+func TestGHCallEveryFlagForm(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	c := canary
+	red := "[redacted:API_KEY]"
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		want  []string
+		where string
+	}{
+		{"body space", []string{"pr", "comment", "7", "--body", "x " + c}, []string{"pr", "comment", "7", "--body", "x " + red}, "--body"},
+		{"body equals", []string{"pr", "comment", "7", "--body=x " + c}, []string{"pr", "comment", "7", "--body=x " + red}, "--body"},
+		{"body short", []string{"pr", "comment", "7", "-b", c}, []string{"pr", "comment", "7", "-b", red}, "--body"},
+		{"body short joined", []string{"pr", "review", "7", "-b" + c}, []string{"pr", "review", "7", "-b" + red}, "--body"},
+		{"body short equals", []string{"pr", "review", "7", "-b=" + c}, []string{"pr", "review", "7", "-b=" + red}, "--body"},
+		{"title space", []string{"pr", "create", "--draft", "--title", c}, []string{"pr", "create", "--draft", "--title", red}, "--title"},
+		{"title equals", []string{"pr", "edit", "7", "--title=" + c}, []string{"pr", "edit", "7", "--title=" + red}, "--title"},
+		{"title short", []string{"pr", "create", "-t", c}, []string{"pr", "create", "-t", red}, "--title"},
+		{"issue body short", []string{"issue", "comment", "3", "-b", c}, []string{"issue", "comment", "3", "-b", red}, "--body"},
+		{"api -f", []string{"api", "repos/o/r/issues/3/comments", "-f", "body=" + c}, []string{"api", "repos/o/r/issues/3/comments", "-f", "body=" + red}, "field body"},
+		{"api -F", []string{"api", "repos/o/r/pulls/3", "-F", "title=" + c}, []string{"api", "repos/o/r/pulls/3", "-F", "title=" + red}, "field title"},
+		{"api -f joined", []string{"api", "repos/o/r/pulls/3", "-fbody=" + c}, []string{"api", "repos/o/r/pulls/3", "-fbody=" + red}, "field body"},
+		{"api --field", []string{"api", "repos/o/r/pulls/3/reviews", "--field", "body=" + c}, []string{"api", "repos/o/r/pulls/3/reviews", "--field", "body=" + red}, "field body"},
+		{"api --field=", []string{"api", "repos/o/r/pulls/3/reviews", "--field=body=" + c}, []string{"api", "repos/o/r/pulls/3/reviews", "--field=body=" + red}, "field body"},
+		{"api --raw-field", []string{"api", "repos/o/r/pulls/3/comments", "--raw-field", "body=" + c}, []string{"api", "repos/o/r/pulls/3/comments", "--raw-field", "body=" + red}, "field body"},
+		{"api --raw-field=", []string{"api", "repos/o/r/pulls/3/comments", "--raw-field=body=" + c}, []string{"api", "repos/o/r/pulls/3/comments", "--raw-field=body=" + red}, "field body"},
+		{"api nested key", []string{"api", "repos/o/r/pulls/3/reviews", "-f", "comments[][body]=" + c}, []string{"api", "repos/o/r/pulls/3/reviews", "-f", "comments[][body]=" + red}, "field body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, hits := r.GHCall("", tc.args)
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("args:\n got %q\nwant %q", got, tc.want)
+			}
+			want := []Hit{{Where: tc.where, Class: ClassSecretsEnv, Count: 1}}
+			if len(hits) != 1 || hits[0] != want[0] {
+				t.Fatalf("hits = %+v, want %+v", hits, want)
+			}
+		})
+	}
+}
+
+// TestGHCallLeavesRefs: refs, logins, repo names, the endpoint and
+// flags that are not posted text pass through even when they equal a
+// secrets.env value; under pr, -F is --body-file.
+func TestGHCallLeavesRefs(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	c := canary
+	for _, args := range [][]string{
+		{"pr", "list", "--head", c, "--state", "open"},
+		{"pr", "create", "--draft", "--base", c, "--head=" + c, "-F", "-"},
+		{"api", "graphql", "-f", "owner=" + c, "-f", "name=" + c, "-F", "number=7"},
+		{"api", "repos/o/r/pulls/3/reviews", "-f", "commit_id=" + c, "-f", "event=COMMENT", "-f", "comments[][path]=" + c},
+		{"api", "repos/o/r/issues/3/assignees", "-f", "assignees[]=" + c},
+		{"api", "repos/o/r/pulls/3", "--jq", c, "-t", c},
+		{"pr", "comment", "7", "--", "--body", c},
+	} {
+		_, got, hits := r.GHCall("", args)
+		if strings.Join(got, "\x00") != strings.Join(args, "\x00") || len(hits) != 0 {
+			t.Errorf("GHCall(%q) = %q, hits %+v; want unchanged", args, got, hits)
+		}
+	}
+}
+
+// TestGHCallStdin: stdin is redacted as JSON after `--input -` in
+// either spelling (a JSON-escaped secret is still caught) and as text
+// otherwise; each class gets its own hit.
+func TestGHCallStdin(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	escaped := "pass word with spaces"
+	doc := `{"body":"pass word with spaces and ghs_` + strings.Repeat("A1", 18) + `"}`
+	for _, input := range [][]string{{"--input", "-"}, {"--input=-"}} {
+		args := append([]string{"api", "repos/o/r/pulls/3/reviews", "--method", "POST"}, input...)
+		out, _, hits := r.GHCall(doc, args)
+		if strings.Contains(out, escaped) || strings.Contains(out, "ghs_") || !strings.Contains(out, "[redacted:DB_PASS]") {
+			t.Errorf("%q: stdin = %q", input, out)
+		}
+		want := []Hit{{"stdin", ClassSecretsEnv, 1}, {"stdin", ClassToken, 1}}
+		if len(hits) != 2 || hits[0] != want[0] || hits[1] != want[1] {
+			t.Errorf("%q: hits = %+v, want %+v", input, hits, want)
+		}
+	}
+	out, _, hits := r.GHCall("see "+canary+" and /home/alice/x", []string{"pr", "comment", "7", "--body-file", "-"})
+	if out != "see [redacted:API_KEY] and [redacted]" {
+		t.Errorf("text stdin = %q", out)
+	}
+	if len(hits) != 2 || hits[1].Class != ClassHomePath {
+		t.Errorf("text hits = %+v", hits)
+	}
+}

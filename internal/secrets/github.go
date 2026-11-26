@@ -106,7 +106,7 @@ func (s *Server) gh(c Caller, req Request) Response {
 		return Response{Error: "refused: gh " + err.Error()}
 	}
 	r := s.redactor(req.Project)
-	stdin, args := r.GHCall(req.Stdin, req.Args)
+	stdin, args, hits := r.GHCall(req.Stdin, req.Args)
 	home, err := os.MkdirTemp("", "spore-secrets-gh-")
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -125,7 +125,7 @@ func (s *Server) gh(c Caller, req Request) Response {
 	}
 	stdout, stderr := &capBuffer{max: maxOutput}, &capBuffer{max: maxOutput}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	resp := Response{}
+	resp := Response{Redactions: hits}
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {

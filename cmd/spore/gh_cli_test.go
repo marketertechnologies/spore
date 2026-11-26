@@ -148,7 +148,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 // startTestBroker runs an in-process secrets broker for the project at
 // root whose App tokens mint from the project's github.toml.
-func startTestBroker(t *testing.T, root string) {
+func startTestBroker(t *testing.T, root string) (secretsDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	sd := filepath.Join(dir, "secrets")
@@ -188,6 +188,7 @@ func startTestBroker(t *testing.T, root string) {
 	t.Cleanup(func() { l.Close() })
 	go s.Serve(l)
 	t.Setenv("SPORE_SECRETS_SOCKET", sock)
+	return sd
 }
 
 func TestGHPRThroughBroker(t *testing.T) {
@@ -347,5 +348,112 @@ func TestGHPushRefusesOtherProjectRepo(t *testing.T) {
 	code, _, errOut := captureFn(t, func() int { return runGH([]string{"push", "wt/x"}) })
 	if code != 1 || !strings.Contains(errOut, "is not the project") {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+}
+
+const ghCanary = "CANARY-vuNfvrcKGX"
+
+type ghRedactCase struct {
+	name   string
+	args   []string
+	stdin  string
+	where  string
+	broker bool
+}
+
+// ghRedactCases post the canary through every flag form a body or
+// title takes; broker marks the ones the broker's allowlist accepts.
+var ghRedactCases = []ghRedactCase{
+	{"body equals", []string{"pr", "comment", "9", "--body=see " + ghCanary}, "", "--body", true},
+	{"body space", []string{"pr", "comment", "9", "--body", "see " + ghCanary}, "", "--body", true},
+	{"body short", []string{"pr", "comment", "9", "-b", ghCanary}, "", "--body", false},
+	{"review body joined", []string{"pr", "review", "9", "--comment", "-b" + ghCanary}, "", "--body", false},
+	{"title equals", []string{"pr", "edit", "9", "--title=" + ghCanary}, "", "--title", true},
+	{"title short", []string{"pr", "edit", "9", "-t", ghCanary}, "", "--title", false},
+	{"api -f", []string{"api", "repos/acme/proj/issues/9/comments", "-f", "body=" + ghCanary}, "", "field body", true},
+	{"api -F", []string{"api", "repos/acme/proj/pulls/9", "-X", "POST", "-F", "title=" + ghCanary}, "", "field title", true},
+	{"api --field=", []string{"api", "repos/acme/proj/pulls/9/reviews", "--field=body=" + ghCanary}, "", "field body", true},
+	{"api --raw-field", []string{"api", "repos/acme/proj/pulls/9/comments", "--raw-field", "body=" + ghCanary}, "", "field body", true},
+	{"api --input -", []string{"api", "repos/acme/proj/pulls/9/reviews", "--input", "-"}, `{"body":"` + ghCanary + `"}`, "stdin", true},
+	{"api --input=-", []string{"api", "repos/acme/proj/pulls/9/reviews", "--input=-"}, `{"body":"` + ghCanary + `"}`, "stdin", true},
+	{"body-file stdin", []string{"pr", "comment", "9", "--body-file", "-"}, "see " + ghCanary, "stdin", true},
+}
+
+// checkGHRedacted runs c against a gh that echoes its args and stdin,
+// and checks the canary never reached it and the ledger holds one
+// secrets_env redaction for c.
+func checkGHRedacted(t *testing.T, root string, c ghRedactCase) {
+	t.Helper()
+	withStdin(t, c.stdin)
+	before := len(ghRedactionEvents(t, root))
+	code, out, errOut := captureFn(t, func() int { return runGH(c.args) })
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, ghCanary) || !strings.Contains(out, "[redacted:API_KEY]") {
+		t.Fatalf("gh got %q", out)
+	}
+	hits := ghRedactionEvents(t, root)[before:]
+	if len(hits) != 1 {
+		t.Fatalf("new redaction events = %+v", hits)
+	}
+	f := hits[0].Fields
+	if f["class"] != "secrets_env" || f["where"] != c.where || f["count"] != "1" || f["via"] != "spore-gh" || hits[0].Slug != "demo" {
+		t.Errorf("event = %+v", hits[0])
+	}
+}
+
+func ghRedactionEvents(t *testing.T, root string) []events.Event {
+	t.Helper()
+	evs, err := events.Read(filepath.Base(root), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []events.Event
+	for _, e := range evs {
+		if e.Kind == events.Redaction {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+const ghEchoScript = `echo "gh $*"
+case "$*" in *body-file*|*input*) echo "stdin=$(cat)";; esac
+`
+
+func ghSecretsEnv(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.env"), []byte("API_KEY="+ghCanary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGHRedactsEveryFormWithoutBroker(t *testing.T) {
+	root := ghTestProject(t)
+	noBroker(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	ghSecretsEnv(t, filepath.Join(cfg, "spore"))
+	fakeBin(t, "gh", ghEchoScript)
+	for _, c := range ghRedactCases {
+		t.Run(c.name, func(t *testing.T) { checkGHRedacted(t, root, c) })
+	}
+}
+
+func TestGHRedactsEveryFormThroughBroker(t *testing.T) {
+	root := ghTestProject(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	sd := startTestBroker(t, root)
+	ghSecretsEnv(t, filepath.Join(sd, filepath.Base(root)))
+	fakeBin(t, "gh", ghEchoScript)
+	for _, c := range ghRedactCases {
+		if c.broker {
+			t.Run(c.name, func(t *testing.T) { checkGHRedacted(t, root, c) })
+		}
 	}
 }

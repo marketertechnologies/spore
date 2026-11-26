@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/versality/spore/internal/redact"
 )
 
 // Ops the broker serves.
@@ -65,6 +67,9 @@ type Response struct {
 	NeedFull    bool            `json:"need_full,omitempty"`
 	Data        json.RawMessage `json:"data,omitempty"`
 	PayloadSize int64           `json:"payload_size,omitempty"`
+	// Redactions is what a gh call had redacted before it was posted,
+	// for the caller to record: the broker cannot write its ledger.
+	Redactions []redact.Hit `json:"redactions,omitempty"`
 }
 
 const (

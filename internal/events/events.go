@@ -43,6 +43,7 @@ const (
 	ReconcileSkipped   = "reconcile.skipped"
 	ReconcileFailed    = "reconcile.failed"
 	PROpened           = "pr.opened"
+	Redaction          = "redaction"
 )
 
 // FileName is the ledger's name inside the project state dir.

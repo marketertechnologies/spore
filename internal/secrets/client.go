@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/redact"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -31,16 +32,17 @@ func Claim(req *Request) {
 }
 
 // GH runs one gh call through the broker as project's App and returns
-// stdout. A non-zero exit is an error carrying stderr.
-func GH(project, stdin string, args []string, timeout time.Duration) (string, error) {
+// stdout and what the broker redacted from the posted text. A
+// non-zero exit is an error carrying stderr.
+func GH(project, stdin string, args []string, timeout time.Duration) (string, []redact.Hit, error) {
 	resp, _, err := Call(Request{Op: OpGH, Project: project, Args: args, Stdin: stdin}, nil, timeout)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if resp.Exit != 0 {
-		return "", &ExitError{Code: resp.Exit, Stderr: strings.TrimSpace(resp.Stderr)}
+		return "", resp.Redactions, &ExitError{Code: resp.Exit, Stderr: strings.TrimSpace(resp.Stderr)}
 	}
-	return strings.TrimSpace(resp.Stdout), nil
+	return strings.TrimSpace(resp.Stdout), resp.Redactions, nil
 }
 
 // ExitError is a command the broker ran that exited non-zero.

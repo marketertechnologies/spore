@@ -779,4 +779,5 @@ func TestGitHubMirrorRedactsSecrets(t *testing.T) {
 	if !strings.Contains(log, "ARGS: pr edit 12 --title Spin [redacted:API_KEY]-PRTITLE --body-file -") {
 		t.Errorf("pr edit title not redacted: %q", f.calls(t))
 	}
+	checkRedactionEvents(t, f.root, canary)
 }

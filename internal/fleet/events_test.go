@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/events"
+	"github.com/versality/spore/internal/redact"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -206,5 +208,33 @@ func TestLedgerPROpenedByMirror(t *testing.T) {
 		if e.Kind == events.PROpened && (e.Fields["url"] != "https://github.com/acme/widget/pull/12" || e.Slug != "demo") {
 			t.Errorf("pr.opened = %+v", e)
 		}
+	}
+}
+
+// checkRedactionEvents: the mirror recorded a redaction event per
+// pattern class, attributed to the task and the pr edit --title, and
+// no event carries a redacted value.
+func checkRedactionEvents(t *testing.T, root, canary string) {
+	t.Helper()
+	classes := map[string]bool{}
+	var titleHit bool
+	for _, e := range ledger(t, root) {
+		if e.Kind != events.Redaction {
+			continue
+		}
+		raw, _ := json.Marshal(e)
+		if strings.Contains(string(raw), canary) || strings.Contains(string(raw), "ghp_") || e.Slug != "demo" || e.Fields["via"] != "mirror" {
+			t.Errorf("redaction event = %s", raw)
+		}
+		classes[e.Fields["class"]] = true
+		titleHit = titleHit || (e.Fields["cmd"] == "pr edit" && e.Fields["where"] == "--title")
+	}
+	for _, c := range []string{redact.ClassSecretsEnv, redact.ClassToken, redact.ClassPEM, redact.ClassHomePath} {
+		if !classes[c] {
+			t.Errorf("no redaction event of class %s; got %v", c, classes)
+		}
+	}
+	if !titleHit {
+		t.Error("no redaction event for the pr edit --title")
 	}
 }
