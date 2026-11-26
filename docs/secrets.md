@@ -94,8 +94,8 @@ The broker hides values; it cannot make an unsafe command safe. Narrow every pat
 
 ## Who may use what
 
-- **Coordinator** (a caller with no `SPORE_TASK_SLUG`): every profile, every project.
-- **Worker** (with `SPORE_TASK_SLUG`): its own project's profiles plus live grants.
+- **Agents** (any caller with `SPORE_TASK_SLUG`: workers, role-loop agents, and coordinators, whose panes carry `SPORE_TASK_SLUG=coordinator`): their own project's profiles plus live grants. Grant another project's coordinator a profile with the slug `coordinator`.
+- **A caller with no `SPORE_TASK_SLUG`** (a plain shell as the agent user): every profile, every project.
 - **Pilots and root**: everything, plus `grant`, `revoke` and re-enabling the fleet.
 
 ```
