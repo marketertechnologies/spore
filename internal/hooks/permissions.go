@@ -52,7 +52,8 @@ var defaultDeny = []string{
 // On Linux the sandbox drops write globs, so the "//**/" rules never
 // reach bwrap and cannot break git init in $TMPDIR. The "~/" rules do
 // reach it, but every one lies outside the sandbox's write roots.
-// ~/.claude/skills and the memory dirs stay writable on purpose.
+// ~/.claude/skills and the memory dirs stay writable on purpose; skill
+// frontmatter hooks are a known residual (docs/sandbox.md).
 var execVectorDeny = []string{
 	"Edit(//**/.git)",
 	"Edit(//**/.git/**)",
@@ -62,11 +63,14 @@ var execVectorDeny = []string{
 	"Edit(//**/.mcp.json)",
 	"Edit(//**/.claude/settings*.json)",
 	"Edit(//**/.claude/hooks/**)",
+	"Edit(//**/.claude/agents/**)",
+	"Edit(//**/.claude/commands/**)",
 	"Edit(~/.claude.json)",
 	"Edit(~/.claude/plugins/**)",
 	"Edit(~/.bashrc)",
 	"Edit(~/.bash_profile)",
 	"Edit(~/.bash_login)",
+	"Edit(~/.bash_logout)",
 	"Edit(~/.profile)",
 	"Edit(~/.zshrc)",
 	"Edit(~/.zshenv)",
@@ -81,13 +85,17 @@ var execVectorDeny = []string{
 	"Edit(~/.config/environment.d/**)",
 	"Edit(~/.huskyrc)",
 	"Edit(~/.config/husky/**)",
+	"Edit(~/.config/fish/**)",
+	"Edit(~/.npmrc)",
+	"Edit(~/.yarnrc)",
+	"Edit(~/.yarnrc.yml)",
 	"Edit(~/.local/bin/**)",
 	"Edit(~/.ssh/**)",
 	"Edit(~/.config/spore/**)",
 }
 
-// DefaultDeny returns the kernel rules plus the guardrail set, in the
-// order Settings emits them.
+// DefaultDeny returns the kernel rules, the guardrail set and the
+// exec-vector set, in the order Settings emits them.
 func DefaultDeny() []string {
 	return DefaultPermissions().DenyRules()
 }
