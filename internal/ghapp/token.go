@@ -214,6 +214,9 @@ func ProjectToken(ctx context.Context, projectRoot string) (Token, error) {
 // Env's credential helper answers any host, so the token must never
 // reach a fetch from GitLab, a mirror or another third party.
 func FetchEnv(ctx context.Context, projectRoot, originURL string, base []string) ([]string, error) {
+	if err := CheckBrokerHost(); err != nil {
+		return nil, err
+	}
 	cfg, err := LoadConfig(projectRoot)
 	if err != nil {
 		return nil, err
@@ -234,16 +237,26 @@ func FetchEnv(ctx context.Context, projectRoot, originURL string, base []string)
 
 // BrokerHostMarker is the broker config the NixOS secrets module
 // installs. On a host that has it the App key belongs to the broker,
-// whatever $SPORE_SECRETS_SOCKET says, so projectToken reads neither
-// the key nor a cached token. A var so tests can repoint it.
+// whatever $SPORE_SECRETS_SOCKET says, so nothing here reads the key or
+// a cached token. A var so tests can repoint it.
 var BrokerHostMarker = "/etc/spore/secrets-broker.json"
 
-// ErrBrokerHost refuses the direct key path on a broker host.
-var ErrBrokerHost = errors.New("this host runs the spore secrets broker (/etc/spore/secrets-broker.json), so the GitHub App key is not read directly: the broker socket is unreachable, check $SPORE_SECRETS_SOCKET (unset it for the default /run/spore-secrets/broker.sock) and spore-secrets.socket")
+var ErrBrokerHost = errors.New("the spore secrets broker config (/etc/spore/secrets-broker.json) is present or unreadable, so the GitHub App key is not read directly: the broker socket is unreachable, check $SPORE_SECRETS_SOCKET (unset it for the default /run/spore-secrets/broker.sock) and spore-secrets.socket")
+
+// CheckBrokerHost returns ErrBrokerHost on a broker host. Callers run
+// it before validating github.toml, whose agent-side copy on such a
+// host lacks the App fields. An unreadable marker counts as present.
+func CheckBrokerHost() error {
+	_, err := os.Lstat(BrokerHostMarker)
+	if err == nil || errors.Is(err, os.ErrPermission) {
+		return ErrBrokerHost
+	}
+	return nil
+}
 
 func projectToken(ctx context.Context, projectRoot string, cfg Config) (Token, error) {
-	if _, err := os.Lstat(BrokerHostMarker); !errors.Is(err, os.ErrNotExist) {
-		return Token{}, ErrBrokerHost
+	if err := CheckBrokerHost(); err != nil {
+		return Token{}, err
 	}
 	path, err := TokenCachePath(projectRoot)
 	if err != nil {

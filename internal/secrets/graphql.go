@@ -82,7 +82,7 @@ func checkGraphQL(query string, vars map[string]string, ownerRepo string) error 
 			case !ok:
 				return fmt.Errorf("graphql variable %q is not allowed", k)
 			case k == "owner" && !strings.EqualFold(v, owner), k == "name" && !strings.EqualFold(v, name):
-				return fmt.Errorf("graphql %s %q is not the project's repo", k, v)
+				return fmt.Errorf("graphql %s %q is not the project's repo %s: the local origin must name the repo set in projects.<name>.repo", k, v, ownerRepo)
 			case re != nil && !re.MatchString(v):
 				return fmt.Errorf("graphql variable %s=%q is not allowed", k, v)
 			}

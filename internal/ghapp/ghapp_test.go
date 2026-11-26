@@ -429,7 +429,7 @@ func TestGitHost(t *testing.T) {
 	}
 }
 
-// N8: on a broker host an env override that hides the socket must not
+// On a broker host an env override that hides the socket must not
 // reach the App key or a token cached before the broker took it over.
 func TestProjectTokenRefusedOnBrokerHost(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -466,5 +466,40 @@ func TestProjectTokenRefusedOnBrokerHost(t *testing.T) {
 	}
 	if ts.calls.Load() != calls {
 		t.Fatal("minted a token on a broker host")
+	}
+}
+
+func TestCheckBrokerHost(t *testing.T) {
+	orig := BrokerHostMarker
+	t.Cleanup(func() { BrokerHostMarker = orig })
+	file := filepath.Join(t.TempDir(), "etc-spore")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	BrokerHostMarker = filepath.Join(file, "secrets-broker.json")
+	if err := CheckBrokerHost(); err != nil {
+		t.Errorf("marker under a regular file (ENOTDIR): %v, want nil", err)
+	}
+	BrokerHostMarker = file
+	if err := CheckBrokerHost(); !errors.Is(err, ErrBrokerHost) {
+		t.Errorf("marker present: %v, want ErrBrokerHost", err)
+	}
+
+	// The agent-side github.toml on a broker host has no App fields;
+	// the base fetch must still say why, not fall back silently.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("pr_flow = \"draft\"\noperator_login = \"op\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FetchEnv(context.Background(), root, "https://github.com/o/r.git", nil); !errors.Is(err, ErrBrokerHost) {
+		t.Errorf("FetchEnv with agent-side github.toml: %v, want ErrBrokerHost", err)
 	}
 }

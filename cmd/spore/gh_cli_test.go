@@ -70,7 +70,7 @@ func TestGHPRWithoutBrokerRunsGHAsApp(t *testing.T) {
 	}
 }
 
-// N8: on a broker host (the NixOS module's config is present) pointing
+// On a broker host (the NixOS module's config is present) pointing
 // SPORE_SECRETS_SOCKET at nothing must not fall back to the App key.
 func TestGHRefusesKeyFallbackOnBrokerHost(t *testing.T) {
 	ghTestProject(t)
