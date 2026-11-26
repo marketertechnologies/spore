@@ -348,13 +348,14 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	if err := s.promisor(ctx, dir, env, repo); err != nil {
 		return Response{Error: err.Error()}
 	}
+	// Fetch on every push, not only when the bundle fails to verify:
+	// git push excludes only origin tips the mirror holds, so a mirror
+	// behind a moved base would pack, and lazy-fetch, the whole history.
+	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return Response{Error: s.redactor(req.Project).String(err.Error())}
+	}
 	if _, err := gitIn(ctx, dir, noLazy(env), "bundle", "verify", "--quiet", bpath); err != nil {
-		if _, ferr := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); ferr != nil {
-			return Response{Error: s.redactor(req.Project).String(ferr.Error())}
-		}
-		if _, err := gitIn(ctx, dir, noLazy(env), "bundle", "verify", "--quiet", bpath); err != nil {
-			return Response{Error: "bundle prerequisites missing", NeedFull: true}
-		}
+		return Response{Error: "bundle prerequisites missing", NeedFull: true}
 	}
 	incoming := "refs/spore/incoming"
 	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", bpath, "+refs/heads/"+req.Branch+":"+incoming); err != nil {

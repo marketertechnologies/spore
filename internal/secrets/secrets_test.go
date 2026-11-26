@@ -621,9 +621,9 @@ func TestPushLazyFetchFollowsRepoURL(t *testing.T) {
 	}
 }
 
-// A mirror behind origin answers a thin bundle it cannot verify with
-// one batched fetch of its branches. Checking for the missing
-// prerequisites must not lazy-fetch them with no haves instead.
+// A push through a mirror behind origin runs one batched fetch of its
+// branches. Checking the bundle's prerequisites must not lazy-fetch
+// them with no haves on top of it.
 func TestPushStaleMirrorFetchesOnce(t *testing.T) {
 	f := newBloblessFixture(t)
 	git(t, f.work, "checkout", "--quiet", "main")
@@ -659,4 +659,28 @@ func TestPushStaleMirrorFetchesOnce(t *testing.T) {
 	if got, want := git(t, f.mirror(), "rev-parse", "refs/remotes/origin/main"), git(t, f.origin, "rev-parse", "main"); got != want {
 		t.Fatalf("mirror origin/main is %s, want %s: a lazy fetch stood in for the batched one", got, want)
 	}
+}
+
+// A mirror whose base moved on origin since its last fetch still knows
+// what origin holds before it pushes, so the push packs only the new
+// commits and never lazy-fetches the history's blobs.
+func TestPushMovedBaseStaysBlobless(t *testing.T) {
+	f := newBloblessFixture(t)
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(f.tmp, "seed")
+	git(t, f.tmp, "clone", "--quiet", f.origin, seed)
+	writeFile(t, filepath.Join(seed, "other.txt"), "moved\n")
+	git(t, seed, "add", "other.txt")
+	git(t, seed, "commit", "--quiet", "-m", "main moves")
+	git(t, seed, "push", "--quiet", "origin", "main")
+
+	if err := Push("alpha", f.work, "wt/edit", f.sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, f.origin, "rev-parse", "refs/heads/wt/edit"); got != f.sha {
+		t.Fatalf("origin has %s, want %s", got, f.sha)
+	}
+	f.assertNoBlob(t, f.old, "the push lazy-fetched the history it should have excluded")
 }
