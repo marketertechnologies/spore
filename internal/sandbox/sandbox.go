@@ -56,7 +56,6 @@ var DefaultDenyRead = []string{
 	"~/.local/state/spore/*/github-token.json",
 	"~/.ssh",
 	"~/.claude/.credentials.json",
-	"~/.npmrc",
 }
 
 // DefaultDenyWrite stops a sandboxed command repointing the GitHub App

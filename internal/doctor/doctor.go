@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +58,8 @@ type Env struct {
 	// ConfigDir is ~/.config/spore; StateBase is ~/.local/state/spore.
 	ConfigDir string
 	StateBase string
+	// Npmrc is ~/.npmrc; "" skips.
+	Npmrc string
 	// SelfVersion is this binary's BuildVersion.
 	SelfVersion string
 
@@ -78,6 +81,7 @@ func Check(env Env) []Result {
 	out = append(out, checkClaudeCode(env))
 	out = append(out, checkFleetUnits(env)...)
 	out = append(out, checkSecrets(env))
+	out = append(out, checkNpmrc(env))
 	out = append(out, checkKillSwitch(env))
 	return out
 }
@@ -586,6 +590,85 @@ func checkSecrets(env Env) Result {
 	default:
 		return Result{"secrets file modes", Pass, fmt.Sprintf("%d secret file(s), none readable by group or others", n)}
 	}
+}
+
+// npmrcAuthKeys are the .npmrc keys whose value is a credential.
+var npmrcAuthKeys = []string{"_authToken", "_auth", "_password"}
+
+// npmrcEnvRef is a value npm and yarn expand from the environment
+// (`${VAR}`, or npm's optional `${VAR?}`).
+var npmrcEnvRef = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\??\}$`)
+
+// npmrcValue unquotes a quoted value and, like npm's ini parser, cuts an
+// unquoted one at the first ';' or '#'.
+func npmrcValue(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
+	}
+	if i := strings.IndexAny(v, ";#"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+// npmrcLiteralAuth returns the 1-based line numbers of auth keys set to
+// a literal value. A value that is entirely a ${VAR} reference is
+// expanded by npm and yarn at run time and holds no secret itself.
+func npmrcLiteralAuth(data []byte) []int {
+	var lines []int
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if j := strings.LastIndex(k, ":"); j >= 0 {
+			k = k[j+1:]
+		}
+		v = npmrcValue(v)
+		if v == "" || npmrcEnvRef.MatchString(v) {
+			continue
+		}
+		for _, a := range npmrcAuthKeys {
+			if k == a {
+				lines = append(lines, i+1)
+				break
+			}
+		}
+	}
+	return lines
+}
+
+// checkNpmrc flags a literal registry token in ~/.npmrc. Since the
+// sandbox no longer hides that file (yarn 1 reads .npmrc from every
+// ancestor of the cwd and fails on the deny placeholder), any token in
+// it is readable by agent commands. Never print the value.
+func checkNpmrc(env Env) Result {
+	const name = "npmrc tokens"
+	if env.Npmrc == "" {
+		return Result{name, Skip, "no HOME"}
+	}
+	data, err := os.ReadFile(env.Npmrc)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return Result{name, Pass, env.Npmrc + " absent"}
+	case err != nil:
+		return Result{name, Warn, err.Error()}
+	}
+	lines := npmrcLiteralAuth(data)
+	if len(lines) == 0 {
+		return Result{name, Pass, "no literal auth token in " + env.Npmrc}
+	}
+	ls := make([]string, len(lines))
+	for i, n := range lines {
+		ls[i] = strconv.Itoa(n)
+	}
+	return Result{name, Warn, fmt.Sprintf("%s line %s holds a literal auth token readable by sandboxed agents; use a ${VAR} reference, or a narrowly scoped token in a file named by NPM_CONFIG_USERCONFIG, which sandboxed agents can read too (see docs/sandbox.md)", env.Npmrc, strings.Join(ls, ", "))}
 }
 
 func checkKillSwitch(env Env) Result {

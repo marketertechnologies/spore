@@ -98,6 +98,7 @@ func newEnv(t *testing.T) (Env, *fakeHost) {
 	env := Env{
 		SW: sw, DropIn: dropin, RepoRoot: repo, FlakeLock: lock, ClaudeBin: "claude",
 		ConfigDir: filepath.Join(dir, "config"), StateBase: filepath.Join(dir, "state"),
+		Npmrc:        filepath.Join(dir, "home", ".npmrc"),
 		SelfVersion:  "0.54.0 (abcdef1234567890)",
 		Run:          f.run,
 		Render:       hooks.ManagedSettings,
@@ -220,6 +221,48 @@ func TestCheckSecretModes(t *testing.T) {
 	}
 	if r := find(t, Check(env), "secrets file modes"); r.Status != Fail || !strings.Contains(r.Detail, "github.toml is 0640") {
 		t.Errorf("loose mode = %+v", r)
+	}
+}
+
+func TestCheckNpmrc(t *testing.T) {
+	env, _ := newEnv(t)
+	if r := find(t, Check(env), "npmrc tokens"); r.Status != Pass {
+		t.Errorf("absent = %+v", r)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.Npmrc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clean := "registry=https://registry.npmjs.org/\n" +
+		"//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}\n" +
+		"# _authToken=CANARY-COMMENT\n" +
+		"//r.example/:_authToken=${CI_TOKEN} # ci\n" +
+		"//q.example/:_authToken=${Q_TOKEN?} ; optional\n" +
+		"//s.example/:_password=\"${S_PW}\"\n" +
+		"always-auth=true\n"
+	if err := os.WriteFile(env.Npmrc, []byte(clean), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := find(t, Check(env), "npmrc tokens"); r.Status != Pass {
+		t.Errorf("env reference = %+v", r)
+	}
+	for _, tc := range []struct{ body, line string }{
+		{"//registry.npmjs.org/:_authToken=CANARY-TOKEN\n", "line 1 "},
+		{"registry=https://r.example/\n//r.example/:_auth = \"CANARY-B64\"\n", "line 2 "},
+		{"_password=CANARY-PW\n", "line 1 "},
+		{"//r.example/:_authToken=pre${X}CANARY\n", "line 1 "},
+		{"//r.example/:_authToken=${X}CANARY}\n", "line 1 "},
+		{"//r.example/:_authToken=\"CANARY#x\"\n", "line 1 "},
+	} {
+		if err := os.WriteFile(env.Npmrc, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := find(t, Check(env), "npmrc tokens")
+		if r.Status != Warn || !strings.Contains(r.Detail, tc.line) || !strings.Contains(r.Detail, "NPM_CONFIG_USERCONFIG") {
+			t.Errorf("%q = %+v, want warn naming %q", tc.body, r, tc.line)
+		}
+		if strings.Contains(r.Detail, "CANARY") {
+			t.Errorf("%q: detail leaks the value: %q", tc.body, r.Detail)
+		}
 	}
 }
 

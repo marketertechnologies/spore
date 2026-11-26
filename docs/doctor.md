@@ -12,6 +12,7 @@ Read-only drift checks for a spore host. Each check prints one `PASS`, `WARN`, `
 | `claude code version` | | `claude --version` is not `VerifiedClaudeCode`, or does not run |
 | `fleet units: <project>` | the project's reconcile timer or path units are not loaded and active, or its last reconcile run did not succeed | no `spore-fleet-reconcile-*` user units at all |
 | `secrets file modes` | a `secrets.env`, `*.pem`, `*.key`, `github-token.json` or `github.toml` under `~/.config/spore` or the spore state dir is readable by group or others | |
+| `npmrc tokens` | | `~/.npmrc` sets `_authToken`, `_auth` or `_password` to a literal value (not a `${VAR}` reference); the sandbox leaves that file readable. A file named by `NPM_CONFIG_USERCONFIG` is readable too and not checked, so only a narrowly scoped token belongs there. Names the line, never the value |
 | `kill switch` | | the fleet is disabled |
 
 Run the binary you want to judge the host against: the deployed one after a switch (the smoke script does), or a fresh build before a deploy to see what the switch will change.

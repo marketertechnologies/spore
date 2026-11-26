@@ -122,8 +122,7 @@
         "~/.config/spore",
         "~/.local/state/spore/*/github-token.json",
         "~/.ssh",
-        "~/.claude/.credentials.json",
-        "~/.npmrc"
+        "~/.claude/.credentials.json"
       ],
       "denyWrite": [
         "~/.local/state/spore/*/github.toml"

@@ -79,9 +79,10 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 		*repo = sporeCheckout()
 	}
 	home := os.Getenv("HOME")
-	configDir := ""
+	configDir, npmrc := "", ""
 	if home != "" {
 		configDir = filepath.Join(home, ".config", "spore")
+		npmrc = filepath.Join(home, ".npmrc")
 	}
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
 		configDir = filepath.Join(d, "spore")
@@ -96,6 +97,7 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 		ClaudeBin:    *claude,
 		ConfigDir:    configDir,
 		StateBase:    stateBase,
+		Npmrc:        npmrc,
 		SelfVersion:  spore.BuildVersion(),
 		Run:          doctorRun,
 		Render:       hooks.ManagedSettings,
