@@ -50,6 +50,8 @@ with git and gh prompts disabled, so a hung connection delays a tick
 by about a minute at most. Deleting `github.json` re-posts every
 comment; an open PR for the branch is adopted, not duplicated.
 
+Every comment and review body the mirror posts ends with a hidden marker, `<!-- spore-mirror: cycle <n> <event> -->`. Before a post the event is saved as `inflight` in `github.json`; after GitHub accepts it, the event moves to the posted list. A tick that still finds an event in flight (the process died, or the call failed or timed out after GitHub got it) reads the PR's reviews or issue comments (`--paginate`, bodies only) and records the event as posted when its marker is there, instead of posting it twice. Events that post nothing (engineer round 1, `ready`) need no lookup: re-running them changes nothing on GitHub (a re-run `ready` can repeat the done notice).
+
 Every gh call runs with `GH_REPO` set from `origin`'s URL, so gh and
 `git push` always target the same repo; without it gh prefers an
 `upstream` remote in a fork-style clone.
