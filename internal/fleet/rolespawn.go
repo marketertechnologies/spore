@@ -352,8 +352,9 @@ func readRoleTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 // prompt, behind the pre-start prelude when there is one; on hook
 // failure the note heads the body. A body that is unreadable or empty
 // at exec time fails the pane instead of starting a bare agent with no
-// role: the exit counts as a death, and the respawn's ResolveRoleBody
-// reports the cause.
+// role: the exit counts as a death. The cause is on the pane's stderr
+// only; the respawn's ResolveRoleBody names it to the coordinator only
+// if the body is still broken from the coordinator's side.
 func roleShellCommand(prelude, cmdWithBody, rolePath string) string {
 	note := ""
 	if prelude != "" {

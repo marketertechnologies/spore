@@ -3,6 +3,7 @@ package fleet
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,35 @@ func TestResolveRoleBodyUnreadableOrEmpty(t *testing.T) {
 				t.Errorf("TmuxArgs err = %v, want the role body error", err)
 			}
 		})
+	}
+}
+
+// A roles dir the spawner cannot search fails the stat itself; the
+// error keeps the OS cause and names the path once.
+func TestResolveRoleBodyStatErrorKeepsCause(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root searches mode 000 dirs")
+	}
+	root := newGitRepoFor(t, "demo-project")
+	dir := filepath.Join(root, "bootstrap", "roles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "engineer.md"), []byte("role body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	_, err := ResolveRoleBody(root, "engineer.md")
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("err = %v, want it to wrap fs.ErrPermission", err)
+	}
+	p := filepath.Join(dir, "engineer.md")
+	want := "rolespawn: project role body " + p + " cannot be read: permission denied"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
 	}
 }
 

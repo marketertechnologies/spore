@@ -103,6 +103,20 @@ func checkoutRef(dir string) string {
 // the drive tells the coordinator (see notifyRoleBodyError).
 type RoleBodyError struct {
 	Path, Reason string
+	Err          error
+}
+
+func (e *RoleBodyError) Unwrap() error { return e.Err }
+
+// unusable keeps err as the cause but drops a *fs.PathError's own
+// op and path from the message: Path already names the file.
+func unusable(p, reason string, err error) *RoleBodyError {
+	msg := err.Error()
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		msg = pe.Err.Error()
+	}
+	return &RoleBodyError{Path: p, Reason: reason + ": " + msg, Err: err}
 }
 
 func (e *RoleBodyError) Error() string {
@@ -125,29 +139,29 @@ func projectRoleBody(projectRoot, name string) (string, error) {
 			return "", nil
 		}
 		if err != nil {
-			return "", &RoleBodyError{p, err.Error()}
+			return "", unusable(p, "cannot be read", err)
 		}
 		fi, err := os.Stat(p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return "", &RoleBodyError{p, "is a dangling symlink"}
+			return "", &RoleBodyError{Path: p, Reason: "is a dangling symlink"}
 		case err != nil:
-			return "", &RoleBodyError{p, err.Error()}
+			return "", unusable(p, "cannot be read", err)
 		case i < len(parts)-1 && !fi.IsDir():
 			// e.g. an autotools-style ./bootstrap script: not an override.
 			return "", nil
 		case i == len(parts)-1 && !fi.Mode().IsRegular():
-			return "", &RoleBodyError{p, "is not a regular file"}
+			return "", &RoleBodyError{Path: p, Reason: "is not a regular file"}
 		}
 	}
 	// The pane reads the body with cat at exec time; reading it here
 	// turns a body the pane could not use into a spawn error.
 	body, err := os.ReadFile(p)
 	if err != nil {
-		return "", &RoleBodyError{p, "is unreadable: " + err.Error()}
+		return "", unusable(p, "is unreadable", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return "", &RoleBodyError{p, "is empty"}
+		return "", &RoleBodyError{Path: p, Reason: "is empty"}
 	}
 	return p, nil
 }
