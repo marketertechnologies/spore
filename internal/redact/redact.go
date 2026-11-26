@@ -249,12 +249,22 @@ func fieldKey(k string) string {
 
 // ghTextFlag maps a gh flag spelling to the canonical name of a flag
 // whose value is posted text, or "" when it is not one. Under pr and
-// issue, -t and -b are --title and --body; under api, -f, -F, --field
-// and --raw-field carry key=value fields (under pr, -F is --body-file).
-func ghTextFlag(sub, name string) string {
+// issue, -t and -b are --title and --body (-t is --subject under pr
+// merge), and -c / --comment is text under close and reopen only (pr
+// review --comment is a boolean); under api, -f, -F, --field and
+// --raw-field carry key=value fields (under pr, -F is --body-file).
+func ghTextFlag(sub, verb, name string) string {
 	switch name {
 	case "--title", "--body":
 		return name
+	case "--subject":
+		if sub == "pr" && verb == "merge" {
+			return name
+		}
+	case "--comment", "-c":
+		if (sub == "pr" || sub == "issue") && (verb == "close" || verb == "reopen") {
+			return "--comment"
+		}
 	case "-t", "-b":
 		if sub == "pr" || sub == "issue" {
 			return map[string]string{"-t": "--title", "-b": "--body"}[name]
@@ -276,9 +286,12 @@ func ghTextFlag(sub, name string) string {
 // The hits say what was redacted where, never the value.
 func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit) {
 	args = append([]string(nil), args...)
-	sub := ""
+	sub, verb := "", ""
 	if len(args) > 0 {
 		sub = args[0]
+	}
+	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+		verb = args[1]
 	}
 	var hits []Hit
 	note := func(where string, counts map[string]int) {
@@ -323,7 +336,7 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 				}
 				continue
 			}
-			flag := ghTextFlag(sub, name)
+			flag := ghTextFlag(sub, verb, name)
 			switch {
 			case flag == "":
 			case inline:
@@ -334,19 +347,26 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 			}
 			continue
 		}
-		if len(a) < 2 {
-			continue
-		}
-		flag := ghTextFlag(sub, a[:2])
-		switch {
-		case flag == "":
-		case len(a) > 2 && a[2] == '=':
-			args[i] = a[:3] + text(flag, a[3:])
-		case len(a) > 2:
-			args[i] = a[:2] + text(flag, a[2:])
-		case i+1 < len(args):
-			i++
-			args[i] = text(flag, args[i])
+		// A short group (-iF body=x, -iFbody=x) is scanned as pflag
+		// does: the first value-taking text flag takes the rest of the
+		// group, or the next arg when the group ends with it.
+		for j := 1; j < len(a) && a[j] != '='; j++ {
+			flag := ghTextFlag(sub, verb, "-"+a[j:j+1])
+			if flag == "" {
+				continue
+			}
+			head, rest := a[:j+1], a[j+1:]
+			if strings.HasPrefix(rest, "=") {
+				head, rest = head+"=", rest[1:]
+			}
+			switch {
+			case rest != "" || strings.HasSuffix(head, "="):
+				args[i] = head + text(flag, rest)
+			case i+1 < len(args):
+				i++
+				args[i] = text(flag, args[i])
+			}
+			break
 		}
 	}
 	counts := map[string]int{}

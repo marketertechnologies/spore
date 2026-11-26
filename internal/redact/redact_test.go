@@ -181,6 +181,16 @@ func TestGHCallEveryFlagForm(t *testing.T) {
 		{"api --field=", []string{"api", "repos/o/r/pulls/3/reviews", "--field=body=" + c}, []string{"api", "repos/o/r/pulls/3/reviews", "--field=body=" + red}, "field body"},
 		{"api --raw-field", []string{"api", "repos/o/r/pulls/3/comments", "--raw-field", "body=" + c}, []string{"api", "repos/o/r/pulls/3/comments", "--raw-field", "body=" + red}, "field body"},
 		{"api --raw-field=", []string{"api", "repos/o/r/pulls/3/comments", "--raw-field=body=" + c}, []string{"api", "repos/o/r/pulls/3/comments", "--raw-field=body=" + red}, "field body"},
+		{"close comment", []string{"pr", "close", "7", "--comment", c}, []string{"pr", "close", "7", "--comment", red}, "--comment"},
+		{"close comment equals", []string{"pr", "close", "7", "--comment=" + c}, []string{"pr", "close", "7", "--comment=" + red}, "--comment"},
+		{"reopen comment short", []string{"pr", "reopen", "7", "-c", c}, []string{"pr", "reopen", "7", "-c", red}, "--comment"},
+		{"issue close comment joined", []string{"issue", "close", "3", "-c" + c}, []string{"issue", "close", "3", "-c" + red}, "--comment"},
+		{"merge subject", []string{"pr", "merge", "7", "--squash", "--subject", c}, []string{"pr", "merge", "7", "--squash", "--subject", red}, "--subject"},
+		{"merge subject equals", []string{"pr", "merge", "7", "--subject=" + c}, []string{"pr", "merge", "7", "--subject=" + red}, "--subject"},
+		{"api grouped space", []string{"api", "repos/o/r/issues/9/comments", "-iF", "body=" + c}, []string{"api", "repos/o/r/issues/9/comments", "-iF", "body=" + red}, "field body"},
+		{"api grouped joined", []string{"api", "repos/o/r/issues/9/comments", "-iFbody=" + c}, []string{"api", "repos/o/r/issues/9/comments", "-iFbody=" + red}, "field body"},
+		{"api grouped equals", []string{"api", "repos/o/r/issues/9/comments", "-iF=body=" + c}, []string{"api", "repos/o/r/issues/9/comments", "-iF=body=" + red}, "field body"},
+		{"pr grouped body", []string{"pr", "comment", "7", "-eb", c}, []string{"pr", "comment", "7", "-eb", red}, "--body"},
 		{"api nested key", []string{"api", "repos/o/r/pulls/3/reviews", "-f", "comments[][body]=" + c}, []string{"api", "repos/o/r/pulls/3/reviews", "-f", "comments[][body]=" + red}, "field body"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,6 +220,9 @@ func TestGHCallLeavesRefs(t *testing.T) {
 		{"api", "repos/o/r/issues/3/assignees", "-f", "assignees[]=" + c},
 		{"api", "repos/o/r/pulls/3", "--jq", c, "-t", c},
 		{"pr", "comment", "7", "--", "--body", c},
+		{"pr", "edit", "7", "--subject", c},
+		{"pr", "review", "7", "--comment", "--approve"},
+		{"pr", "view", "7", "-c", c},
 	} {
 		_, got, hits := r.GHCall("", args)
 		if strings.Join(got, "\x00") != strings.Join(args, "\x00") || len(hits) != 0 {

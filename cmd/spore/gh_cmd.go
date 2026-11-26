@@ -354,22 +354,33 @@ func inlineBodyFile(args []string) ([]string, []byte, error) {
 }
 
 // fieldValue returns the key=value of a gh api -F/--field at args[i],
-// in any spelling; gh reads `@path` values from disk.
+// in any spelling (-F k=v, -Fk=v, -F=k=v, a short group like -iF k=v);
+// gh reads `@path` values from disk.
 func fieldValue(args []string, i int) (string, bool) {
 	if args[0] != "api" {
 		return "", false
 	}
 	a := args[i]
 	switch {
-	case a == "-F" || a == "--field":
+	case a == "--field":
 		if i+1 < len(args) {
 			return args[i+1], true
 		}
 		return "", true
 	case strings.HasPrefix(a, "--field="):
 		return strings.TrimPrefix(a, "--field="), true
-	case strings.HasPrefix(a, "-F"):
-		return a[2:], true
+	case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
+		j := strings.IndexByte(a, 'F')
+		if j < 0 {
+			return "", false
+		}
+		if rest := a[j+1:]; rest != "" {
+			return strings.TrimPrefix(rest, "="), true
+		}
+		if i+1 < len(args) {
+			return args[i+1], true
+		}
+		return "", true
 	}
 	return "", false
 }
