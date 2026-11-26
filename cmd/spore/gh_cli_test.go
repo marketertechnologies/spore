@@ -70,6 +70,32 @@ func TestGHPRWithoutBrokerRunsGHAsApp(t *testing.T) {
 	}
 }
 
+// N8: on a broker host (the NixOS module's config is present) pointing
+// SPORE_SECRETS_SOCKET at nothing must not fall back to the App key.
+func TestGHRefusesKeyFallbackOnBrokerHost(t *testing.T) {
+	ghTestProject(t)
+	noBroker(t)
+	fakeBin(t, "gh", fakeGHScript)
+	marker := filepath.Join(t.TempDir(), "secrets-broker.json")
+	if err := os.WriteFile(marker, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := ghapp.BrokerHostMarker
+	ghapp.BrokerHostMarker = marker
+	t.Cleanup(func() { ghapp.BrokerHostMarker = orig })
+	for _, args := range [][]string{
+		{"exec", "--", "gh", "auth", "status"},
+		{"token"},
+		{"pr", "view", "9"},
+		{"api", "repos/acme/proj/pulls/9"},
+	} {
+		code, out, errOut := captureFn(t, func() int { return runGH(args) })
+		if code == 0 || strings.Contains(out, "token=") || !strings.Contains(errOut, "secrets broker") {
+			t.Errorf("%q: exit %d, stdout %q, stderr %q", args, code, out, errOut)
+		}
+	}
+}
+
 // ghRemoteProject makes the project a git repo with an https origin and
 // a git on PATH that logs pushes instead of sending them.
 func ghRemoteProject(t *testing.T) (root, log string) {

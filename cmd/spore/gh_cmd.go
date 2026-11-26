@@ -58,10 +58,12 @@ Subcommands:
 
 On a host running the secrets broker, pr, api and push go through it
 and its allowlist applies: pr list|view|ready|edit|create --draft|
-comment, api on the repo's own pulls and issues or a read-only GraphQL
-query, and pushes of branches matching the project's push_branch
-(default ^wt/...). token and exec refuse there: the App key is not
-readable (docs/secrets.md).
+comment, api on the repo's own pulls and issues or the GraphQL queries
+spore itself sends (no mutations, no other repos), and pushes of
+branches matching the project's push_branch (default ^wt/...). token
+and exec refuse there: the App key is not readable. On a host with
+/etc/spore/secrets-broker.json no subcommand reads the App key, even
+when the socket is unreachable (docs/secrets.md).
 
 See docs/github-app.md for the one-time app setup.
 `

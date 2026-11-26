@@ -232,7 +232,19 @@ func FetchEnv(ctx context.Context, projectRoot, originURL string, base []string)
 	return Env(base, tok.Token), nil
 }
 
+// BrokerHostMarker is the broker config the NixOS secrets module
+// installs. On a host that has it the App key belongs to the broker,
+// whatever $SPORE_SECRETS_SOCKET says, so projectToken reads neither
+// the key nor a cached token. A var so tests can repoint it.
+var BrokerHostMarker = "/etc/spore/secrets-broker.json"
+
+// ErrBrokerHost refuses the direct key path on a broker host.
+var ErrBrokerHost = errors.New("this host runs the spore secrets broker (/etc/spore/secrets-broker.json), so the GitHub App key is not read directly: the broker socket is unreachable, check $SPORE_SECRETS_SOCKET (unset it for the default /run/spore-secrets/broker.sock) and spore-secrets.socket")
+
 func projectToken(ctx context.Context, projectRoot string, cfg Config) (Token, error) {
+	if _, err := os.Lstat(BrokerHostMarker); !errors.Is(err, os.ErrNotExist) {
+		return Token{}, ErrBrokerHost
+	}
 	path, err := TokenCachePath(projectRoot)
 	if err != nil {
 		return Token{}, err

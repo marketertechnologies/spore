@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/ghapp"
 )
 
 // testTmuxSocket: see internal/task/tmuxsocket_test.go for the
@@ -48,6 +50,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// The host may run the secrets broker: keep its socket and marker
+	// out of tests that exercise the direct App key path.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
+	ghapp.BrokerHostMarker = filepath.Join(tmpdir, "no-broker-marker")
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()

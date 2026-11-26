@@ -278,10 +278,10 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "view", "7", "--json", "isDraft", "--jq", ".isDraft"},
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
 		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate", "--jq", ".[]"},
-		{"api", "graphql", "--hostname", "github.com", "-f", "query=query { viewer { login } }", "-F", "number=7"},
+		{"api", "graphql", "--hostname", "github.com", "-f", "query=" + PRActivityQuery, "-f", "owner=acme", "-f", "name=alpha", "-F", "number=7"},
 	}
 	for _, a := range ok {
-		if err := checkGHArgs(a, repo); err != nil {
+		if err := checkGHArgs(a, "", repo); err != nil {
 			t.Errorf("%q: %v", a, err)
 		}
 	}
@@ -301,7 +301,7 @@ func TestCheckGHArgs(t *testing.T) {
 		{"repo", "clone", "acme/alpha"},
 	}
 	for _, a := range bad {
-		if err := checkGHArgs(a, repo); err == nil {
+		if err := checkGHArgs(a, "", repo); err == nil {
 			t.Errorf("%q accepted", a)
 		}
 	}
