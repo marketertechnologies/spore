@@ -15,6 +15,7 @@ import (
 	"github.com/versality/spore/internal/coordinator/tokenmonitor"
 	"github.com/versality/spore/internal/coordinator/verify"
 	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/sporetoml"
 )
 
 // defaultCoordinatorStateDir resolves the coordinator state dir from
@@ -45,7 +46,14 @@ Subcommands:
   state-debt      Scan state.md for prose lessons that should be lifted.
   verify-done     Run the verify-done verdict for a slug.
   loop-guard      Check the respawn circuit breaker.
-  token-monitor   Stop-hook: check coordinator context budget.
+  token-monitor   Stop-hook: check coordinator context budget. Caps
+                  (soft 250000, finish-unit 290000, force 300000)
+                  are overridable with $SPORE_COORDINATOR_TOKEN_SOFT,
+                  $SPORE_COORDINATOR_TOKEN_WRAP (finish-unit) and
+                  $SPORE_COORDINATOR_TOKEN_FORCE. The respawn command
+                  it prints relaunches the configured agent
+                  ($SPORE_COORDINATOR_AGENT, else [coordinator]
+                  driver).
   monitor         Boot-time verdict over the token-monitor ledger.
 `
 
@@ -55,6 +63,12 @@ func runCoordinator(args []string) int {
 		return 2
 	}
 	sub, rest := args[0], args[1:]
+	switch sub {
+	case "start", "restart", "status", "swap":
+		if cwd, err := os.Getwd(); err == nil {
+			sporetoml.WarnUnknown(os.Stderr, "spore coordinator "+sub, cwd)
+		}
+	}
 	switch sub {
 	case "-h", "--help", "help":
 		fmt.Print(coordinatorUsage)
@@ -222,7 +236,7 @@ func runCoordinatorStatus(args []string) int {
 		return 1
 	}
 	session := fleet.CoordinatorSessionName(root)
-	cfg, _ := fleet.LoadCoordinatorConfig(root)
+	cfg := fleet.LoadCoordinatorConfigWarn(root)
 	alive := fleet.CoordinatorAlive(root)
 
 	state := "down"
@@ -416,8 +430,16 @@ func runCoordinatorTokenMonitor(_ []string) int {
 		return 0
 	}
 
+	root := os.Getenv("SPORE_PROJECT_ROOT")
+	if root == "" {
+		root, _ = os.Getwd()
+	}
 	cfg := tokenmonitor.Config{
-		Inbox: os.Getenv("SPORE_TASK_INBOX"),
+		Inbox:    os.Getenv("SPORE_TASK_INBOX"),
+		SoftCap:  envInt("SPORE_COORDINATOR_TOKEN_SOFT"),
+		HardCap:  envInt("SPORE_COORDINATOR_TOKEN_WRAP"),
+		ForceCap: envInt("SPORE_COORDINATOR_TOKEN_FORCE"),
+		Respawn:  fleet.CoordinatorRespawnShell(root),
 	}
 
 	result := tokenmonitor.Check(cfg, payload)

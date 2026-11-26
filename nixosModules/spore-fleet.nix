@@ -322,12 +322,11 @@ in
       type = lib.types.ints.positive;
       default = 3;
       description = ''
-        Concurrency cap (one slot per worker or live role loop). Wired through
-        SPORE_FLEET_MAX_WORKERS so
-        an explicit `[fleet] max_workers` in the project's
-        spore.toml still wins (matching `spore fleet reconcile`
-        precedence: --max-workers > env > spore.toml > built-in
-        default).
+        Host default concurrency cap (one slot per worker or live
+        role loop), wired through SPORE_FLEET_MAX_WORKERS. A project's
+        spore.toml `[fleet] max_workers` wins over it (`spore fleet
+        reconcile` precedence: --max-workers > spore.toml > env >
+        built-in default 3).
       '';
     };
 

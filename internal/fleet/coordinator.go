@@ -69,7 +69,7 @@ func CoordinatorRolePath(projectRoot string) string {
 	if p := os.Getenv(CoordinatorRoleEnv); p != "" {
 		return p
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.Brief != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.Brief != "" {
 		if filepath.IsAbs(cfg.Brief) {
 			return cfg.Brief
 		}
@@ -96,7 +96,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return session, false, nil
 	}
 
-	tomlCfg, _ := LoadCoordinatorConfig(projectRoot)
+	tomlCfg := LoadCoordinatorConfigWarn(projectRoot)
 	if pat := tomlCfg.ExternalSessionPattern; pat != "" {
 		if name, ok := externalCoordinatorSession(pat); ok {
 			return name, false, nil
@@ -247,6 +247,19 @@ func driverToBinary(driver string) string {
 	}
 }
 
+// CoordinatorRespawnShell is the shell command that relaunches the
+// coordinator of projectRoot the way EnsureCoordinator spawned it: the
+// same agent precedence (SPORE_COORDINATOR_AGENT first, then config)
+// and the role file from SPORE_COORDINATOR_ROLE, which the session env
+// carries, else CoordinatorRolePath.
+func CoordinatorRespawnShell(projectRoot string) string {
+	rolePath := os.Getenv("SPORE_COORDINATOR_ROLE")
+	if rolePath == "" {
+		rolePath = CoordinatorRolePath(projectRoot)
+	}
+	return coordinatorShellCommand(coordinatorAgent(LoadCoordinatorConfigWarn(projectRoot)), rolePath)
+}
+
 // coordinatorShellCommand builds the shell snippet tmux runs for the
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers
@@ -328,7 +341,7 @@ func CoordinatorAlive(projectRoot string) bool {
 	if hasSession(CoordinatorSessionName(projectRoot)) {
 		return true
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.ExternalSessionPattern != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.ExternalSessionPattern != "" {
 		if _, ok := externalCoordinatorSession(cfg.ExternalSessionPattern); ok {
 			return true
 		}

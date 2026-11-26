@@ -150,9 +150,9 @@ The detector blocks if any item is `fail`. Resolve the failing step
 
 ### `validation-green`
 
-The detector runs the spore lint set (emdash, filesize,
-comment-noise, claude-drift). On failure, the blocker shows the
-first issue. Fix the source; do not silence the lint.
+The detector runs the full `spore lint` set (listed in
+`bootstrap/stages/validation-green.md`). On failure, the blocker
+shows the first issue. Fix the source; do not silence the lint.
 
 ### `pilot-aligned`
 
@@ -169,7 +169,7 @@ package is broken; report and stop.
 
 ## End of bootstrap
 
-When `spore bootstrap` reports `bootstrap complete.` the project is
-ready for routine work. Subsequent `spore bootstrap` calls are
+When `spore bootstrap` reports `bootstrap complete.` (exit 0) the
+project is ready for routine work. A blocked run exits 3. Subsequent `spore bootstrap` calls are
 no-ops; `spore bootstrap reset` (with `--yes`) wipes state if the
 operator wants to re-run.

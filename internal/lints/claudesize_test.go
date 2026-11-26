@@ -78,3 +78,46 @@ func TestClaudeSize_SubdirFile(t *testing.T) {
 		t.Fatalf("expected sub/CLAUDE.md, got %s", issues[0].Path)
 	}
 }
+
+func TestClaudeSize_LoneTitleSplitsOnH2(t *testing.T) {
+	lines := []string{"# area", "intro"}
+	for _, h := range []string{"## one", "## two"} {
+		lines = append(lines, h)
+		for i := 0; i < 4; i++ {
+			lines = append(lines, "rule")
+		}
+	}
+	lines = append(lines, "```sh", "# a shell comment, not a heading", "```")
+	root := newTestRepo(t, map[string]string{"sub/CLAUDE.md": strings.Join(lines, "\n") + "\n"})
+	issues, err := ClaudeSize{Limit: 7}.Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("lone title with short ## sections flagged: %v", issues)
+	}
+}
+
+func TestDefaultRunsClaudeSizeAndSubdir(t *testing.T) {
+	names := map[string]bool{}
+	for _, l := range Default() {
+		names[l.Name()] = true
+	}
+	for _, want := range []string{"claude-size", "claude-subdir"} {
+		if !names[want] {
+			t.Errorf("%s is not in Default()", want)
+		}
+	}
+}
+
+func TestDefaultLintsCleanOnRepo(t *testing.T) {
+	for _, l := range []Lint{ClaudeSize{}, ClaudeSubdir{}} {
+		issues, err := l.Run("../..")
+		if err != nil {
+			t.Fatalf("%s: %v", l.Name(), err)
+		}
+		for _, i := range issues {
+			t.Errorf("%s: %s", l.Name(), i)
+		}
+	}
+}

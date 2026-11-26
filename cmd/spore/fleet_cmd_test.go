@@ -148,6 +148,47 @@ func TestFleetWorkerAgentSetPrintClear(t *testing.T) {
 	}
 }
 
+func TestResolveMaxWorkers_SporeTOMLBeatsEnv(t *testing.T) {
+	t.Setenv("SPORE_FLEET_MAX_WORKERS", "3")
+	t.Setenv("WT_FLEET_FLOOR", "8")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\nmax_workers = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveMaxWorkers(0, root)
+	if err != nil {
+		t.Fatalf("resolveMaxWorkers: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("got %d, want 1 (spore.toml beats the host env default)", got)
+	}
+	if got, _ := resolveMaxWorkers(5, root); got != 5 {
+		t.Errorf("flag: got %d, want 5", got)
+	}
+}
+
+func TestFleetReconcileWarnsOnUnknownSporeTOMLKey(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("SPORE_FLEET_MAX_WORKERS", "")
+	t.Setenv("WT_FLEET_FLOOR", "")
+	if err := os.WriteFile(filepath.Join(root, "spore.toml"), []byte("[fleet]\nmax_worker = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := replenishReconcile
+	t.Cleanup(func() { replenishReconcile = orig })
+	replenishReconcile = func(fleet.Config) (fleet.Result, error) { return fleet.Result{Disabled: true}, nil }
+	_, _, stderr := captureHook(t, "", func() int {
+		if err := runFleetReconcile(nil); err != nil {
+			t.Errorf("reconcile: %v", err)
+		}
+		return 0
+	})
+	if !strings.Contains(stderr, `spore fleet reconcile: warning: spore.toml line 2: unknown key "max_worker" in [fleet]`) {
+		t.Errorf("stderr = %q, want the unknown-key warning", stderr)
+	}
+}
+
 func gitInitRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
