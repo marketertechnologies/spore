@@ -27,7 +27,9 @@ Subcommands:
            private_key, operator_login, commit_name, commit_email,
            api_url.
   token    Print an installation token (cached host-side until ~5 min
-           before expiry).
+           before expiry). For humans: run from an agent session, the
+           token lands in its transcript. Agents use exec instead,
+           e.g. spore gh exec -- git push -u origin <branch>.
   exec     Run <cmd> with GH_TOKEN set and a git credential helper
            injected, so gh and git push over https act as the app.
            Refuses when the cwd repo's origin is not https.

@@ -201,9 +201,13 @@ func TestMergeCloseGateFailureKeepsBranchAndWorktree(t *testing.T) {
 	evidence.ContractStart = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() { evidence.ContractStart = origStart })
 
+	before := gitOutput(t, repo, "rev-parse", "main")
 	err := Merge(tasksDir, "demo")
 	if err == nil {
 		t.Fatal("Merge should fail when close gate fails")
+	}
+	if after := gitOutput(t, repo, "rev-parse", "main"); after != before {
+		t.Errorf("main moved to %s on a refused merge, want %s", after, before)
 	}
 	if !strings.Contains(err.Error(), "evidence verdict") {
 		t.Errorf("error = %q should mention evidence verdict", err)
@@ -398,9 +402,16 @@ func TestMergePushFailureKeepsBranchAndWorktree(t *testing.T) {
 	runGit(t, worktree, "add", "feature.txt")
 	runGit(t, worktree, "commit", "-q", "-m", "feat: demo work")
 
+	before := gitOutput(t, repo, "rev-parse", "main")
 	err := Merge(tasksDir, "demo")
 	if err == nil {
 		t.Fatal("expected push failure, got nil")
+	}
+	if after := gitOutput(t, repo, "rev-parse", "main"); after != before {
+		t.Errorf("main = %s after failed push, want rolled back to %s", after, before)
+	}
+	if st := gitOutput(t, repo, "status", "--porcelain", "-uno"); st != "" {
+		t.Errorf("main checkout dirty after rollback:\n%s", st)
 	}
 	if !strings.Contains(err.Error(), "git push origin main:main") {
 		t.Errorf("error = %q should mention push command", err)
@@ -411,8 +422,8 @@ func TestMergePushFailureKeepsBranchAndWorktree(t *testing.T) {
 	if _, statErr := os.Stat(worktree); statErr != nil {
 		t.Errorf("worktree missing despite push failure: %v", statErr)
 	}
-	if status := readStatus(t, taskPath); status != "done" {
-		t.Errorf("status = %q want done after local close commit", status)
+	if status := readStatus(t, taskPath); status != "active" {
+		t.Errorf("status = %q want active after rollback", status)
 	}
 }
 
@@ -630,4 +641,97 @@ func TestMergeRefusesNonMainForkBase(t *testing.T) {
 			t.Fatalf("Merge with worktree_base = head: %v", err)
 		}
 	})
+}
+
+func TestMergeGitignoredTasksLandsInOneRun(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("tasks/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "init")
+	remote := configureOrigin(t, repo)
+
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "ign.md")
+	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: ign\ntitle: Ign\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktree := filepath.Join(repo, ".worktrees", "ign")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "wt/ign", worktree, "main")
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, worktree, "add", "feature.txt")
+	runGit(t, worktree, "commit", "-q", "-m", "feat: ign work")
+	work := gitOutput(t, repo, "rev-parse", "wt/ign")
+
+	if err := Merge(tasksDir, "ign"); err != nil {
+		t.Fatalf("Merge with gitignored tasks/: %v", err)
+	}
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("status = %q want done", status)
+	}
+	if got := gitOutput(t, remote, "rev-parse", "main"); got != work {
+		t.Errorf("origin main = %s, want %s", got, work)
+	}
+	if branchExists(repo, "wt/ign") {
+		t.Error("wt/ign still exists after merge")
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("worktree still present: %v", err)
+	}
+}
+
+func TestMergeFromWorktreeTasksDirActsOnMainRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+
+	repo := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	tasksDir := filepath.Join(repo, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "demo.md")
+	if err := os.WriteFile(taskPath, []byte("---\nstatus: active\nslug: demo\ntitle: Demo\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-q", "-m", "task active")
+	configureOrigin(t, repo)
+
+	other := filepath.Join(repo, ".worktrees", "other")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "wt/other", other, "main")
+	runGit(t, repo, "branch", "wt/demo")
+	t.Chdir(other)
+
+	if err := Merge("tasks", "demo"); err != nil {
+		t.Fatalf("Merge from worktree: %v", err)
+	}
+	if status := readStatus(t, taskPath); status != "done" {
+		t.Errorf("main task status = %q want done", status)
+	}
+	if status := readStatus(t, filepath.Join(other, "tasks", "demo.md")); status != "active" {
+		t.Errorf("worktree copy status = %q, want untouched active", status)
+	}
 }
