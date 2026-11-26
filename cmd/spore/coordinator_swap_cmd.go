@@ -24,8 +24,10 @@ tmux session env; set [coordinator] driver/model in the host-side
 override (<state dir>/coordinator/driver.toml, which beats spore.toml;
 the project tree is never written); respawn the session's first pane. A failed step undoes the earlier
 ones. The agent is SPORE_COORDINATOR_AGENT from the session env, then
-the tmux global env, then the driver's own binary; the caller's env
-is ignored.
+the tmux global env, then the host launcher
+(/usr/local/bin/spore-coordinator-launch, or
+$SPORE_COORDINATOR_HOST_LAUNCHER) when it is executable, then the
+driver's own binary; the caller's env is otherwise ignored.
 
 Without --model, a driver change clears the model and a same-driver
 swap keeps it.

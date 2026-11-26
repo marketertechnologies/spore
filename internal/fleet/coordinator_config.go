@@ -1,9 +1,13 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
@@ -43,33 +47,55 @@ type CoordinatorConfig struct {
 // LoadCoordinatorConfig reads `[coordinator]` from <projectRoot>/spore.toml,
 // then layers the host-side driver override (see DriverOverridePath) on
 // top. A missing file returns a zero CoordinatorConfig with no error so
-// callers can treat absent config as "use defaults". On an override
-// error the spore.toml config is still returned alongside it.
+// callers can treat absent config as "use defaults". An unknown key or
+// an override error comes back alongside the config built from the
+// rest, so one typo does not zero the section.
 func LoadCoordinatorConfig(projectRoot string) (CoordinatorConfig, error) {
 	entries, err := sporetoml.ReadSection(projectRoot, "coordinator")
 	if err != nil {
 		return CoordinatorConfig{}, fmt.Errorf("coordinator: %w", err)
 	}
-	cfg, err := coordinatorFromEntries(entries)
-	if err != nil {
-		return CoordinatorConfig{}, err
+	cfg, keyErr := coordinatorFromEntries(entries)
+	if keyErr != nil {
+		keyErr = fmt.Errorf("coordinator: spore.toml %w", keyErr)
 	}
 	path, err := DriverOverridePath(projectRoot)
 	if err != nil {
-		return cfg, nil
+		return cfg, keyErr
 	}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, nil
+		return cfg, keyErr
 	}
 	if err != nil {
-		return cfg, fmt.Errorf("coordinator: read %s: %w", path, err)
+		return cfg, errors.Join(keyErr, fmt.Errorf("coordinator: read %s: %w", path, err))
 	}
 	ov, err := parseDriverOverride(string(b))
 	if err != nil {
-		return cfg, fmt.Errorf("coordinator: %s: %w", path, err)
+		return cfg, errors.Join(keyErr, fmt.Errorf("coordinator: %s: %w", path, err))
 	}
-	return applyDriverOverride(cfg, ov), nil
+	return applyDriverOverride(cfg, ov), keyErr
+}
+
+// coordinatorWarnOut receives LoadCoordinatorConfigWarn's warnings.
+var (
+	coordinatorWarnOut io.Writer = os.Stderr
+	coordinatorWarned  sync.Map
+)
+
+// LoadCoordinatorConfigWarn is LoadCoordinatorConfig for callers that
+// carry on with whatever config loaded: the error goes to stderr, once
+// per process per message, since one reconcile loads the config several
+// times.
+func LoadCoordinatorConfigWarn(projectRoot string) CoordinatorConfig {
+	cfg, err := LoadCoordinatorConfig(projectRoot)
+	if err != nil {
+		msg := strings.ReplaceAll(err.Error(), "\n", "; ")
+		if _, dup := coordinatorWarned.LoadOrStore(msg, true); !dup {
+			fmt.Fprintf(coordinatorWarnOut, "spore: warning: %s\n", msg)
+		}
+	}
+	return cfg
 }
 
 // DriverOverridePath is the host-side file `spore coordinator swap`
@@ -125,8 +151,11 @@ func parseCoordinatorTOML(content string) (CoordinatorConfig, error) {
 	return coordinatorFromEntries(entries)
 }
 
+// coordinatorFromEntries builds the config from the known keys and
+// reports the unknown ones in one error.
 func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error) {
 	var cfg CoordinatorConfig
+	var unknown []error
 	for _, e := range entries {
 		switch e.Key {
 		case "driver":
@@ -138,10 +167,10 @@ func coordinatorFromEntries(entries []sporetoml.Entry) (CoordinatorConfig, error
 		case "external_session_pattern":
 			cfg.ExternalSessionPattern = e.Value
 		default:
-			return CoordinatorConfig{}, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key)
+			unknown = append(unknown, fmt.Errorf("line %d: unknown key %q in [coordinator]", e.Line, e.Key))
 		}
 	}
-	return cfg, nil
+	return cfg, errors.Join(unknown...)
 }
 
 // driverPlan is a pending rewrite of the host-side driver override,

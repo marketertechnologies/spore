@@ -57,7 +57,8 @@ spore bootstrap
 
 `spore bootstrap` is re-entrant. Each run checks what it can prove,
 records the completed gates, then prints the first blocker that still
-needs operator or repo work. In plain terms, bootstrap moves through:
+needs operator or repo work. It exits 0 once every stage is done and 3
+while a stage blocks, so a script can tell the two apart. In plain terms, bootstrap moves through:
 
 1. map the repo and collect project facts;
 2. find the test and validation commands;

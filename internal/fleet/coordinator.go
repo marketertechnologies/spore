@@ -3,13 +3,13 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/versality/spore/codexpolicy"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
 	"github.com/versality/spore/internal/task"
 )
@@ -69,7 +69,7 @@ func CoordinatorRolePath(projectRoot string) string {
 	if p := os.Getenv(CoordinatorRoleEnv); p != "" {
 		return p
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.Brief != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.Brief != "" {
 		if filepath.IsAbs(cfg.Brief) {
 			return cfg.Brief
 		}
@@ -96,7 +96,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return session, false, nil
 	}
 
-	tomlCfg, _ := LoadCoordinatorConfig(projectRoot)
+	tomlCfg := LoadCoordinatorConfigWarn(projectRoot)
 	if pat := tomlCfg.ExternalSessionPattern; pat != "" {
 		if name, ok := externalCoordinatorSession(pat); ok {
 			return name, false, nil
@@ -109,7 +109,7 @@ func EnsureCoordinator(projectRoot string) (string, bool, error) {
 		return "", false, err
 	}
 	args = append(args, coordinatorShellCommand(agent, rolePath))
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -247,6 +247,19 @@ func driverToBinary(driver string) string {
 	}
 }
 
+// CoordinatorRespawnShell is the shell command that relaunches the
+// coordinator of projectRoot the way EnsureCoordinator spawned it: the
+// same agent precedence (SPORE_COORDINATOR_AGENT first, then config)
+// and the role file from SPORE_COORDINATOR_ROLE, which the session env
+// carries, else CoordinatorRolePath.
+func CoordinatorRespawnShell(projectRoot string) string {
+	rolePath := os.Getenv("SPORE_COORDINATOR_ROLE")
+	if rolePath == "" {
+		rolePath = CoordinatorRolePath(projectRoot)
+	}
+	return coordinatorShellCommand(coordinatorAgent(LoadCoordinatorConfigWarn(projectRoot)), rolePath)
+}
+
 // coordinatorShellCommand builds the shell snippet tmux runs for the
 // coordinator session. tmux invokes its operator shell to parse this
 // string; the agent token is intentionally left unquoted so callers
@@ -316,7 +329,7 @@ func ReapCoordinator(projectRoot string) bool {
 	if !hasSession(session) {
 		return false
 	}
-	_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 	return true
 }
 
@@ -328,7 +341,7 @@ func CoordinatorAlive(projectRoot string) bool {
 	if hasSession(CoordinatorSessionName(projectRoot)) {
 		return true
 	}
-	if cfg, err := LoadCoordinatorConfig(projectRoot); err == nil && cfg.ExternalSessionPattern != "" {
+	if cfg := LoadCoordinatorConfigWarn(projectRoot); cfg.ExternalSessionPattern != "" {
 		if _, ok := externalCoordinatorSession(cfg.ExternalSessionPattern); ok {
 			return true
 		}
@@ -347,7 +360,7 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return "", false
 	}
@@ -363,5 +376,5 @@ func externalCoordinatorSession(pattern string) (string, bool) {
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
 }
