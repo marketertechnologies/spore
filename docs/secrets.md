@@ -54,7 +54,7 @@ services.spore-fleet.secrets = {
     vars.SENTRY_TOKEN = "SENTRY_AUTH_TOKEN";
     commands.get = {
       argv = [ "curl" "-sS" "--fail-with-body" "-H" "Authorization: Bearer \${SENTRY_TOKEN}" ];
-      args = [ "https://sentry\\.example\\.com/api/0/[A-Za-z0-9_./?=&%-]*" ];
+      args = [ "https://sentry\\.example\\.com/api/0(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*/?(\\?[A-Za-z0-9_.=&%-]*)?" ];
     };
   };
 
@@ -89,7 +89,7 @@ echo '{"query":"{ actor { user { name } } }"}' | spore secrets run --stdin marke
 The broker hides values; it cannot make an unsafe command safe. Narrow every pattern:
 
 - Refuse arguments that let the program read local files or run a shell: psql backslash meta-commands (`\!`, `\o |`, `\copy ... program`, `\setenv`), `curl -K`, `-o`, `-d @file`, `--config`. Redaction catches a value printed verbatim, not one that was reversed, encoded or sent elsewhere.
-- Pin URLs with an anchored host so a credential header cannot be sent to another host. The sandbox egress allowlist (agent-sandbox) covers the agent's own processes, not the broker's.
+- Pin URLs with an anchored host so a credential header cannot be sent to another host. Keep `..` unmatchable in the path: curl resolves `../` before sending, so a class like `[A-Za-z0-9_./-]*` after `/api/0/` reaches any path on the host. Let no path segment start with a dot, as the Sentry example does. The sandbox egress allowlist (agent-sandbox) covers the agent's own processes, not the broker's.
 - Prefer a fixed `argv` plus one constrained argument over `variadic` free text.
 
 ## Who may use what

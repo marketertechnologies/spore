@@ -45,7 +45,7 @@ Schema per profile: `project`, `description`, `vars.<NAME> = "<secrets.env key>"
 Design:
 
 - One command per action, a fixed `argv`, and one constrained trailing argument. Avoid `variadic` free text.
-- HTTP: `curl -sS --fail-with-body`, the credential in a header built from `${VAR}`, and a URL pattern on one host and path prefix (`https://api\\.example\\.com/v1/[A-Za-z0-9_./?=&%:+-]*`). Never allow `-K`, `-o`, `-d @file` or `--config` through `args`. Use `stdin = true` for a request body rather than an argument.
+- HTTP: `curl -sS --fail-with-body`, the credential in a header built from `${VAR}`, and a URL pattern on one host and path prefix in which `..` cannot match: no path segment may start with a dot, because curl resolves `../` before sending (`https://api\\.example\\.com/v1(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*/?(\\?[A-Za-z0-9_.=&%:+-]*)?`). A character class that admits both `.` and `/` lets `v1/../admin` through. Never allow `-K`, `-o`, `-d @file` or `--config` through `args`. Use `stdin = true` for a request body rather than an argument.
 - SQL: a read-only role or replica in the URL; `args = [ "-c" "[^\\\\]*" ]` (no psql backslash meta-commands); a `timeout`.
 - A program not yet on the broker's PATH: add its package to `path`.
 - Name it `<project>-<service>[-<variant>]` and give it a `description` (shown by `spore secrets list`).
@@ -57,10 +57,10 @@ Show the operator the profile and say in one line what it allows and what it ref
 
 - Write the new config file and an apply script under `~/.local/state/spore/<project>/broker-profiles/<profile>/` (`new.nix`, `apply.sh`). You cannot write `/etc/nixos` or `/var/lib/spore-secrets`.
 - `apply.sh` (run as root) must:
-  1. `set -euo pipefail`. Copy the current file to `/root/spore-broker-backup-<timestamp>/` and print the one-line rollback (copy back, rebuild).
-  2. Install `new.nix` over the host file with the same mode and owner.
-  3. Stop with a message if the variable is still missing from `/var/lib/spore-secrets/secrets/<project>/secrets.env` (or the global `secrets.env` for a shared key). Use `grep -q '^NAME='` and never print the line.
-  4. Reset that file to `spore-secrets:spore-pilots` mode 0640 (`chown`, `chmod`): `sudoedit` keeps both on an existing file, but creates a new one as root.
+  1. `set -euo pipefail`. Stop with a message if the variable is still missing from `/var/lib/spore-secrets/secrets/<project>/secrets.env` (or the global `secrets.env` for a shared key). Match what the broker parses (surrounding whitespace, an optional `export `): `grep -qE '^[[:space:]]*(export[[:space:]]+)?NAME='`, and never print the line. This runs before anything changes, so a stopped script leaves `/etc/nixos` untouched.
+  2. Reset that file to `spore-secrets:spore-pilots` mode 0640 (`chown`, `chmod`): `sudoedit` keeps both on an existing file, but creates a new one as root.
+  3. Copy the current host file to `/root/spore-broker-backup-<timestamp>/` and print the one-line rollback (copy back, rebuild).
+  4. Install `new.nix` over the host file with the same mode and owner.
   5. `nixos-rebuild switch --flake /etc/nixos#<attr>`.
 - Before handing it over, check the change on a copy: `cp -r /etc/nixos "$TMPDIR/nixos-check"`, apply `new.nix` there, then `nix-instantiate --parse` the file and, if the flake evaluates from the copy, `nix eval "$TMPDIR/nixos-check#nixosConfigurations.<attr>.config.services.spore-fleet.secrets.profiles" --apply builtins.attrNames`. When it evaluates, also build the rendered config (`nix build --no-link --print-out-paths "$TMPDIR/nixos-check#nixosConfigurations.<attr>.config.environment.etc.\"spore/secrets-broker.json\".source"`) and confirm the new profile's `project` is a key of its `projects`. Fix anything that fails before the operator sees it.
 
@@ -73,7 +73,7 @@ sudo install -d -o spore-secrets -g spore-pilots -m 0750 /var/lib/spore-secrets/
 sudo bash /absolute/path/to/apply.sh
 ```
 
-The `install -d` is a no-op when the directory exists. A key shared by every project goes in `/var/lib/spore-secrets/secrets/secrets.env` instead (project files win over it).
+The `install -d` creates the directory, or resets an existing one to `spore-secrets:spore-pilots` mode 0750 (what tmpfiles sets anyway). A key shared by every project goes in `/var/lib/spore-secrets/secrets/secrets.env` instead (project files win over it).
 
 ## 6. Verify yourself
 
