@@ -16,7 +16,11 @@ import (
 // JSON file following the tell protocol ({ts, source, body}), written
 // atomically via .tmp.
 func NotifyCoordinator(slug string) error {
-	return notifyCoordinatorAt(coordinatorInbox(slug), "notification", "poke")
+	inbox, err := coordinatorInbox(slug)
+	if err != nil {
+		return err
+	}
+	return notifyCoordinatorAt(inbox, "notification", "poke")
 }
 
 // NotifyCoordinatorEvent writes a tell envelope with the given source
@@ -25,7 +29,11 @@ func NotifyCoordinator(slug string) error {
 // transition from inside the coordinator's own hooks still need the
 // envelope to land (their own idempotency guard prevents repeats).
 func NotifyCoordinatorEvent(project, source, body string) error {
-	return notifyCoordinatorAt(coordinatorInbox(project), source, body)
+	inbox, err := coordinatorInbox(project)
+	if err != nil {
+		return err
+	}
+	return notifyCoordinatorAt(inbox, source, body)
 }
 
 // NotifyCoordinatorEnv is the env-driven entry point for the
@@ -38,7 +46,10 @@ func NotifyCoordinatorEnv() error {
 	if project == "" {
 		return nil
 	}
-	inbox := coordinatorInbox(project)
+	inbox, err := coordinatorInbox(project)
+	if err != nil {
+		return err
+	}
 	if os.Getenv("SPORE_TASK_INBOX") == inbox {
 		return nil
 	}
@@ -85,7 +96,10 @@ type tellEvent struct {
 	Body   string `json:"body"`
 }
 
-func coordinatorInbox(slug string) string {
-	root, _ := task.CoordinatorStateDir()
-	return filepath.Join(root, slug, "inbox")
+func coordinatorInbox(slug string) (string, error) {
+	root, err := task.CoordinatorStateDir()
+	if err != nil {
+		return "", fmt.Errorf("notify-coordinator: %w", err)
+	}
+	return filepath.Join(root, slug, "inbox"), nil
 }

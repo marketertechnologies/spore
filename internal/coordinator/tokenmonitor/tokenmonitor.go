@@ -98,12 +98,16 @@ func (c Config) Defaults() Config {
 
 // defaultStateDir resolves the coordinator state dir from the
 // SPORE_COORDINATOR_STATE_DIR env var, falling back to
-// <XDG_STATE_HOME or ~/.local/state>/spore/coordinator.
+// <XDG_STATE_HOME or ~/.local/state>/spore/coordinator, or "" (no
+// coordinator matches) when neither HOME nor XDG_STATE_HOME is set.
 func defaultStateDir() string {
 	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
 		return d
 	}
-	base, _ := events.BaseDir()
+	base, err := events.BaseDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(base, "coordinator")
 }
 
@@ -114,6 +118,9 @@ func (c Config) IsCoordinator() bool {
 		return false
 	}
 	stateRoot := strings.TrimRight(c.StateDir, "/")
+	if stateRoot == "" {
+		return false
+	}
 	return c.Inbox == stateRoot || strings.HasPrefix(c.Inbox, stateRoot+"/")
 }
 

@@ -120,7 +120,10 @@ func defaultCoordinatorStateDir() string {
 	if d := os.Getenv("SPORE_COORDINATOR_STATE_DIR"); d != "" {
 		return d
 	}
-	base, _ := events.BaseDir()
+	base, err := events.BaseDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(base, "coordinator")
 }
 
