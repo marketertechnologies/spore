@@ -252,6 +252,33 @@ func TestNotifyCoordinatorEnv_DedupsBurstPerSlugTypeAndMessage(t *testing.T) {
 	}
 }
 
+func TestNotifyCoordinatorEnv_SameBlockingPromptPassesAfterBurstWindow(t *testing.T) {
+	inbox := setWorkerEnv(t)
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+		t.Fatal(err)
+	}
+	stamp := notifyStamp(filepath.Dir(inbox), "fix-thing", "permission_prompt", "Claude needs your permission to use Bash")
+	past := time.Now().Add(-NotifyBurstWindow - time.Second)
+	if err := os.Chtimes(stamp, past, past); err != nil {
+		t.Fatalf("stamp not written where expected: %v", err)
+	}
+	if err := NotifyCoordinatorEnv(strings.NewReader(permissionPayload)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inboxEvents(t, inbox)); n != 2 {
+		t.Fatalf("second Bash approval after the burst window: got %d messages, want 2", n)
+	}
+}
+
+func TestDedupWindow(t *testing.T) {
+	if got := dedupWindow("permission_prompt"); got != NotifyBurstWindow {
+		t.Errorf("permission_prompt window = %v, want %v", got, NotifyBurstWindow)
+	}
+	if got := dedupWindow("auth_storage_failure"); got != NotifyDedupWindow {
+		t.Errorf("auth_storage_failure window = %v, want %v", got, NotifyDedupWindow)
+	}
+}
+
 func TestNotifyCoordinatorEnv_FailedWriteDoesNotStamp(t *testing.T) {
 	inbox := setWorkerEnv(t)
 	if err := os.MkdirAll(filepath.Dir(inbox), 0o755); err != nil {
@@ -288,14 +315,14 @@ func TestNotifyStamp_WindowExpiresAndPrunes(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	stamp := notifyStamp(dir, "w", "permission_prompt", "msg")
-	if sentRecently(stamp, now) {
+	if sentRecently(stamp, now, NotifyDedupWindow) {
 		t.Fatal("unsent stamp reported recent")
 	}
 	markSent(stamp, now)
-	if !sentRecently(stamp, now.Add(NotifyDedupWindow-time.Second)) {
+	if !sentRecently(stamp, now.Add(NotifyDedupWindow-time.Second), NotifyDedupWindow) {
 		t.Fatal("send inside the window not suppressed")
 	}
-	if sentRecently(stamp, now.Add(NotifyDedupWindow+time.Second)) {
+	if sentRecently(stamp, now.Add(NotifyDedupWindow+time.Second), NotifyDedupWindow) {
 		t.Fatal("send after the window suppressed")
 	}
 	if notifyStamp(dir, "w", "permission_prompt", "other") == stamp {

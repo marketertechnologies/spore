@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
@@ -45,6 +46,38 @@ func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("notify-coordinator env mode did not write a json poke")
+	}
+}
+
+func TestReadHookPayloadOpenPipeTimesOut(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer w.Close()
+	defer r.Close()
+	if got := readHookPayload(r, 50*time.Millisecond); got != nil {
+		t.Fatalf("readHookPayload on an open pipe = %v, want nil", got)
+	}
+}
+
+func TestReadHookPayloadClosedPipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString(`{"message":"m"}`); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	got := readHookPayload(r, time.Second)
+	if got == nil {
+		t.Fatal("readHookPayload = nil, want the payload")
+	}
+	b, _ := io.ReadAll(got)
+	if string(b) != `{"message":"m"}` {
+		t.Fatalf("payload = %q", b)
 	}
 }
 

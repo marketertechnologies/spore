@@ -35,6 +35,27 @@ func NotifyCoordinatorEvent(project, source, body string) error {
 // repeats with the same type and message.
 const NotifyDedupWindow = 5 * time.Minute
 
+// NotifyBurstWindow replaces NotifyDedupWindow for blockingTypes. Their
+// message names only the tool ("Claude needs your permission to use
+// Bash"), so two separate Bash approvals look identical; only a true
+// burst (duplicates seconds apart) may collapse.
+const NotifyBurstWindow = 30 * time.Second
+
+// blockingTypes are requests the worker waits on until someone answers.
+var blockingTypes = map[string]bool{
+	"permission_prompt":      true,
+	"elicitation_dialog":     true,
+	"elicitation_url_dialog": true,
+	"agent_needs_input":      true,
+}
+
+func dedupWindow(kind string) time.Duration {
+	if blockingTypes[kind] {
+		return NotifyBurstWindow
+	}
+	return NotifyDedupWindow
+}
+
 // NotificationInput is the part of the Claude Code Notification hook
 // stdin payload the hook reads.
 type NotificationInput struct {
@@ -74,7 +95,7 @@ var idleMessage = regexp.MustCompile(`(?i)^claude is waiting for your input\.?$`
 //   - the plain idle reminder and other info-only types (infoOnlyTypes),
 //     or an empty payload;
 //   - a repeat of the same type and message from the same worker within
-//     NotifyDedupWindow (recorded only after the inbox write succeeds).
+//     dedupWindow (recorded only after the inbox write succeeds).
 func NotifyCoordinatorEnv(stdin io.Reader) error {
 	project := os.Getenv("WT_PROJECT")
 	if project == "" || os.Getenv("SPORE_ROLE") != "" {
@@ -101,7 +122,7 @@ func NotifyCoordinatorEnv(stdin io.Reader) error {
 	slug := notifySenderSlug()
 	stamp := notifyStamp(filepath.Dir(inbox), slug, kind, in.Message)
 	now := time.Now()
-	if sentRecently(stamp, now) {
+	if sentRecently(stamp, now, dedupWindow(kind)) {
 		return nil
 	}
 	body := fmt.Sprintf("worker %s: %s", slug, kind)
@@ -146,19 +167,20 @@ func notifyStamp(projectState, slug, kind, message string) string {
 	return filepath.Join(projectState, "notify-stamps", name)
 }
 
-// sentRecently reports whether stamp records a send within
-// NotifyDedupWindow of now. Two hooks racing inside one window can both
+// sentRecently reports whether stamp records a send within window of
+// now. Two hooks racing inside one window can both
 // pass, which is fine for a rate limit that only has to collapse bursts.
-func sentRecently(stamp string, now time.Time) bool {
+func sentRecently(stamp string, now time.Time, window time.Duration) bool {
 	fi, err := os.Stat(stamp)
 	if err != nil {
 		return false
 	}
 	age := now.Sub(fi.ModTime())
-	return age >= 0 && age < NotifyDedupWindow
+	return age >= 0 && age < window
 }
 
-// notifyStampMaxAge bounds how long stale stamps stay on disk.
+// notifyStampMaxAge is well past the longest dedup window, so pruning
+// never drops a stamp that still suppresses anything.
 const notifyStampMaxAge = time.Hour
 
 // markSent records a send at now and prunes stamps past

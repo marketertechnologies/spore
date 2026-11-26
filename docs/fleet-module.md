@@ -154,7 +154,7 @@ The managed drop-in binds `spore hooks notify-coordinator` to every Claude Code 
 - role panes (`$SPORE_ROLE` set): the role loop already reports their progress (source `role-loop`);
 - the coordinator's own pane (`$SPORE_TASK_INBOX` is the coordinator inbox) and non-spore sessions (no `$WT_PROJECT`);
 - `idle_prompt` and the other types that report something already finished (`auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`, `plugin_notification`); any other type, `permission_prompt` included, is forwarded;
-- a repeat of the same type and message from the same worker within 5 minutes (stamp files under `<coordinator state>/<project>/notify-stamps/`, written only after the inbox write succeeds and pruned after an hour). A different prompt from the same worker, such as a second tool approval, still gets through.
+- a repeat of the same type and message from the same worker: within 30 seconds for requests the worker waits on (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`), whose message names only the tool, so only a true burst collapses and a second Bash approval minutes later still gets through; within 5 minutes for every other type. Stamp files live under `<coordinator state>/<project>/notify-stamps/`, are written only after the inbox write succeeds, and are pruned after an hour.
 
 A role pane blocked on a permission prompt or an MCP form is not reported this way; the role loop's stall handling catches it.
 
