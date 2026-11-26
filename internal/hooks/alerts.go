@@ -22,6 +22,10 @@ type AlertKind string
 const (
 	AlertUsageLimit AlertKind = "usage-limit"
 	AlertLogin      AlertKind = "login"
+	// AlertCoordinatorCrash is per project (claim
+	// `coordinator-crash@<project>`): its own inbox is the one place
+	// nobody reads while the coordinator is down.
+	AlertCoordinatorCrash AlertKind = "coordinator-crash"
 )
 
 // alertCooldown is how long a raised alert stays claimed even when a
@@ -194,8 +198,9 @@ func isAlertClaim(name string) bool {
 	return kind == string(AlertUsageLimit) || kind == string(AlertLogin)
 }
 
-// ActiveAlerts returns the host-level alert lines (time, then body)
-// that are still claimed.
+// ActiveAlerts returns the alert lines (time, then body) that are
+// still claimed: the host-level ones, then each project's coordinator
+// crash loop.
 func ActiveAlerts() []string {
 	dir := AlertsDir()
 	var out []string
@@ -204,7 +209,46 @@ func ActiveAlerts() []string {
 			out = append(out, strings.TrimSpace(string(b)))
 		}
 	}
+	crashes, _ := filepath.Glob(filepath.Join(dir, string(AlertCoordinatorCrash)+"@*"))
+	sort.Strings(crashes)
+	for _, p := range crashes {
+		if b, err := os.ReadFile(p); err == nil {
+			out = append(out, strings.TrimSpace(string(b)))
+		}
+	}
 	return out
+}
+
+// RaiseCoordinatorCrash tells the operator once per incident that
+// project's coordinator crash-looped: shown on every attached tmux
+// client and listed by `spore fleet status` until
+// ClearCoordinatorCrash.
+func RaiseCoordinatorCrash(project, body string) error {
+	dir := AlertsDir()
+	if dir == "" {
+		return errors.New("alerts: no state dir")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	msg := fmt.Sprintf("[%s] %s", project, body)
+	ok, err := claimAlert(coordinatorCrashPath(dir, project), alertNow().Format(time.RFC3339)+" "+msg)
+	if err != nil || !ok {
+		return err
+	}
+	return displayToOperator("spore: " + msg)
+}
+
+// ClearCoordinatorCrash drops project's coordinator crash alert, once
+// the coordinator runs again or the fleet is disabled.
+func ClearCoordinatorCrash(project string) {
+	if dir := AlertsDir(); dir != "" {
+		_ = os.Remove(coordinatorCrashPath(dir, project))
+	}
+}
+
+func coordinatorCrashPath(dir, project string) string {
+	return filepath.Join(dir, string(AlertCoordinatorCrash)+"@"+project)
 }
 
 // FailedPanes lists the recorded failed panes, oldest first.

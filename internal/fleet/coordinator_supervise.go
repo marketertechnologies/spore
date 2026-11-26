@@ -10,6 +10,7 @@ import (
 
 	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/events"
+	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -26,8 +27,9 @@ var (
 // greet shell). Fast deaths are capped like workers: past
 // MaxFastDeaths the pass stops spawning and tells the coordinator
 // inbox once. Failures come back as a warning; they never abort the
-// pass, so workers and role loops still run.
-func superviseCoordinator(projectRoot string) string {
+// pass, so workers and role loops still run. alive is whether the
+// pass's session listing holds the coordinator session.
+func superviseCoordinator(projectRoot string, alive bool) string {
 	session := CoordinatorSessionName(projectRoot)
 	guard := coordinatorGuard(projectRoot)
 	defer saveGuard(guard)
@@ -37,10 +39,11 @@ func superviseCoordinator(projectRoot string) string {
 		respawnReason = "session gone"
 	}
 
-	if hasSession(session) {
+	if alive {
 		reason := coordinatorAgentGone(session, now)
 		if reason == "" {
 			guard.alive(now)
+			clearCoordinatorAlert(projectRoot)
 			return ""
 		}
 		guard.dead()
@@ -91,10 +94,24 @@ func coordinatorCapped(projectRoot string, guard *spawnGuard, reason string) str
 		FastDeathWindow, guard.Deaths, reason)
 	if guard.capOnce() {
 		notifyFleet(projectRoot, msg)
+		if err := hooks.RaiseCoordinatorCrash(projectName(projectRoot), msg); err != nil {
+			fmt.Fprintf(os.Stderr, "fleet: coordinator crash alert: %v\n", err)
+		}
 		task.RecordEvent(projectRoot, events.Event{Kind: events.CoordinatorCrash,
 			Detail: fmt.Sprintf("%d fast deaths in a row (last: %s); respawn stopped", guard.Deaths, reason)})
 	}
 	return msg
+}
+
+func clearCoordinatorAlert(projectRoot string) {
+	hooks.ClearCoordinatorCrash(projectName(projectRoot))
+}
+
+func projectName(projectRoot string) string {
+	if name, err := task.ProjectName(projectRoot); err == nil && name != "" {
+		return name
+	}
+	return filepath.Base(projectRoot)
 }
 
 func coordinatorGuardPath(projectRoot string) string {

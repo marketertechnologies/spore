@@ -125,7 +125,7 @@ Any agent can ask the broker to push a branch matching `pushBranch` or open a dr
 
 ## Kill switch
 
-With the broker on, the flag is `/var/lib/spore-fleet/fleet-enabled` (`SPORE_FLEET_FLAG`, set system-wide and in the reconcile units), in a directory owned by `spore-secrets`. `spore fleet disable` from an agent goes through the broker and works; `spore fleet enable` from an agent is refused. `sudo spore fleet enable` (root writes the flag directly) or a pilot's `spore fleet enable` turns it back on. The graceful-deploy scripts remove and recreate the flag as root.
+With the broker on, the flag is `/var/lib/spore-fleet/fleet-enabled` (`SPORE_FLEET_FLAG`, set system-wide and in the reconcile units), in a directory owned by `spore-secrets`. `spore fleet disable` and `spore fleet stop` from an agent go through the broker and work, including from a sandboxed pane, where the flag's directory is read-only (`EROFS`); `spore fleet enable` from an agent is refused. `/etc/spore/secrets-broker.json` pins the flag path: when it sets `fleet_flag`, spore ignores `SPORE_FLEET_FLAG` (with a warning when they differ), so an agent cannot point the variable at a file of its own and reconcile while the fleet is off. `sudo spore fleet enable` (root writes the flag directly) or a pilot's `spore fleet enable` turns it back on. The graceful-deploy scripts remove and recreate the flag as root.
 
 ## Claude Code login
 

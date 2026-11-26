@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/versality/spore/internal/fleet"
 )
 
 // testTmuxSocket: see internal/task/tmuxsocket_test.go for the
@@ -34,6 +36,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// Never the host's kill switch or broker (see the fleet TestMain).
+	fleet.HostConfigPath = filepath.Join(tmpdir, "no-host-config.json")
+	_ = os.Unsetenv("SPORE_FLEET_FLAG")
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()

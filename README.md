@@ -300,10 +300,12 @@ When the NixOS module is enabled with `gracefulDeploy.enable =
 true` (the default), pre and post activation hooks drain active
 workers around `nixos-rebuild switch` and colmena deploys:
 
-- pre-activation disables the kill-switch, drops a wrap-up
-  message into every active worker's inbox, waits up to
-  `gracefulDeploy.timeout` seconds for them to flush, then kills
-  any holdouts;
+- pre-activation disables the kill-switch, tells every worker
+  and role loop to wrap up (`spore task tell`; a role loop's tell
+  reaches its active pane), waits up to `gracefulDeploy.timeout`
+  seconds for their sessions (`spore/<project>/<slug>` and
+  `spore-role/<project>/<slug>/<role>`) to exit, then kills any
+  holdouts;
 - post-activation re-enables the kill-switch so the next
   reconcile pass repopulates the fleet. On `nixos-rebuild switch` /
   `test` this runs as `spore-fleet-graceful-post.service`, which the

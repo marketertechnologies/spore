@@ -1,6 +1,7 @@
 package task
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,4 +113,31 @@ func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 
 func hasSession(name string) bool {
 	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+// ListSessions returns every tmux session name. No server (or a stale
+// socket) is an empty list; any other failure, a call killed by its
+// budget included, is an error.
+func ListSessions() ([]string, error) {
+	cmd := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") {
+			return nil, nil
+		}
+		if msg != "" {
+			return nil, fmt.Errorf("tmux list-sessions: %w: %s", err, msg)
+		}
+		return nil, fmt.Errorf("tmux list-sessions: %w", err)
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }

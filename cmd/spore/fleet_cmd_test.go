@@ -309,3 +309,77 @@ func TestReconcileBudgetedRecordsFailure(t *testing.T) {
 		t.Fatalf("ledger = %+v", evs)
 	}
 }
+
+func cliTmuxSession(t *testing.T, name string, env ...string) {
+	t.Helper()
+	var envArgs []string
+	for _, kv := range env {
+		envArgs = append(envArgs, "-e", kv)
+	}
+	cmd := exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", name)
+	cmd.Args = append(cmd.Args, append(envArgs, "sleep 300")...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session %s: %v: %s", name, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", testTmuxSocket, "kill-session", "-t", "="+name).Run() })
+}
+
+// status lists role panes and the real agent count; stop kills the
+// project's agent sessions, prints them, and leaves a pilot shell.
+func TestFleetStatusAndStop(t *testing.T) {
+	requireToolchain(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("SPORE_FLEET_MAX_WORKERS", "3")
+	root := filepath.Join(t.TempDir(), "clistop")
+	gitInitRepo(t, root)
+	t.Chdir(root)
+	if err := fleet.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	cliTmuxSession(t, "spore/clistop/w1", "SPORE_TASK_SLUG=w1", "WT_PROJECT=clistop")
+	cliTmuxSession(t, "spore-role/clistop/r1/engineer", "SPORE_TASK_SLUG=r1", "WT_PROJECT=clistop")
+	cliTmuxSession(t, "spore-role/clistop/r1/reviewer-A", "SPORE_TASK_SLUG=r1", "WT_PROJECT=clistop")
+	cliTmuxSession(t, "spore/pilot/op")
+
+	_, out, _ := captureFn(t, func() int {
+		if err := runFleet([]string{"status"}); err != nil {
+			t.Errorf("status: %v", err)
+		}
+		return 0
+	})
+	for _, want := range []string{
+		"fleet: enabled",
+		"role panes:\n  r1/engineer\n  r1/reviewer-A\n",
+		"agents: 3 running (coordinator 0, workers 1, role panes 2); slots 2/3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output missing %q:\n%s", want, out)
+		}
+	}
+
+	_, out, _ = captureFn(t, func() int {
+		if err := runFleet([]string{"stop", "--project", "clistop"}); err != nil {
+			t.Errorf("stop: %v", err)
+		}
+		return 0
+	})
+	for _, want := range []string{
+		"fleet: disabled",
+		"killed: spore/clistop/w1\n",
+		"killed: spore-role/clistop/r1/engineer\n",
+		"killed: spore-role/clistop/r1/reviewer-A\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stop output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pilot") {
+		t.Errorf("stop touched the pilot session:\n%s", out)
+	}
+	if exec.Command("tmux", "-L", testTmuxSocket, "has-session", "-t", "=spore/pilot/op").Run() != nil {
+		t.Error("spore/pilot/op was killed")
+	}
+	if on, _ := fleet.Enabled(); on {
+		t.Error("fleet still enabled after stop")
+	}
+}
