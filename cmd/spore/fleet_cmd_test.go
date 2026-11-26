@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/fleet"
 )
 
@@ -285,5 +287,25 @@ func TestReconcileBudgetedAbandonsHungPass(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("took %s", took)
+	}
+}
+
+func TestReconcileBudgetedRecordsFailure(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	orig := replenishReconcile
+	t.Cleanup(func() { replenishReconcile = orig })
+	replenishReconcile = func(fleet.Config) (fleet.Result, error) {
+		return fleet.Result{}, errors.New("scan tasks: boom")
+	}
+	if _, err := reconcileBudgeted(fleet.Config{ProjectRoot: root}); err == nil {
+		t.Fatal("want the pass error back")
+	}
+	evs, err := events.Read(filepath.Base(root), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != events.ReconcileFailed || !strings.Contains(evs[0].Detail, "boom") {
+		t.Fatalf("ledger = %+v", evs)
 	}
 }

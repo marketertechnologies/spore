@@ -625,6 +625,7 @@ func (m *githubMirror) ensurePR() error {
 	}
 	m.state.PRNumber, m.state.PRURL = n, url
 	m.save()
+	recordPROpened(m.projectRoot, m.slug, url, base)
 	return nil
 }
 

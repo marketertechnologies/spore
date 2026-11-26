@@ -12,6 +12,7 @@ import (
 
 	"github.com/versality/spore/internal/budget"
 	"github.com/versality/spore/internal/callbudget"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/fleet"
 	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/sporetoml"
@@ -368,6 +369,9 @@ func reconcileBudgeted(cfg fleet.Config) (fleet.Result, error) {
 	defer timer.Stop()
 	select {
 	case o := <-done:
+		if o.err != nil {
+			recordReconcileFailed(cfg.ProjectRoot, o.err)
+		}
 		return o.res, o.err
 	case <-timer.C:
 	}
@@ -376,7 +380,13 @@ func reconcileBudgeted(cfg fleet.Config) (fleet.Result, error) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 	}
-	return fleet.Result{}, fmt.Errorf("reconcile pass exceeded its %s budget (%s); in-flight calls killed", budget, PassTimeoutEnv)
+	err := fmt.Errorf("reconcile pass exceeded its %s budget (%s); in-flight calls killed", budget, PassTimeoutEnv)
+	recordReconcileFailed(cfg.ProjectRoot, err)
+	return fleet.Result{}, err
+}
+
+func recordReconcileFailed(projectRoot string, err error) {
+	task.RecordEvent(projectRoot, events.Event{Kind: events.ReconcileFailed, Detail: err.Error()})
 }
 
 // runFleetReplenishHook is the Stop-hook entry point for `spore fleet
@@ -407,13 +417,15 @@ func runFleetReplenishHook(args []string) error {
 		return nil
 	}
 
-	if a := budget.Advice(); a == "tighten" || a == "ration" {
-		fmt.Fprintf(os.Stderr, "replenish-hook: skipping reconcile (budget advice=%s)\n", a)
+	root, ok := replenishProjectRoot()
+	if !ok {
 		return nil
 	}
 
-	root, ok := replenishProjectRoot()
-	if !ok {
+	if a := budget.Advice(); a == "tighten" || a == "ration" {
+		fmt.Fprintf(os.Stderr, "replenish-hook: skipping reconcile (budget advice=%s)\n", a)
+		task.RecordEventThrottled(root, "reconcile-budget", time.Hour,
+			events.Event{Kind: events.ReconcileSkipped, Detail: "budget advice " + a})
 		return nil
 	}
 	resolved, err := resolveMaxWorkers(0, root)

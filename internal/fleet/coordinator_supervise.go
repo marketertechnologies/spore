@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/callbudget"
+	"github.com/versality/spore/internal/events"
+	"github.com/versality/spore/internal/task"
 )
 
 // Seams for superviseCoordinator; tests swap the probe to avoid
@@ -30,6 +32,10 @@ func superviseCoordinator(projectRoot string) string {
 	guard := coordinatorGuard(projectRoot)
 	defer saveGuard(guard)
 	now := nowFunc()
+	respawnReason := ""
+	if guard.Spawned != 0 {
+		respawnReason = "session gone"
+	}
 
 	if hasSession(session) {
 		reason := coordinatorAgentGone(session, now)
@@ -41,6 +47,7 @@ func superviseCoordinator(projectRoot string) string {
 		if !guard.mayRespawn() {
 			return coordinatorCapped(projectRoot, guard, reason)
 		}
+		respawnReason = reason
 		_ = callbudget.Command("tmux", "kill-session", "-t", session).Run()
 		fmt.Fprintf(os.Stderr, "fleet: coordinator %s: %s; respawning\n", session, reason)
 	} else {
@@ -59,6 +66,16 @@ func superviseCoordinator(projectRoot string) string {
 	if spawned || err != nil {
 		guard.spawned(now)
 	}
+	if spawned || err != nil {
+		ev := events.Event{Kind: events.CoordinatorSpawn}
+		if respawnReason != "" {
+			ev.Kind, ev.Detail = events.CoordinatorRespawn, respawnReason
+		}
+		if err != nil {
+			ev.Fields = map[string]string{"error": err.Error()}
+		}
+		task.RecordEvent(projectRoot, ev)
+	}
 	if err != nil {
 		guard.dead()
 		if !guard.mayRespawn() {
@@ -74,6 +91,8 @@ func coordinatorCapped(projectRoot string, guard *spawnGuard, reason string) str
 		FastDeathWindow, guard.Deaths, reason)
 	if guard.capOnce() {
 		notifyFleet(projectRoot, msg)
+		task.RecordEvent(projectRoot, events.Event{Kind: events.CoordinatorCrash,
+			Detail: fmt.Sprintf("%d fast deaths in a row (last: %s); respawn stopped", guard.Deaths, reason)})
 	}
 	return msg
 }

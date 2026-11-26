@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/versality/spore/internal/callbudget"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -70,6 +71,7 @@ func StartWithOptions(tasksDir, slug string, opts StartOptions) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskStart, Slug: slug, Fields: map[string]string{"agent": m.Agent}})
 	notifyMatterSpawn(projectRoot, slug, m, os.Stderr)
 	return out, nil
 }

@@ -12,7 +12,9 @@
 # migration 004 backup present and the user settings already pruned,
 # repo settings free of duplicated hooks, Codex hooks.json path, and
 # spore tmux panes started before the drop-in (they still run the old
-# hooks until respawned). Nothing is modified: prune runs on copies.
+# hooks until respawned), then `spore doctor` (binary vs repo and flake,
+# Claude Code version, fleet units, secrets modes, kill switch). Nothing
+# is modified: prune runs on copies.
 #
 # Active probes (deny rules, force-push guard, role-loop end to end) are
 # not here; run the P0.1 / P0.5 probes and a throwaway role-loop task.
@@ -142,6 +144,20 @@ if [ -f "$DROPIN" ] && command -v tmux >/dev/null; then
     fi
   done < <(env -u TMUX tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_pid}' 2>/dev/null | grep '^spore')
   [ "$stale" = 0 ] && pass "every spore pane started after the drop-in"
+fi
+
+# 7. spore doctor: the binary's own drift checks.
+if [ -x "$SW/bin/spore" ]; then
+  if "$SW/bin/spore" --help 2>&1 | grep -q '^  doctor '; then
+    if out="$("$SW/bin/spore" doctor --sw "$SW" --dropin "$DROPIN" 2>&1)"; then
+      pass "spore doctor: $(tail -1 <<<"$out")"
+    else
+      fail "spore doctor: $(tail -1 <<<"$out")"
+    fi
+    grep -E '^(FAIL|WARN) ' <<<"$out" | sed 's/^/      doctor: /'
+  else
+    warn "spore doctor: $SW/bin/spore has no doctor command (older than 0.59.0)"
+  fi
 fi
 
 printf '\n%d fail, %d warn\n' "$fails" "$warns"

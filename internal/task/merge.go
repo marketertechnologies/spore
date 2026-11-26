@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
 
@@ -241,6 +242,7 @@ func (c *mergedTaskClose) apply(projectRoot, slug string) error {
 	if err := os.WriteFile(c.path, c.closed, 0o644); err != nil {
 		return err
 	}
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskDone, Slug: slug, Detail: "merged"})
 	rel, err := filepath.Rel(projectRoot, c.path)
 	if err != nil {
 		rel = c.path

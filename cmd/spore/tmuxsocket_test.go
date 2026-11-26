@@ -28,6 +28,12 @@ func TestMain(m *testing.M) {
 	// A coordinator swap must not fall back to the host's launcher.
 	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	_ = os.Unsetenv("TMUX_PANE")
+	// Ledger writes and other state from a test must never reach the
+	// host's real state dir.
+	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
+		os.Exit(2)
+	}
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()
