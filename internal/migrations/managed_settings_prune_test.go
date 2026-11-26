@@ -35,6 +35,14 @@ func buildSpore(t *testing.T) string {
 	return bin
 }
 
+// noBrokerEnv is the environment for an exec'd spore binary. Only a
+// test binary skips the host broker socket on its own (see
+// secrets.SocketPath), so a built spore needs SPORE_SECRETS_SOCKET
+// pointed at an absent path.
+func noBrokerEnv(t *testing.T) []string {
+	return append(os.Environ(), "SPORE_SECRETS_SOCKET="+filepath.Join(t.TempDir(), "no-broker.sock"))
+}
+
 func runPrune(t *testing.T, home, bin, managed string) string {
 	t.Helper()
 	script, err := filepath.Abs("../../bootstrap/migrations/004-managed-settings-prune.sh")
@@ -43,7 +51,7 @@ func runPrune(t *testing.T, home, bin, managed string) string {
 	}
 	cmd := exec.Command("bash", "-eu", script)
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(noBrokerEnv(t),
 		"HOME="+home,
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"SPORE_MANAGED_SETTINGS="+managed)
@@ -60,6 +68,7 @@ func TestManagedSettingsPrune(t *testing.T) {
 	managed := filepath.Join(home, "etc/50-spore.json")
 	gen := exec.Command(filepath.Join(bin, "spore"), "hooks", "settings", "--managed",
 		"--spore", "/nix/store/x-spore/bin/spore", "--hooks-dir", "/nix/store/x-shims/share/spore/hooks")
+	gen.Env = noBrokerEnv(t)
 	body, err := gen.Output()
 	if err != nil {
 		t.Fatal(err)
