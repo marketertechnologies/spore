@@ -81,3 +81,34 @@ func TaskAgentLines(projectRoot, tasksDir, slug string) ([]AgentLine, error) {
 	}
 	return []AgentLine{{Name: task.AgentRoleWorker, Agent: agent, Settings: st}}, nil
 }
+
+// RoleBodyLine names where one role pane's body comes from.
+type RoleBodyLine struct {
+	Name, Source string
+}
+
+// TaskRoleBodyLines resolves the role body source of each pane a
+// `loop: role` task spawns; nil for any other task.
+func TaskRoleBodyLines(projectRoot, tasksDir, slug string) ([]RoleBodyLine, error) {
+	if tasksDir == "" {
+		tasksDir = filepath.Join(projectRoot, "tasks")
+	}
+	meta, err := readRoleTaskMeta(tasksDir, slug)
+	if err != nil || meta.Loop != task.LoopRole {
+		return nil, err
+	}
+	var out []RoleBodyLine
+	for _, spec := range []RoleSpawnSpec{
+		EngineerSpec(projectRoot, slug),
+		ReviewerSpec(projectRoot, slug, task.ReviewerA),
+		ReviewerSpec(projectRoot, slug, task.ReviewerB),
+	} {
+		spec.TasksDir = tasksDir
+		src, err := spec.BodySource()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, RoleBodyLine{Name: roleKey(spec), Source: src})
+	}
+	return out, nil
+}

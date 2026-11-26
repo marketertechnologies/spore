@@ -10,9 +10,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -62,6 +64,38 @@ func ResolveRoleBody(projectRoot, name string) (string, error) {
 		return "", fmt.Errorf("rolespawn: materialize role body %s: %w", name, err)
 	}
 	return path, nil
+}
+
+// RoleBodySource describes where ResolveRoleBody takes body name from,
+// without materializing the bundled copy: the override path with the
+// branch its checkout is on (role bodies are read from the project
+// checkout, not the task worktree, so a checkout on the wrong branch
+// shows here), the bundled body with the spore version, or the error
+// that fails the spawn.
+func RoleBodySource(projectRoot, name string) string {
+	p, err := projectRoleBody(projectRoot, name)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	if p != "" {
+		return fmt.Sprintf("%s (project override, checkout %s)", p, checkoutRef(projectRoot))
+	}
+	if _, err := fs.Stat(spore.BundledRoles, "bootstrap/roles/"+name); err != nil {
+		return fmt.Sprintf("error: role body %s not in %s and not bundled", name, filepath.Join(projectRoot, "bootstrap", "roles"))
+	}
+	return fmt.Sprintf("bundled %s (spore %s)", name, spore.Version())
+}
+
+// checkoutRef names the branch dir's checkout is on, or its short
+// commit when detached.
+func checkoutRef(dir string) string {
+	if out, err := callbudget.Command("git", "-C", dir, "symbolic-ref", "-q", "--short", "HEAD").Output(); err == nil {
+		return "on branch " + strings.TrimSpace(string(out))
+	}
+	if out, err := callbudget.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output(); err == nil {
+		return "detached at " + strings.TrimSpace(string(out))
+	}
+	return "on an unknown branch"
 }
 
 // RoleBodyError is a project role body override that exists but

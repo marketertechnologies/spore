@@ -88,11 +88,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	rolePath := s.RoleBodyPath
 	if rolePath == "" {
-		body := s.Role + ".md"
-		if slot.Mode == ReviewerModeCodeReview {
-			body = "reviewer-code-review.md"
-		}
-		if rolePath, err = ResolveRoleBody(s.ProjectRoot, body); err != nil {
+		if rolePath, err = ResolveRoleBody(s.ProjectRoot, s.bodyName(slot)); err != nil {
 			return nil, err
 		}
 	}
@@ -147,6 +143,27 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
 	args = append(args, roleShellCommand(prelude, withBody, rolePath))
 	return args, nil
+}
+
+// bodyName is the role body file the pane reads for its settled slot.
+func (s RoleSpawnSpec) bodyName(slot ReviewerSlot) string {
+	if slot.Mode == ReviewerModeCodeReview {
+		return "reviewer-code-review.md"
+	}
+	return s.Role + ".md"
+}
+
+// BodySource says where the pane's role body comes from (see
+// RoleBodySource), for status output.
+func (s RoleSpawnSpec) BodySource() (string, error) {
+	if s.RoleBodyPath != "" {
+		return s.RoleBodyPath, nil
+	}
+	slot, _, _, err := s.resolve()
+	if err != nil {
+		return "", err
+	}
+	return RoleBodySource(s.ProjectRoot, s.bodyName(slot)), nil
 }
 
 // commitIdentityEnv authors engineer commits as the dispatching
