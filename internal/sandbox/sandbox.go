@@ -42,7 +42,11 @@ var DefaultDomains = []string{
 // DefaultAllowWrite holds the tool caches agents write besides the
 // task worktree and $TMPDIR, which Claude Code allows on its own.
 // ~/.local/state/spore carries inboxes and task state that `spore task`
-// commands write.
+// commands write. These floor paths assume the default state dir: the
+// floor is rendered once into the host-wide managed drop-in, which
+// cannot see a pane's XDG_STATE_HOME. A host that sets XDG_STATE_HOME
+// adds its state dir through spore.toml [sandbox] allow_write and a
+// Read(...) deny rule for its github-token.json files.
 var DefaultAllowWrite = []string{
 	"~/.cache",
 	"~/go",
