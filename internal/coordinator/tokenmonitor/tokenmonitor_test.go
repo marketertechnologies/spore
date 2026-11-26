@@ -234,3 +234,12 @@ func TestCoordinatorStateDirHonorsXDGStateHome(t *testing.T) {
 		t.Errorf("defaultStateDir() = %q, want %q", got, want)
 	}
 }
+
+func TestNoStateBaseMatchesNoCoordinator(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if c := (Config{Inbox: "/any/inbox"}).Defaults(); c.IsCoordinator() {
+		t.Errorf("IsCoordinator with StateDir %q = true", c.StateDir)
+	}
+}

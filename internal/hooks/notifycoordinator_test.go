@@ -162,3 +162,17 @@ func TestNotifyCoordinator_HonorsXDGStateHome(t *testing.T) {
 		t.Errorf("notice touched HOME/.local (err %v)", err)
 	}
 }
+
+func TestNotifyCoordinator_NoStateBaseIsAnError(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if err := NotifyCoordinator("proj"); err == nil {
+		t.Error("NotifyCoordinator with no HOME and no XDG_STATE_HOME: err = nil")
+	}
+	if entries, _ := os.ReadDir(cwd); len(entries) != 0 {
+		t.Errorf("notice written under the cwd: %v", entries)
+	}
+}
