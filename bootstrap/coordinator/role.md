@@ -178,7 +178,10 @@ Applies when `spore gh config` shows a GitHub App with
 `pr_flow = "draft"`. Without an App config, the operator pushes and
 opens PRs.
 
-- Run network git and gh through `spore gh exec -- <cmd>`.
+- Run network git and gh through `spore gh exec -- <cmd>`, e.g.
+  `spore gh exec -- git push -u origin <branch>`. Never run
+  `spore gh token` or put a token in a command line: it lands in
+  the transcript.
 - The driver pushes `wt/<slug>` and opens the draft PR after the
   engineer's first round. Keep `wt/<slug>` as the PR head: renaming
   the branch closes the PR.
