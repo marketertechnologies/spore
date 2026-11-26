@@ -275,9 +275,9 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "ready", "7", "--undo"},
 		{"pr", "edit", "7", "--title", "t", "--body-file", "-"},
 		{"pr", "comment", "7", "--body-file", "-"},
-		{"pr", "view", "7", "--json", "isDraft", "--jq", ".isDraft"},
+		{"pr", "view", "7", "--json", "isDraft"},
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
-		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate", "--jq", ".[]"},
+		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate"},
 		{"api", "graphql", "--hostname", "github.com", "-f", "query=query { viewer { login } }", "-F", "number=7"},
 	}
 	for _, a := range ok {
@@ -299,6 +299,20 @@ func TestCheckGHArgs(t *testing.T) {
 		{"api", "repos/acme/alpha/pulls/7", "--hostname", "evil.example"},
 		{"auth", "token"},
 		{"repo", "clone", "acme/alpha"},
+		// gh evaluates these expressions in the process holding the token.
+		{"pr", "view", "7", "--json", "isDraft", "--jq", "[env.GH_TOKEN|explode[]]|map(.+1)|implode"},
+		{"pr", "view", "7", "--json", "isDraft", "--jq=env"},
+		{"pr", "view", "7", "--json", "isDraft", "-q", "$ENV.GH_TOKEN"},
+		{"pr", "view", "7", "--json", "isDraft", "-q$ENV"},
+		{"pr", "list", "--json", "number", "--jq", "$__loc__"},
+		{"api", "repos/acme/alpha/pulls/7/files", "--jq", "input_filename"},
+		{"api", "repos/acme/alpha/pulls/7", "--template", "{{.}}"},
+		{"pr", "view", "7", "--json", "title", "--template={{.title}}"},
+		{"pr", "view", "7", "--json", "title", "-t", "{{.title}}"},
+		{"pr", "view", "7", "--json", "title", "-t{{.title}}"},
+		{"pr", "create", "--draft", "--recover", "/etc/shadow"},
+		{"api", "repos/acme/alpha/pulls/7", "-H", "Accept: x"},
+		{"pr", "view", "7", "--", "--jq", "env"},
 	}
 	for _, a := range bad {
 		if err := checkGHArgs(a, repo); err == nil {

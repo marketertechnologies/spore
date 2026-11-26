@@ -545,11 +545,17 @@ func (m *githubMirror) cyclePrefix() string {
 // gets the comment.
 func (m *githubMirror) redraft() error {
 	pr := strconv.Itoa(m.state.PRNumber)
-	draft, err := m.gh("", "pr", "view", pr, "--json", "isDraft", "--jq", ".isDraft")
+	out, err := m.gh("", "pr", "view", pr, "--json", "isDraft")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(draft) != "true" {
+	var view struct {
+		IsDraft bool `json:"isDraft"`
+	}
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		return fmt.Errorf("gh pr view %s: %w", pr, err)
+	}
+	if !view.IsDraft {
 		if _, err := m.gh("", "pr", "ready", pr, "--undo"); err != nil {
 			return err
 		}

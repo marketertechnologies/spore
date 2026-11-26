@@ -48,6 +48,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// On a host running the secrets broker the mirror would otherwise
+	// route its gh calls to the live socket instead of the fake gh.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()
