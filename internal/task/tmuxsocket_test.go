@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +35,19 @@ func TestMain(m *testing.M) {
 	// host's socket regardless of TMUX_TMPDIR).
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+	// Keep state (inboxes, the reconcile lock) off the host's real
+	// state dir, and drop the SPORE_* / WT_* env an agent pane passes
+	// down, which names the live coordinator.
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(k, "SPORE_") || strings.HasPrefix(k, "WT_") {
+			_ = os.Unsetenv(k)
+		}
+	}
+	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
+		os.Exit(2)
+	}
 	// Keepalive session: tmux's default behavior is to exit the
 	// server when the last session ends. With a per-process server,
 	// each test's cleanup can drop the session count to zero,

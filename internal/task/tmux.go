@@ -3,9 +3,10 @@ package task
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 func tmuxSessionName(projectRoot, slug string) string {
@@ -46,7 +47,7 @@ func tmuxSessionPrefix(projectRoot string) string {
 // next char to be end-of-string or a space (so slug "foo" doesn't
 // kill "foo-bar").
 func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []string {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return nil
 	}
@@ -102,7 +103,7 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) []
 // nothing matches.
 func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug, true) {
-		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
+		if out, err := callbudget.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
 				name, err, strings.TrimSpace(string(out)))
 		}
@@ -110,5 +111,5 @@ func killAllSlugSessions(tasksDir, projectRoot, slug string) {
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
 }

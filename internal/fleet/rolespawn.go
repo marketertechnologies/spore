@@ -3,10 +3,10 @@ package fleet
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
@@ -313,7 +313,7 @@ func SpawnRole(spec RoleSpawnSpec) (string, bool, error) {
 	if _, err := task.EnsureRoleTaskDir(spec.ProjectRoot, spec.Slug); err != nil {
 		return "", false, err
 	}
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", false, fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -329,7 +329,7 @@ func ReapRole(spec RoleSpawnSpec) (bool, error) {
 	if !hasSession(name) {
 		return false, nil
 	}
-	_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+	_ = callbudget.Command("tmux", "kill-session", "-t", name).Run()
 	return true, nil
 }
 

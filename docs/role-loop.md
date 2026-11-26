@@ -116,18 +116,22 @@ Phase completion comes only from files; a pane exiting never advances
 or stalls the loop by itself. Each tick probes every pane the phase
 expects (tmux `pane_dead`, `pane_current_command`, `session_created`):
 
-- missing session: spawn it, silently. This covers a pane missing
-  after a phase transition and a token-monitor wrap (which kills its
-  own session on purpose); neither counts toward the respawn cap.
+- missing session: spawn it. A pane missing after a phase transition
+  or after a run of at least 60s (a token-monitor wrap kills its own
+  session on purpose) respawns silently. A session that vanished
+  before any tick saw it alive for 60s counts as a crash toward the
+  respawn cap: the launch line execs the agent, so with
+  `remain-on-exit off` a crash takes the session with it. The spawn
+  time lives in `state/spawn-<role>.json`.
 - agent gone (pane dead, or a shell in the foreground once the
   session is 30s old, e.g. a hand-started role whose agent exited):
   kill the session and spawn a fresh one.
 
-Each agent-gone respawn claims `state/respawn-<role>-r<round>-<n>`
+Each counted respawn claims `state/respawn-<role>-r<round>-<n>`
 and tells the coordinator (`<slug>: respawned <role> (<reason>; round
 R, respawn K/3)`). When the agent dies again after 3 respawns of one
-role in one round, the driver stops, leaves the dead pane for
-inspection, and tells the coordinator once (`<slug>: escalated:
+role in one round, the driver stops, leaves any dead pane for
+inspection (a vanished session is not spawned again), and tells the coordinator once (`<slug>: escalated:
 <role> agent died again ...`, marker
 `state/respawn-capped-<role>-r<round>`). The cap re-arms when the
 role's round advances; delete the role's `respawn-<role>-r<round>-*`
@@ -593,7 +597,7 @@ Markers under `.spore/<slug>/state/`:
 - `order-exempt-files`: verdicts grandfathered from before the
   severity-order rule.
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
-  `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
+  `spawn-<role>.json`, `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).
 - `check-pass-<round>-<sha>`, `check-attempt-<round>-<sha>-<k>`,
   `check-failed-<round>-<sha>`: engineer check gate results
