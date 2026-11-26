@@ -28,7 +28,9 @@
 # state, source and .claude/rules writable. --files-only runs just
 # those against a scratch git repo with the rendered floor (pre mode,
 # sandbox off): the file tools never go through bwrap, so it also runs
-# from a sandboxed pane.
+# from a sandboxed pane. It then checks, from the sandbox runtime's
+# debug log, that the Edit deny rules put no bwrap mount in the way of
+# git (inside a sandboxed pane the git init itself reports SKIP).
 #
 # Safety: scratch HOME under /tmp (outside the sandbox's writable
 # $TMPDIR), fake API key, never the real ~/.claude, no tmux.
@@ -45,7 +47,7 @@ while [ $# -gt 0 ]; do
 	--gh-project) gh_project=$2; shift 2 ;;
 	--skip-go-test) go_test=0; shift ;;
 	--files-only) files_only=1; shift ;;
-	*) sed -n '2,34p' "$0" >&2; exit 2 ;;
+	*) sed -n '2,36p' "$0" >&2; exit 2 ;;
 	esac
 done
 case "$mode" in pre | post | none) ;; *) echo "bad --mode $mode" >&2; exit 2 ;; esac
@@ -89,10 +91,11 @@ start_stub() {
 # One scripted turn through a real claude pane: spec is the stub's JSON.
 # __ETC_PROFILE_DONE mirrors live panes: without it the sandbox's inner
 # bash re-sources /etc/profile and may lose socat (docs/sandbox.md).
+probe_env=()
 run_spec() { # run_spec <timeout> <spec json>
 	local spec
 	spec=$(python3 -I -c 'import base64,sys; print(base64.urlsafe_b64encode(sys.argv[1].encode()).decode())' "$2")
-	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 \
+	(cd "$wt" && env -i PATH="$(dirname "$spore"):$PATH" HOME="$home" TERM=xterm LANG=C.UTF-8 "${probe_env[@]}" \
 		__ETC_PROFILE_DONE=1 ANTHROPIC_API_KEY=sk-ant-sandbox-probe ANTHROPIC_BASE_URL="http://127.0.0.1:$port" \
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 \
 		timeout "$1" claude -p --dangerously-skip-permissions --model claude-haiku-5-5 \
@@ -155,6 +158,53 @@ file_checks() {
 	done
 }
 
+# The Edit deny rules feed the sandbox's denyWrite. Every "//**/" rule
+# must be dropped as a glob before bwrap (or git init breaks in every
+# pane), and every "~/" rule must place no bind (none lies under a
+# write root). Graded from the sandbox runtime's SRT_DEBUG log, which
+# is written before bwrap starts, so a nested sandbox that cannot
+# start (ENOSPC inside a sandboxed pane) still yields the verdict.
+sandbox_glob_checks() {
+	local out
+	python3 -I -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+m.pop("hooks", None)
+m["sandbox"]["enabled"] = True
+json.dump(m, open(sys.argv[2], "w"))' "$work/managed.json" "$work/sandboxed.json"
+	probe_env=(SRT_DEBUG=1 TMPDIR="${TMPDIR:-/tmp}")
+	out=$(settings=$work/sandboxed.json probe 120 0 'git init -q probe-init && echo GIT-INIT-OK')
+	probe_env=()
+	echo "--- bash sandbox: Edit deny rules"
+	if grep -q 'GIT-INIT-OK' <<<"$out"; then
+		report PASS "git init under the floor" "$out"
+	elif grep -q 'Creating new namespace failed' <<<"$out"; then
+		report SKIP "git init under the floor (nested bwrap cannot start; run outside a sandbox)" "$out"
+	else
+		report FAIL "git init under the floor" "$out"
+	fi
+	while IFS=$'\t' read -r verdict rule; do
+		report "$verdict" "$rule" "$out"
+	done < <(python3 -I -c '
+import json, os, sys
+deny = json.load(open(sys.argv[1]))["permissions"]["deny"]
+# A path with a Read deny as well is hidden by the read side instead.
+rules = [r[5:-1] for r in deny if r.startswith("Edit(") and "Read(" + r[5:] not in deny]
+log, home = sys.argv[2], sys.argv[3]
+for r in rules:
+    p = r[1:] if r.startswith("//") else home + r[1:] if r.startswith("~/") else None
+    if p is None:
+        continue
+    if p.endswith("/**"):
+        p = p[:-3]
+    if r.startswith("//"):
+        ok = ("Skipping glob write pattern on Linux: " + p) in log
+    else:
+        lines = [l for l in log.splitlines() if "Read deny" not in l and (l.endswith(" " + p) or (" " + p + ":") in l)]
+        ok = bool(lines) and all("read-only there" in l or "not within allowed paths" in l for l in lines)
+    print("%s\t%s" % ("PASS" if ok else "FAIL", "Edit(%s) %s" % (r, "skipped as a glob" if r.startswith("//") else "places no bind")))' "$work/managed.json" "$out" "$home")
+}
+
 if [ "$files_only" = 1 ]; then
 	wt=$work/proj
 	git init -q "$wt"
@@ -163,6 +213,7 @@ if [ "$files_only" = 1 ]; then
 	settings=$work/managed.json
 	start_stub
 	file_checks
+	sandbox_glob_checks
 	echo "--- $fails failing check(s), files only"
 	[ "$fails" -eq 0 ]
 	exit
