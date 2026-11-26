@@ -230,3 +230,62 @@ func TestGHPRThroughBroker(t *testing.T) {
 		t.Fatalf("token behind the broker: exit %d, stderr %q", code, errOut)
 	}
 }
+
+func TestGHPRBodyFileReadByClient(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "secret.env")
+	if err := os.WriteFile(outside, []byte("TOKEN=x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	root := ghTestProject(t)
+	gitOut(t, root, "init", "-q")
+	fakeBin(t, "gh", fakeGHScript)
+	if err := os.WriteFile(filepath.Join(root, "body.md"), []byte("from file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	tmpBody := filepath.Join(os.TempDir(), "b.md")
+	if err := os.WriteFile(tmpBody, []byte("from tmp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := func(name string) {
+		t.Helper()
+		for _, tc := range []struct {
+			args []string
+			want string
+		}{
+			{[]string{"pr", "create", "--draft", "--title", "t", "--body-file", "body.md"}, "body=from file"},
+			{[]string{"pr", "comment", "9", "--body-file=" + tmpBody}, "body=from tmp"},
+		} {
+			code, out, errOut := captureFn(t, func() int { return runGH(tc.args) })
+			if code != 0 || !strings.Contains(out, tc.want) || !strings.Contains(out, "body-file") || strings.Contains(out, "body.md") {
+				t.Errorf("%s %q: exit %d, stdout %q, stderr %q", name, tc.args, code, out, errOut)
+			}
+		}
+		for _, p := range []string{outside, "link.md", "missing.md"} {
+			code, out, _ := captureFn(t, func() int { return runGH([]string{"pr", "comment", "9", "--body-file", p}) })
+			if code == 0 || strings.Contains(out, "TOKEN") {
+				t.Errorf("%s: body file %s accepted: %q", name, p, out)
+			}
+		}
+	}
+	noBroker(t)
+	check("no broker")
+	startTestBroker(t, root)
+	check("broker")
+}
+
+func TestGHUnreadableKeyInSandboxExplains(t *testing.T) {
+	ghTestProject(t)
+	noBroker(t)
+	if code := runGH([]string{"config", "--set", "private_key=" + filepath.Join(t.TempDir(), "gone.pem")}); code != 0 {
+		t.Fatalf("config exit %d", code)
+	}
+	t.Setenv("SANDBOX_RUNTIME", "1")
+	code, _, errOut := captureFn(t, func() int { return runGH([]string{"pr", "view", "9"}) })
+	if code != 1 || !strings.Contains(errOut, "no redirect, pipe") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+}

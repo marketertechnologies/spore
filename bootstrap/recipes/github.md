@@ -81,12 +81,18 @@ own key.
 
 ```
 spore gh push <feature-branch>
-spore gh pr create --draft --base <base> --head <feature-branch> --title "..." --body-file - < body.md
+spore gh pr create --draft --base <base> --head <feature-branch> --title "..." --body-file body.md
 spore gh pr view <number>
-spore gh pr comment <number> --body-file - < comment.md
+spore gh pr comment <number> --body-file comment.md
 spore gh pr ready <number>
 spore gh api repos/<owner>/<repo>/pulls/<number>/comments
 ```
+
+`spore gh` reads `--body-file <path>` itself (the path must be in
+the cwd repo or `$TMPDIR`) and hands it to gh on stdin. Run each
+call as one command: Claude Code takes `spore gh` out of the sandbox
+only without a redirect, pipe or `cd ... &&` chain, and inside the
+sandbox it cannot read the App key on a host without the broker.
 
 `push` sends the local branch from the cwd repo (worktrees too) and
 sets its upstream; a rewritten branch needs

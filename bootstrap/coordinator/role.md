@@ -195,9 +195,13 @@ opens PRs.
   `spore gh pr <verb> ...` and `spore gh api <path> ...`, not with
   `spore gh exec` around git or gh. They work the same with or
   without the secrets broker; behind it they go through the broker
-  (`docs/secrets.md`). Pass PR bodies on stdin with
-  `--body-file -`. Never run `spore gh token` or put a token in a
-  command line: it lands in the transcript.
+  (`docs/secrets.md`). Write a PR body to a file in the worktree or
+  `$TMPDIR` and pass `--body-file <path>`. Run each `spore gh` call
+  as one command: a redirect (`< body.md`), a pipe or a
+  `cd ... &&` chain keeps it in the sandbox, where it cannot read
+  the App key on a host without the broker. Never run
+  `spore gh token` or put a token in a command line: it lands in
+  the transcript.
 - Open PRs as drafts (`spore gh pr create --draft ...`); mark one
   ready with `spore gh pr ready <n>` once its reviewers approve. The
   operator merges. A rewritten branch goes up with

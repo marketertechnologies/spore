@@ -31,8 +31,11 @@ Usage:
 
 Subcommands:
   pr       Run gh pr <verb> as the app (create --draft, view, list,
-           comment, edit, ready). Pass a body on stdin with
-           --body-file -.
+           comment, edit, ready). --body-file <path> (api: --input
+           <path>) is read here, from the cwd repo or $TMPDIR only,
+           and fed to gh on stdin. In an agent pane, run each call
+           with no redirect, pipe or cd chain: those keep it in the
+           sandbox, where the App key is unreadable.
   api      Run gh api <path> as the app.
   push     Push the local branch from the cwd repo (worktrees too) to
            origin as the app and set its upstream. A rewritten branch
@@ -185,6 +188,16 @@ func runGHExec(args []string) (int, error) {
 	if secrets.Available() {
 		return 0, errBrokered
 	}
+	return runAsApp(args, os.Stdin)
+}
+
+// errSandboxedKey explains the usual cause of an unreadable App key in
+// an agent pane: Claude Code takes `spore gh` out of the sandbox only
+// when the call has no redirect, pipe or chain.
+const errSandboxedKey = "this spore gh call ran inside the Claude Code sandbox, which cannot read the App key: run it as one command with no redirect, pipe or `cd ... &&` (pass a body with --body-file <path>)"
+
+// runAsApp runs args with the App token injected, stdin from stdin.
+func runAsApp(args []string, stdin io.Reader) (int, error) {
 	if out, err := exec.Command("git", "config", "--get", "remote.origin.url").Output(); err == nil {
 		if err := ghapp.CheckHTTPSRemote(strings.TrimSpace(string(out))); err != nil {
 			return 0, err
@@ -196,12 +209,15 @@ func runGHExec(args []string) (int, error) {
 	}
 	tok, err := ghapp.ProjectToken(context.Background(), root)
 	if err != nil {
+		if os.Getenv("SANDBOX_RUNTIME") == "1" {
+			return 0, fmt.Errorf("%w\n%s", err, errSandboxedKey)
+		}
 		return 0, err
 	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = ghapp.Env(os.Environ(), tok.Token)
 	var out bytes.Buffer
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, os.Stdout, os.Stderr
 	if isPRCreate(args) {
 		cmd.Stdout = io.MultiWriter(os.Stdout, &out)
 	}
@@ -224,17 +240,24 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 	if len(args) == 0 {
 		return 2, fmt.Errorf("usage: spore gh %s <%s> [args...]", sub, map[string]string{"pr": "verb", "api": "path"}[sub])
 	}
-	ghArgs := append([]string{sub}, args...)
-	if !secrets.Available() {
-		return runGHExec(append([]string{"gh"}, ghArgs...))
+	ghArgs, body, err := inlineBodyFile(append([]string{sub}, args...))
+	if err != nil {
+		return 2, err
 	}
-	stdin := ""
-	if readsStdin(ghArgs) {
-		b, err := io.ReadAll(io.LimitReader(os.Stdin, 4<<20+1))
+	if !secrets.Available() {
+		var in io.Reader = os.Stdin
+		if body != nil {
+			in = bytes.NewReader(body)
+		}
+		return runAsApp(append([]string{"gh"}, ghArgs...), in)
+	}
+	stdin := string(body)
+	if body == nil && readsStdin(ghArgs) {
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxGHBody+1))
 		if err != nil {
 			return 0, err
 		}
-		if len(b) > 4<<20 {
+		if len(b) > maxGHBody {
 			return 0, fmt.Errorf("stdin over 4 MiB")
 		}
 		stdin = string(b)
@@ -256,6 +279,84 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 		}
 	}
 	return resp.Exit, nil
+}
+
+const maxGHBody = 4 << 20
+
+// inlineBodyFile reads a `--body-file <path>` (pr -F <path>, api
+// --input <path>) here and rewrites it to `-`, returning the contents
+// to feed gh on stdin. A redirect would keep the call in the sandbox,
+// and the broker lets gh read only stdin. spore gh runs unsandboxed,
+// so the path must resolve inside the cwd repo or $TMPDIR.
+func inlineBodyFile(args []string) ([]string, []byte, error) {
+	out := append([]string(nil), args...)
+	var body []byte
+	for i := 1; i < len(out); i++ {
+		name, path, inline := strings.Cut(out[i], "=")
+		switch {
+		case name == "--body-file" || name == "--input" || (name == "-F" && !inline && out[0] == "pr"):
+		default:
+			continue
+		}
+		if !inline {
+			if i+1 >= len(out) {
+				break
+			}
+			i++
+			path = out[i]
+		}
+		if path == "-" {
+			continue
+		}
+		if body != nil {
+			return nil, nil, fmt.Errorf("more than one body file")
+		}
+		b, err := readBodyFile(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		body = b
+		if inline {
+			out[i] = name + "=-"
+		} else {
+			out[i] = "-"
+		}
+	}
+	return out, body, nil
+}
+
+func readBodyFile(path string) ([]byte, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, fmt.Errorf("body file: %w", err)
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		return nil, err
+	}
+	var roots []string
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		roots = append(roots, strings.TrimSpace(string(out)))
+	}
+	roots = append(roots, os.TempDir())
+	ok := false
+	for _, r := range roots {
+		if rr, err := filepath.EvalSymlinks(r); err == nil {
+			if rel, err := filepath.Rel(rr, real); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		return nil, fmt.Errorf("body file %s: must be inside the repo or $TMPDIR", path)
+	}
+	fi, err := os.Stat(real)
+	if err != nil {
+		return nil, fmt.Errorf("body file: %w", err)
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > maxGHBody {
+		return nil, fmt.Errorf("body file %s: want a regular file up to 4 MiB", path)
+	}
+	return os.ReadFile(real)
 }
 
 // readsStdin reports whether gh args take a body from stdin, the only

@@ -191,8 +191,11 @@ flow was turned on keep their old identity until respawned.
   host with the secrets broker they go through it and its allowlist
   (`docs/secrets.md`); elsewhere they run like `spore gh exec`
   around `git push -u origin <branch>` or `gh`. Push never
-  force-pushes without a lease. Pass PR bodies on stdin with
-  `--body-file -`.
+  force-pushes without a lease. `--body-file <path>` (or `--input
+  <path>` for `api`) is read by spore itself, from the cwd repo or
+  `$TMPDIR` only, and fed to gh on stdin. Run each call as one
+  command: a redirect, pipe or `cd ... &&` chain keeps it in the
+  sandbox, where it cannot read the App key without the broker.
 - `spore gh token` prints an installation token, for humans only:
   run from an agent pane, the token lands in the transcript. Agents
   use `spore gh pr|api|push`. Tokens are cached in
