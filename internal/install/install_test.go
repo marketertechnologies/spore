@@ -192,7 +192,7 @@ func TestInstallFillsCodexSkillDir(t *testing.T) {
 	if _, err := install.Install(root, spore.BundledSkills, "bootstrap/skills", install.Options{}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	for _, name := range []string{"spore-bootstrap", "diagram", "select-agent"} {
+	for _, name := range []string{"spore-bootstrap", "diagram", "select-agent", "secrets-profile"} {
 		claude, err := os.ReadFile(filepath.Join(root, ".claude", "skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatal(err)
@@ -216,7 +216,7 @@ func TestInstallDirWritesFlatTree(t *testing.T) {
 	if _, err := install.InstallDir(dest, spore.BundledSkills, "bootstrap/skills"); err != nil {
 		t.Fatalf("InstallDir: %v", err)
 	}
-	for _, name := range []string{"diagram", "select-agent", "spore-bootstrap"} {
+	for _, name := range []string{"diagram", "select-agent", "spore-bootstrap", "secrets-profile"} {
 		if _, err := os.Stat(filepath.Join(dest, name, "SKILL.md")); err != nil {
 			t.Errorf("missing %s/SKILL.md: %v", name, err)
 		}

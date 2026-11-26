@@ -25,6 +25,8 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	_ = os.Unsetenv("TMUX")
+	// Tests that want a broker start their own; the host's must stay unreachable.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	// A coordinator swap must not fall back to the host's launcher.
 	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	_ = os.Unsetenv("TMUX_PANE")
