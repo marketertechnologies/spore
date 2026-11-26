@@ -129,6 +129,9 @@
       "Edit(~/.gitconfig)",
       "Edit(~/.config/git/**)",
       "Edit(~/.config/systemd/user/**)",
+      "Edit(~/.config/environment.d/**)",
+      "Edit(~/.huskyrc)",
+      "Edit(~/.config/husky/**)",
       "Edit(~/.local/bin/**)",
       "Edit(~/.ssh/**)",
       "Edit(~/.config/spore/**)"
