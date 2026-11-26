@@ -43,6 +43,46 @@ var defaultDeny = []string{
 	"Bash(git push * +*)",
 }
 
+// execVectorDeny keeps the file tools (an Edit rule also covers Write
+// and NotebookEdit) off files an unsandboxed process later runs: the
+// Bash sandbox does not wrap them, and agents run with
+// --dangerously-skip-permissions. "//" is the filesystem root, so
+// "//**/" matches at any depth; a bare "**/" only matches under the
+// cwd, and a leading "/" in a managed file has no documented anchor.
+// On Linux the sandbox drops write globs, so the "//**/" rules never
+// reach bwrap and cannot break git init in $TMPDIR. The "~/" rules do
+// reach it, but every one lies outside the sandbox's write roots.
+// ~/.claude/skills and the memory dirs stay writable on purpose.
+var execVectorDeny = []string{
+	"Edit(//**/.git)",
+	"Edit(//**/.git/**)",
+	"Edit(//**/*.git/hooks/**)",
+	"Edit(//**/*.git/config)",
+	"Edit(//**/.envrc)",
+	"Edit(//**/.mcp.json)",
+	"Edit(//**/.claude/settings*.json)",
+	"Edit(//**/.claude/hooks/**)",
+	"Edit(~/.claude.json)",
+	"Edit(~/.claude/plugins/**)",
+	"Edit(~/.bashrc)",
+	"Edit(~/.bash_profile)",
+	"Edit(~/.bash_login)",
+	"Edit(~/.profile)",
+	"Edit(~/.zshrc)",
+	"Edit(~/.zshenv)",
+	"Edit(~/.zprofile)",
+	"Edit(~/.zlogin)",
+	"Edit(~/.tmux.conf)",
+	"Edit(~/.config/tmux/**)",
+	"Edit(~/.config/direnv/**)",
+	"Edit(~/.gitconfig)",
+	"Edit(~/.config/git/**)",
+	"Edit(~/.config/systemd/user/**)",
+	"Edit(~/.local/bin/**)",
+	"Edit(~/.ssh/**)",
+	"Edit(~/.config/spore/**)",
+}
+
 // DefaultDeny returns the kernel rules plus the guardrail set, in the
 // order Settings emits them.
 func DefaultDeny() []string {
@@ -112,6 +152,7 @@ func (p Permissions) DenyRules() []string {
 	add(kernelDeny)
 	if p.DefaultDeny {
 		add(defaultDeny)
+		add(execVectorDeny)
 	}
 	add(p.Deny)
 	return out

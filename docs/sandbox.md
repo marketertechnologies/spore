@@ -62,6 +62,23 @@ Behaviour under `--dangerously-skip-permissions`, all observed in real runs:
 - **Deny rules resolve simple variables.** `d=$HOME/.config/spore/x; cp "$d/secrets.env" k` is denied by `Read(~/.config/spore/**/secrets.env)` before it runs, so the probe builds paths inside Python to reach the sandbox layer.
 - **Only Bash is sandboxed.** The Read, Edit and Write tools, MCP servers and hooks run outside the sandbox. `permissions.deny` still covers the tools.
 
+## File tools versus the Bash sandbox
+
+The sandbox wraps Bash only. Read, Write, Edit and NotebookEdit run in the Claude Code process and obey `permissions.deny` alone, so under `--dangerously-skip-permissions` they can write anywhere the agent's uid can. Secrets stay safe (the broker keeps them under another uid), but a written file that an unsandboxed process runs later is code execution outside the sandbox. Since 0.64.0 the managed floor carries `Edit(...)` deny rules for those files (`execVectorDeny` in `internal/hooks/permissions.go`; an Edit rule also covers Write and NotebookEdit):
+
+- Any depth on disk (`//**/`): a `.git` directory or worktree pointer file and everything under it, a bare repo's `*.git/hooks/**` and `*.git/config`, `.envrc`, `.mcp.json`, `.claude/settings*.json`, `.claude/hooks/**`. These also cover `~/.claude/settings*.json` and `~/.claude/hooks/**`.
+- Home: `~/.claude.json`, `~/.claude/plugins/**`, the bash and zsh startup files, `~/.tmux.conf`, `~/.config/tmux/**`, `~/.config/direnv/**`, `~/.gitconfig`, `~/.config/git/**`, `~/.config/systemd/user/**`, `~/.local/bin/**`, `~/.ssh/**`, `~/.config/spore/**`.
+
+Still writable by the tools: the project tree apart from the files above (`.claude/rules/` included), `~/.claude/projects/*/memory/**`, `~/.claude/skills/**`, `~/.local/state/spore/**` and `$TMPDIR`. `spore compose`, `spore install`, `spore hooks settings`, `spore sandbox prepare` and `spore infect` write their `.claude/` and `.git/info/` files from Go, not through the tools, so they are unaffected. Edit a project's `.claude/settings.json` or `.envrc` by hand, or ask the operator.
+
+Rule syntax: `//` is the filesystem root and `~/` the home directory. A bare `**/x` only matches under the session's cwd, and a leading `/` in a managed file has no documented anchor, so the floor never uses either.
+
+How the rules meet Bash:
+
+- Claude Code also applies Edit deny rules to Bash file commands and redirects it recognizes, so `echo x >> .git/info/exclude`, `cp f .git/hooks/pre-commit`, `echo x >> ~/.bashrc` and `rm -rf repo/.git` are denied before they run. `git init`, `git commit`, `git config`, `git clone`, `git worktree add` and `rm -rf <repo>` are not file commands on those paths and keep working (probed 2026-11-26).
+- Edit deny rules feed the sandbox's `denyWrite`, but on Linux the sandbox runtime drops a write path that is still a glob once a trailing `/**` is stripped (`Skipping glob write pattern on Linux`, present in Claude Code 2.1.329). The `//**/` rules therefore never reach bwrap, and `git init` in `$TMPDIR` is unaffected. The `~/` rules do reach it, but none lies under a sandbox write root (the worktree, `$TMPDIR`, `~/.cache`, `~/go`, `~/.local/state/spore`), so they change nothing for Bash.
+- Codex does not read Claude Code's `permissions.deny`, and spore renders no file-path rules into the Codex config (`internal/hooks/codexconfig.go` carries hooks only). Spore launches Codex without sandbox flags, so what its file edits can reach is whatever the host's Codex config sets. Treat Codex panes as keeping this gap.
+
 ## Residual gaps (phase 2)
 
 - The tmux server is reachable through its unix socket, and `tmux new-window <cmd>` runs `<cmd>` outside the sandbox. Coordinators need tmux, so phase 1 accepts this.
@@ -101,6 +118,7 @@ Opting a project out (`enabled = false`) restores the old behaviour while its wo
 - `--mode pre` merges the host's installed drop-in, so until a release without `~/.npmrc` in `denyRead` is deployed, the `cat ~/.npmrc` check fails in `pre`.
 - On 2026-11-25, `--mode pre --gh-project <spore checkout>` passed all 14 checks, `go test ./...` of this repo inside the sandbox included.
 - `--gh-project ROOT` adds the `spore gh exec -- git push --dry-run` check with a real App token; the token cache stays in the scratch dir, which is deleted.
+- File-tool checks (every mode): the stub scripts Read then Write or Edit, and the verdict is the file on disk. Write and Edit must be denied for the scratch repo's `.git/hooks/pre-commit` and `.git/config` and for `~/.bashrc` (the scratch `HOME`'s), and allowed for a memory file, a file under `~/.local/state/spore`, a project source file and `.claude/rules/x.md`. `--files-only` runs just these against a scratch `git init` repo with the rendered floor and the sandbox off. The file tools never enter bwrap, so it also runs from a sandboxed pane. On 2026-11-26 the 0.64.0 floor passed all 14 checks and the 0.62.2 floor failed the 6 deny checks.
 
 Containment checks (secrets must not leak, the victim file must survive, the request must not get a 2xx/3xx): `cat` of `secrets.env`, copy then read of `secrets.env`, Python reading `secrets.env`, Python reading Claude's credentials, Python reading the GitHub token cache, an SSH key, `dangerouslyDisableSandbox`, `spore gh exec` around a shell, `rm -rf` outside the worktree, `curl` to a non-allowed domain. Must-work checks: `curl` to an allowed domain, `cat ~/.npmrc` (a non-secret one), `git commit` in a worktree, `nix develop -c true`, `nix develop -c go test ./...`, `spore gh exec -- git push --dry-run`.
 
