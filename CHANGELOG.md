@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Engineer-check lock test race (0.59.1): `waitOnHeldLock` waits until the run under test reports it found the lock held, instead of sleeping three poll intervals, so `TestEngineerCheckWaiterShowsHolderAttempt` no longer fails under full-suite load. Test-only behavior; no consumer impact.
 - Morning report and doctor (0.59.0). See `docs/report.md` and `docs/doctor.md`.
   - **Events ledger.** Each project gets an append-only `<state dir>/spore/<project>/events.jsonl` (rotates to `.1` past 1 MiB). Spore records task start/pause/block/done, worker spawn/respawn/crash-loop cap, coordinator spawn/respawn/crash-loop cap, role-pane respawns and caps, role-loop phase changes and verdicts, `StopFailure` alerts (error kind and reset time only), reconcile passes skipped (lock held, fleet disabled, budget; once per hour per reason) or failed, and PRs opened (role-loop PR mirror and `spore gh exec -- gh pr create`). No prompt text or model output; details are scrubbed for token shapes.
   - **`spore report [--since 12h] [--project <name>|--all] [--full]`.** One-screen digest of the ledger plus live state: tasks by status, done and started, PRs opened, an attention block (escalations, blocked tasks, coordinator down, crash loops, alerts, failed or skipped passes), what is running. `--full` lists every event.

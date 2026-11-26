@@ -233,6 +233,10 @@ var checkLockPoll = 200 * time.Millisecond
 
 var errCheckLockTimeout = errors.New("check lock held past the wait")
 
+// onCheckLockBusy, when set, runs once per lockCheckRun call the first
+// time the lock is found held. Tests use it to know a run is waiting.
+var onCheckLockBusy func()
+
 // lockCheckRun takes an exclusive flock on path, waiting up to wait
 // for a concurrent holder, and stamps the file with its own start
 // time. holderStart is the start time the holder stamped when this
@@ -258,6 +262,9 @@ func lockCheckRun(path string, wait time.Duration) (unlock func(), holderStart t
 		}
 		if holderStart.IsZero() {
 			holderStart = readLockStamp(path)
+			if onCheckLockBusy != nil {
+				onCheckLockBusy()
+			}
 		}
 		if !time.Now().Before(deadline) {
 			_ = f.Close()
