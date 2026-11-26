@@ -87,7 +87,7 @@ as MCP server keys or git-push tokens. It wires them through systemd
 
 With `services.spore-fleet.enable`, home-manager links each skill the
 spore binary embeds (`bootstrap/skills/`: diagram, select-agent,
-spore-bootstrap) into the operator user's scopes, refreshed on every
+spore-bootstrap, secrets-profile) into the operator user's scopes, refreshed on every
 rebuild:
 
 - `~/.claude/skills/<name>`: Claude Code personal scope.
