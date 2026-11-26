@@ -93,10 +93,11 @@ func deny(reason string) Response {
 var sporeGH = regexp.MustCompile(`\bspore[[:space:]]+gh\b([^;|&\n]*)`)
 
 // ghOutsideSandbox vets `spore gh`, which the sandbox excludes so it
-// can read the GitHub App key: an agent may run `spore gh exec` around
-// git or gh, and read-only `spore gh config`. Anything else behind it
-// would run unsandboxed (exec of another program), print the token, or
-// repoint the key (config --set). Returns the deny reason, or "".
+// can read the GitHub App key: an agent may run `spore gh pr|api|push`,
+// `spore gh exec` around git or gh, and read-only `spore gh config`.
+// Anything else behind it would run unsandboxed (exec of another
+// program), print the token, or repoint the key (config --set).
+// Returns the deny reason, or "".
 func ghOutsideSandbox(cmd string) string {
 	for _, m := range sporeGH.FindAllStringSubmatch(cmd, -1) {
 		args := strings.Fields(m[1])
@@ -114,15 +115,15 @@ func ghOutsideSandbox(cmd string) string {
 				prog = filepath.Base(strings.Trim(args[0], `"'`))
 			}
 			if prog != "git" && prog != "gh" {
-				return "spore gh exec runs outside the Claude Code sandbox with the GitHub App token: wrap only git or gh (spore gh exec -- git push ..., spore gh exec -- gh api ...)"
+				return "spore gh exec runs outside the Claude Code sandbox with the GitHub App token: wrap only git or gh, or use spore gh pr|api|push"
 			}
 		case "config":
 			if strings.Contains(m[1], "--set") {
 				return "spore gh config --set changes the GitHub App setup: ask the operator to run it"
 			}
-		case "", "help", "-h", "--help":
+		case "pr", "api", "push", "", "help", "-h", "--help":
 		default:
-			return "spore gh " + sub + " runs outside the Claude Code sandbox: use spore gh exec -- gh api ... instead of handling the token"
+			return "spore gh " + sub + " runs outside the Claude Code sandbox: use spore gh pr|api|push instead of handling the token"
 		}
 	}
 	return ""

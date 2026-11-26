@@ -132,3 +132,46 @@ func Fetch(project, dir, branch string, timeout time.Duration) error {
 	}
 	return nil
 }
+
+// GHRaw runs one gh call through the broker and returns its response
+// unchanged (stdout, stderr and exit), for callers that relay gh's own
+// output. A refusal is a *BrokerError.
+func GHRaw(project, stdin string, args []string, timeout time.Duration) (Response, error) {
+	resp, _, err := Call(Request{Op: OpGH, Project: project, Args: args, Stdin: stdin}, nil, timeout)
+	return resp, err
+}
+
+// ResolvePush checks branch and lease for a push of the local branch
+// in the repo at dir and returns the branch tip and the lease as full
+// commit ids. A branch spelled as a force refspec (+x) or an option is
+// refused; a rewrite must name the commit it replaces.
+func ResolvePush(dir, branch, lease string) (sha, leaseSHA string, err error) {
+	if branch == "" || strings.HasPrefix(branch, "+") || strings.HasPrefix(branch, "-") || strings.Contains(branch, ":") {
+		return "", "", fmt.Errorf("bad branch %q: name a local branch (no +, leading -, or refspec)", branch)
+	}
+	if err := exec.Command("git", "check-ref-format", "--branch", branch).Run(); err != nil {
+		return "", "", fmt.Errorf("bad branch %q: not a valid branch name", branch)
+	}
+	rev := func(r string) (string, error) {
+		out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", r+"^{commit}").Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	if sha, err = rev("refs/heads/" + branch); err != nil {
+		return "", "", fmt.Errorf("no local branch %q in %s", branch, dir)
+	}
+	if lease != "" {
+		if strings.HasPrefix(lease, "-") {
+			return "", "", fmt.Errorf("--force-with-lease %q: want a commit", lease)
+		}
+		if leaseSHA, err = rev(lease); err != nil {
+			if !shaRE.MatchString(lease) {
+				return "", "", fmt.Errorf("--force-with-lease %q: not a commit in %s; pass the full sha origin's branch is at", lease, dir)
+			}
+			leaseSHA = lease
+		}
+	}
+	return sha, leaseSHA, nil
+}
