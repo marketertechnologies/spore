@@ -4,7 +4,7 @@ With `pr_flow = "draft"`, the role loop runs on a visible draft PR. A
 GitHub App pushes the task branch, opens the PR, and posts every
 round; the operator gives the only approval and merges. Design and
 locked decisions: `docs/todo/github-app-pr-flow.md`. For ad-hoc use
-from a coordinator (detect, `spore gh exec`, App vs personal token),
+from a coordinator (detect, `spore gh pr|api|push`, App vs personal token),
 see `spore recipes show github`. On a host running the secrets broker the App key lives with the broker and the mirror pushes through it; see `docs/secrets.md`.
 
 ## What happens
@@ -184,9 +184,18 @@ flow was turned on keep their old identity until respawned.
 
 ## `spore gh`
 
+- `spore gh push <branch> [--force-with-lease=<sha>]`,
+  `spore gh pr <verb> [args...]` and `spore gh api <path> [args...]`
+  are what agents use: push the local branch from the cwd repo
+  (worktrees included) and run `gh pr` / `gh api` as the app. On a
+  host with the secrets broker they go through it and its allowlist
+  (`docs/secrets.md`); elsewhere they run like `spore gh exec`
+  around `git push -u origin <branch>` or `gh`. Push never
+  force-pushes without a lease. Pass PR bodies on stdin with
+  `--body-file -`.
 - `spore gh token` prints an installation token, for humans only:
   run from an agent pane, the token lands in the transcript. Agents
-  use `spore gh exec`. Tokens are cached in
+  use `spore gh pr|api|push`. Tokens are cached in
   `$XDG_STATE_HOME/spore/<project>/github-token.json` (0600) until 5
   minutes before expiry; changing `app_id` or `installation_id`
   invalidates the cache.
