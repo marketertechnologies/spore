@@ -43,7 +43,7 @@ func TestGraphQLAllowsSporeQueries(t *testing.T) {
 		{"reflowed with comment", prArgs(reflowed, "owner=acme", "name=alpha", "number=7"), ""},
 		{"repo case differs", prArgs(PRActivityQuery, "owner=Acme", "name=Alpha", "number=7"), ""},
 		{"input stdin", []string{"api", "graphql", "--input", "-"}, gqlBody(t, PRActivityQuery, repoVars)},
-		{"input= stdin", []string{"api", "graphql", "--input=-", "--jq", ".data"}, gqlBody(t, PRActivityQuery, repoVars)},
+		{"input= stdin", []string{"api", "graphql", "--input=-"}, gqlBody(t, PRActivityQuery, repoVars)},
 	}
 	for _, c := range cases {
 		if err := checkGHArgs(c.args, c.stdin, gqlRepo); err != nil {

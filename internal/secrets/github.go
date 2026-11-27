@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,42 @@ func (s *Server) githubEnv(ctx context.Context, project, repo, home string) ([]s
 	return ghapp.Env(base, tok), nil
 }
 
+// ghCallEnv is the environment for a brokered gh call. The token goes
+// in a hosts.yml under home (a 0700 MkdirTemp dir), not in GH_TOKEN, so
+// nothing gh evaluates can read it back through the environment.
+func (s *Server) ghCallEnv(ctx context.Context, project, repo, home string) ([]string, error) {
+	tok, err := s.token(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	host, _, _ := strings.Cut(repo, "/")
+	dir := filepath.Join(home, "gh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return nil, err
+	}
+	// version "1" marks the config as migrated; without it gh would try
+	// to move the token into a keyring.
+	cfg := "version: \"1\"\n"
+	if s.ghSocket != "" {
+		cfg += "http_unix_socket: " + strconv.Quote(s.ghSocket) + "\n"
+	}
+	h, t := strconv.Quote(host), strconv.Quote(tok)
+	hosts := h + ":\n    users:\n        x-access-token:\n            oauth_token: " + t +
+		"\n    oauth_token: " + t + "\n    user: x-access-token\n    git_protocol: https\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yml"), []byte(cfg), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hosts), 0o600); err != nil {
+		return nil, err
+	}
+	return []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "LANG=C.UTF-8",
+		"GH_CONFIG_DIR=" + dir, "GH_REPO=" + repo,
+		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}, nil
+}
+
 func (s *Server) gh(c Caller, req Request) Response {
 	repo, err := s.githubProject(c, req)
 	if err != nil {
@@ -114,7 +151,7 @@ func (s *Server) gh(c Caller, req Request) Response {
 	defer os.RemoveAll(home)
 	ctx, cancel := context.WithTimeout(context.Background(), githubTimeout)
 	defer cancel()
-	env, err := s.githubEnv(ctx, req.Project, repo, home)
+	env, err := s.ghCallEnv(ctx, req.Project, repo, home)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -141,9 +178,12 @@ func (s *Server) gh(c Caller, req Request) Response {
 
 // ghFlags are the gh flags the mirror uses, and whether each takes a
 // value. Anything else is refused, so a caller cannot point gh at a
-// file (`-F x=@path`, `--input path`) or another repo (`--repo`).
+// file (`-F x=@path`, `--input path`) or another repo (`--repo`). Never
+// add a flag that evaluates a caller expression (`--jq`/`-q`,
+// `--template`/`-t`): it runs inside the token-holding gh process.
+// Callers filter the JSON themselves.
 var ghFlags = map[string]bool{
-	"--head": true, "--state": true, "--json": true, "--limit": true, "--jq": true,
+	"--head": true, "--state": true, "--json": true, "--limit": true,
 	"--undo": false, "--add-assignee": true, "--assignee": true, "--title": true,
 	"--body": true, "--body-file": true, "--draft": false, "--base": true,
 	"--method": true, "-X": true, "--input": true, "--paginate": false,

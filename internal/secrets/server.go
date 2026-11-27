@@ -37,9 +37,10 @@ type Server struct {
 	gitMu  map[string]*sync.Mutex
 
 	// mint and remote replace the App token and the https remote in
-	// tests.
-	mint   func(ctx context.Context, project string) (string, error)
-	remote func(repo string) string
+	// tests; ghSocket points brokered gh calls at a stub API.
+	mint     func(ctx context.Context, project string) (string, error)
+	remote   func(repo string) string
+	ghSocket string
 }
 
 // NewServer prepares a broker for cfg. The agent user and pilot group

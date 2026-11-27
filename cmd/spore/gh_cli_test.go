@@ -23,7 +23,10 @@ func fakeBin(t *testing.T, name, body string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-const fakeGHScript = `echo "gh $* token=${GH_TOKEN:-none}"
+// The broker hands gh its token in hosts.yml, not GH_TOKEN; hosts= shows
+// the file's token.
+const fakeGHScript = `hosts=$(sed -n 's/^    oauth_token: "\(.*\)"$/\1/p' "$GH_CONFIG_DIR/hosts.yml" 2>/dev/null)
+echo "gh $* token=${GH_TOKEN:-none} hosts=${hosts:-none}"
 if [ "$1 $2" = "pr create" ]; then echo https://github.com/acme/proj/pull/9; fi
 case "$*" in *body-file*) echo "body=$(cat)";; esac
 `
@@ -229,7 +232,7 @@ func TestGHPRThroughBroker(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	for _, want := range []string{"gh pr create --draft --title t --body-file - token=ghs_cli", "body=hello", "/pull/9"} {
+	for _, want := range []string{"gh pr create --draft --title t --body-file - token=none hosts=ghs_cli", "body=hello", "/pull/9"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout %q lacks %q", out, want)
 		}
