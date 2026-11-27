@@ -147,6 +147,10 @@ type Hit struct {
 	Where string `json:"where"`
 	Class string `json:"class"`
 	Count int    `json:"count"`
+	// Cmd is the call's verb or API path as the ledger logs it,
+	// redacted by the redactor that found the hit, since a caller
+	// behind the broker cannot redact it itself.
+	Cmd string `json:"cmd,omitempty"`
 }
 
 // String returns s with every secret replaced by [redacted], or
@@ -400,20 +404,34 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 		stdin = r.scrub(stdin, counts)
 	}
 	note("stdin", counts)
+	cmd := r.scrub(LogCmd(args), nil)
+	for i := range hits {
+		hits[i].Cmd = cmd
+	}
 	return stdin, args, hits
+}
+
+// LogCmd is the gh call's verb or API path as a ledger event names it:
+// a flag in second place (gh takes flags before the verb or path, and
+// one may carry the secret) is dropped, as is a path's query string.
+func LogCmd(args []string) string {
+	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		return strings.Join(args[:min(1, len(args))], " ")
+	}
+	path, _, _ := strings.Cut(args[1], "?")
+	return args[0] + " " + path
 }
 
 // Record appends one redaction event per hit to the ledger of the
 // project at projectRoot. via names the path that posted ("mirror",
-// "spore-gh"); the event carries the gh call's verb, never its text.
-// gh takes flags before the verb or api path, so a flag in second
-// place (which may carry the secret) is not logged as the verb.
+// "spore-gh"); the event carries the gh call's verb (the hit's
+// redacted Cmd, else LogCmd of args), never its text.
 func Record(projectRoot, slug, via string, args []string, hits []Hit) {
-	cmd := strings.Join(args[:min(2, len(args))], " ")
-	if len(args) > 1 && strings.HasPrefix(args[1], "-") {
-		cmd = args[0]
-	}
 	for _, h := range hits {
+		cmd := h.Cmd
+		if cmd == "" {
+			cmd = LogCmd(args)
+		}
 		task.RecordEvent(projectRoot, events.Event{
 			Kind: events.Redaction, Slug: slug, Detail: cmd + " " + h.Where,
 			Fields: map[string]string{"class": h.Class, "where": h.Where, "count": strconv.Itoa(h.Count), "via": via, "cmd": cmd},

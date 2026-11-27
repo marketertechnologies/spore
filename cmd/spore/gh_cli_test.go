@@ -572,3 +572,30 @@ func TestGHRedactsRefsAndKeysThroughBroker(t *testing.T) {
 		}
 	}
 }
+
+// TestGHRedactionEventCmdOmitsPathSecret: the API path is not posted
+// text and goes to gh as-is, but the ledger's cmd never carries a
+// secret from it.
+func TestGHRedactionEventCmdOmitsPathSecret(t *testing.T) {
+	root := ghTestProject(t)
+	noBroker(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	ghSecretsEnv(t, filepath.Join(cfg, "spore"))
+	fakeBin(t, "gh", ghEchoScript)
+	for _, path := range []string{"repos/acme/proj/issues?q=" + ghCanary, "repos/acme/proj/issues/" + ghCanary + "/comments"} {
+		withStdin(t, "")
+		before := len(ghRedactionEvents(t, root))
+		if code, _, errOut := captureFn(t, func() int { return runGH([]string{"api", path, "-f", "body=" + ghCanary}) }); code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		evs := ghRedactionEvents(t, root)[before:]
+		if len(evs) != 1 {
+			t.Fatalf("%s: new redaction events = %+v", path, evs)
+		}
+		if raw, _ := json.Marshal(evs[0]); strings.Contains(string(raw), ghCanary) {
+			t.Errorf("event carries the secret: %s", raw)
+		}
+	}
+}

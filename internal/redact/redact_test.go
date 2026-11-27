@@ -195,6 +195,7 @@ func TestGHCallEveryFlagForm(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, got, hits := r.GHCall("", tc.args)
+			hits = noCmd(hits)
 			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
 				t.Fatalf("args:\n got %q\nwant %q", got, tc.want)
 			}
@@ -241,10 +242,11 @@ func TestGHCallStdin(t *testing.T) {
 	for _, input := range [][]string{{"--input", "-"}, {"--input=-"}} {
 		args := append([]string{"api", "repos/o/r/pulls/3/reviews", "--method", "POST"}, input...)
 		out, _, hits := r.GHCall(doc, args)
+		hits = noCmd(hits)
 		if strings.Contains(out, escaped) || strings.Contains(out, "ghs_") || !strings.Contains(out, "[redacted:DB_PASS]") {
 			t.Errorf("%q: stdin = %q", input, out)
 		}
-		want := []Hit{{"stdin", ClassSecretsEnv, 1}, {"stdin", ClassToken, 1}}
+		want := []Hit{{Where: "stdin", Class: ClassSecretsEnv, Count: 1}, {Where: "stdin", Class: ClassToken, Count: 1}}
 		if len(hits) != 2 || hits[0] != want[0] || hits[1] != want[1] {
 			t.Errorf("%q: hits = %+v, want %+v", input, hits, want)
 		}
@@ -278,6 +280,7 @@ func TestGHCallRefKeysGetShapes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, got, hits := r.GHCall("", tc.args)
+			hits = noCmd(hits)
 			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
 				t.Fatalf("args:\n got %q\nwant %q", got, tc.want)
 			}
@@ -307,16 +310,17 @@ func TestGHCallFieldKeys(t *testing.T) {
 		want string
 		hits []Hit
 	}{
-		{"secrets.env key", canary + "=v", red + "=v", []Hit{{"field " + red + " key", ClassSecretsEnv, 1}}},
-		{"token key", tok + "=v", Mark + "=v", []Hit{{"field " + Mark + " key", ClassToken, 1}}},
+		{"secrets.env key", canary + "=v", red + "=v", []Hit{{Where: "field " + red + " key", Class: ClassSecretsEnv, Count: 1}}},
+		{"token key", tok + "=v", Mark + "=v", []Hit{{Where: "field " + Mark + " key", Class: ClassToken, Count: 1}}},
 		{"nested key and value", "body[" + canary + "]=" + canary, "body[" + red + "]=" + red, []Hit{
-			{"field " + red + " key", ClassSecretsEnv, 1}, {"field " + red, ClassSecretsEnv, 1},
+			{Where: "field " + red + " key", Class: ClassSecretsEnv, Count: 1}, {Where: "field " + red, Class: ClassSecretsEnv, Count: 1},
 		}},
-		{"key without value", canary, red, []Hit{{"field " + red + " key", ClassSecretsEnv, 1}}},
+		{"key without value", canary, red, []Hit{{Where: "field " + red + " key", Class: ClassSecretsEnv, Count: 1}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"api", "repos/o/r/issues/1/comments", "-f", tc.arg}
 			_, got, hits := r.GHCall("", args)
+			hits = noCmd(hits)
 			if got[3] != tc.want {
 				t.Fatalf("field = %q, want %q", got[3], tc.want)
 			}
@@ -329,5 +333,32 @@ func TestGHCallFieldKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func noCmd(hits []Hit) []Hit {
+	for i := range hits {
+		hits[i].Cmd = ""
+	}
+	return hits
+}
+
+// TestGHCallHitCmd: the hit's Cmd is the verb or path with the query
+// dropped and any secret redacted, and never a leading flag.
+func TestGHCallHitCmd(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"api", "repos/o/r/issues?q=" + canary, "-f", "body=" + canary}, "api repos/o/r/issues"},
+		{[]string{"api", "repos/o/r/issues/" + canary + "/comments", "-f", "body=" + canary}, "api repos/o/r/issues/[redacted:API_KEY]/comments"},
+		{[]string{"api", "-fbody=" + canary, "repos/o/r/issues/1/comments"}, "api"},
+		{[]string{"pr", "comment", "7", "--body", canary}, "pr comment"},
+	} {
+		_, _, hits := r.GHCall("", tc.args)
+		if len(hits) == 0 || hits[0].Cmd != tc.want {
+			t.Errorf("GHCall(%q) hits = %+v, want cmd %q", tc.args, hits, tc.want)
+		}
 	}
 }
