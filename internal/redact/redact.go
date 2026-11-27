@@ -233,9 +233,11 @@ func (r *Redactor) walk(v any, counts map[string]int) any {
 			t[i] = r.walk(t[i], counts)
 		}
 	case map[string]any:
-		for k := range t {
-			t[k] = r.walk(t[k], counts)
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[r.scrub(k, counts)] = r.walk(x, counts)
 		}
+		return out
 	}
 	return v
 }
@@ -265,11 +267,13 @@ func fieldKey(k string) string {
 
 // ghTextFlag maps a gh flag spelling to the canonical name of a flag
 // whose value is posted text, or "" when it is not one. Under pr and
-// issue, -t and -b are --title and --body (-t is --subject under pr
-// merge), and -c / --comment is text under close and reopen only (pr
-// review --comment is a boolean); under api, -f, -F, --field and
-// --raw-field carry key=value fields (under pr, -F is --body-file).
+// issue, -b is --body and -t is --title under create and edit (and an
+// unknown verb), --subject under pr merge and --template elsewhere;
+// -c / --comment is text under close and reopen only (pr review
+// --comment is a boolean); under api, -f, -F, --field and --raw-field
+// carry key=value fields (under pr, -F is --body-file).
 func ghTextFlag(sub, verb, name string) string {
+	prIssue := sub == "pr" || sub == "issue"
 	switch name {
 	case "--title", "--body":
 		return name
@@ -278,16 +282,68 @@ func ghTextFlag(sub, verb, name string) string {
 			return name
 		}
 	case "--comment", "-c":
-		if (sub == "pr" || sub == "issue") && (verb == "close" || verb == "reopen") {
+		if prIssue && (verb == "close" || verb == "reopen") {
 			return "--comment"
 		}
-	case "-t", "-b":
-		if sub == "pr" || sub == "issue" {
-			return map[string]string{"-t": "--title", "-b": "--body"}[name]
+	case "-b":
+		if prIssue {
+			return "--body"
+		}
+	case "-t":
+		switch {
+		case !prIssue:
+		case sub == "pr" && verb == "merge":
+			return "--subject"
+		case verb == "create" || verb == "edit" || verb == "":
+			return "--title"
 		}
 	case "-f", "-F", "--field", "--raw-field":
 		if sub == "api" {
 			return "--field"
+		}
+	}
+	return ""
+}
+
+// shortValueFlags are the short flags, per gh subcommand, that take a
+// value but carry no posted text. Only letters that take a value under
+// every verb are listed (pr -r and -s are booleans under review and
+// merge): treating a boolean as value-taking would hide the flags
+// after it in its group.
+var shortValueFlags = map[string]string{
+	"api":   "HXpqt",
+	"pr":    "RBHqLAalmpSTFt",
+	"issue": "RHqLAalmpSTFt",
+}
+
+// ShortValueFlag walks a short flag group (-iF, -Fk=v, -F=k=v) as
+// pflag does and returns the index in a of the first flag that takes a
+// value (the rest of a after it, or the next arg, is that value), or
+// -1 when the group has none.
+func ShortValueFlag(sub, verb, a string) int {
+	if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+		return -1
+	}
+	for j := 1; j < len(a) && a[j] != '='; j++ {
+		c := a[j : j+1]
+		if ghTextFlag(sub, verb, "-"+c) != "" || c == "R" || strings.Contains(shortValueFlags[sub], c) {
+			return j
+		}
+	}
+	return -1
+}
+
+// ghVerb is the gh verb of args (subcommand first): the first non-flag
+// arg after it, skipping the value of -R / --repo.
+func ghVerb(args []string) string {
+	for i := 1; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--":
+			return ""
+		case a == "-R" || a == "--repo":
+			i++
+		case !strings.HasPrefix(a, "-"):
+			return a
 		}
 	}
 	return ""
@@ -305,12 +361,9 @@ func ghTextFlag(sub, verb, name string) string {
 // the value.
 func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit) {
 	args = append([]string(nil), args...)
-	sub, verb := "", ""
+	sub, verb := "", ghVerb(args)
 	if len(args) > 0 {
 		sub = args[0]
-	}
-	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
-		verb = args[1]
 	}
 	var hits []Hit
 	note := func(where string, counts map[string]int) {
@@ -376,25 +429,28 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 			continue
 		}
 		// A short group (-iF body=x, -iFbody=x) is scanned as pflag
-		// does: the first value-taking text flag takes the rest of the
-		// group, or the next arg when the group ends with it.
-		for j := 1; j < len(a) && a[j] != '='; j++ {
-			flag := ghTextFlag(sub, verb, "-"+a[j:j+1])
-			if flag == "" {
-				continue
-			}
-			head, rest := a[:j+1], a[j+1:]
-			if strings.HasPrefix(rest, "=") {
-				head, rest = head+"=", rest[1:]
-			}
-			switch {
-			case rest != "" || strings.HasSuffix(head, "="):
-				args[i] = head + text(flag, rest)
-			case i+1 < len(args):
-				i++
-				args[i] = text(flag, args[i])
-			}
-			break
+		// does: its first value-taking flag takes the rest of the
+		// group, or the next arg when the group ends with it. A
+		// non-text value flag's next arg is not skipped: if the letter
+		// set is wrong, that over-redacts instead of hiding a flag.
+		j := ShortValueFlag(sub, verb, a)
+		if j < 0 {
+			continue
+		}
+		flag := ghTextFlag(sub, verb, "-"+a[j:j+1])
+		if flag == "" {
+			continue
+		}
+		head, rest := a[:j+1], a[j+1:]
+		if strings.HasPrefix(rest, "=") {
+			head, rest = head+"=", rest[1:]
+		}
+		switch {
+		case rest != "" || strings.HasSuffix(head, "="):
+			args[i] = head + text(flag, rest)
+		case i+1 < len(args):
+			i++
+			args[i] = text(flag, args[i])
 		}
 	}
 	counts := map[string]int{}
@@ -404,17 +460,17 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 		stdin = r.scrub(stdin, counts)
 	}
 	note("stdin", counts)
-	cmd := r.scrub(LogCmd(args), nil)
+	cmd := r.scrub(logCmd(args), nil)
 	for i := range hits {
 		hits[i].Cmd = cmd
 	}
 	return stdin, args, hits
 }
 
-// LogCmd is the gh call's verb or API path as a ledger event names it:
+// logCmd is the gh call's verb or API path as a ledger event names it:
 // a flag in second place (gh takes flags before the verb or path, and
 // one may carry the secret) is dropped, as is a path's query string.
-func LogCmd(args []string) string {
+func logCmd(args []string) string {
 	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 		return strings.Join(args[:min(1, len(args))], " ")
 	}
@@ -424,13 +480,14 @@ func LogCmd(args []string) string {
 
 // Record appends one redaction event per hit to the ledger of the
 // project at projectRoot. via names the path that posted ("mirror",
-// "spore-gh"); the event carries the gh call's verb (the hit's
-// redacted Cmd, else LogCmd of args), never its text.
+// "spore-gh"); the event carries the gh call's verb as the hit's
+// redacted Cmd, never its text. A hit without Cmd (from a broker older
+// than Cmd) logs only the subcommand: the caller cannot redact a path.
 func Record(projectRoot, slug, via string, args []string, hits []Hit) {
 	for _, h := range hits {
 		cmd := h.Cmd
-		if cmd == "" {
-			cmd = LogCmd(args)
+		if cmd == "" && len(args) > 0 {
+			cmd = args[0]
 		}
 		task.RecordEvent(projectRoot, events.Event{
 			Kind: events.Redaction, Slug: slug, Detail: cmd + " " + h.Where,

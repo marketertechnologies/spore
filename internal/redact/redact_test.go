@@ -3,9 +3,13 @@ package redact
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/versality/spore/internal/events"
 )
 
 const canary = "CANARY-vuNfvrcKGX"
@@ -360,5 +364,76 @@ func TestGHCallHitCmd(t *testing.T) {
 		if len(hits) == 0 || hits[0].Cmd != tc.want {
 			t.Errorf("GHCall(%q) hits = %+v, want cmd %q", tc.args, hits, tc.want)
 		}
+	}
+}
+
+// TestGHCallFlagParsing: the verb is found past -R, a non-text value
+// flag ends a short group, and -t is --template outside create, edit
+// and merge.
+func TestGHCallFlagParsing(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	c := canary
+	red := "[redacted:API_KEY]"
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		want  []string
+		where string
+	}{
+		{"-R before close", []string{"pr", "-R", "o/r", "close", "12", "--comment", c}, []string{"pr", "-R", "o/r", "close", "12", "--comment", red}, "--comment"},
+		{"--repo before merge", []string{"pr", "--repo", "o/r", "merge", "12", "-t", c}, []string{"pr", "--repo", "o/r", "merge", "12", "-t", red}, "--subject"},
+		{"head value ends group", []string{"pr", "create", "-Hwt/" + c + "-tb"}, []string{"pr", "create", "-Hwt/" + c + "-tb"}, ""},
+		{"api header ends group", []string{"api", "repos/o/r/issues/1", "-HIf-" + c}, []string{"api", "repos/o/r/issues/1", "-HIf-" + c}, ""},
+		{"view template", []string{"pr", "view", "5", "-t", "{{.body}} " + c}, []string{"pr", "view", "5", "-t", "{{.body}} " + c}, ""},
+		{"api template", []string{"api", "repos/o/r/pulls/1", "-t", c}, []string{"api", "repos/o/r/pulls/1", "-t", c}, ""},
+		{"text flag after bool", []string{"pr", "comment", "7", "-eb" + c}, []string{"pr", "comment", "7", "-eb" + red}, "--body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, hits := r.GHCall("", tc.args)
+			hits = noCmd(hits)
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("args:\n got %q\nwant %q", got, tc.want)
+			}
+			if tc.where == "" {
+				if len(hits) != 0 {
+					t.Fatalf("hits = %+v, want none", hits)
+				}
+				return
+			}
+			if len(hits) != 1 || hits[0].Where != tc.where {
+				t.Fatalf("hits = %+v, want where %q", hits, tc.where)
+			}
+		})
+	}
+}
+
+// TestGHCallJSONKeys: a secret used as a JSON object key under
+// --input - is redacted like a field key.
+func TestGHCallJSONKeys(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	out, _, hits := r.GHCall(`{"a":{"`+canary+`":"x"}}`, []string{"api", "repos/o/r/issues/1/comments", "--input", "-"})
+	if strings.Contains(out, canary) || !strings.Contains(out, `"[redacted:API_KEY]":"x"`) {
+		t.Fatalf("stdin = %q", out)
+	}
+	if hits = noCmd(hits); len(hits) != 1 || hits[0] != (Hit{Where: "stdin", Class: ClassSecretsEnv, Count: 1}) {
+		t.Fatalf("hits = %+v", hits)
+	}
+}
+
+// TestRecordWithoutCmd: a hit with no Cmd (an older broker) logs only
+// the subcommand, never the caller's unredacted path.
+func TestRecordWithoutCmd(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "rec-proj")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	Record(root, "demo", "spore-gh", []string{"api", "repos/o/r/issues/" + canary}, []Hit{{Where: "--body", Class: ClassToken, Count: 1}})
+	evs, err := events.Read(filepath.Base(root), time.Time{})
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("events = %+v, %v", evs, err)
+	}
+	if evs[0].Fields["cmd"] != "api" || strings.Contains(evs[0].Detail, canary) {
+		t.Fatalf("event = %+v", evs[0])
 	}
 }

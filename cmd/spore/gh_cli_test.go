@@ -599,3 +599,42 @@ func TestGHRedactionEventCmdOmitsPathSecret(t *testing.T) {
 		}
 	}
 }
+
+// TestGHFieldGuardReadsFlagsOnly: an F inside another short flag's
+// value is not taken for -F, so no false file-read refusal.
+func TestGHFieldGuardReadsFlagsOnly(t *testing.T) {
+	ghTestProject(t)
+	noBroker(t)
+	fakeBin(t, "gh", ghEchoScript)
+	for _, args := range [][]string{
+		{"api", "repos/acme/proj/issues/1/comments", "-fbody=ping Fk=@alice"},
+		{"api", "repos/acme/proj/issues/1", "-HX-Fk=@x"},
+	} {
+		withStdin(t, "")
+		if code, _, errOut := captureFn(t, func() int { return runGH(args) }); code != 0 {
+			t.Errorf("%q: exit %d: %s", args, code, errOut)
+		}
+	}
+}
+
+// TestGHNoRedactionEventWhenGHNeverRuns: a call spore refuses before
+// gh runs (here a non-HTTPS remote) records no redaction.
+func TestGHNoRedactionEventWhenGHNeverRuns(t *testing.T) {
+	root := ghTestProject(t)
+	noBroker(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	ghSecretsEnv(t, filepath.Join(cfg, "spore"))
+	fakeBin(t, "gh", ghEchoScript)
+	gitOut(t, root, "init", "-q")
+	gitOut(t, root, "remote", "add", "origin", "git@github.com:acme/proj.git")
+	withStdin(t, "")
+	before := len(ghRedactionEvents(t, root))
+	if code, _, _ := captureFn(t, func() int { return runGH([]string{"pr", "comment", "9", "--body", ghCanary}) }); code == 0 {
+		t.Fatal("exit 0 with an ssh remote")
+	}
+	if evs := ghRedactionEvents(t, root)[before:]; len(evs) != 0 {
+		t.Fatalf("redaction events = %+v", evs)
+	}
+}

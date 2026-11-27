@@ -276,14 +276,17 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 	slug := os.Getenv("SPORE_TASK_SLUG")
 	if !brokered {
 		sentStdin, sent, hits := redact.New(root).GHCall(stdin, ghArgs)
-		redact.Record(root, slug, "spore-gh", ghArgs, hits)
 		// A human at a terminal (an interactive prompt, a typed body)
 		// keeps it: only piped and file bodies are redacted.
 		var in io.Reader = os.Stdin
 		if pipeStdin {
 			in = strings.NewReader(sentStdin)
 		}
-		return runAsApp(append([]string{"gh"}, sent...), in)
+		code, err := runAsApp(append([]string{"gh"}, sent...), in)
+		if err == nil {
+			redact.Record(root, slug, "spore-gh", ghArgs, hits)
+		}
+		return code, err
 	}
 	req := secrets.Request{}
 	secrets.Claim(&req)
@@ -374,8 +377,8 @@ func fieldValue(args []string, i int) (string, bool) {
 	case strings.HasPrefix(a, "--field="):
 		return strings.TrimPrefix(a, "--field="), true
 	case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
-		j := strings.IndexByte(a, 'F')
-		if j < 0 {
+		j := redact.ShortValueFlag("api", "", a)
+		if j < 0 || a[j] != 'F' {
 			return "", false
 		}
 		if rest := a[j+1:]; rest != "" {
