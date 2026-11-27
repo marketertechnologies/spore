@@ -267,9 +267,9 @@ func (s *Server) list(c Caller, req Request) (Response, []byte) {
 	return Response{Data: b}, nil
 }
 
-// allowed applies the scoping rules: pilots and the coordinator (an
-// agent with no task) see every profile; a worker sees its project's
-// profiles plus live grants.
+// allowed applies the scoping rules: pilots and a caller with no task
+// see every profile; any agent with a task (coordinators claim the task
+// "coordinator") sees its project's profiles plus live grants.
 func (s *Server) allowed(c Caller, req Request, profile string) (ok, viaGrant bool) {
 	p, exists := s.cfg.Profiles[profile]
 	if !exists {

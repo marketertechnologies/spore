@@ -157,7 +157,8 @@ func TestScopingAndGrants(t *testing.T) {
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	s.Now = func() time.Time { return now }
 	worker := Request{Project: "alpha", Task: "t1"}
-	coord := Request{Project: "alpha"}
+	noTask := Request{Project: "alpha"}
+	coord := Request{Project: "alpha", Task: "coordinator"}
 
 	if ok, _ := s.allowed(agent, worker, "alpha-db"); !ok {
 		t.Fatal("worker denied its own project's profile")
@@ -165,8 +166,14 @@ func TestScopingAndGrants(t *testing.T) {
 	if ok, _ := s.allowed(agent, worker, "beta-sentry"); ok {
 		t.Fatal("worker allowed another project's profile")
 	}
-	if ok, _ := s.allowed(agent, coord, "beta-sentry"); !ok {
-		t.Fatal("coordinator denied a profile")
+	if ok, _ := s.allowed(agent, noTask, "beta-sentry"); !ok {
+		t.Fatal("caller with no task denied a profile")
+	}
+	if ok, _ := s.allowed(agent, coord, "beta-sentry"); ok {
+		t.Fatal("coordinator allowed another project's profile without a grant")
+	}
+	if ok, _ := s.allowed(agent, coord, "alpha-db"); !ok {
+		t.Fatal("coordinator denied its own project's profile")
 	}
 
 	if r := s.grant(agent, Request{Project: "alpha", Task: "t1", Profile: "beta-sentry", For: "1h"}); !strings.Contains(r.Error, "refused") {

@@ -54,7 +54,7 @@ services.spore-fleet.secrets = {
     vars.SENTRY_TOKEN = "SENTRY_AUTH_TOKEN";
     commands.get = {
       argv = [ "curl" "-sS" "--fail-with-body" "-H" "Authorization: Bearer \${SENTRY_TOKEN}" ];
-      args = [ "https://sentry\\.example\\.com/api/0/[A-Za-z0-9_./?=&%-]*" ];
+      args = [ "https://sentry\\.example\\.com/api/0(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*/?(\\?[A-Za-z0-9_.=&%-]*)?" ];
     };
   };
 
@@ -89,13 +89,13 @@ echo '{"query":"{ actor { user { name } } }"}' | spore secrets run --stdin marke
 The broker hides values; it cannot make an unsafe command safe. Narrow every pattern:
 
 - Refuse arguments that let the program read local files or run a shell: psql backslash meta-commands (`\!`, `\o |`, `\copy ... program`, `\setenv`), `curl -K`, `-o`, `-d @file`, `--config`. Redaction catches a value printed verbatim, not one that was reversed, encoded or sent elsewhere.
-- Pin URLs with an anchored host so a credential header cannot be sent to another host. The sandbox egress allowlist (agent-sandbox) covers the agent's own processes, not the broker's.
+- Pin URLs with an anchored host so a credential header cannot be sent to another host. Keep `..` unmatchable in the path: curl resolves `../` before sending, so a class like `[A-Za-z0-9_./-]*` after `/api/0/` reaches any path on the host. Let no path segment start with a dot, as the Sentry example does. The sandbox egress allowlist (agent-sandbox) covers the agent's own processes, not the broker's.
 - Prefer a fixed `argv` plus one constrained argument over `variadic` free text.
 
 ## Who may use what
 
-- **Coordinator** (a caller with no `SPORE_TASK_SLUG`): every profile, every project.
-- **Worker** (with `SPORE_TASK_SLUG`): its own project's profiles plus live grants.
+- **Agents** (any caller with `SPORE_TASK_SLUG`: workers, role-loop agents, and coordinators, whose panes carry `SPORE_TASK_SLUG=coordinator`): their own project's profiles plus live grants. Grant another project's coordinator a profile with the slug `coordinator`.
+- **A caller with no `SPORE_TASK_SLUG`** (a plain shell as the agent user): every profile, every project.
 - **Pilots and root**: everything, plus `grant`, `revoke` and re-enabling the fleet.
 
 ```
@@ -150,5 +150,7 @@ sudo spore fleet enable
 Tokens that ever sat in transcripts (P0.4) should also be revoked; App installation tokens expire within an hour on their own.
 
 ## Verifying
+
+`spore secrets check [--config <path>]` validates a broker config the way `spore secrets serve` does at start (names, regexps, `${VAR}` references, known projects) without serving; run it on a rendered config before a rebuild, since an invalid config keeps the broker from starting and fails every broker call on the host. With no `--config` it checks the deployed `/etc/spore/secrets-broker.json`.
 
 `nix build .#checks.x86_64-linux.nixosModules-spore-secrets` boots a VM with an agent user and a pilot and checks: the agent cannot read the secrets directory, the broker's environment or the audit log; `spore secrets run` returns redacted output and refuses other commands and arguments; agents cannot grant or re-enable the fleet; pilots can; `spore gh token` refuses; the audit log carries no value. `internal/secrets` tests cover the policy, the gh allowlist and push/fetch through bundles against a local origin.

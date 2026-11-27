@@ -24,6 +24,7 @@ Usage:
   spore secrets revoke <task-slug> [<profile>] [--project <name>]
   spore secrets grants
   spore secrets serve [--config <path>] [--socket <path>]
+  spore secrets check [--config <path>]
 
 Subcommands:
   list     Profiles this caller may use, with their commands. Never
@@ -37,6 +38,9 @@ Subcommands:
   revoke   Drop a task's grants (one profile, or all).
   grants   List live grants.
   serve    Run the broker (the NixOS module's spore-secrets.service).
+  check    Validate a broker config the way serve does at start (names,
+           regexps, ${VAR} references, known projects) without
+           serving. Exit 1 on the first error.
 
 The broker listens on $SPORE_SECRETS_SOCKET (default
 /run/spore-secrets/broker.sock). See docs/secrets.md.
@@ -65,6 +69,8 @@ func runSecrets(args []string) int {
 		err = runSecretsGrants(args[1:])
 	case "serve":
 		err = runSecretsServe(args[1:])
+	case "check":
+		err = runSecretsCheck(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "spore secrets: unknown subcommand %q\n\n%s", args[0], secretsUsage)
 		return 2
@@ -248,6 +254,23 @@ func runSecretsGrants(args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", g.Project, g.Task, g.Profile, g.Expires.Local().Format(time.RFC3339), g.By)
 	}
 	return tw.Flush()
+}
+
+func runSecretsCheck(args []string) error {
+	fs := flag.NewFlagSet("secrets check", flag.ContinueOnError)
+	cfgPath := fs.String("config", secrets.ConfigPath(), "broker config")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("check: unexpected argument %q", fs.Arg(0))
+	}
+	cfg, err := secrets.LoadConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("ok: %s: %d project(s), %d profile(s)\n", *cfgPath, len(cfg.Projects), len(cfg.Profiles))
+	return nil
 }
 
 func runSecretsServe(args []string) error {
