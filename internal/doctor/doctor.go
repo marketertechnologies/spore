@@ -681,7 +681,7 @@ func checkNpmrc(env Env) Result {
 // bundleTokenRE matches the GitHub credential shapes bundler configs
 // carry: classic, fine-grained, OAuth and App installation tokens, and
 // the x-access-token user of an App token URL.
-var bundleTokenRE = regexp.MustCompile(`gh[ops]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|x-access-token`)
+var bundleTokenRE = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|x-access-token`)
 
 // bundleTokenLines returns "line N (KEY)" for each line of a bundler
 // config holding a GitHub token. The key names the host, never the
@@ -718,10 +718,22 @@ func checkBundleConfig(env Env) Result {
 	}
 	var fails, warns []string
 	seen, masked := 0, ""
+	globalFI, globalErr := os.Stat(env.BundleConfig)
 	files := append([]string{env.BundleConfig}, env.ProjectBundle...)
 	for i, f := range files {
 		if f == "" {
 			continue
+		}
+		// A project entry naming the global file (doctor run from
+		// $HOME, BUNDLE_USER_CONFIG=~/.bundle/config) is graded once,
+		// as the global file.
+		if i > 0 && env.BundleConfig != "" {
+			if filepath.Clean(f) == filepath.Clean(env.BundleConfig) {
+				continue
+			}
+			if fi, err := os.Stat(f); err == nil && globalErr == nil && os.SameFile(fi, globalFI) {
+				continue
+			}
 		}
 		// Inside the sandbox the global file is a /dev/null mask (a
 		// 0666 character device): grading its mode or content would
@@ -749,6 +761,11 @@ func checkBundleConfig(env Env) Result {
 			}
 		}
 		if !global {
+			continue
+		}
+		// A symlink (home-manager into the read-only store) cannot be
+		// chmodded; its token content was graded above.
+		if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
 		if fi, err := os.Stat(f); err == nil && fi.Mode().Perm()&0o077 != 0 {

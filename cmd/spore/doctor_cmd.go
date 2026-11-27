@@ -39,8 +39,9 @@ Checks (one pass/warn/fail/skip line each):
                           state dir are 0600 or stricter
   npmrc tokens            no literal registry token in ~/.npmrc
   bundle tokens           no GitHub token in ~/.bundle/config, a file
-                          BUNDLE_CONFIG / BUNDLE_USER_CONFIG names, or
-                          the cwd project's .bundle/config;
+                          BUNDLE_CONFIG / BUNDLE_USER_CONFIG /
+                          BUNDLE_USER_HOME names, or the cwd project's
+                          app config (.bundle/config);
                           ~/.bundle/config is 0600 with no ACL
   kill switch             fleet-enabled flag state
 
@@ -133,8 +134,9 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 
 // projectBundleConfigs lists the bundler configs besides
 // ~/.bundle/config that the sandbox leaves readable: files the
-// BUNDLE_CONFIG / BUNDLE_USER_CONFIG env names, and the .bundle/config
-// of the cwd's worktree and main checkout.
+// BUNDLE_CONFIG / BUNDLE_USER_CONFIG / BUNDLE_USER_HOME env names, and
+// the app config (.bundle/config, or BUNDLE_APP_CONFIG) of the cwd's
+// worktree and main checkout when the cwd is in a git repo.
 func projectBundleConfigs() []string {
 	var out []string
 	add := func(p string) {
@@ -150,13 +152,29 @@ func projectBundleConfigs() []string {
 	}
 	add(os.Getenv("BUNDLE_CONFIG"))
 	add(os.Getenv("BUNDLE_USER_CONFIG"))
-	if b, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
-		if top := strings.TrimSpace(string(b)); top != "" {
-			add(filepath.Join(top, ".bundle", "config"))
-		}
+	if h := os.Getenv("BUNDLE_USER_HOME"); h != "" {
+		add(filepath.Join(h, "config"))
 	}
-	if root, err := task.MainRepoRoot(""); err == nil {
-		add(filepath.Join(root, ".bundle", "config"))
+	b, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	top := strings.TrimSpace(string(b))
+	if err != nil || top == "" {
+		return out
+	}
+	// Bundler resolves a relative BUNDLE_APP_CONFIG against the app root.
+	appConfig := ".bundle"
+	if a := os.Getenv("BUNDLE_APP_CONFIG"); a != "" {
+		appConfig = a
+	}
+	roots := []string{top}
+	if root, err := task.MainRepoRoot(top); err == nil {
+		roots = append(roots, root)
+	}
+	for _, r := range roots {
+		if filepath.IsAbs(appConfig) {
+			add(filepath.Join(appConfig, "config"))
+		} else {
+			add(filepath.Join(r, appConfig, "config"))
+		}
 	}
 	return out
 }

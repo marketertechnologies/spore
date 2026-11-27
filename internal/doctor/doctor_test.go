@@ -306,6 +306,7 @@ func TestCheckBundleConfig(t *testing.T) {
 		{"---\nBUNDLE_JOBS: \"4\"\nBUNDLE_GITHUB__COM: \"github_pat_CANARY_CANARY_CANARY\"\n", "line 3 (BUNDLE_GITHUB__COM)"},
 		{"BUNDLE_GITHUB__COM: \"x-access-token:CANARYCANARY\"\n", "line 1 (BUNDLE_GITHUB__COM)"},
 		{"BUNDLE_GITHUB__COM: \"gho_CANARYCANARY\"\nBUNDLE_X__COM: \"ghs_CANARYCANARY\"\n", "line 1 (BUNDLE_GITHUB__COM), line 2 (BUNDLE_X__COM)"},
+		{"BUNDLE_GITHUB__COM: \"x:ghu_CANARYCANARY\"\nBUNDLE_X__COM: \"ghr_CANARYCANARY\"\n", "line 1 (BUNDLE_GITHUB__COM), line 2 (BUNDLE_X__COM)"},
 	} {
 		write(global, tc.body, 0o600)
 		r := find(t, Check(env), "bundle tokens")
@@ -326,6 +327,38 @@ func TestCheckBundleConfig(t *testing.T) {
 			t.Errorf("project %q: detail leaks the value: %q", tc.body, r.Detail)
 		}
 		write(proj, clean, 0o644)
+	}
+
+	// The global file listed again as a project config (doctor run
+	// from $HOME, BUNDLE_USER_CONFIG=~/.bundle/config, or a symlink to
+	// it) is graded once, as the global file.
+	write(global, "BUNDLE_GITHUB__COM: \"ghu_CANARYCANARY\"\n", 0o600)
+	link := filepath.Join(filepath.Dir(proj), "linked-config")
+	if err := os.Symlink(global, link); err != nil {
+		t.Fatal(err)
+	}
+	saved := env.ProjectBundle
+	env.ProjectBundle = []string{global, filepath.Dir(global) + "/./config", link}
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Warn || strings.Count(r.Detail, "holds a literal GitHub token") != 1 {
+		t.Errorf("global listed as project = %+v, want one warn, no fail", r)
+	}
+	env.ProjectBundle = saved
+
+	// A symlinked global config (home-manager into the store) gets
+	// no chmod advice.
+	store := filepath.Join(filepath.Dir(proj), "store-config")
+	write(store, clean, 0o444)
+	if err := os.Remove(global); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, global); err != nil {
+		t.Fatal(err)
+	}
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Pass {
+		t.Errorf("symlinked global = %+v, want pass without mode advice", r)
+	}
+	if err := os.Remove(global); err != nil {
+		t.Fatal(err)
 	}
 
 	write(global, "# BUNDLE_GITHUB__COM: \"ghp_CANARYCANARYCANARY\"\n", 0o600)

@@ -37,7 +37,7 @@ var tokenRE = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-
 
 // urlCredRE is the password of URL userinfo, as bundler and git print
 // it (`https://x:<token>@rubygems.pkg.github.com`), whatever its shape.
-var urlCredRE = regexp.MustCompile(`(?i)\b(https?://[^\s/:@]+:)[^\s/@]+@`)
+var urlCredRE = regexp.MustCompile(`(?i)\b(https?://[^\s/:@]*:)[^\s/@]+@`)
 
 // pemRE also takes a BEGIN line with no END: a truncated key is still
 // key material.

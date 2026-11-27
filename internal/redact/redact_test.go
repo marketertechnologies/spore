@@ -79,6 +79,7 @@ func TestStringURLCredentials(t *testing.T) {
 		"Retrying download gem from https://x:CANARY-opaque-1234@rubygems.pkg.github.com/org/ due to error": "Retrying download gem from https://x:[redacted]@rubygems.pkg.github.com/org/ due to error",
 		"https://x:ghp_" + strings.Repeat("Ab1", 12) + "@rubygems.pkg.github.com/":                          "https://x:[redacted]@rubygems.pkg.github.com/",
 		"git clone HTTPS://x-access-token:CANARY@github.com/o/r.git":                                        "git clone HTTPS://x-access-token:[redacted]@github.com/o/r.git",
+		"https://:CANARY-empty-user@github.com/o/r":                                                         "https://:[redacted]@github.com/o/r",
 	} {
 		hits := map[string]int{}
 		if got := r.scrub(in, hits); got != want {
