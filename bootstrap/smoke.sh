@@ -33,6 +33,7 @@ trap 'rm -rf "$work"' EXIT
 
 export XDG_STATE_HOME="$state"
 export HOME="$home"
+export SPORE_SECRETS_SOCKET="$work/no-broker.sock"
 
 mkdir -p "$work/proj"
 cd "$work/proj"
