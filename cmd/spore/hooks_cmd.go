@@ -395,7 +395,7 @@ func runHooksStopFailure() int {
 func runHooksNotifyCoordinator(args []string) int {
 	switch len(args) {
 	case 0:
-		if err := hooks.NotifyCoordinatorEnv(); err != nil {
+		if err := hooks.NotifyCoordinatorEnv(readHookPayload(os.Stdin, notifyPayloadTimeout)); err != nil {
 			fmt.Fprintln(os.Stderr, "spore hooks notify-coordinator:", err)
 			return 1
 		}
@@ -409,6 +409,30 @@ func runHooksNotifyCoordinator(args []string) int {
 	default:
 		fmt.Fprintln(os.Stderr, "usage: spore hooks notify-coordinator [project]")
 		return 2
+	}
+}
+
+// notifyPayloadTimeout stays under the hook's 5 s timeout. Claude Code
+// closes stdin after the payload; a manual call on a pipe that never
+// closes gives up instead of hanging.
+const notifyPayloadTimeout = 2 * time.Second
+
+// readHookPayload returns the hook payload on f, or nil when f is a
+// terminal or nothing arrives before EOF within timeout.
+func readHookPayload(f *os.File, timeout time.Duration) io.Reader {
+	if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice != 0 {
+		return nil
+	}
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		return bytes.NewReader(b)
+	case <-time.After(timeout):
+		return nil
 	}
 }
 

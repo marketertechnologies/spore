@@ -25,6 +25,8 @@ import (
 func ghTestProject(t *testing.T) string {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// A host broker socket would make spore gh exec refuse.
+	t.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(t.TempDir(), "no-secrets-broker.sock"))
 	root := filepath.Join(t.TempDir(), "proj")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)

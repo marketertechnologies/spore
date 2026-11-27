@@ -147,6 +147,19 @@ Stale `~/.claude/hooks/*.pl` copies become unreferenced; delete them once the pr
 
 Set `claudeManagedSettings.enable = false` to keep managing hooks in `~/.claude/settings.json`.
 
+### notify-coordinator: worker notifications
+
+The managed drop-in binds `spore hooks notify-coordinator` to every Claude Code `Notification` event on the host. It reads the hook payload on stdin (`notification_type`, `message`) and writes one envelope, source `notification`, body `worker <slug>: <type>: <message>`, to the coordinator inbox of `$WT_PROJECT`. It drops:
+
+- role panes (`$SPORE_ROLE` set): the role loop already reports their progress (source `role-loop`);
+- the coordinator's own pane (`$SPORE_TASK_INBOX` is the coordinator inbox) and non-spore sessions (no `$WT_PROJECT`);
+- `idle_prompt` and the other types that report something already finished (`auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`, `plugin_notification`); any other type, `permission_prompt` included, is forwarded;
+- a repeat of the same type and message from the same worker: within 30 seconds for requests the worker waits on (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`), whose message names only the tool, so only a true burst collapses and a second Bash approval minutes later still gets through; within 5 minutes for every other type. Stamp files live under `<coordinator state>/<project>/notify-stamps/`, are written only after the inbox write succeeds, and are pruned after an hour.
+
+A role pane blocked on a permission prompt or an MCP form is not reported this way; the role loop's stall handling catches it.
+
+`spore hooks notify-coordinator <project>` still writes a bare `poke` envelope for manual use.
+
 ### watch-inbox: delivery and trust
 
 `spore hooks watch-inbox` runs as an `asyncRewake` Stop hook. It waits on the session inbox (`$SPORE_TASK_INBOX`), claims each top-level `*.json` by renaming it into `inbox/read/`, and prints one line per message on stdout; interactive sessions receive that text when the hook wakes them. The rename is the claim, so two watchers on one inbox never both deliver a message.
