@@ -12,8 +12,9 @@ your own credentials before installing.
 
 The exact target depends on which agent runtime the operator runs:
 
-- Claude Code (CLI): merge entries into `~/.claude.json` under
-  `mcpServers`, or register each server with
+- Claude Code (CLI): the operator merges entries into `~/.claude.json`
+  under `mcpServers` (spore's managed floor denies the agent's file
+  tools that file), or registers each server with
   `claude mcp add --transport stdio <name> -- <command> [args...]`.
 - mcp-hub (or any MCP aggregator): write the rendered file to
   `~/.config/mcp-hub/config.json`.

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,16 +98,52 @@ func (s *Server) githubEnv(ctx context.Context, project, repo, home string) ([]s
 	return ghapp.Env(base, tok), nil
 }
 
+// ghCallEnv is the environment for a brokered gh call. The token goes
+// in a hosts.yml under home (a 0700 MkdirTemp dir), not in GH_TOKEN, so
+// nothing gh evaluates can read it back through the environment.
+func (s *Server) ghCallEnv(ctx context.Context, project, repo, home string) ([]string, error) {
+	tok, err := s.token(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	host, _, _ := strings.Cut(repo, "/")
+	dir := filepath.Join(home, "gh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return nil, err
+	}
+	// version "1" marks the config as migrated; without it gh would try
+	// to move the token into a keyring.
+	cfg := "version: \"1\"\n"
+	if s.ghSocket != "" {
+		cfg += "http_unix_socket: " + strconv.Quote(s.ghSocket) + "\n"
+	}
+	h, t := strconv.Quote(host), strconv.Quote(tok)
+	hosts := h + ":\n    users:\n        x-access-token:\n            oauth_token: " + t +
+		"\n    oauth_token: " + t + "\n    user: x-access-token\n    git_protocol: https\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yml"), []byte(cfg), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hosts), 0o600); err != nil {
+		return nil, err
+	}
+	return []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "LANG=C.UTF-8",
+		"GH_CONFIG_DIR=" + dir, "GH_REPO=" + repo,
+		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}, nil
+}
+
 func (s *Server) gh(c Caller, req Request) Response {
 	repo, err := s.githubProject(c, req)
 	if err != nil {
 		return Response{Error: "refused: " + err.Error()}
 	}
-	if err := checkGHArgs(req.Args, repo); err != nil {
-		return Response{Error: "refused: gh " + err.Error()}
-	}
 	r := s.redactor(req.Project)
 	stdin, args := r.GHCall(req.Stdin, req.Args)
+	if err := checkGHArgs(args, stdin, repo); err != nil {
+		return Response{Error: "refused: gh " + err.Error()}
+	}
 	home, err := os.MkdirTemp("", "spore-secrets-gh-")
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -114,7 +151,7 @@ func (s *Server) gh(c Caller, req Request) Response {
 	defer os.RemoveAll(home)
 	ctx, cancel := context.WithTimeout(context.Background(), githubTimeout)
 	defer cancel()
-	env, err := s.githubEnv(ctx, req.Project, repo, home)
+	env, err := s.ghCallEnv(ctx, req.Project, repo, home)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -141,27 +178,33 @@ func (s *Server) gh(c Caller, req Request) Response {
 
 // ghFlags are the gh flags the mirror uses, and whether each takes a
 // value. Anything else is refused, so a caller cannot point gh at a
-// file (`-F x=@path`, `--input path`) or another repo (`--repo`).
+// file (`-F x=@path`, `--input path`) or another repo (`--repo`). Never
+// add a flag that evaluates a caller expression (`--jq`/`-q`,
+// `--template`/`-t`): it runs inside the token-holding gh process.
+// Callers filter the JSON themselves.
 var ghFlags = map[string]bool{
-	"--head": true, "--state": true, "--json": true, "--limit": true, "--jq": true,
+	"--head": true, "--state": true, "--json": true, "--limit": true,
 	"--undo": false, "--add-assignee": true, "--assignee": true, "--title": true,
 	"--body": true, "--body-file": true, "--draft": false, "--base": true,
 	"--method": true, "-X": true, "--input": true, "--paginate": false,
 	"--hostname": true, "-f": true, "--raw-field": true, "-F": true, "--field": true,
+	"--required": false,
 }
 
-var ghPRVerbs = map[string]bool{"list": true, "view": true, "ready": true, "edit": true, "create": true, "comment": true}
-
-var mutationRE = regexp.MustCompile(`(?i)\bmutation\b`)
+var ghPRVerbs = map[string]bool{"list": true, "view": true, "ready": true, "edit": true, "create": true, "comment": true, "checks": true}
 
 // checkGHArgs allows the shapes the role-loop mirror sends: `gh pr
-// list|view|ready|edit|create|comment` and `gh api` on the repo's own
-// pulls or issues, or a read-only GraphQL query.
-func checkGHArgs(args []string, repo string) error {
+// list|view|ready|edit|create|comment`, plus `gh pr checks` and
+// `gh api` GETs of a commit's CI status for coordinators, `gh api` on
+// the repo's own pulls or issues, and `gh api graphql` with one of
+// graphqlQueries. stdin is what gh reads for `--input -`.
+func checkGHArgs(args []string, stdin, repo string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("needs a subcommand")
 	}
 	host, ownerRepo, _ := strings.Cut(repo, "/")
+	// CI status of a commit: read-only, so no body and no method but GET.
+	commit := false
 	switch args[0] {
 	case "pr":
 		if !ghPRVerbs[args[1]] {
@@ -169,12 +212,16 @@ func checkGHArgs(args []string, repo string) error {
 		}
 	case "api":
 		ep := args[1]
-		if ep != "graphql" && !regexp.MustCompile(`^repos/`+regexp.QuoteMeta(ownerRepo)+`/(pulls|issues)/[0-9]+(/[a-z_]+)?$`).MatchString(ep) {
+		prefix := `^repos/` + regexp.QuoteMeta(ownerRepo)
+		commit = regexp.MustCompile(prefix + `/commits/[0-9a-f]{7,40}(/(check-runs|check-suites|status|statuses))?$`).MatchString(ep)
+		if ep != "graphql" && !commit && !regexp.MustCompile(prefix+`/(pulls|issues)/[0-9]+(/[a-z_]+)?$`).MatchString(ep) {
 			return fmt.Errorf("api %s is not allowed", ep)
 		}
 	default:
 		return fmt.Errorf("%s is not allowed", args[0])
 	}
+	graphql := args[0] == "api" && args[1] == "graphql"
+	fields, input := map[string]string{}, false
 	draft := false
 	for i := 2; i < len(args); i++ {
 		a := args[i]
@@ -200,6 +247,7 @@ func checkGHArgs(args []string, repo string) error {
 			if val != "-" {
 				return fmt.Errorf("%s must be - (stdin)", name)
 			}
+			input = input || name == "--input"
 		case "-F", "--field":
 			// Under pr, -F is --body-file.
 			if args[0] == "pr" && val != "-" {
@@ -208,23 +256,62 @@ func checkGHArgs(args []string, repo string) error {
 			if _, v, _ := strings.Cut(val, "="); strings.HasPrefix(v, "@") {
 				return fmt.Errorf("%s must not read a file", name)
 			}
+			if err := addField(fields, graphql, val); err != nil {
+				return err
+			}
 		case "-f", "--raw-field":
-			if k, v, _ := strings.Cut(val, "="); k == "query" && mutationRE.MatchString(v) {
-				return fmt.Errorf("graphql mutations are not allowed")
+			if err := addField(fields, graphql, val); err != nil {
+				return err
 			}
 		case "--hostname":
 			if val != host {
 				return fmt.Errorf("--hostname %s is not the project's host", val)
 			}
 		case "--method", "-X":
-			if m := strings.ToUpper(val); m != "GET" && m != "POST" {
+			if m := strings.ToUpper(val); m != "GET" && (m != "POST" || commit) {
 				return fmt.Errorf("--method %s is not allowed", val)
 			}
+		}
+		if commit && (name == "-f" || name == "--raw-field" || name == "-F" || name == "--field" || name == "--input") {
+			return fmt.Errorf("api on commits is read-only: %s is not allowed", name)
 		}
 	}
 	if args[0] == "pr" && args[1] == "create" && !draft {
 		return fmt.Errorf("pr create must be --draft")
 	}
+	if !graphql {
+		return nil
+	}
+	query, hasQuery := fields["query"]
+	delete(fields, "query")
+	if input {
+		if hasQuery || len(fields) > 0 {
+			return fmt.Errorf("graphql takes --input - or fields, not both")
+		}
+		var err error
+		if query, fields, err = graphqlBody(stdin); err != nil {
+			return err
+		}
+	} else if !hasQuery {
+		return fmt.Errorf("graphql needs a query")
+	}
+	return checkGraphQL(query, fields, ownerRepo)
+}
+
+// addField records a graphql call's key=value field. A repeated key is
+// refused rather than guessing which value gh sends.
+func addField(fields map[string]string, graphql bool, kv string) error {
+	if !graphql {
+		return nil
+	}
+	k, v, ok := strings.Cut(kv, "=")
+	if !ok {
+		return fmt.Errorf("graphql field %q needs key=value", kv)
+	}
+	if _, dup := fields[k]; dup {
+		return fmt.Errorf("graphql field %q is repeated", k)
+	}
+	fields[k] = v
 	return nil
 }
 
@@ -256,6 +343,35 @@ func (s *Server) remoteURL(repo string) string {
 		return s.remote(repo)
 	}
 	return "https://" + repo + ".git"
+}
+
+// promisor makes the mirror a blobless partial clone of origin. A cold
+// full fetch of a history with tens of GB of blobs outruns
+// githubTimeout; commits and trees stay small, and git fetches
+// the few blobs a thin bundle or a push needs on demand from origin
+// with the App credentials in env. Existing full mirrors keep their
+// objects.
+func (s *Server) promisor(ctx context.Context, dir string, env []string, repo string) error {
+	for _, kv := range [][2]string{
+		{"core.repositoryformatversion", "1"},
+		{"extensions.partialClone", "origin"},
+		{"remote.origin.url", s.remoteURL(repo)},
+		{"remote.origin.promisor", "true"},
+		{"remote.origin.partialclonefilter", "blob:none"},
+	} {
+		if _, err := gitIn(ctx, dir, env, "config", kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// noLazy is env for a check that reads only commits, which a blobless
+// mirror holds once fetched. A commit it lacks must fail fast: a lazy
+// fetch sends origin no haves, so it pulls every commit and tree
+// behind that commit, ahead of the single batched fetch that follows.
+func noLazy(env []string) []string {
+	return append(env[:len(env):len(env)], "GIT_NO_LAZY_FETCH=1")
 }
 
 func gitIn(ctx context.Context, dir string, env []string, args ...string) (string, error) {
@@ -307,13 +423,17 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	if err := os.WriteFile(bpath, bundle, 0o600); err != nil {
 		return Response{Error: err.Error()}
 	}
-	if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
-		if _, ferr := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", s.remoteURL(repo), "+refs/heads/*:refs/remotes/origin/*"); ferr != nil {
-			return Response{Error: s.redactor(req.Project).String(ferr.Error())}
-		}
-		if _, err := gitIn(ctx, dir, env, "bundle", "verify", "--quiet", bpath); err != nil {
-			return Response{Error: "bundle prerequisites missing", NeedFull: true}
-		}
+	if err := s.promisor(ctx, dir, env, repo); err != nil {
+		return Response{Error: err.Error()}
+	}
+	// Fetch on every push, not only when the bundle fails to verify:
+	// git push excludes only origin tips the mirror holds, so a mirror
+	// behind a moved base would pack, and lazy-fetch, the whole history.
+	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return Response{Error: s.redactor(req.Project).String(err.Error())}
+	}
+	if _, err := gitIn(ctx, dir, noLazy(env), "bundle", "verify", "--quiet", bpath); err != nil {
+		return Response{Error: "bundle prerequisites missing", NeedFull: true}
 	}
 	incoming := "refs/spore/incoming"
 	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", bpath, "+refs/heads/"+req.Branch+":"+incoming); err != nil {
@@ -326,7 +446,7 @@ func (s *Server) push(c Caller, req Request, bundle []byte) Response {
 	// The mirror pushes the commit the check gate cleared, which may
 	// trail the branch tip the bundle carries.
 	if got != req.SHA {
-		if _, err := gitIn(ctx, dir, env, "merge-base", "--is-ancestor", req.SHA, incoming); err != nil {
+		if _, err := gitIn(ctx, dir, noLazy(env), "merge-base", "--is-ancestor", req.SHA, incoming); err != nil {
 			return Response{Error: fmt.Sprintf("%s is not in the bundle (tip %s)", req.SHA, got)}
 		}
 	}
@@ -369,8 +489,11 @@ func (s *Server) fetch(c Caller, req Request) (Response, []byte) {
 	if err != nil {
 		return Response{Error: err.Error()}, nil
 	}
+	if err := s.promisor(ctx, dir, env, repo); err != nil {
+		return Response{Error: err.Error()}, nil
+	}
 	ref := "refs/remotes/origin/" + req.Branch
-	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", s.remoteURL(repo), "+refs/heads/"+req.Branch+":"+ref); err != nil {
+	if _, err := gitIn(ctx, dir, env, "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/"+req.Branch+":"+ref); err != nil {
 		return Response{Error: s.redactor(req.Project).String(err.Error())}, nil
 	}
 	tip, err := gitIn(ctx, dir, env, "rev-parse", ref)
@@ -383,7 +506,7 @@ func (s *Server) fetch(c Caller, req Request) (Response, []byte) {
 	}
 	args := []string{"bundle", "create", "--quiet", filepath.Join(home, "fetch.bundle"), ref}
 	if shaRE.MatchString(req.Have) {
-		if _, err := gitIn(ctx, dir, env, "merge-base", "--is-ancestor", req.Have, tip); err == nil {
+		if _, err := gitIn(ctx, dir, noLazy(env), "merge-base", "--is-ancestor", req.Have, tip); err == nil {
 			args = append(args, "^"+req.Have)
 		}
 	}

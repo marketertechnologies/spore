@@ -12,7 +12,7 @@ import (
 
 const (
 	reviewCall = "api repos/acme/widget/pulls/12/reviews --hostname github.com --method POST --input -"
-	filesCall  = "api repos/acme/widget/pulls/12/files --hostname github.com --paginate --jq .[] | {filename, patch}"
+	filesCall  = "api repos/acme/widget/pulls/12/files --hostname github.com --paginate"
 )
 
 // reviews returns every review payload sent, accepted or not, in order.
@@ -94,7 +94,7 @@ func TestGitHubMirrorInlineReviewPayload(t *testing.T) {
 func TestGitHubMirrorInline422KeepsDiffAnchors(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":"gone.go"`)
-	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `[{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}]`+"\n"+`[{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}]`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -140,7 +140,7 @@ func TestGitHubMirrorInline422FallsBackToBody(t *testing.T) {
 func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":"one.txt"`)
-	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `[{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}]`+"\n"+`[{"filename":"one.txt","patch":"@@ -0,0 +1 @@\n+one"}]`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)
@@ -169,7 +169,7 @@ func TestGitHubMirrorInline422NarrowedRetryFallsBackToBody(t *testing.T) {
 func TestGitHubMirrorInline422NoDiffAnchorsGoesToBody(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	writeRaw(t, os.Getenv("FAKE_GH_422"), `"path":`)
-	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}`+"\n")
+	writeRaw(t, os.Getenv("FAKE_GH_FILES"), `[{"filename":"other.txt","patch":"@@ -0,0 +1 @@\n+x"}]`+"\n")
 	f.postAnchoredReview(t)
 	f.tick(t)
 	calls := f.calls(t)

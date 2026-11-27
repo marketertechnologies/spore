@@ -7,7 +7,7 @@
     {
       "name": "spore",
       "source": "./",
-      "description": "spore harness skills: diagram, select-agent and spore-bootstrap."
+      "description": "spore harness skills: diagram, select-agent, spore-bootstrap and secrets-profile."
     }
   ]
 }

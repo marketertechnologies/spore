@@ -87,7 +87,7 @@ as MCP server keys or git-push tokens. It wires them through systemd
 
 With `services.spore-fleet.enable`, home-manager links each skill the
 spore binary embeds (`bootstrap/skills/`: diagram, select-agent,
-spore-bootstrap) into the operator user's scopes, refreshed on every
+spore-bootstrap, secrets-profile) into the operator user's scopes, refreshed on every
 rebuild:
 
 - `~/.claude/skills/<name>`: Claude Code personal scope.
@@ -177,7 +177,7 @@ The repo root is a Claude Code plugin marketplace (`.claude-plugin/marketplace.j
 /plugin install spore@spore
 ```
 
-Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`.
+Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`, `/spore:secrets-profile`.
 
 `claudeManagedSettings.plugin.enable` (default false) builds a store copy of the marketplace (manifests from the repo, skills from `spore install --dest`), registers it in the drop-in under `extraKnownMarketplaces.spore` as a `directory` source and sets `enabledPlugins."spore@spore" = true`. It is off by default because the namespaced names differ from the bare `/select-agent` and `/spore-bootstrap` that roles and docs use, and the home-manager links in `~/.claude/skills` stay regardless (Codex needs `~/.agents/skills`). With both on, each skill is listed twice.
 

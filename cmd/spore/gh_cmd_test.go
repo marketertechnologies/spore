@@ -32,6 +32,7 @@ func ghTestProject(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("SPORE_PROJECT_ROOT", root)
+	noBroker(t)
 	t.Chdir(root)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

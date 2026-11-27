@@ -16,7 +16,7 @@ func fakeGH(t *testing.T) {
 	bin := t.TempDir()
 	writeFile(t, filepath.Join(bin, "gh"), `#!/bin/sh
 echo "gh $* repo=$GH_REPO"
-test -n "$GH_TOKEN" || { echo "no token" >&2; exit 4; }
+grep -q 'oauth_token: "ghs_testtoken"' "$GH_CONFIG_DIR/hosts.yml" || { echo "no token" >&2; exit 4; }
 if [ "$1 $2" = "pr create" ]; then echo https://github.com/acme/alpha/pull/9; fi
 case "$*" in *body-file*|*" -F -"*) echo "body=$(cat)";; esac
 `)
