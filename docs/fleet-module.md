@@ -87,7 +87,7 @@ as MCP server keys or git-push tokens. It wires them through systemd
 
 With `services.spore-fleet.enable`, home-manager links each skill the
 spore binary embeds (`bootstrap/skills/`: diagram, select-agent,
-spore-bootstrap) into the operator user's scopes, refreshed on every
+spore-bootstrap, secrets-profile) into the operator user's scopes, refreshed on every
 rebuild:
 
 - `~/.claude/skills/<name>`: Claude Code personal scope.
@@ -147,6 +147,19 @@ Stale `~/.claude/hooks/*.pl` copies become unreferenced; delete them once the pr
 
 Set `claudeManagedSettings.enable = false` to keep managing hooks in `~/.claude/settings.json`.
 
+### notify-coordinator: worker notifications
+
+The managed drop-in binds `spore hooks notify-coordinator` to every Claude Code `Notification` event on the host. It reads the hook payload on stdin (`notification_type`, `message`) and writes one envelope, source `notification`, body `worker <slug>: <type>: <message>`, to the coordinator inbox of `$WT_PROJECT`. It drops:
+
+- role panes (`$SPORE_ROLE` set): the role loop already reports their progress (source `role-loop`);
+- the coordinator's own pane (`$SPORE_TASK_INBOX` is the coordinator inbox) and non-spore sessions (no `$WT_PROJECT`);
+- `idle_prompt` and the other types that report something already finished (`auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`, `plugin_notification`); any other type, `permission_prompt` included, is forwarded;
+- a repeat of the same type and message from the same worker: within 30 seconds for requests the worker waits on (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`), whose message names only the tool, so only a true burst collapses and a second Bash approval minutes later still gets through; within 5 minutes for every other type. Stamp files live under `<coordinator state>/<project>/notify-stamps/`, are written only after the inbox write succeeds, and are pruned after an hour.
+
+A role pane blocked on a permission prompt or an MCP form is not reported this way; the role loop's stall handling catches it.
+
+`spore hooks notify-coordinator <project>` still writes a bare `poke` envelope for manual use.
+
 ### watch-inbox: delivery and trust
 
 `spore hooks watch-inbox` runs as an `asyncRewake` Stop hook. It waits on the session inbox (`$SPORE_TASK_INBOX`), claims each top-level `*.json` by renaming it into `inbox/read/`, and prints one line per message on stdout; interactive sessions receive that text when the hook wakes them. The rename is the claim, so two watchers on one inbox never both deliver a message.
@@ -164,7 +177,7 @@ The repo root is a Claude Code plugin marketplace (`.claude-plugin/marketplace.j
 /plugin install spore@spore
 ```
 
-Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`.
+Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`, `/spore:secrets-profile`.
 
 `claudeManagedSettings.plugin.enable` (default false) builds a store copy of the marketplace (manifests from the repo, skills from `spore install --dest`), registers it in the drop-in under `extraKnownMarketplaces.spore` as a `directory` source and sets `enabledPlugins."spore@spore" = true`. It is off by default because the namespaced names differ from the bare `/select-agent` and `/spore-bootstrap` that roles and docs use, and the home-manager links in `~/.claude/skills` stay regardless (Codex needs `~/.agents/skills`). With both on, each skill is listed twice.
 

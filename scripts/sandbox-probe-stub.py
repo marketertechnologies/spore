@@ -1,9 +1,11 @@
 """Mock Anthropic Messages API for scripts/sandbox-probe.sh.
 
 A prompt carrying `SBPROBE:<base64url json>` gets one scripted Bash
-tool_use ({"command", "disable"}); once the conversation holds the
-tool_result, the reply echoes it as `TOOL_RESULT is_error=<bool>` plus
-the output, so the probe can grade it. Any other request (titles,
+tool_use ({"command", "disable"}), or, for {"steps": [{"tool", "input"},
+...]}, one tool_use per step in order. Once the conversation holds a
+tool_result for every step, the reply echoes each as
+`TOOL_RESULT is_error=<bool>` plus the output, so the probe can grade
+it. Any other request (titles,
 side queries) gets a plain "ok". Streaming and non-streaming both work.
 """
 import base64
@@ -37,19 +39,26 @@ def plan(body):
                 spec = json.loads(base64.urlsafe_b64decode(found.group(1)))
     if spec is None:
         return [{"type": "text", "text": "ok"}], "end_turn"
-    # Claude Code may append its own system message after the tool_result,
+    if "steps" in spec:
+        steps = [(s["tool"], s["input"]) for s in spec["steps"]]
+    else:
+        tool_input = {"command": spec["command"], "description": "sandbox probe", "timeout": 600000}
+        if spec.get("disable"):
+            tool_input["dangerouslyDisableSandbox"] = True
+        steps = [("Bash", tool_input)]
+    # Claude Code may append its own system message after a tool_result,
     # so scan every message rather than the last one.
+    results = []
     for m in msgs:
         if not isinstance(m.get("content"), list):
             continue
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") == "tool_result":
-                text = "TOOL_RESULT is_error=%s\n%s" % (bool(b.get("is_error")), result_text(b))
-                return [{"type": "text", "text": text}], "end_turn"
-    tool_input = {"command": spec["command"], "description": "sandbox probe", "timeout": 600000}
-    if spec.get("disable"):
-        tool_input["dangerouslyDisableSandbox"] = True
-    return [{"type": "tool_use", "id": "toolu_sbprobe", "name": "Bash", "input": tool_input}], "tool_use"
+                results.append("TOOL_RESULT is_error=%s\n%s" % (bool(b.get("is_error")), result_text(b)))
+    if len(results) >= len(steps):
+        return [{"type": "text", "text": "\n".join(results)}], "end_turn"
+    name, tool_input = steps[len(results)]
+    return [{"type": "tool_use", "id": "toolu_sbprobe%d" % len(results), "name": name, "input": tool_input}], "tool_use"
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
