@@ -87,7 +87,7 @@ as MCP server keys or git-push tokens. It wires them through systemd
 
 With `services.spore-fleet.enable`, home-manager links each skill the
 spore binary embeds (`bootstrap/skills/`: diagram, select-agent,
-spore-bootstrap) into the operator user's scopes, refreshed on every
+spore-bootstrap, secrets-profile) into the operator user's scopes, refreshed on every
 rebuild:
 
 - `~/.claude/skills/<name>`: Claude Code personal scope.
@@ -147,6 +147,19 @@ Stale `~/.claude/hooks/*.pl` copies become unreferenced; delete them once the pr
 
 Set `claudeManagedSettings.enable = false` to keep managing hooks in `~/.claude/settings.json`.
 
+### notify-coordinator: worker notifications
+
+The managed drop-in binds `spore hooks notify-coordinator` to every Claude Code `Notification` event on the host. It reads the hook payload on stdin (`notification_type`, `message`) and writes one envelope, source `notification`, body `worker <slug>: <type>: <message>`, to the coordinator inbox of `$WT_PROJECT`. It drops:
+
+- role panes (`$SPORE_ROLE` set): the role loop already reports their progress (source `role-loop`);
+- the coordinator's own pane (`$SPORE_TASK_INBOX` is the coordinator inbox) and non-spore sessions (no `$WT_PROJECT`);
+- `idle_prompt` and the other types that report something already finished (`auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`, `plugin_notification`); any other type, `permission_prompt` included, is forwarded;
+- a repeat of the same type and message from the same worker: within 30 seconds for requests the worker waits on (`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`), whose message names only the tool, so only a true burst collapses and a second Bash approval minutes later still gets through; within 5 minutes for every other type. Stamp files live under `<coordinator state>/<project>/notify-stamps/`, are written only after the inbox write succeeds, and are pruned after an hour.
+
+A role pane blocked on a permission prompt or an MCP form is not reported this way; the role loop's stall handling catches it.
+
+`spore hooks notify-coordinator <project>` still writes a bare `poke` envelope for manual use.
+
 ### watch-inbox: delivery and trust
 
 `spore hooks watch-inbox` runs as an `asyncRewake` Stop hook. It waits on the session inbox (`$SPORE_TASK_INBOX`), claims each top-level `*.json` by renaming it into `inbox/read/`, and prints one line per message on stdout; interactive sessions receive that text when the hook wakes them. The rename is the claim, so two watchers on one inbox never both deliver a message.
@@ -164,7 +177,7 @@ The repo root is a Claude Code plugin marketplace (`.claude-plugin/marketplace.j
 /plugin install spore@spore
 ```
 
-Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`.
+Plugin skills are namespaced: `/spore:diagram`, `/spore:select-agent`, `/spore:spore-bootstrap`, `/spore:secrets-profile`.
 
 `claudeManagedSettings.plugin.enable` (default false) builds a store copy of the marketplace (manifests from the repo, skills from `spore install --dest`), registers it in the drop-in under `extraKnownMarketplaces.spore` as a `directory` source and sets `enabledPlugins."spore@spore" = true`. It is off by default because the namespaced names differ from the bare `/select-agent` and `/spore-bootstrap` that roles and docs use, and the home-manager links in `~/.claude/skills` stay regardless (Codex needs `~/.agents/skills`). With both on, each skill is listed twice.
 
@@ -214,14 +227,37 @@ The full option reference lives in `nixosModules/spore-fleet.nix`.
 
 One bad task, one crashing agent or one hung call must not stop the fleet. Each pass:
 
-- **Counts agents against `max_workers`.** A worker session takes one slot; a `loop: role` task with any live pane (engineer plus reviewers) takes one slot too. Running units keep their slot; new ones fill free slots in task order and the rest are listed as skipped. Paused and blocked tasks whose session is still alive keep counting.
-- **Caps crash loops.** A worker or coordinator that dies before any pass saw it alive for 60s is a fast death. After 3 in a row the pass stops respawning it, lists it as crash-looped, and tells the coordinator inbox once. A healthy run resets the count. To retry a worker, pause the task and start it again; to retry the coordinator, start it by hand (`spore coordinator start`) or run a pass with the fleet disabled. Records live under `<state dir>/<project>/fleet/`. Role panes use their per-round cap (see `docs/role-loop.md`); a role session that vanishes before it ran 60s counts toward it.
+- **Counts agent units against `max_workers`.** A worker session takes one slot; a `loop: role` task with any live pane takes one slot too, however many panes it has: the engineer stays up while a reviewer works, so a loop briefly runs 2 agents in one slot, and `max_workers = 3` can mean up to 6 role panes plus the coordinator. That is deliberate: the slot caps concurrent tasks (worktrees, PRs, review traffic), and `agentMemoryMax` caps memory. A role loop in phase `done` (PR ready, panes reaped, waiting for the merge) takes no slot; it is still driven for PR feedback and reopen. Running units keep their slot; new ones fill free slots in task order and the rest are listed as skipped. Paused and blocked tasks whose session is still alive keep counting. `spore fleet status` prints the real count: `agents: N running (coordinator C, workers W, role panes R); slots U/M`.
+- **Skips the pass when tmux cannot list sessions.** No server (or a stale socket) is an empty list. Any other failure of `tmux list-sessions`, a call killed by `SPORE_FLEET_CALL_TIMEOUT` included, ends the pass with an error before any liveness decision, so a slow or wedged server never reads as "every agent died" (no false respawn, crash-loop notice or ledger line).
+- **Caps crash loops.** A worker or coordinator that dies before any pass saw it alive for 60s is a fast death. After 3 in a row the pass stops respawning it, lists it as crash-looped, and tells the coordinator inbox once. A coordinator crash loop also raises an operator alert (tmux message on every attached client, `alert:` line in `spore fleet status`; see `docs/alerts.md`), since its own inbox is unread while it is down. A healthy run resets the count. To retry a worker, pause the task and start it again; to retry the coordinator, start it by hand (`spore coordinator start`) or run a pass with the fleet disabled. Records live under `<state dir>/<project>/fleet/`. Role panes use their per-round cap (see `docs/role-loop.md`); a role session that vanishes before it ran 60s counts toward it.
 - **Sees through a greet shell.** A coordinator session whose first pane is dead, or is an idle shell with no child process after 30s (a launcher that fell back to its greet shell), is killed and respawned under the same cap. A launcher that runs the agent as a child is alive.
 - **Skips bad task files.** A `tasks/*.md` with no frontmatter, no `slug`, a slug that does not match the file name, or a slug that cannot name `wt/<slug>` is skipped with one coordinator notice per file and reason. A task that fails to spawn or reap is a warning. Neither aborts the pass, and a coordinator that fails to spawn does not either.
 - **Runs one at a time per project.** A pass takes a non-blocking lock at `<state dir>/<project>/fleet/reconcile.lock`; a pass that cannot take it (the timer, the `tasks/` path unit and the coordinator Stop hook can fire together) exits 0 and does nothing. `spore task start` holds the same lock from before its status flip until its session is up, waiting up to 2 minutes for a running pass, so the pass its own flip wakes cannot race it on `git worktree add`.
 - **Time-boxes calls.** Each git, tmux and matter call gets `SPORE_FLEET_CALL_TIMEOUT` (default `2m`) and is killed with its process group past it. The whole pass gets `SPORE_FLEET_PASS_TIMEOUT` (default `10m`); past it in-flight calls are killed and `spore fleet reconcile` exits non-zero. The module sets `TimeoutStartSec=15min` on each reconcile oneshot as the outer bound; raise `SPORE_FLEET_PASS_TIMEOUT` through `extraEnv` only together with it.
 
 `spore fleet replenish-hook` (the coordinator Stop hook) reconciles only when the cwd's repo is the session's own project (`$SPORE_PROJECT_ROOT`, else a repo named `$WT_PROJECT`), so an agent started from a coordinator pane in another repo does not spawn a stray coordinator there.
+
+## Emergency stop
+
+`spore fleet disable` only removes the kill-switch flag: the next pass reaps the coordinator and spawns nothing, but workers and role panes keep running. `spore fleet stop [--project NAME]` is the emergency stop. It removes the flag the same way, then kills every agent session spore spawned and prints each one (`killed: <session>`):
+
+- `spore/<project>/coordinator`;
+- `spore/<project>/<slug>` workers;
+- `spore-role/<project>/<slug>/engineer` and `spore-role/<project>/<slug>/reviewer-<instance>` panes.
+
+Without `--project` it covers every project on the host. A session must match one of these shapes exactly (three or four `/`-separated parts, no spaces) and carry the `SPORE_TASK_SLUG` and `WT_PROJECT` that every spore spawn sets with `tmux new-session -e`, naming the same project and slug. `spore/pilot/*` (the operator's `spore-attach pilot` shells) never matches, and neither does any session someone made by hand under a spore-looking name. When the flag cannot be removed, the sessions are still killed and the command exits non-zero, since the reconciler would respawn them. A pass already past its own flag check re-reads the flag before each spawn and stops; `stop` also sweeps twice.
+
+Agents may stop the fleet (the coordinator, on operator request): with the secrets broker the flag is not the agent's, and `disable` / `stop` ask the broker to remove it, also from a sandboxed pane, where the write fails with `EROFS`. Only root or a pilot can re-enable it (`docs/secrets.md`). After a stop, `spore fleet enable` (or `sudo spore fleet enable`) brings the fleet back on the next pass; role panes then count one respawn each toward their per-round cap.
+
+## tmux server and memory
+
+`tmux.server.enable` (default true) runs the fleet user's tmux server as the `spore-tmux` systemd user service (`tmux -D`), so:
+
+- **it survives a reboot.** The user lingers, so the unit starts at boot with nobody logged in, and the reconciler respawns the coordinator, workers and role loops into it. Each reconcile unit `Wants=` and orders `After=` it. Before this, the server was whatever an SSH login (`spore-attach`) or a reconcile pass happened to start; a server started by a pass lived in the oneshot's cgroup and died with it at the end of the pass, hanging up every pane. The reconcile units now also set `KillMode=process`, so a server a pass still has to start itself outlives it.
+- **memory is bounded.** The service runs in `spore-agents.slice`, and tmux (built with systemd support, as nixpkgs' is) moves each new pane into its own `tmux-spawn-*.scope` in the server's slice. `agentMemoryMax` (for example `"24G"` or `"75%"`; default null, unbounded) sets the slice's `MemoryMax`, so every coordinator, worker and role pane together cannot take the host's memory: the kernel OOM-kills inside the slice instead. Pilot shells on the same server count toward it too. The reconcile passes run in the slice as well.
+- **panes get a fixed environment.** The server's environment becomes every new pane's: `PATH` (the reconciler's tools, then `/run/wrappers/bin`, the user profile and `/run/current-system/sw/bin`), `LANG`, `LOCALE_ARCHIVE`, `SPORE_FLEET_MAX_WORKERS`, `SPORE_HOST_ID` and, with the broker, `SPORE_FLEET_FLAG`.
+
+Stopping or restarting `spore-tmux.service` kills every session on the server, the operator's pilot shells included, so home-manager keeps a running one on switch (`X-SwitchMethod=keep-old`; the slice too) and a changed unit applies at the next boot. A changed `agentMemoryMax` applies at once with `systemctl --user set-property spore-agents.slice MemoryMax=<value>`. On the first deploy a server started from an SSH login usually already owns the socket; the unit cannot adopt it and waits, checking every 10 seconds, until it exits (at the latest at the next reboot), and until then the old server keeps working outside the slice.
 
 ## Horizontal Scale
 

@@ -3,9 +3,10 @@
 #
 #   scripts/pr-before-after.sh <before-ref> <after-ref> <scenario.sh>
 #
-# The scenario runs twice, each time in a fresh sandbox: HOME, XDG dirs and
-# the tmux server are private, SPORE_* is cleared, and $SPORE is the binary
-# under test. It never touches the live fleet, ~/.claude or /etc.
+# The scenario runs twice, each time in a fresh sandbox: HOME, XDG dirs,
+# TMPDIR and the tmux server are private, SPORE_* is cleared, the secrets
+# broker socket points at an absent path (docs/secrets.md), and $SPORE is the
+# binary under test. It never touches the live fleet, ~/.claude or /etc.
 # Scenario env: SPORE (binary), SANDBOX (scratch dir), SIDE (before|after),
 # SRC (checkout of the ref, for fixtures).
 set -euo pipefail
@@ -43,12 +44,13 @@ build() {
 
 run() {
 	local side=$1 sb="$work/$1/sandbox"
-	mkdir -p "$sb"/{home,state,config,cache,tmux}
+	mkdir -p "$sb"/{home,state,config,cache,tmux,tmp}
 	echo
 	echo "=================== $side ==================="
 	env -i PATH="$work/$side/bin:$PATH" TERM="${TERM:-xterm}" LANG="${LANG:-C.UTF-8}" \
 		HOME="$sb/home" XDG_STATE_HOME="$sb/state" XDG_CONFIG_HOME="$sb/config" \
-		XDG_CACHE_HOME="$sb/cache" TMUX_TMPDIR="$sb/tmux" \
+		XDG_CACHE_HOME="$sb/cache" TMUX_TMPDIR="$sb/tmux" TMPDIR="$sb/tmp" \
+		SPORE_SECRETS_SOCKET="$sb/no-broker.sock" \
 		GOCACHE="${GOCACHE:-$(go env GOCACHE)}" GOMODCACHE="$(go env GOMODCACHE)" \
 		GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid \
 		GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid \

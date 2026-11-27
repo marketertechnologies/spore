@@ -107,7 +107,9 @@ func MergeWithOptions(tasksDir, slug string, opts MergeOptions) error {
 	}
 	_ = gitCmd(projectRoot, "branch", "-d", branch).Run()
 
-	killAllSlugSessions(tasksDir, projectRoot, slug)
+	if err := killAllSlugSessions(tasksDir, projectRoot, slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task merge: %v\n", err)
+	}
 
 	return nil
 }

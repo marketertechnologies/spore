@@ -37,9 +37,10 @@ type Server struct {
 	gitMu  map[string]*sync.Mutex
 
 	// mint and remote replace the App token and the https remote in
-	// tests.
-	mint   func(ctx context.Context, project string) (string, error)
-	remote func(repo string) string
+	// tests; ghSocket points brokered gh calls at a stub API.
+	mint     func(ctx context.Context, project string) (string, error)
+	remote   func(repo string) string
+	ghSocket string
 }
 
 // NewServer prepares a broker for cfg. The agent user and pilot group
@@ -266,9 +267,9 @@ func (s *Server) list(c Caller, req Request) (Response, []byte) {
 	return Response{Data: b}, nil
 }
 
-// allowed applies the scoping rules: pilots and the coordinator (an
-// agent with no task) see every profile; a worker sees its project's
-// profiles plus live grants.
+// allowed applies the scoping rules: pilots and a caller with no task
+// see every profile; any agent with a task (coordinators claim the task
+// "coordinator") sees its project's profiles plus live grants.
 func (s *Server) allowed(c Caller, req Request, profile string) (ok, viaGrant bool) {
 	p, exists := s.cfg.Profiles[profile]
 	if !exists {

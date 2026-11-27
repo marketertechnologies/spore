@@ -12,6 +12,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/versality/spore/internal/callbudget"
@@ -54,8 +56,9 @@ type Config struct {
 // one of Spawned / Kept / Skipped / Crashed).
 type Result struct {
 	// Disabled is true when the kill-switch flag is missing and
-	// Reconcile short-circuited. The slug lists are empty in that
-	// case; the sessions already running (if any) are NOT reaped.
+	// Reconcile short-circuited, or went missing mid-pass and the pass
+	// stopped before its next spawn. The sessions already running (if
+	// any) are NOT reaped; `spore fleet stop` does that.
 	Disabled bool
 
 	// Locked is true when another pass or `spore task start` held the
@@ -123,6 +126,7 @@ func Reconcile(cfg Config) (Result, error) {
 		// preserving, so we tear it down with the flag.
 		ReapCoordinator(cfg.ProjectRoot)
 		clearGuard(coordinatorGuardPath(cfg.ProjectRoot))
+		clearCoordinatorAlert(cfg.ProjectRoot)
 		task.RecordEventThrottled(cfg.ProjectRoot, "reconcile-disabled", skipEventEvery,
 			events.Event{Kind: events.ReconcileSkipped, Detail: "fleet disabled (kill-switch flag missing)"})
 		return Result{Disabled: true}, nil
@@ -132,7 +136,16 @@ func Reconcile(cfg Config) (Result, error) {
 		cfg.MaxWorkers = DefaultMaxWorkers
 	}
 
-	coordinatorWarning := superviseCoordinator(cfg.ProjectRoot)
+	// Every liveness decision below (coordinator respawn, worker
+	// crash guard, slot count) reads this listing. A failed or
+	// timed-out listing is not "no sessions": it would count every
+	// healthy agent as a fast death, so the pass is skipped.
+	sessions, err := task.ListSessions()
+	if err != nil {
+		return Result{}, fmt.Errorf("pass skipped: %w", err)
+	}
+
+	coordinatorWarning := superviseCoordinator(cfg.ProjectRoot, slices.Contains(sessions, CoordinatorSessionName(cfg.ProjectRoot)))
 
 	matterRes := syncMatters(cfg.ProjectRoot)
 
@@ -271,7 +284,10 @@ func Reconcile(cfg Config) (Result, error) {
 	// One slot per agent unit: a worker session, or a role loop with
 	// any live pane (engineer plus reviewers count once). Running units
 	// hold their slot; new ones fill free slots in actives order.
-	roleRunning := runningRoleLoops(cfg.ProjectRoot)
+	roleRunning, err := runningRoleLoops(cfg.ProjectRoot)
+	if err != nil {
+		return res, fmt.Errorf("pass stopped: %w", err)
+	}
 	used := len(runningSet) + len(roleRunning)
 	var drive []string
 
@@ -280,7 +296,10 @@ func Reconcile(cfg Config) (Result, error) {
 	for _, slug := range actives {
 		if roleLooped[slug] {
 			switch {
-			case roleRunning[slug]:
+			case roleRunning[slug], roleLoopDone(cfg.ProjectRoot, slug):
+				// A done loop has no panes and waits on the operator's
+				// merge; it is still driven (PR feedback, reopen) but
+				// takes no slot.
 				drive = append(drive, slug)
 			case used >= cfg.MaxWorkers:
 				res.Skipped = append(res.Skipped, slug)
@@ -313,6 +332,9 @@ func Reconcile(cfg Config) (Result, error) {
 		if used >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
+		}
+		if stopped(&res) {
+			return res, nil
 		}
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
@@ -350,6 +372,9 @@ func Reconcile(cfg Config) (Result, error) {
 	// on the first tick, so a task starts moving on the same pass that
 	// classified it.
 	for _, slug := range drive {
+		if stopped(&res) {
+			return res, nil
+		}
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
 		}
@@ -369,27 +394,34 @@ func Reconcile(cfg Config) (Result, error) {
 
 // runningRoleLoops returns the slugs with at least one live role pane
 // (spore-role/<project>/<slug>/<role>).
-func runningRoleLoops(projectRoot string) map[string]bool {
+func runningRoleLoops(projectRoot string) (map[string]bool, error) {
+	slugs, err := task.SpawnedRoleSlugs(projectRoot)
+	if err != nil {
+		return nil, err
+	}
 	out := map[string]bool{}
-	project, err := task.ProjectName(projectRoot)
-	if err != nil {
-		return out
+	for _, s := range slugs {
+		out[s] = true
 	}
-	lines, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	if err != nil {
-		return out
+	return out, nil
+}
+
+// roleLoopDone reports whether slug's role loop reached PhaseDone (PR
+// ready, waiting for the operator's merge).
+func roleLoopDone(projectRoot, slug string) bool {
+	snap, err := DeriveSnapshot(projectRoot, slug)
+	return err == nil && snap.Phase == PhaseDone
+}
+
+// stopped re-reads the kill switch before each spawn, so a pass
+// already past its own check spawns nothing after `spore fleet stop`.
+func stopped(res *Result) bool {
+	if on, err := Enabled(); err != nil || on {
+		return false
 	}
-	prefix := "spore-role/" + project + "/"
-	for _, line := range strings.Split(string(lines), "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
-		if !ok {
-			continue
-		}
-		if slug, _, ok := strings.Cut(rest, "/"); ok && slug != "" {
-			out[slug] = true
-		}
-	}
-	return out
+	res.Disabled = true
+	res.warn("fleet disabled during the pass; nothing more spawned")
+	return true
 }
 
 // workerGuards returns a loader for per-slug crash-loop records under
@@ -523,14 +555,29 @@ func LoadMaxWorkers(projectRoot string) (n int, set bool, err error) {
 	return DefaultMaxWorkers, false, nil
 }
 
-// FlagPath returns the kill-switch path: $SPORE_FLEET_FLAG when set
-// (the NixOS module points it at a flag the agent user cannot write),
-// else `<XDG_STATE_HOME>/spore/fleet-enabled`, falling back to
+// HostConfigPath is the host config whose `fleet_flag` pins the
+// kill-switch path (the NixOS module writes it with the secrets
+// broker). Deliberately not env-overridable; tests repoint it.
+var HostConfigPath = secrets.DefaultConfigPath
+
+// FlagPath returns the kill-switch path: the host config's
+// `fleet_flag` when set, else $SPORE_FLEET_FLAG, else
+// `<XDG_STATE_HOME>/spore/fleet-enabled`, falling back to
 // `$HOME/.local/state/spore/fleet-enabled` when XDG_STATE_HOME is
 // unset. Reconcile short-circuits when this path is missing.
+//
+// The host config wins over the env so an agent cannot point
+// SPORE_FLEET_FLAG at a file of its own and reconcile past the switch.
 func FlagPath() (string, error) {
-	if p := os.Getenv("SPORE_FLEET_FLAG"); p != "" {
+	env := os.Getenv("SPORE_FLEET_FLAG")
+	if p := hostFlagPath(); p != "" {
+		if env != "" && filepath.Clean(env) != filepath.Clean(p) {
+			fmt.Fprintf(os.Stderr, "spore fleet: ignoring SPORE_FLEET_FLAG=%s: %s pins the flag at %s\n", env, HostConfigPath, p)
+		}
 		return p, nil
+	}
+	if env != "" {
+		return env, nil
 	}
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
@@ -541,6 +588,20 @@ func FlagPath() (string, error) {
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "spore", "fleet-enabled"), nil
+}
+
+func hostFlagPath() string {
+	b, err := os.ReadFile(HostConfigPath)
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		FleetFlag string `json:"fleet_flag"`
+	}
+	if json.Unmarshal(b, &c) != nil {
+		return ""
+	}
+	return c.FleetFlag
 }
 
 // Enable creates the kill-switch flag (along with parent dirs).
@@ -575,12 +636,29 @@ func Disable() error {
 	return nil
 }
 
+// brokerCall is a test seam for the secrets broker round trip.
+var brokerCall = func(enable bool) error {
+	if !secrets.Available() {
+		return secrets.ErrUnavailable
+	}
+	_, _, err := secrets.Call(secrets.Request{Op: secrets.OpFleet, Enable: enable}, nil, 30*time.Second)
+	return err
+}
+
+// viaBroker asks the broker to flip a flag this process cannot write:
+// EACCES/EPERM for a flag owned by the broker user, EROFS from inside
+// the agent sandbox, where the flag's directory is mounted read-only.
 func viaBroker(err error, enable bool) error {
-	if !errors.Is(err, os.ErrPermission) || !secrets.Available() {
+	if !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EROFS) {
 		return err
 	}
-	_, _, berr := secrets.Call(secrets.Request{Op: secrets.OpFleet, Enable: enable}, nil, 30*time.Second)
-	return berr
+	if berr := brokerCall(enable); berr != nil {
+		if errors.Is(berr, secrets.ErrUnavailable) {
+			return err
+		}
+		return berr
+	}
+	return nil
 }
 
 // Enabled reports whether the kill-switch flag is present.
@@ -611,9 +689,6 @@ func LiveUnits(projectRoot string) (workers, roleLoops []string, coordinator boo
 		}
 		workers = append(workers, s)
 	}
-	for s := range runningRoleLoops(projectRoot) {
-		roleLoops = append(roleLoops, s)
-	}
-	sort.Strings(roleLoops)
+	roleLoops, _ = task.SpawnedRoleSlugs(projectRoot)
 	return workers, roleLoops, coordinator
 }

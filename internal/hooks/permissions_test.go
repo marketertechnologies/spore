@@ -151,3 +151,133 @@ func TestDefaultDeny_ClaudeCredentials(t *testing.T) {
 		}
 	}
 }
+
+// editRuleMatches approximates claude-code's gitignore-style Edit(...)
+// path match for "//" and "~/" rules: "**/" spans zero or more
+// directories, "*" one path segment, and a rule that matches a
+// directory also covers everything under it.
+func editRuleMatches(rule, home, path string) bool {
+	inner, ok := strings.CutPrefix(rule, "Edit(")
+	if !ok {
+		return false
+	}
+	inner = strings.TrimSuffix(inner, ")")
+	switch {
+	case strings.HasPrefix(inner, "//"):
+		inner = inner[1:]
+	case strings.HasPrefix(inner, "~/"):
+		inner = home + inner[1:]
+	default:
+		return false
+	}
+	var b strings.Builder
+	for i := 0; i < len(inner); {
+		switch {
+		case strings.HasPrefix(inner[i:], "**/"):
+			b.WriteString("(?:.*/)?")
+			i += 3
+		case strings.HasPrefix(inner[i:], "/**") && i+3 == len(inner):
+			b.WriteString("/.*")
+			i += 3
+		case inner[i] == '*':
+			b.WriteString("[^/]*")
+			i++
+		default:
+			b.WriteString(regexp.QuoteMeta(inner[i : i+1]))
+			i++
+		}
+	}
+	re := regexp.MustCompile("^" + b.String() + "$")
+	for p := path; p != "/" && p != "."; p = filepath.Dir(p) {
+		if re.MatchString(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDefaultDeny_ExecVectors(t *testing.T) {
+	const home = "/home/u"
+	deny := DefaultDeny()
+	denied := func(path string) bool {
+		for _, r := range deny {
+			if editRuleMatches(r, home, path) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range []string{
+		"/home/u/proj/.git/hooks/pre-commit",
+		"/home/u/proj/.git/config",
+		"/home/u/proj/.git/worktrees/wt/config.worktree",
+		"/home/u/proj/.git/modules/sub/hooks/post-checkout",
+		"/home/u/proj/.worktrees/wt/.git",
+		"/tmp/scratch/.git/hooks/pre-commit",
+		"/home/u/mirrors/repo.git/hooks/pre-receive",
+		"/home/u/mirrors/repo.git/config",
+		"/home/u/proj/.envrc",
+		"/home/u/proj/.mcp.json",
+		"/home/u/proj/.claude/settings.json",
+		"/home/u/proj/.claude/settings.local.json",
+		"/home/u/proj/.claude/hooks/guard.sh",
+		"/home/u/proj/.claude/agents/x.md",
+		"/home/u/.claude/agents/x.md",
+		"/home/u/.claude/commands/x.md",
+		"/home/u/.claude/settings.json",
+		"/home/u/.claude/hooks/x.pl",
+		"/home/u/.claude/plugins/p/hooks/hooks.json",
+		"/home/u/.claude.json",
+		"/home/u/.bashrc",
+		"/home/u/.profile",
+		"/home/u/.bash_profile",
+		"/home/u/.bash_logout",
+		"/home/u/.config/fish/config.fish",
+		"/home/u/.npmrc",
+		"/home/u/.yarnrc.yml",
+		"/home/u/.zshrc",
+		"/home/u/.tmux.conf",
+		"/home/u/.config/tmux/tmux.conf",
+		"/home/u/.gitconfig",
+		"/home/u/.config/git/config",
+		"/home/u/.config/systemd/user/x.service",
+		"/home/u/.config/environment.d/path.conf",
+		"/home/u/.huskyrc",
+		"/home/u/.config/husky/init.sh",
+		"/home/u/.local/bin/spore",
+		"/home/u/.ssh/authorized_keys",
+		"/home/u/.config/spore/proj/secrets.env",
+	} {
+		if !denied(p) {
+			t.Errorf("not denied: %s", p)
+		}
+	}
+	for _, p := range []string{
+		"/home/u/proj/main.go",
+		"/home/u/proj/.claude/rules/x.md",
+		"/home/u/proj/.github/workflows/ci.yml",
+		"/home/u/proj/.gitignore",
+		"/home/u/proj/.spore/task/responses/engineer-round-1.json",
+		"/home/u/.claude/projects/-home-u-proj/memory/MEMORY.md",
+		"/home/u/.claude/skills/diagram/SKILL.md",
+		"/home/u/.local/state/spore/proj/inbox/x.json",
+		"/tmp/claude-1000/scratch.txt",
+	} {
+		if denied(p) {
+			t.Errorf("denied: %s", p)
+		}
+	}
+}
+
+func TestLoadPermissions_OptOutDropsExecVectors(t *testing.T) {
+	p, err := LoadPermissions(writeSporeToml(t, "[permissions]\ndefault_deny = false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.DenyRules(); !reflect.DeepEqual(got, kernelDeny) {
+		t.Fatalf("deny = %q, want %q", got, kernelDeny)
+	}
+	if !slices.Contains(DefaultDeny(), "Edit(//**/.git/**)") {
+		t.Fatalf("default deny lacks the .git rule: %q", DefaultDeny())
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
@@ -16,6 +17,19 @@ func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
 	t.Setenv("SPORE_COORDINATOR_STATE_DIR", state)
 	t.Setenv("WT_PROJECT", "project")
 	t.Setenv("SPORE_TASK_INBOX", filepath.Join(t.TempDir(), "worker", "inbox"))
+	t.Setenv("SPORE_ROLE", "")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if _, err := w.WriteString(`{"message":"Claude needs your permission","notification_type":"permission_prompt"}`); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	orig := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = orig }()
 
 	if code := runHooksNotifyCoordinator(nil); code != 0 {
 		t.Fatalf("runHooksNotifyCoordinator(nil) = %d, want 0", code)
@@ -32,6 +46,38 @@ func TestHooksNotifyCoordinatorNoArgsUsesEnv(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("notify-coordinator env mode did not write a json poke")
+	}
+}
+
+func TestReadHookPayloadOpenPipeTimesOut(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer w.Close()
+	defer r.Close()
+	if got := readHookPayload(r, 50*time.Millisecond); got != nil {
+		t.Fatalf("readHookPayload on an open pipe = %v, want nil", got)
+	}
+}
+
+func TestReadHookPayloadClosedPipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString(`{"message":"m"}`); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	got := readHookPayload(r, time.Second)
+	if got == nil {
+		t.Fatal("readHookPayload = nil, want the payload")
+	}
+	b, _ := io.ReadAll(got)
+	if string(b) != `{"message":"m"}` {
+		t.Fatalf("payload = %q", b)
 	}
 }
 
@@ -150,5 +196,17 @@ func TestHooksSettingsMergesSporeTomlPermissions(t *testing.T) {
 	}
 	if code, _ := runHooksSettingsIn(t, sub); code != 1 {
 		t.Fatalf("runHooksSettings with unknown [permissions] key = %d, want 1", code)
+	}
+}
+
+func TestHookSessionReadsPayload(t *testing.T) {
+	var got string
+	captureHook(t, `{"hook_event_name":"Stop","session_id":"0f2c-abc"}`, func() int { got = hookSession(); return 0 })
+	if got != "0f2c-abc" {
+		t.Errorf("hookSession() = %q", got)
+	}
+	captureHook(t, "", func() int { got = hookSession(); return 0 })
+	if got != "" {
+		t.Errorf("empty stdin: hookSession() = %q", got)
 	}
 }

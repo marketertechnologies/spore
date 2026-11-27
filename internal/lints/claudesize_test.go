@@ -1,6 +1,9 @@
 package lints
 
 import (
+	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -111,6 +114,27 @@ func TestDefaultRunsClaudeSizeAndSubdir(t *testing.T) {
 }
 
 func TestDefaultLintsCleanOnRepo(t *testing.T) {
+	// claude-size lists files with git ls-files; the nix flake check copies
+	// the source tree without .git. Match listFiles' safe.directory, and
+	// require ../.. to be the toplevel: inside a parent repo ls-files would
+	// list none of spore's files and the test would pass vacuously.
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("git", "-c", "safe.directory="+root, "-C", root, "rev-parse", "--show-toplevel").Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Skipf("repo root is not a git work tree: %v", err)
+	}
+	if top := strings.TrimSpace(string(out)); top != root {
+		t.Skipf("repo root %s is inside another git repo (toplevel %s)", root, top)
+	}
 	for _, l := range []Lint{ClaudeSize{}, ClaudeSubdir{}} {
 		issues, err := l.Run("../..")
 		if err != nil {

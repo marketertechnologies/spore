@@ -171,8 +171,10 @@ in
       type = lib.types.attrsOf profileType;
       default = { };
       description = ''
-        Named capabilities. The coordinator may use every profile;
-        a worker only its own project's, plus `spore secrets grant`.
+        Named capabilities. Agents (workers, role-loop agents and
+        coordinators, which claim the task `coordinator`) use their own
+        project's profiles plus `spore secrets grant`; a caller with no
+        task, pilots and root use every profile. See docs/secrets.md.
       '';
     };
 

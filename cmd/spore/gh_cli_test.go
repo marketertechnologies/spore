@@ -24,7 +24,10 @@ func fakeBin(t *testing.T, name, body string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-const fakeGHScript = `echo "gh $* token=${GH_TOKEN:-none}"
+// The broker hands gh its token in hosts.yml, not GH_TOKEN; hosts= shows
+// the file's token.
+const fakeGHScript = `hosts=$(sed -n 's/^    oauth_token: "\(.*\)"$/\1/p' "$GH_CONFIG_DIR/hosts.yml" 2>/dev/null)
+echo "gh $* token=${GH_TOKEN:-none} hosts=${hosts:-none}"
 if [ "$1 $2" = "pr create" ]; then echo https://github.com/acme/proj/pull/9; fi
 case "$*" in *body-file*) echo "body=$(cat)";; esac
 `
@@ -68,6 +71,32 @@ func TestGHPRWithoutBrokerRunsGHAsApp(t *testing.T) {
 	}
 	if code := runGH([]string{"pr"}); code != 2 {
 		t.Fatalf("bare pr exit %d, want 2", code)
+	}
+}
+
+// On a broker host (the NixOS module's config is present) pointing
+// SPORE_SECRETS_SOCKET at nothing must not fall back to the App key.
+func TestGHRefusesKeyFallbackOnBrokerHost(t *testing.T) {
+	ghTestProject(t)
+	noBroker(t)
+	fakeBin(t, "gh", fakeGHScript)
+	marker := filepath.Join(t.TempDir(), "secrets-broker.json")
+	if err := os.WriteFile(marker, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := ghapp.BrokerHostMarker
+	ghapp.BrokerHostMarker = marker
+	t.Cleanup(func() { ghapp.BrokerHostMarker = orig })
+	for _, args := range [][]string{
+		{"exec", "--", "gh", "auth", "status"},
+		{"token"},
+		{"pr", "view", "9"},
+		{"api", "repos/acme/proj/pulls/9"},
+	} {
+		code, out, errOut := captureFn(t, func() int { return runGH(args) })
+		if code == 0 || strings.Contains(out, "token=") || !strings.Contains(errOut, "secrets broker") {
+			t.Errorf("%q: exit %d, stdout %q, stderr %q", args, code, out, errOut)
+		}
 	}
 }
 
@@ -205,7 +234,7 @@ func TestGHPRThroughBroker(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	for _, want := range []string{"gh pr create --draft --title t --body-file - token=ghs_cli", "body=hello", "/pull/9"} {
+	for _, want := range []string{"gh pr create --draft --title t --body-file - token=none hosts=ghs_cli", "body=hello", "/pull/9"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout %q lacks %q", out, want)
 		}
