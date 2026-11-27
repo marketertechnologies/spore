@@ -161,6 +161,9 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		}
 		reason = fmt.Sprintf("session gone within %s of spawn", FastDeathWindow)
 	}
+	if why := takeRoleBodyExecFail(stateDir, key); why != "" {
+		reason += "; pane: " + why
+	}
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return err
@@ -217,16 +220,54 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 }
 
 // spawnRoleGuarded spawns spec and, when a session was created, marks
-// the guard pending so the next pass can judge the run.
+// the guard pending so the next pass can judge the run. A broken role
+// body override fails the spawn and tells the coordinator once per
+// distinct error.
 func spawnRoleGuarded(spec RoleSpawnSpec, guard *spawnGuard, now time.Time) error {
 	_, spawned, err := spawnRole(spec)
+	var bodyErr *RoleBodyError
+	if errors.As(err, &bodyErr) {
+		notifyRoleBodyError(spec, bodyErr)
+	}
 	if err != nil {
 		return err
 	}
+	clearRoleBodyNotices(spec)
 	if spawned {
 		guard.spawned(now)
 	}
 	return saveRoleGuard(guard)
+}
+
+const roleBodyNoticeStem = "rolebody-failed-"
+
+// notifyRoleBodyError tells the coordinator that spec's pane was not
+// spawned because of err. The marker is keyed on the error text, so a
+// different breakage notifies again; a clean spawn clears it.
+func notifyRoleBodyError(spec RoleSpawnSpec, err *RoleBodyError) {
+	stateDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
+	if mkErr := os.MkdirAll(stateDir, 0o755); mkErr != nil {
+		fmt.Fprintf(os.Stderr, "role-loop role body notice: %v\n", mkErr)
+		return
+	}
+	sum := sha256.Sum256([]byte(err.Error()))
+	created, mkErr := createMarkerExcl(filepath.Join(stateDir, roleBodyNoticeStem+roleKey(spec)+"-"+hex.EncodeToString(sum[:6])))
+	if mkErr != nil {
+		fmt.Fprintf(os.Stderr, "role-loop role body notice: %v\n", mkErr)
+		return
+	}
+	if created {
+		notifyRoleLoop(spec.ProjectRoot, fmt.Sprintf("%s: %s not spawned: %v; fix the override or remove it to use the bundled body",
+			spec.Slug, roleKey(spec), err))
+	}
+}
+
+func clearRoleBodyNotices(spec RoleSpawnSpec) {
+	stateDir := filepath.Join(task.RoleTaskDir(spec.ProjectRoot, spec.Slug), "state")
+	matches, _ := filepath.Glob(filepath.Join(stateDir, roleBodyNoticeStem+roleKey(spec)+"-*"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }
 
 func saveRoleGuard(g *spawnGuard) error {
@@ -405,4 +446,17 @@ func roleStallWindow(projectRoot string) time.Duration {
 		fmt.Fprintf(os.Stderr, "role-loop spore.toml: %v\n", err)
 	}
 	return time.Duration(n) * time.Minute
+}
+
+// takeRoleBodyExecFail returns and removes the reason a role pane's
+// launch line recorded for refusing to start the agent, so the next
+// death is not blamed on it.
+func takeRoleBodyExecFail(stateDir, key string) string {
+	path := roleBodyExecFailPath(stateDir, key)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	_ = os.Remove(path)
+	return strings.TrimSpace(string(b))
 }

@@ -76,6 +76,9 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err := task.EnsureOrderExemptMarker(projectRoot, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: order-exempt marker: %w", slug, err)
 	}
+	if err := task.EnsureGradeExemptMarker(projectRoot, slug); err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: grade-exempt marker: %w", slug, err)
+	}
 	// Own the worktree precondition explicitly. The role panes cwd
 	// into <projectRoot>/.worktrees/<slug>/; without this call the
 	// loop would rely on the homogeneous fleet's task.Ensure to add

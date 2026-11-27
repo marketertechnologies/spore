@@ -27,12 +27,14 @@ func (m *githubMirror) gh(stdin string, args ...string) (string, error) {
 	if m.redactor == nil {
 		m.redactor = redact.New(m.projectRoot)
 	}
-	stdin, args = m.redactor.GHCall(stdin, args)
-	return m.run1("gh", stdin, args...)
+	stdin, sent, hits := m.redactor.GHCall(stdin, args)
+	redact.Record(m.projectRoot, m.slug, "mirror", args, hits)
+	return m.run1("gh", stdin, sent...)
 }
 
 func (m *githubMirror) brokerGH(stdin string, args []string) (string, error) {
-	out, err := secrets.GH(m.project, stdin, args, mirrorCallTimeout)
+	out, hits, err := secrets.GH(m.project, stdin, args, mirrorCallTimeout)
+	redact.Record(m.projectRoot, m.slug, "mirror", args, hits)
 	var ee *secrets.ExitError
 	if errors.As(err, &ee) {
 		return "", &cmdError{

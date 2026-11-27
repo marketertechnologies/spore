@@ -13,7 +13,8 @@ func TestParseReviewStrict(t *testing.T) {
 		name, body, want string
 	}{
 		{"ok", `{"author":"A","verdict":"approve","summary":"s","comments":[]}`, ""},
-		{"ok no comments", `{"author":"A","verdict":"request_changes","summary":"s"}`, ""},
+		{"ok no comments", `{"author":"A","verdict":"approve","summary":"s"}`, ""},
+		{"request_changes no comments", `{"author":"A","verdict":"request_changes","summary":"s"}`, `"request_changes" with no comments`},
 		{"unknown key", `{"author":"A","verdict":"approve","summary":"s","severity":"high"}`, `unknown field "severity"`},
 		{"trailing data", `{"author":"A","verdict":"approve","summary":"s"}{}`, "trailing data"},
 		{"empty", ``, "empty file"},
@@ -143,6 +144,52 @@ func TestOrderExemptMarkerGrandfathersUnsortedReviews(t *testing.T) {
 	}
 	if _, err := ReadReview(root, slug, ReviewerA, 2); !errors.Is(err, ErrInvalidRoleFile) {
 		t.Fatalf("post-marker unsorted ReadReview: err = %v, want invalid", err)
+	}
+}
+
+// A strict review written before strict grades (an empty
+// request_changes, plain-string comments) must not be bounced on
+// upgrade; one written after the grade-exempt marker must.
+func TestGradeExemptMarkerGrandfathersLooseReviews(t *testing.T) {
+	root := t.TempDir()
+	slug := "demo"
+	for _, ensure := range []func(string, string) error{EnsureLegacyMarker, EnsureOrderExemptMarker} {
+		if err := ensure(root, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bodies := map[string]string{
+		"no comments":   `{"author":"A","verdict":"request_changes","summary":"s"}`,
+		"plain strings": `{"author":"A","verdict":"request_changes","summary":"s","comments":["fix it"]}`,
+	}
+	write := func(round int, body string) RoleFile {
+		t.Helper()
+		p := ReviewPath(root, slug, ReviewerA, round)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return RoleFile{Path: p, Rel: relTo(RoleTaskDir(root, slug), p), Instance: ReviewerA, Round: round}
+	}
+	old := write(1, bodies["no comments"])
+	if err := EnsureGradeExemptMarker(root, slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRoleFile(root, slug, old); err != nil {
+		t.Fatalf("exempt empty request_changes rejected: %v", err)
+	}
+	round := 2
+	for name, body := range bodies {
+		fresh := write(round, body)
+		if err := ValidateRoleFile(root, slug, fresh); !errors.Is(err, ErrInvalidRoleFile) {
+			t.Errorf("post-marker %s: err = %v, want invalid", name, err)
+		}
+		if _, err := ReadReview(root, slug, ReviewerA, round); !errors.Is(err, ErrInvalidRoleFile) {
+			t.Errorf("post-marker %s ReadReview: err = %v, want invalid", name, err)
+		}
+		round++
 	}
 }
 

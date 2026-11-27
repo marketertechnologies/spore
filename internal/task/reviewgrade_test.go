@@ -29,50 +29,62 @@ func TestParseReviewGraded(t *testing.T) {
 		round int
 		body  string
 		want  string
+		// exempt runs the case as a grade-exempt file (written before
+		// strict grades): plain strings and an empty request_changes
+		// keep their old meaning there.
+		exempt bool
 	}{
 		// Round 1: any comment requests changes, none approves.
-		{"r1 high", 1, reviewJSON("request_changes", highCorrect, lowNit), ""},
-		{"r1 low only", 1, reviewJSON("request_changes", lowNit), ""},
-		{"r1 question only", 1, reviewJSON("request_changes", question), ""},
-		{"r1 no comments approve", 1, reviewJSON("approve"), ""},
-		{"r1 low approve", 1, reviewJSON("approve", lowNit), `round 1 verdict "approve" but the review has 1 comment(s): in round 1 any comment (high, medium, low or question) requires "request_changes"`},
-		{"r1 question approve", 1, reviewJSON("approve", question), `round 1 verdict "approve"`},
+		{"r1 high", 1, reviewJSON("request_changes", highCorrect, lowNit), "", false},
+		{"r1 low only", 1, reviewJSON("request_changes", lowNit), "", false},
+		{"r1 question only", 1, reviewJSON("request_changes", question), "", false},
+		{"r1 no comments approve", 1, reviewJSON("approve"), "", false},
+		{"r1 low approve", 1, reviewJSON("approve", lowNit), `round 1 verdict "approve" but the review has 1 comment(s): in round 1 any comment (high, medium, low or question) requires "request_changes"`, false},
+		{"r1 question approve", 1, reviewJSON("approve", question), `round 1 verdict "approve"`, false},
 		// Rounds 2-3: high/medium request changes (round 3 escalates);
 		// lows and questions never block.
-		{"r2 medium", 2, reviewJSON("request_changes", medEdge), ""},
-		{"r2 low only approve", 2, reviewJSON("approve", lowNit, question), ""},
-		{"r2 low request_changes", 2, reviewJSON("request_changes", lowNit), `round 2 verdict "request_changes" but every comment is low or question: from round 2 those never block and the verdict must be "approve"`},
-		{"r2 question request_changes", 2, reviewJSON("request_changes", question), `every comment is low or question`},
-		{"r2 medium approve", 2, reviewJSON("approve", lowNit, medEdge), `round 2 verdict "approve" but comments[1] is medium: from round 2 any high or medium requires "request_changes"`},
-		{"r3 low only approve", 3, reviewJSON("approve", lowNit, lowNit), ""},
-		{"r3 no comments approve", 3, reviewJSON("approve"), ""},
-		{"r3 medium request_changes", 3, reviewJSON("request_changes", medEdge, lowNit), ""},
-		{"r3 high request_changes", 3, reviewJSON("request_changes", highCorrect), ""},
-		{"r3 medium approve", 3, reviewJSON("approve", lowNit, medSpec), `round 3 verdict "approve" but comments[1] is medium`},
-		{"r3 low request_changes", 3, reviewJSON("request_changes", lowNit), `every comment is low or question`},
-		{"r3 string in graded blocks", 3, reviewJSON("approve", lowNit, legacyString), `comments[1] is an ungraded string`},
+		{"r2 medium", 2, reviewJSON("request_changes", medEdge), "", false},
+		{"r2 low only approve", 2, reviewJSON("approve", lowNit, question), "", false},
+		{"r2 low request_changes", 2, reviewJSON("request_changes", lowNit), `round 2 verdict "request_changes" but every comment is low or question: from round 2 those never block and the verdict must be "approve"`, false},
+		{"r2 question request_changes", 2, reviewJSON("request_changes", question), `every comment is low or question`, false},
+		{"r2 medium approve", 2, reviewJSON("approve", lowNit, medEdge), `round 2 verdict "approve" but comments[1] is medium: from round 2 any high or medium requires "request_changes"`, false},
+		{"r3 low only approve", 3, reviewJSON("approve", lowNit, lowNit), "", false},
+		{"r3 no comments approve", 3, reviewJSON("approve"), "", false},
+		{"r3 medium request_changes", 3, reviewJSON("request_changes", medEdge, lowNit), "", false},
+		{"r3 high request_changes", 3, reviewJSON("request_changes", highCorrect), "", false},
+		{"r3 medium approve", 3, reviewJSON("approve", lowNit, medSpec), `round 3 verdict "approve" but comments[1] is medium`, false},
+		{"r3 low request_changes", 3, reviewJSON("request_changes", lowNit), `every comment is low or question`, false},
+		{"r3 string in graded blocks", 3, reviewJSON("approve", lowNit, legacyString), `comments[1] is an ungraded string`, true},
 		// All-string reviews keep the written verdict at any round.
-		{"legacy strings approve", 1, reviewJSON("approve", legacyString), ""},
-		{"legacy strings request_changes r3", 3, reviewJSON("request_changes", legacyString), ""},
-		{"legacy no comments request_changes", 1, reviewJSON("request_changes"), ""},
+		{"legacy strings approve", 1, reviewJSON("approve", legacyString), "", true},
+		{"legacy strings request_changes r3", 3, reviewJSON("request_changes", legacyString), "", true},
+		{"legacy no comments request_changes", 1, reviewJSON("request_changes"), "", true},
+		// Strict files: every comment graded, request_changes never empty.
+		{"strict no comments request_changes r1", 1, reviewJSON("request_changes"), `verdict "request_changes" with no comments`, false},
+		{"strict no comments request_changes r2", 2, reviewJSON("request_changes"), `verdict "request_changes" with no comments`, false},
+		{"strict no comments request_changes r3", 3, reviewJSON("request_changes"), `verdict "request_changes" with no comments`, false},
+		{"strict strings request_changes r2", 2, reviewJSON("request_changes", legacyString), `comments[0] is a plain string`, false},
+		{"strict string after graded", 1, reviewJSON("request_changes", highCorrect, legacyString), `comments[1] is a plain string`, false},
 		// Comment shape.
-		{"high missing reason", 1, reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x","trigger":"t"}`), `comments[0]: high comment missing required field "reason"`},
-		{"medium missing reason", 1, reviewJSON("request_changes", `{"severity":"medium","category":"perf","text":"x","trigger":"t"}`), `medium comment missing required field "reason"`},
-		{"high missing trigger", 1, reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x","reason":"r"}`), `comments[0]: high comment missing required field "trigger"`},
-		{"medium blank trigger", 1, reviewJSON("request_changes", `{"severity":"medium","category":"perf","text":"x","reason":"r","trigger":" "}`), `medium comment missing required field "trigger"`},
-		{"low without trigger or reason", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit","text":"x"}`), ""},
-		{"question without trigger or reason", 1, reviewJSON("request_changes", `{"severity":"question","category":"spec","text":"x"}`), ""},
-		{"suggestion on high", 1, reviewJSON("request_changes", `{"severity":"high","category":"correctness","text":"x","reason":"r","trigger":"t","suggestion":"--- a\n+++ b"}`), ""},
-		{"unknown severity", 1, reviewJSON("request_changes", `{"severity":"critical","category":"nit","text":"x","reason":"r"}`), `severity "critical" not one of high, medium, low, question`},
-		{"unknown category", 1, reviewJSON("request_changes", `{"severity":"low","category":"style","text":"x"}`), `category "style" not one of`},
-		{"missing severity", 1, reviewJSON("request_changes", `{"category":"nit","text":"x"}`), `missing required field "severity"`},
-		{"missing text", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit"}`), `missing required field "text"`},
-		{"unknown comment key", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit","text":"x","file":"a.go"}`), `unknown field "file"`},
-		{"non-object comment", 1, reviewJSON("approve", `3`), "decode"},
+		{"high missing reason", 1, reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x","trigger":"t"}`), `comments[0]: high comment missing required field "reason"`, false},
+		{"medium missing reason", 1, reviewJSON("request_changes", `{"severity":"medium","category":"perf","text":"x","trigger":"t"}`), `medium comment missing required field "reason"`, false},
+		{"high missing trigger", 1, reviewJSON("request_changes", `{"severity":"high","category":"security","text":"x","reason":"r"}`), `comments[0]: high comment missing required field "trigger"`, false},
+		{"medium blank trigger", 1, reviewJSON("request_changes", `{"severity":"medium","category":"perf","text":"x","reason":"r","trigger":" "}`), `medium comment missing required field "trigger"`, false},
+		{"low without trigger or reason", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit","text":"x"}`), "", false},
+		{"question without trigger or reason", 1, reviewJSON("request_changes", `{"severity":"question","category":"spec","text":"x"}`), "", false},
+		{"suggestion on high", 1, reviewJSON("request_changes", `{"severity":"high","category":"correctness","text":"x","reason":"r","trigger":"t","suggestion":"--- a\n+++ b"}`), "", false},
+		{"unknown severity", 1, reviewJSON("request_changes", `{"severity":"critical","category":"nit","text":"x","reason":"r"}`), `severity "critical" not one of high, medium, low, question`, false},
+		{"unknown category", 1, reviewJSON("request_changes", `{"severity":"low","category":"style","text":"x"}`), `category "style" not one of`, false},
+		{"missing severity", 1, reviewJSON("request_changes", `{"category":"nit","text":"x"}`), `missing required field "severity"`, false},
+		{"missing text", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit"}`), `missing required field "text"`, false},
+		{"unknown comment key", 1, reviewJSON("request_changes", `{"severity":"low","category":"nit","text":"x","file":"a.go"}`), `unknown field "file"`, false},
+		{"non-object comment", 1, reviewJSON("approve", `3`), "decode", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, tc.round, false)
+			rules := strictRules()
+			rules.strictGrades = !tc.exempt
+			_, err := parseReview("x.json", []byte(tc.body), ReviewerA, tc.round, rules)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want nil", err)
@@ -117,7 +129,7 @@ func TestParseReviewLegacyStringsUnchanged(t *testing.T) {
 }
 
 func TestParseReviewObjectShape(t *testing.T) {
-	r, err := ParseReview("x", []byte(reviewJSON("request_changes", highCorrect, legacyString)), ReviewerA, 1, false)
+	r, err := parseReview("x", []byte(reviewJSON("request_changes", highCorrect, legacyString)), ReviewerA, 1, reviewRules{sorted: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +164,8 @@ func TestParseReviewSeverityOrder(t *testing.T) {
 	cases := []struct {
 		name, body, want string
 	}{
+		// Plain strings only pass validation in a grade-exempt file,
+		// so every case runs with strict grades off.
 		{"sorted all grades", reviewJSON("request_changes", highCorrect, medEdge, medSpec, lowNit, question), ""},
 		{"ties keep any order", reviewJSON("request_changes", medSpec, medEdge), ""},
 		{"string sorts as medium", reviewJSON("request_changes", highCorrect, legacyString, lowNit), ""},
@@ -163,7 +177,7 @@ func TestParseReviewSeverityOrder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseReview("x.json", []byte(tc.body), ReviewerA, 1, false)
+			_, err := parseReview("x.json", []byte(tc.body), ReviewerA, 1, reviewRules{sorted: true})
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("err = %v, want nil", err)
@@ -213,23 +227,25 @@ func TestReviewCounts(t *testing.T) {
 }
 
 func TestParseReviewOperatorOverride(t *testing.T) {
+	forcedRules := strictRules()
+	forcedRules.override = true
 	forced := `{"author":"A","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + medEdge + `]}`
 	if _, err := ParseReview("r.json", []byte(forced), ReviewerA, 3, false); err == nil {
 		t.Fatal("a reviewer-written operator_override validated")
 	}
-	if _, err := parseReview("r.json", []byte(forced), ReviewerA, 3, false, true, true); err != nil {
+	if _, err := parseReview("r.json", []byte(forced), ReviewerA, 3, forcedRules); err != nil {
 		t.Fatalf("recorded forced approve with a medium: %v", err)
 	}
 	rcOverride := `{"author":"A","verdict":"request_changes","summary":"s","operator_override":"x","comments":[` + lowNit + `]}`
-	if _, err := parseReview("r.json", []byte(rcOverride), ReviewerA, 2, false, true, true); err == nil {
+	if _, err := parseReview("r.json", []byte(rcOverride), ReviewerA, 2, forcedRules); err == nil {
 		t.Fatal("an override on request_changes skipped the round rule")
 	}
 	blank := `{"author":"A","verdict":"approve","summary":"s","operator_override":"  ","comments":[` + medEdge + `]}`
-	if _, err := parseReview("r.json", []byte(blank), ReviewerA, 3, false, true, true); err == nil {
+	if _, err := parseReview("r.json", []byte(blank), ReviewerA, 3, forcedRules); err == nil {
 		t.Fatal("a blank override skipped the round rule")
 	}
 	bad := `{"author":"A","verdict":"approve","summary":"s","operator_override":"ok","comments":[{"severity":"high","category":"correctness","text":"x"}]}`
-	if _, err := parseReview("r.json", []byte(bad), ReviewerA, 3, false, true, true); err == nil {
+	if _, err := parseReview("r.json", []byte(bad), ReviewerA, 3, forcedRules); err == nil {
 		t.Fatal("an override skipped the comment shape check")
 	}
 }

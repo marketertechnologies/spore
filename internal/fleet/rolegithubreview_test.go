@@ -85,7 +85,8 @@ func TestGitHubMirrorInlineReviewPayload(t *testing.T) {
 		t.Fatalf("second anchor = %+v", p.Comments[1])
 	}
 	wantMain := "**Code review (round 1): request changes**\n\ntwo bugs\n\n" +
-		"- **C1.3** | low | nit | `one.txt` - file-level nit\n- **C1.4** | low | nit - no where\n"
+		"- **C1.3** | low | nit | `one.txt` - file-level nit\n- **C1.4** | low | nit - no where\n\n" +
+		"<!-- spore-mirror: cycle 1 B/round-1.json -->\n"
 	if p.Body != wantMain {
 		t.Fatalf("body:\n%q\nwant:\n%q", p.Body, wantMain)
 	}

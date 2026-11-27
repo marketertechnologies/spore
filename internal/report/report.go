@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,10 @@ func renderProject(w io.Writer, p Project, full bool) {
 		}
 	}
 
+	if s.redactions > 0 {
+		fmt.Fprintf(w, "redactions: %d (%s)\n", s.redactions, s.redactionClasses)
+	}
+
 	var attn []string
 	if l := p.Live; l != nil {
 		for _, slug := range l.Escalated {
@@ -163,6 +168,10 @@ type summary struct {
 	attention     []string
 	roleNotes     []string
 	respawns      string
+	// redactions sums the redacted matches in text posted to GitHub;
+	// redactionClasses breaks it down by pattern class.
+	redactions       int
+	redactionClasses string
 }
 
 func summarize(evs []events.Event) summary {
@@ -177,6 +186,7 @@ func summarize(evs []events.Event) summary {
 	phases := map[string]string{}
 	verdicts := map[string][]string{}
 	var roleSlugs []string
+	redacted := map[string]int{}
 
 	for _, e := range evs {
 		switch e.Kind {
@@ -222,6 +232,13 @@ func summarize(evs []events.Event) summary {
 				roleSlugs = appendUnique(roleSlugs, e.Slug)
 			}
 			phases[e.Slug] = e.Detail
+		case events.Redaction:
+			n, err := strconv.Atoi(e.Fields["count"])
+			if err != nil || n < 1 {
+				n = 1
+			}
+			redacted[e.Fields["class"]] += n
+			s.redactions += n
 		case events.RoleVerdict:
 			roleSlugs = appendUnique(roleSlugs, e.Slug)
 			v := e.Fields["verdict"]
@@ -231,6 +248,15 @@ func summarize(evs []events.Event) summary {
 			verdicts[e.Slug] = append(verdicts[e.Slug], e.Fields["reviewer"]+e.Fields["round"]+" "+v)
 		}
 	}
+	var classes []string
+	for c := range redacted {
+		classes = append(classes, c)
+	}
+	sort.Strings(classes)
+	for i, c := range classes {
+		classes[i] = fmt.Sprintf("%d %s", redacted[c], c)
+	}
+	s.redactionClasses = strings.Join(classes, ", ")
 	for _, k := range alertKinds {
 		last := alertLast[k]
 		a := fmt.Sprintf("alert %s x%d (last %s", k, alerts[k], clock(last.TS))

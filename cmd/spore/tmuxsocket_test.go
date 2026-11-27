@@ -34,6 +34,8 @@ func TestMain(m *testing.M) {
 	// A coordinator swap must not fall back to the host's launcher.
 	_ = os.Setenv("SPORE_COORDINATOR_HOST_LAUNCHER", filepath.Join(tmpdir, "no-host-launcher"))
 	_ = os.Unsetenv("TMUX_PANE")
+	// Unset, the socket falls back to the host's live broker path.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	// Ledger writes and other state from a test must never reach the
 	// host's real state dir.
 	if err := os.Setenv("XDG_STATE_HOME", filepath.Join(tmpdir, "state")); err != nil {

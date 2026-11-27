@@ -285,6 +285,8 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "view", "7", "--json", "isDraft"},
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
 		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate"},
+		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--paginate"},
+		{"api", "repos/acme/alpha/issues/7/comments", "--hostname", "github.com", "--paginate"},
 		{"api", "graphql", "--hostname", "github.com", "-f", "query=" + PRActivityQuery, "-f", "owner=acme", "-f", "name=alpha", "-F", "number=7"},
 		{"pr", "checks", "7", "--required", "--json", "name,state"},
 		{"api", "repos/acme/alpha/commits/9cc70240d3c90179350720a9e322f60d70bf60a8/check-runs"},

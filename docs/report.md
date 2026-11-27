@@ -32,6 +32,7 @@ Content rules: no prompt text, no model output, no secret values. `detail` and `
 | `reconcile.skipped` | reconcile pass, replenish hook | lock held, fleet disabled, or budget advice; at most once per hour per reason |
 | `reconcile.failed` | `spore fleet reconcile`, replenish hook | the pass returned an error or blew its time budget |
 | `pr.opened` | role-loop PR mirror, `spore gh pr create`, `spore gh exec -- gh pr create` | a PR was created (`fields.url`) |
+| `redaction` | role-loop PR mirror, `spore gh pr\|api` | text posted to GitHub had a match replaced; one event per pattern class and place (`fields.class`, `where`, `count`, `via`, `cmd`), never the value; recorded once gh runs, so a gh call that then fails still counts (a call spore refuses before gh runs does not) |
 
 ## `spore report`
 
@@ -39,6 +40,6 @@ Content rules: no prompt text, no model output, no secret values. `detail` and `
 spore report [--since 12h] [--project <name> | --all] [--full]
 ```
 
-Prints the window, the kill-switch state and active alerts, then per project: tasks by status (live from `tasks/`), tasks done and started, PRs opened, an attention block (escalated role loops, blocked tasks, coordinator down, crash loops, alerts, failed or skipped passes), what is running now, role-loop progress and respawn counts. The default view stays under one screen; `--full` appends every event in the window.
+Prints the window, the kill-switch state and active alerts, then per project: tasks by status (live from `tasks/`), tasks done and started, PRs opened, redactions in text posted to GitHub (total and per pattern class), an attention block (escalated role loops, blocked tasks, coordinator down, crash loops, alerts, failed or skipped passes), what is running now, role-loop progress and respawn counts. The default view stays under one screen; `--full` appends every event in the window.
 
 `--project` and `--all` read live state from the root the ledger recorded; a project whose root was never recorded shows `tasks: unknown`.

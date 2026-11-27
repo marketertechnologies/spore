@@ -18,6 +18,15 @@ var (
 	askWhy  = task.ReviewComment{Severity: task.SeverityQuestion, Category: "spec", Text: "is the cap intended?"}
 )
 
+// writeLegacy is writeGraded for plain-string comments, written as a
+// reviewer did before grading (see writeLegacyReview).
+func writeLegacy(instance task.ReviewerInstance, round int, verdict string, comments ...task.ReviewComment) stepFn {
+	return func(t *testing.T, root, slug string) {
+		t.Helper()
+		writeLegacyReview(t, root, slug, instance, round, task.Review{Verdict: verdict, Summary: "s", Comments: comments})
+	}
+}
+
 func writeGraded(instance task.ReviewerInstance, round int, verdict string, comments ...task.ReviewComment) stepFn {
 	return func(t *testing.T, root, slug string) {
 		t.Helper()
@@ -215,10 +224,10 @@ func TestDerivePhaseLegacyStringsUnchanged(t *testing.T) {
 	root, slug := t.TempDir(), "demo"
 	walkPhases(t, root, slug, []phaseRow{
 		{writeEng(1), PhaseReviewA, A, 0},
-		{writeGraded(A, 1, task.VerdictApprove, task.Ungraded("consider X")), PhaseReviewB, B, 0},
-		{writeGraded(B, 1, task.VerdictRequestChanges, task.Ungraded("fix Y")), PhaseEngineerReviseB, B, 1},
+		{writeLegacy(A, 1, task.VerdictApprove, task.Ungraded("consider X")), PhaseReviewB, B, 0},
+		{writeLegacy(B, 1, task.VerdictRequestChanges, task.Ungraded("fix Y")), PhaseEngineerReviseB, B, 1},
 		{writeEng(2), PhaseReviewB, B, 1},
-		{writeGraded(B, 2, task.VerdictApprove, task.Ungraded("nit")), PhaseDone, B, 2},
+		{writeLegacy(B, 2, task.VerdictApprove, task.Ungraded("nit")), PhaseDone, B, 2},
 	})
 }
 
@@ -420,7 +429,7 @@ func TestDriveEscalationFixPassUngradedMessage(t *testing.T) {
 	tasksDir := setupRoleLoopDriveFixture(t, root, slug)
 	for i := 1; i <= MaxReviewerRounds; i++ {
 		writeEng(i)(t, root, slug)
-		writeGraded(task.ReviewerA, i, task.VerdictRequestChanges, task.Ungraded("fix it"))(t, root, slug)
+		writeLegacy(task.ReviewerA, i, task.VerdictRequestChanges, task.Ungraded("fix it"))(t, root, slug)
 	}
 	stubPanes(t)
 	outcome := wakeDelivered

@@ -103,7 +103,7 @@ func TestGHTruncatedIsError(t *testing.T) {
 		fmt.Fprintln(conn, `{"stdout":"[{\"filename\":","truncated":true}`)
 	}()
 	t.Setenv("SPORE_SECRETS_SOCKET", sock)
-	if _, err := GH("alpha", "", []string{"api", "repos/acme/alpha/pulls/7/files"}, 10*time.Second); err == nil || !strings.Contains(err.Error(), "byte cap") {
+	if _, _, err := GH("alpha", "", []string{"api", "repos/acme/alpha/pulls/7/files"}, 10*time.Second); err == nil || !strings.Contains(err.Error(), "byte cap") {
 		t.Fatalf("err = %v, want the cap", err)
 	}
 }

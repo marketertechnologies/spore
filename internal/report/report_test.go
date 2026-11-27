@@ -25,6 +25,9 @@ func TestRenderDigest(t *testing.T) {
 		{TS: at(4), Kind: events.RoleVerdict, Slug: "gamma", Fields: map[string]string{"reviewer": "A", "round": "1", "verdict": "request_changes"}},
 		{TS: at(3), Kind: events.RolePhase, Slug: "gamma", Detail: "engineer-revise-A"},
 		{TS: at(2), Kind: events.PROpened, Slug: "gamma", Fields: map[string]string{"url": "https://github.com/o/r/pull/9"}},
+		{TS: at(2), Kind: events.Redaction, Slug: "gamma", Fields: map[string]string{"class": "token", "where": "--body", "count": "2"}},
+		{TS: at(2), Kind: events.Redaction, Slug: "gamma", Fields: map[string]string{"class": "home_path", "where": "stdin", "count": "1"}},
+		{TS: at(1), Kind: events.Redaction, Fields: map[string]string{"class": "token", "where": "stdin", "count": "1"}},
 		{TS: at(1), Kind: events.TaskDone, Slug: "alpha"},
 	}
 	on := false
@@ -47,6 +50,7 @@ func TestRenderDigest(t *testing.T) {
 		"done (1): alpha",
 		"started (2): alpha, beta",
 		"https://github.com/o/r/pull/9 (gamma)",
+		"redactions: 4 (1 home_path, 3 token)",
 		"escalated role loop: gamma",
 		"coordinator not running",
 		"blocked: delta",

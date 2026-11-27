@@ -16,6 +16,7 @@ import (
 
 	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/ghapp"
+	"github.com/versality/spore/internal/redact"
 	"github.com/versality/spore/internal/secrets"
 	"github.com/versality/spore/internal/task"
 )
@@ -238,7 +239,9 @@ func runAsApp(args []string, stdin io.Reader) (int, error) {
 const ghBrokerTimeout = 3 * time.Minute
 
 // runGHPassthrough runs `gh <sub> args...` as the app: through the
-// broker when its socket is present, else as exec does.
+// broker when its socket is present, else as exec does. Either way the
+// posted text is redacted (broker-side when brokered) and each
+// redaction is recorded in the project ledger.
 func runGHPassthrough(sub string, args []string) (int, error) {
 	if len(args) == 0 {
 		return 2, fmt.Errorf("usage: spore gh %s <%s> [args...]", sub, map[string]string{"pr": "verb", "api": "path"}[sub])
@@ -247,26 +250,43 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if !secrets.Available() {
-		var in io.Reader = os.Stdin
-		if body != nil {
-			in = bytes.NewReader(body)
-		}
-		return runAsApp(append([]string{"gh"}, ghArgs...), in)
-	}
-	stdin := string(body)
+	brokered := secrets.Available()
+	stdin, pipeStdin := string(body), body != nil
 	if body == nil && readsStdin(ghArgs) {
-		if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fi, err := os.Stdin.Stat()
+		tty := err == nil && fi.Mode()&os.ModeCharDevice != 0
+		if tty && brokered {
 			return 2, fmt.Errorf("--body-file - reads stdin, which is a terminal: pass --body-file <path>")
 		}
-		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxGHBody+1))
-		if err != nil {
-			return 0, err
+		if !tty {
+			b, err := io.ReadAll(io.LimitReader(os.Stdin, maxGHBody+1))
+			if err != nil {
+				return 0, err
+			}
+			if len(b) > maxGHBody {
+				return 0, fmt.Errorf("stdin over 4 MiB")
+			}
+			stdin, pipeStdin = string(b), true
 		}
-		if len(b) > maxGHBody {
-			return 0, fmt.Errorf("stdin over 4 MiB")
+	}
+	root, err := ghProjectRoot()
+	if err != nil {
+		root = ""
+	}
+	slug := os.Getenv("SPORE_TASK_SLUG")
+	if !brokered {
+		sentStdin, sent, hits := redact.New(root).GHCall(stdin, ghArgs)
+		// A human at a terminal (an interactive prompt, a typed body)
+		// keeps it: only piped and file bodies are redacted.
+		var in io.Reader = os.Stdin
+		if pipeStdin {
+			in = strings.NewReader(sentStdin)
 		}
-		stdin = string(b)
+		code, err := runAsApp(append([]string{"gh"}, sent...), in)
+		if err == nil {
+			redact.Record(root, slug, "spore-gh", ghArgs, hits)
+		}
+		return code, err
 	}
 	req := secrets.Request{}
 	secrets.Claim(&req)
@@ -274,15 +294,14 @@ func runGHPassthrough(sub string, args []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	redact.Record(root, slug, "spore-gh", ghArgs, resp.Redactions)
 	fmt.Fprint(os.Stdout, resp.Stdout)
 	fmt.Fprint(os.Stderr, resp.Stderr)
 	if resp.Truncated {
 		fmt.Fprintln(os.Stderr, "spore gh: output truncated by the secrets broker")
 	}
-	if resp.Exit == 0 {
-		if root, err := ghProjectRoot(); err == nil {
-			recordPRCreate(root, append([]string{"gh"}, ghArgs...), resp.Stdout)
-		}
+	if resp.Exit == 0 && root != "" {
+		recordPRCreate(root, append([]string{"gh"}, ghArgs...), resp.Stdout)
 	}
 	return resp.Exit, nil
 }
@@ -342,22 +361,33 @@ func inlineBodyFile(args []string) ([]string, []byte, error) {
 }
 
 // fieldValue returns the key=value of a gh api -F/--field at args[i],
-// in any spelling; gh reads `@path` values from disk.
+// in any spelling (-F k=v, -Fk=v, -F=k=v, a short group like -iF k=v);
+// gh reads `@path` values from disk.
 func fieldValue(args []string, i int) (string, bool) {
 	if args[0] != "api" {
 		return "", false
 	}
 	a := args[i]
 	switch {
-	case a == "-F" || a == "--field":
+	case a == "--field":
 		if i+1 < len(args) {
 			return args[i+1], true
 		}
 		return "", true
 	case strings.HasPrefix(a, "--field="):
 		return strings.TrimPrefix(a, "--field="), true
-	case strings.HasPrefix(a, "-F"):
-		return a[2:], true
+	case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
+		j := redact.ShortValueFlag("api", "", a)
+		if j < 0 || a[j] != 'F' {
+			return "", false
+		}
+		if rest := a[j+1:]; rest != "" {
+			return strings.TrimPrefix(rest, "="), true
+		}
+		if i+1 < len(args) {
+			return args[i+1], true
+		}
+		return "", true
 	}
 	return "", false
 }
