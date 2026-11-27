@@ -1,6 +1,7 @@
 package lints
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -111,6 +112,11 @@ func TestDefaultRunsClaudeSizeAndSubdir(t *testing.T) {
 }
 
 func TestDefaultLintsCleanOnRepo(t *testing.T) {
+	// claude-size lists files with git ls-files; the nix flake check copies
+	// the source tree without .git.
+	if err := exec.Command("git", "-C", "../..", "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		t.Skipf("repo root is not a git work tree: %v", err)
+	}
 	for _, l := range []Lint{ClaudeSize{}, ClaudeSubdir{}} {
 		issues, err := l.Run("../..")
 		if err != nil {
