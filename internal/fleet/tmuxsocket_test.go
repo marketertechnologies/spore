@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/versality/spore/internal/secrets"
 )
 
 // testTmuxSocket: see internal/task/tmuxsocket_test.go for the
@@ -44,6 +46,8 @@ func TestMain(m *testing.M) {
 			_ = os.Unsetenv(k)
 		}
 	}
+	// Tests that want a broker start their own; the host's must stay unreachable.
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	if err := os.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(tmpdir, "coordinator")); err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
@@ -53,4 +57,16 @@ func TestMain(m *testing.M) {
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()
 	_ = os.RemoveAll(tmpdir)
 	os.Exit(code)
+}
+
+// Without TestMain's override, a test that reaches for the broker
+// would hit the host's live socket and its real GitHub App.
+func TestHostBrokerUnreachable(t *testing.T) {
+	p := secrets.SocketPath()
+	if p == secrets.DefaultSocketPath {
+		t.Fatalf("broker socket is the host default %s", p)
+	}
+	if _, err := os.Stat(p); err == nil {
+		t.Fatalf("broker socket %s exists", p)
+	}
 }
