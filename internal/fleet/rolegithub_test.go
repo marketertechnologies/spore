@@ -35,12 +35,13 @@ if [ -e "$FAKE_GH_FAIL.$1-$2" ]; then echo "gh $1 $2 refused" >&2; exit 1; fi
 if [ "$1" = api ] && [ -s "$FAKE_GH_422" ] && [ -s "$in" ] && grep -qF -f "$FAKE_GH_422" "$in"; then
   echo '{"message":"Unprocessable Entity"}'; echo 'gh: Unprocessable Entity (HTTP 422)' >&2; exit 1
 fi
-case "$1 $2" in
-  "api repos/acme/widget/pulls/12/files") if [ -e "$FAKE_GH_FILES" ]; then cat "$FAKE_GH_FILES"; else exit 1; fi ;;
-  "pr view") echo '{"isDraft":false}' ;;
-  "pr list") if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
-  "pr create") echo "https://github.com/acme/widget/pull/12" ;;
-  "api graphql") if [ -n "$FAKE_GH_GRAPHQL" ]; then cat "$FAKE_GH_GRAPHQL"; fi ;;
+case "$1 $2 $*" in
+  "api repos/acme/widget/"*/comments*--paginate*|"api repos/acme/widget/"*/reviews*--paginate*) if [ -e "$FAKE_GH_LISTED" ]; then cat "$FAKE_GH_LISTED"; fi ;;
+  "api repos/acme/widget/pulls/12/files"*) if [ -e "$FAKE_GH_FILES" ]; then cat "$FAKE_GH_FILES"; else exit 1; fi ;;
+  "pr view"*) echo '{"isDraft":false}' ;;
+  "pr list"*) if [ -n "$FAKE_GH_OPEN_PR" ]; then echo "$FAKE_GH_OPEN_PR"; else echo '[]'; fi ;;
+  "pr create"*) echo "https://github.com/acme/widget/pull/12" ;;
+  "api graphql"*) if [ -n "$FAKE_GH_GRAPHQL" ]; then cat "$FAKE_GH_GRAPHQL"; fi ;;
 esac
 `
 
@@ -114,6 +115,7 @@ func newMirrorFixture(t *testing.T, prFlow string) *mirrorFixture {
 	f.failFile = filepath.Join(t.TempDir(), "fail")
 	t.Setenv("FAKE_GH_422", filepath.Join(t.TempDir(), "422"))
 	t.Setenv("FAKE_GH_FILES", filepath.Join(t.TempDir(), "files"))
+	t.Setenv("FAKE_GH_LISTED", filepath.Join(t.TempDir(), "listed"))
 	t.Setenv("FAKE_GH_LOG", f.ghLog)
 	t.Setenv("FAKE_GH_FAIL", f.failFile)
 
@@ -245,7 +247,7 @@ func TestGitHubMirrorFullFlow(t *testing.T) {
 		t.Fatalf("state = %+v", s)
 	}
 
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
+	writeLegacyReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R", Comments: []task.ReviewComment{task.Ungraded("add a test")}})
 	f.tick(t)
 	writeEng(2)(t, f.root, f.slug)
 	head2 := f.commit(t, "two")
@@ -359,7 +361,7 @@ func TestGitHubMirrorForcePushAfterRewrite(t *testing.T) {
 	f := newMirrorFixture(t, "draft")
 	writeEng(1)(t, f.root, f.slug)
 	f.tick(t)
-	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "squash"})
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "squash", Comments: []task.ReviewComment{highBug}})
 	f.tick(t)
 	runGit(t, f.wt, "commit", "-q", "--amend", "-m", "one, amended")
 	amended := runGit(t, f.wt, "rev-parse", "HEAD")
@@ -377,7 +379,7 @@ func TestGitHubMirrorEscalationCommentsOnce(t *testing.T) {
 		if r > 1 {
 			writeEng(r)(t, f.root, f.slug)
 		}
-		mustWriteReview(t, f.root, f.slug, task.ReviewerA, r, task.Review{Verdict: task.VerdictRequestChanges, Summary: "no"})
+		mustWriteReview(t, f.root, f.slug, task.ReviewerA, r, task.Review{Verdict: task.VerdictRequestChanges, Summary: "no", Comments: []task.ReviewComment{highBug}})
 	}
 	if snap := f.tick(t); snap.Phase != PhaseEscalated {
 		t.Fatalf("phase = %s", snap.Phase)
@@ -541,10 +543,10 @@ func TestMirrorEventsOrder(t *testing.T) {
 	root := t.TempDir()
 	slug := "demo"
 	writeEng(1)(t, root, slug)
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x"})
+	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x", Comments: []task.ReviewComment{highBug}})
 	writeEng(2)(t, root, slug)
 	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{Verdict: task.VerdictApprove, Summary: "x"})
-	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x"})
+	mustWriteReview(t, root, slug, task.ReviewerB, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "x", Comments: []task.ReviewComment{highBug}})
 	snap, err := DeriveSnapshot(root, slug)
 	if err != nil {
 		t.Fatal(err)

@@ -17,7 +17,7 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
 		t.Fatal(err)
 	}
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
+	writeLegacyReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs splitting",
 		Comments: []task.ReviewComment{task.Ungraded("split commit X"), task.Ungraded("drop file Y")},
@@ -109,7 +109,7 @@ func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
 	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
 		t.Fatal(err)
 	}
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
+	writeLegacyReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs work",
 		Comments: []task.ReviewComment{task.Ungraded("fix bug X")},
@@ -285,8 +285,9 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
-			Verdict: task.VerdictRequestChanges,
-			Summary: "more work",
+			Verdict:  task.VerdictRequestChanges,
+			Summary:  "more work",
+			Comments: []task.ReviewComment{highBug},
 		})
 	}
 
@@ -535,8 +536,9 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
-			Verdict: task.VerdictRequestChanges,
-			Summary: "more work",
+			Verdict:  task.VerdictRequestChanges,
+			Summary:  "more work",
+			Comments: []task.ReviewComment{highBug},
 		})
 	}
 
@@ -719,6 +721,21 @@ func mustWriteReview(t *testing.T, root, slug string, instance task.ReviewerInst
 	if err := task.WriteReview(root, slug, instance, round, r); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeLegacyReview writes r without the strict-mode check, the way a
+// reviewer wrote plain-string comments before grading. Files a drive
+// later grandfathers (legacy or grade-exempt) read back as written.
+func writeLegacyReview(t *testing.T, root, slug string, instance task.ReviewerInstance, round int, r task.Review) {
+	t.Helper()
+	if r.Author == "" {
+		r.Author = string(instance)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, task.ReviewPath(root, slug, instance, round), string(b))
 }
 
 // TestDriveRoleLoopRefusesGenericTask pins that a task without

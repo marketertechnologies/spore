@@ -88,11 +88,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	rolePath := s.RoleBodyPath
 	if rolePath == "" {
-		body := s.Role + ".md"
-		if slot.Mode == ReviewerModeCodeReview {
-			body = "reviewer-code-review.md"
-		}
-		if rolePath, err = ResolveRoleBody(s.ProjectRoot, body); err != nil {
+		if rolePath, err = ResolveRoleBody(s.ProjectRoot, s.bodyName(slot)); err != nil {
 			return nil, err
 		}
 	}
@@ -104,7 +100,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	withBody, bare, err := s.invocations(agent, meta, settings)
+	withBody, err := s.invocation(agent, meta, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -145,8 +141,29 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	args = append(args, task.SandboxSessionEnv(s.ProjectRoot, cwd)...)
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
-	args = append(args, roleShellCommand(prelude, withBody, bare, rolePath))
+	args = append(args, roleShellCommand(prelude, withBody, rolePath, roleBodyExecFailPath(filepath.Join(taskDir, "state"), roleKey(s))))
 	return args, nil
+}
+
+// bodyName is the role body file the pane reads for its settled slot.
+func (s RoleSpawnSpec) bodyName(slot ReviewerSlot) string {
+	if slot.Mode == ReviewerModeCodeReview {
+		return "reviewer-code-review.md"
+	}
+	return s.Role + ".md"
+}
+
+// BodySource says where the pane's role body comes from (see
+// RoleBodySource), for status output.
+func (s RoleSpawnSpec) BodySource() (string, error) {
+	if s.RoleBodyPath != "" {
+		return s.RoleBodyPath, nil
+	}
+	slot, _, _, err := s.resolve()
+	if err != nil {
+		return "", err
+	}
+	return RoleBodySource(s.ProjectRoot, s.bodyName(slot)), nil
 }
 
 // commitIdentityEnv authors engineer commits as the dispatching
@@ -234,17 +251,19 @@ func (s RoleSpawnSpec) reviewerPrefix(slot ReviewerSlot) (string, error) {
 	return task.ReviewerPrefix(s.ReviewerInstance, modes[task.ReviewerA], modes[task.ReviewerB]), nil
 }
 
-// invocations returns the pane's agent command with and without a
-// role body (see agentInvocations) for the agent resolve picked.
-func (s RoleSpawnSpec) invocations(agent string, meta frontmatter.Meta, st task.AgentSettings) (withBody, bare string, err error) {
+// invocation returns the pane's agent command, ready for the role
+// body as its last argument (see agentInvocations), for the agent
+// resolve picked.
+func (s RoleSpawnSpec) invocation(agent string, meta frontmatter.Meta, st task.AgentSettings) (string, error) {
 	if s.Agent != "" || agent != "codex" {
-		return agentInvocations(agent, st)
+		withBody, _, err := agentInvocations(agent, st)
+		return withBody, err
 	}
 	cmd, err := task.CodexAgentCommand(meta, st)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	return cmd + " --", cmd, nil
+	return cmd + " --", nil
 }
 
 // settings returns the pane's model and effort: [agents.<role>]
@@ -329,19 +348,35 @@ func readRoleTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 	return m, nil
 }
 
-// roleShellCommand is coordinatorShellCommand behind the pre-start
-// prelude. On hook failure the note heads the role body; with no
-// role body the note alone is the first prompt.
-func roleShellCommand(prelude, cmdWithBody, cmdBare, rolePath string) string {
-	if prelude == "" {
-		return bodyShellCommand(cmdWithBody, cmdBare, rolePath)
+// roleShellCommand execs the agent with the role body as its first
+// prompt, behind the pre-start prelude when there is one; on hook
+// failure the note heads the body. A body that is unreadable, empty or
+// whitespace only at exec time fails the pane instead of starting a
+// bare agent with no role: the exit counts as a death. With
+// remain-on-exit off the pane's stderr is lost, so the reason is also
+// written to failPath for ensureRolePane to quote in its notice.
+func roleShellCommand(prelude, cmdWithBody, rolePath, failPath string) string {
+	note := ""
+	if prelude != "" {
+		note = fmt.Sprintf("${%[1]s:+$%[1]s\n\n}", task.PreStartNoteVar)
+	}
+	q := shellSingleQuote(rolePath)
+	msg := shellSingleQuote(fmt.Sprintf("role body %s is unreadable or empty; not starting the agent without its role", rolePath))
+	record := ""
+	if failPath != "" {
+		record = fmt.Sprintf(`{ mkdir -p %s && printf '%%s\n' %s > %s; } 2>/dev/null; `,
+			shellSingleQuote(filepath.Dir(failPath)), msg, shellSingleQuote(failPath))
 	}
 	return prelude + fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "${%[4]s:+$%[4]s
-
-}$(cat %[1]s)"; else exec %[3]s ${%[4]s:+"$%[4]s"}; fi`,
-		shellSingleQuote(rolePath), cmdWithBody, cmdBare, task.PreStartNoteVar,
+		`if [ -r %[1]s ] && grep -q '[^[:space:]]' %[1]s 2>/dev/null; then exec %[2]s "%[3]s$(cat %[1]s)"; else %[4]secho "spore: "%[5]s >&2; exit 1; fi`,
+		q, cmdWithBody, note, record, msg,
 	)
+}
+
+// roleBodyExecFailPath is where a role pane's launch line records why
+// it refused to start the agent.
+func roleBodyExecFailPath(stateDir, key string) string {
+	return filepath.Join(stateDir, "rolebody-exec-"+key)
 }
 
 // SpawnRole creates the tmux session for spec, idempotently. A live

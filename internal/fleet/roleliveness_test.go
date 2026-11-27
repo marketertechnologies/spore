@@ -326,6 +326,40 @@ func TestEnsureRolePaneCountsFastMissingSession(t *testing.T) {
 	}
 }
 
+// A launch line that refused to start the agent records why; the
+// respawn notice quotes it once, and a later death is not blamed on it.
+func TestEnsureRolePaneQuotesRoleBodyExecFailure(t *testing.T) {
+	root, inbox := livenessFixture(t)
+	f := stubPanes(t)
+	spec := EngineerSpec(root, "demo")
+	session, _ := spec.SessionName()
+	stateDir := filepath.Join(task.RoleTaskDir(root, "demo"), "state")
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(roleBodyExecFailPath(stateDir, "engineer"), []byte("role body /x/engineer.md is unreadable or empty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		delete(f.panes, session)
+		f.now = f.now.Add(5 * time.Second)
+		if err := ensureRolePane(spec, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bodies := envBodies(t, inbox)
+	want := []string{
+		"demo: respawned engineer (session gone within 1m0s of spawn; pane: role body /x/engineer.md is unreadable or empty; round 1, respawn 1/3)",
+		"demo: respawned engineer (session gone within 1m0s of spawn; round 1, respawn 2/3)",
+	}
+	if strings.Join(bodies, "\n") != strings.Join(want, "\n") {
+		t.Errorf("notices = %q, want %q", bodies, want)
+	}
+}
+
 // After A approves, the drive must bring B up even when nothing was
 // started by hand, and keep the engineer pane alive.
 func TestDriveRoleLoopSpawnsReviewerAfterTransition(t *testing.T) {

@@ -10,9 +10,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	spore "github.com/versality/spore"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -64,11 +66,69 @@ func ResolveRoleBody(projectRoot, name string) (string, error) {
 	return path, nil
 }
 
+// RoleBodySource describes where ResolveRoleBody takes body name from,
+// without materializing the bundled copy: the override path with the
+// branch its checkout is on (role bodies are read from the project
+// checkout, not the task worktree, so a checkout on the wrong branch
+// shows here), the bundled body with the spore version, or the error
+// that fails the spawn.
+func RoleBodySource(projectRoot, name string) string {
+	p, err := projectRoleBody(projectRoot, name)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	if p != "" {
+		return fmt.Sprintf("%s (project override, checkout %s)", p, checkoutRef(projectRoot))
+	}
+	if _, err := fs.Stat(spore.BundledRoles, "bootstrap/roles/"+name); err != nil {
+		return fmt.Sprintf("error: role body %s not in %s and not bundled", name, filepath.Join(projectRoot, "bootstrap", "roles"))
+	}
+	return fmt.Sprintf("bundled %s (spore %s)", name, spore.Version())
+}
+
+// checkoutRef names the branch dir's checkout is on, or its short
+// commit when detached.
+func checkoutRef(dir string) string {
+	if out, err := callbudget.Command("git", "-C", dir, "symbolic-ref", "-q", "--short", "HEAD").Output(); err == nil {
+		return "on branch " + strings.TrimSpace(string(out))
+	}
+	if out, err := callbudget.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output(); err == nil {
+		return "detached at " + strings.TrimSpace(string(out))
+	}
+	return "on an unknown branch"
+}
+
+// RoleBodyError is a project role body override that exists but
+// cannot be used. The spawn fails on it instead of falling back, and
+// the drive tells the coordinator (see notifyRoleBodyError).
+type RoleBodyError struct {
+	Path, Reason string
+	Err          error
+}
+
+func (e *RoleBodyError) Unwrap() error { return e.Err }
+
+// unusable keeps err as the cause but drops a *fs.PathError's own
+// op and path from the message: Path already names the file.
+func unusable(p, reason string, err error) *RoleBodyError {
+	msg := err.Error()
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		msg = pe.Err.Error()
+	}
+	return &RoleBodyError{Path: p, Reason: reason + ": " + msg, Err: err}
+}
+
+func (e *RoleBodyError) Error() string {
+	return fmt.Sprintf("rolespawn: project role body %s %s", e.Path, e.Reason)
+}
+
 // projectRoleBody returns the project override for name, or "" when
 // a path component is absent or a parent is not a directory. A
 // component that exists but is broken (dangling symlink, unreadable,
-// a body that is not a regular file) is an error, not an absence:
-// falling back would silently drop a customized body.
+// a body that is not a regular file or holds only whitespace) is a
+// *RoleBodyError, not an absence: falling back would silently drop a
+// customized body.
 func projectRoleBody(projectRoot, name string) (string, error) {
 	p := projectRoot
 	parts := []string{"bootstrap", "roles", name}
@@ -79,20 +139,29 @@ func projectRoleBody(projectRoot, name string) (string, error) {
 			return "", nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("rolespawn: project role body %s: %w", p, err)
+			return "", unusable(p, "cannot be read", err)
 		}
 		fi, err := os.Stat(p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return "", fmt.Errorf("rolespawn: project role body %s is a dangling symlink", p)
+			return "", &RoleBodyError{Path: p, Reason: "is a dangling symlink"}
 		case err != nil:
-			return "", fmt.Errorf("rolespawn: project role body %s: %w", p, err)
+			return "", unusable(p, "cannot be read", err)
 		case i < len(parts)-1 && !fi.IsDir():
 			// e.g. an autotools-style ./bootstrap script: not an override.
 			return "", nil
 		case i == len(parts)-1 && !fi.Mode().IsRegular():
-			return "", fmt.Errorf("rolespawn: project role body %s: not a regular file", p)
+			return "", &RoleBodyError{Path: p, Reason: "is not a regular file"}
 		}
+	}
+	// The pane reads the body with cat at exec time; reading it here
+	// turns a body the pane could not use into a spawn error.
+	body, err := os.ReadFile(p)
+	if err != nil {
+		return "", unusable(p, "is unreadable", err)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", &RoleBodyError{Path: p, Reason: "is empty"}
 	}
 	return p, nil
 }

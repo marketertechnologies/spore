@@ -94,6 +94,48 @@ func TestCollectReviewStats(t *testing.T) {
 	}
 }
 
+// Archived cycles count: each cycle's reviews are tallied with its own
+// outcomes, and a forced approve validates only against the override
+// marker in that cycle's state/.
+func TestCollectReviewStatsArchivedCycles(t *testing.T) {
+	root := t.TempDir()
+	gamma := filepath.Join(root, RoleTaskRoot, "gamma")
+	c1 := filepath.Join(gamma, "cycles", "1")
+	writeFixture(t, filepath.Join(c1, "reviews", "A", "round-1.json"), reviewJSON("request_changes", medEdge))
+	writeFixture(t, filepath.Join(c1, "responses", "engineer-round-2.json"), `{"author":"engineer","outcomes":[{"reviewer":"A","round":1,"comment":0,"outcome":"fixed"}]}`)
+	forced := `{"author":"B","verdict":"approve","summary":"s","operator_override":"accepted","comments":[` + highCorrect + `]}`
+	writeFixture(t, filepath.Join(c1, "reviews", "B", "round-3.json"), forced)
+	writeFixture(t, filepath.Join(c1, "state", "operator-overrides"), overrideLine("reviews/B/round-3.json", []byte(forced))+"\n")
+	// Cycle 2 carries the same forced file without a record: invalid.
+	writeFixture(t, filepath.Join(gamma, "cycles", "2", "reviews", "B", "round-3.json"), forced)
+	writeFixture(t, filepath.Join(gamma, "cycles", "2", "state", "legacy-files"), "")
+	// The live cycle restarts at round 1 with its own outcomes.
+	writeFixture(t, filepath.Join(gamma, "reviews", "A", "round-1.json"), reviewJSON("request_changes", lowNit))
+	// A task whose only reviews are archived still counts.
+	writeFixture(t, filepath.Join(root, RoleTaskRoot, "delta", "cycles", "1", "reviews", "A", "round-1.json"), reviewJSON("approve"))
+
+	st, err := CollectReviewStats(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Tasks != 2 || st.Reviews != 4 || st.Skipped != 1 {
+		t.Errorf("tasks/reviews/skipped = %d/%d/%d, want 2/4/1", st.Tasks, st.Reviews, st.Skipped)
+	}
+	sev := map[string]StatsRow{}
+	for _, r := range st.BySeverity {
+		sev[r.Key] = r
+	}
+	if r := sev[SeverityMedium]; r.Raised != 1 || r.Outcomes[OutcomeFixed] != 1 {
+		t.Errorf("medium row = %+v, want 1 raised, fixed by the cycle 1 response", r)
+	}
+	if r := sev[SeverityHigh]; r.Raised != 1 || r.Outcomes[OutcomeUnrecorded] != 1 {
+		t.Errorf("high row = %+v, want the forced cycle 1 comment, unrecorded", r)
+	}
+	if r := sev[SeverityLow]; r.Raised != 1 || r.Outcomes[OutcomeUnrecorded] != 1 {
+		t.Errorf("low row = %+v, want the live comment, not cycle 1's outcome", r)
+	}
+}
+
 func TestCollectReviewStatsNoSporeDir(t *testing.T) {
 	st, err := CollectReviewStats(t.TempDir())
 	if err != nil || st.Tasks != 0 || st.Reviews != 0 {

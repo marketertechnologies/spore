@@ -254,6 +254,13 @@ func runTaskStatus(args []string) error {
 	for _, l := range lines {
 		fmt.Printf("agent:    %s: %s\n", l.Name, l)
 	}
+	bodies, err := fleet.TaskRoleBodyLines(projectRoot, resolveTasksDir(), slug)
+	if err != nil {
+		return err
+	}
+	for _, b := range bodies {
+		fmt.Printf("body:     %s: %s\n", b.Name, b.Source)
+	}
 	return nil
 }
 

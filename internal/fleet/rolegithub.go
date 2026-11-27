@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -43,6 +44,11 @@ type githubState struct {
 	// the PR twice.
 	PRDescription string `json:"pr_description,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
+	// Inflight is the event being posted, saved before the post. Still
+	// set on the next tick, the post may have landed before the save
+	// that records it (a crash, a kill): the mirror looks for the
+	// event's marker on the PR before posting again.
+	Inflight string `json:"inflight,omitempty"`
 	// Reopen is set by `spore task reopen` for the current cycle; the
 	// mirror then re-drafts the PR and labels its posts with the cycle.
 	Reopen *reopenState `json:"reopen,omitempty"`
@@ -184,6 +190,9 @@ type githubMirror struct {
 	// (see holdForCheck); gated is false when no gate applies.
 	checked string
 	gated   bool
+	// marker is the hidden tag of the event being applied; prComment
+	// and sendReview end every body with it.
+	marker string
 }
 
 // mirrorGitHub publishes the role loop's new files to the task's draft
@@ -271,6 +280,28 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
+	connected := false
+	// Settle the event left in flight before the check hold can defer
+	// it: posting another event would overwrite Inflight, and the
+	// deferred one would later post twice.
+	if i := slices.IndexFunc(pending, func(e mirrorEvent) bool { return e.name == m.state.Inflight }); i >= 0 {
+		if _, err := m.connect(); err != nil {
+			return err
+		}
+		connected = true
+		e := pending[i]
+		m.marker = mirrorMarker(m.state.Reopen, e.name)
+		landed, err := m.alreadyPosted(e)
+		if err != nil {
+			return fmt.Errorf("%s: %w", e.name, err)
+		}
+		if landed {
+			m.state.Posted = append(m.state.Posted, e.name)
+			pending = slices.Delete(pending, i, i+1)
+		}
+		m.state.Inflight = ""
+		m.save()
+	}
 	pending, m.checked, m.gated, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
 	if err != nil {
 		return err
@@ -278,14 +309,20 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	if _, err := m.connect(); err != nil {
-		return err
+	if !connected {
+		if _, err := m.connect(); err != nil {
+			return err
+		}
 	}
 	for _, e := range pending {
+		m.marker = mirrorMarker(m.state.Reopen, e.name)
+		m.state.Inflight = e.name
+		m.save()
 		if err := m.apply(e); err != nil {
 			return fmt.Errorf("%s: %w", e.name, err)
 		}
 		m.state.Posted = append(m.state.Posted, e.name)
+		m.state.Inflight = ""
 		m.save()
 	}
 	return nil
@@ -567,7 +604,7 @@ func (m *githubMirror) redraft() error {
 }
 
 func (m *githubMirror) prComment(body string) error {
-	_, err := m.gh(body, "pr", "comment", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
+	_, err := m.gh(withMarker(body, m.marker), "pr", "comment", strconv.Itoa(m.state.PRNumber), "--body-file", "-")
 	return err
 }
 

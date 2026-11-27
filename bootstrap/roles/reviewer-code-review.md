@@ -247,8 +247,9 @@ alone decides; `category` is only a label.
 The coordinator rejects a file whose verdict contradicts its grades
 for its round and wakes you with the rule it broke.
 
-Plain-string comments still parse but are ungraded: in a review with
-any graded comment they count like a `medium`. Do not write them.
+Write every comment as a graded object. The coordinator also rejects
+a plain-string comment, and a `request_changes` with no comments, at
+any round: list what must change, or approve.
 
 ## Writing JSON files
 

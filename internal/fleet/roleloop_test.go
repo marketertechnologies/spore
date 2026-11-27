@@ -24,10 +24,11 @@ func writeEng(round int) stepFn {
 func writeRev(instance task.ReviewerInstance, round int, verdict string) stepFn {
 	return func(t *testing.T, root, slug string) {
 		t.Helper()
-		if err := task.WriteReview(root, slug, instance, round, task.Review{
-			Verdict: verdict,
-			Summary: "test verdict",
-		}); err != nil {
+		rev := task.Review{Verdict: verdict, Summary: "test verdict"}
+		if verdict == task.VerdictRequestChanges {
+			rev.Comments = []task.ReviewComment{highBug}
+		}
+		if err := task.WriteReview(root, slug, instance, round, rev); err != nil {
 			t.Fatalf("WriteReview %s round=%d: %v", instance, round, err)
 		}
 	}
@@ -97,6 +98,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after A round 1 request_changes\n want: %+v\n got:  %+v", want, got)
@@ -112,6 +114,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after engineer round 2\n want: %+v\n got:  %+v", want, got)
@@ -141,6 +144,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerB,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after B round 1 request_changes\n want: %+v\n got:  %+v", want, got)
@@ -189,6 +193,7 @@ func TestDeriveSnapshotEscalateAtRound3A(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   3,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 		// The final request_changes owes one engineer fix pass.
 		EscalationFixPending: true,
 	}
@@ -231,6 +236,7 @@ func TestDeriveSnapshotEscalateAtRound3B(t *testing.T) {
 		CurrentReviewer:      task.ReviewerB,
 		ReviewerRound:        3,
 		LastVerdict:          task.VerdictRequestChanges,
+		LastCounts:           task.GradeCounts{HighMedium: 1},
 		EscalationFixPending: true,
 	}
 	if got != want {

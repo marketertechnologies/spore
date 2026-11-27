@@ -158,8 +158,12 @@ same name. A bundled body is written to
 `$XDG_STATE_HOME/spore/<project>/roles/<sha>/<role>.md`, keyed by
 content so two spore releases spawning for one project never swap each
 other's body. An override that exists but is broken (dangling symlink
-on the file or the `bootstrap/roles` dir, unreadable, not a regular
-file) fails the spawn instead of falling back; a `bootstrap` or
+on the file or the `bootstrap/roles` dir, unreadable, empty or
+whitespace only, not a regular file) fails the spawn instead of
+falling back: no pane starts, and the coordinator gets one
+`<slug>: <role> not spawned: ...` notice per distinct error (a clean
+spawn re-arms it). The launch line never starts a bare agent either:
+a body that breaks between the spawn and the exec fails the pane; a `bootstrap` or
 `bootstrap/roles` that is not a directory (such as a `./bootstrap`
 script) means no override. A project with a `bootstrap/roles/` dir
 that lacks one body gets a stderr warning, once per process, when the
@@ -435,11 +439,15 @@ medium here") and overrides the generic rubric examples, never the
 verdict rules above. Spore only points the reviewer at it (the role
 body is not composed in code); there is no default file.
 
-Plain-string comments (legacy files, project role overrides that
-predate grading) still parse and are ungraded. A review whose
-comments are all ungraded (or empty) keeps its verdict as written,
-exactly as before grading, at any round. In a review that grades
-any comment, a plain string counts like a `medium`.
+A strict review (written after the tree's `grade-exempt-files`
+marker, see "Upgrade path") must grade every comment, and a
+`request_changes` must carry at least one: a plain-string comment or
+a comment-less `request_changes` is bounced at any round, so an empty
+verdict cannot burn a round or escalate on nothing. Grandfathered
+files keep the old reading: plain strings parse and are ungraded, a
+review whose comments are all ungraded (or empty) keeps its verdict
+as written at any round, and in a review that grades any comment a
+plain string counts like a `medium`.
 
 ## Comment IDs
 
@@ -557,6 +565,9 @@ upgrade still run the old role body; their next file without
 The severity-order rule has its own marker: the first drive by a
 binary that enforces it writes `state/order-exempt-files`, and the
 verdicts listed there keep their order (their IDs already went out).
+Strict grading (graded comments only, no comment-less
+`request_changes`) likewise writes `state/grade-exempt-files` on the
+first drive by a binary that enforces it.
 A tree with no marker yet is exempt in full until its first drive.
 
 ## Observing a running loop
@@ -565,10 +576,18 @@ A tree with no marker yet is exempt in full until its first drive.
 engineer round, current reviewer, reviewer round, last verdict with
 its comment counts (high/medium, low, question, ungraded), and an
 `engineer: fix pass pending` line while an escalation's fix pass is
-owed.
+owed. For a role task it adds one `body:` line per pane naming the
+role body it spawns with: the override path with the branch its
+checkout is on (`(project override, checkout on branch main)`), the
+bundled body with the spore version, or the error a broken override
+fails the spawn with. Bodies are read from the project checkout, not
+the task worktree, so a checkout left on the wrong branch shows here.
 
 `spore task review-stats` scans every `.spore/*/reviews/{A,B}/
-round-*.json` under the main repo root and prints three tables, by
+round-*.json` under the main repo root, plus each archived cycle's
+`.spore/*/cycles/<n>/reviews/` (validated against that cycle's own
+`state/` markers, `operator-overrides` included, and matched with
+that cycle's engineer outcomes), and prints three tables, by
 reviewer label (`Requirements review`, `Code review`, `Reviewer A`
 for files without a prefix), by severity and by category: comments
 raised, and how the engineer handled them (`fixed`, `pushed_back`,
@@ -600,6 +619,10 @@ Markers under `.spore/<slug>/state/`:
 - `legacy-files`: role files grandfathered from before validation.
 - `order-exempt-files`: verdicts grandfathered from before the
   severity-order rule.
+- `grade-exempt-files`: verdicts grandfathered from before strict
+  grading (plain strings, comment-less `request_changes`).
+- `rolebody-failed-<role>-<hash>`: the coordinator was told this
+  role's body override fails the spawn; removed on a clean spawn.
 - `respawn-<role>-r<round>-<n>`, `respawn-capped-<role>-r<round>`,
   `spawn-<role>.json`, `activity-<role>-r<round>`, `stalled-<role>-r<round>-<since>`: pane
   liveness (see above).

@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 )
@@ -38,11 +40,14 @@ type commentKey struct {
 }
 
 // CollectReviewStats scans `<projectRoot>/.spore/*/reviews/{A,B}/
-// round-*.json` and `responses/engineer-round-*.json`. Each comment
-// counts once under its reviewer label, severity and category (ungraded strings
-// under "ungraded" and "-"); its outcome is the last one an engineer
-// response recorded for it, else "unrecorded". Invalid files are
-// skipped and counted in Skipped.
+// round-*.json` and `responses/engineer-round-*.json`, plus the same
+// files of every archived cycle under `.spore/*/cycles/<n>/`, each
+// cycle validated against its own state markers (operator overrides
+// included). Each comment counts once under its reviewer label,
+// severity and category (ungraded strings under "ungraded" and "-");
+// its outcome is the last one an engineer response of the same cycle
+// recorded for it, else "unrecorded". Invalid files are skipped and
+// counted in Skipped.
 func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 	var st ReviewStats
 	entries, err := os.ReadDir(filepath.Join(projectRoot, RoleTaskRoot))
@@ -63,43 +68,17 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 		if !e.IsDir() {
 			continue
 		}
-		slug := e.Name()
-		outcomes, err := slugOutcomes(projectRoot, slug, &st)
+		trees, err := cycleTrees(projectRoot, e.Name())
 		if err != nil {
 			return st, err
 		}
 		seen := false
-		for _, inst := range []ReviewerInstance{ReviewerA, ReviewerB} {
-			rounds, err := ListReviewRounds(projectRoot, slug, inst)
+		for _, tree := range trees {
+			found, err := collectTree(projectRoot, tree, &st, sev, cat, who)
 			if err != nil {
 				return st, err
 			}
-			for _, r := range rounds {
-				rev, err := ReadReview(projectRoot, slug, inst, r)
-				if errors.Is(err, ErrInvalidRoleFile) {
-					st.Skipped++
-					continue
-				}
-				if err != nil {
-					return st, err
-				}
-				seen = true
-				st.Reviews++
-				label := ReviewerLabel(rev.IDPrefix(inst))
-				for i, c := range rev.Comments {
-					out, ok := outcomes[commentKey{inst, r, i}]
-					if !ok {
-						out = OutcomeUnrecorded
-					}
-					s, k := c.Severity, c.Category
-					if !c.IsGraded() {
-						s, k = "ungraded", "-"
-					}
-					sev.add(s, out)
-					cat.add(k, out)
-					who.add(label, out)
-				}
-			}
+			seen = seen || found
 		}
 		if seen {
 			st.Tasks++
@@ -107,6 +86,73 @@ func CollectReviewStats(projectRoot string) (ReviewStats, error) {
 	}
 	st.ByReviewer, st.BySeverity, st.ByCategory = who.rows(), sev.rows(), cat.rows()
 	return st, nil
+}
+
+// cycleTrees returns the role-file trees of slug as pseudo-slugs that
+// RoleTaskDir resolves: each archived cycle (`<slug>/cycles/<n>`, in
+// cycle order), then the live one. An archived cycle keeps the live
+// tree's layout and its own state/, so every per-slug reader and
+// marker check works on it unchanged.
+func cycleTrees(projectRoot, slug string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(RoleTaskDir(projectRoot, slug), "cycles"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	var cycles []int
+	for _, e := range entries {
+		if n, err := strconv.Atoi(e.Name()); err == nil && e.IsDir() {
+			cycles = append(cycles, n)
+		}
+	}
+	sort.Ints(cycles)
+	var out []string
+	for _, n := range cycles {
+		out = append(out, filepath.Join(slug, "cycles", strconv.Itoa(n)))
+	}
+	return append(out, slug), nil
+}
+
+// collectTree tallies one tree's reviews; found reports whether it
+// held a valid one.
+func collectTree(projectRoot, tree string, st *ReviewStats, sev, cat, who *tally) (bool, error) {
+	outcomes, err := slugOutcomes(projectRoot, tree, st)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, inst := range []ReviewerInstance{ReviewerA, ReviewerB} {
+		rounds, err := ListReviewRounds(projectRoot, tree, inst)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range rounds {
+			rev, err := ReadReview(projectRoot, tree, inst, r)
+			if errors.Is(err, ErrInvalidRoleFile) {
+				st.Skipped++
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			found = true
+			st.Reviews++
+			label := ReviewerLabel(rev.IDPrefix(inst))
+			for i, c := range rev.Comments {
+				out, ok := outcomes[commentKey{inst, r, i}]
+				if !ok {
+					out = OutcomeUnrecorded
+				}
+				s, k := c.Severity, c.Category
+				if !c.IsGraded() {
+					s, k = "ungraded", "-"
+				}
+				sev.add(s, out)
+				cat.add(k, out)
+				who.add(label, out)
+			}
+		}
+	}
+	return found, nil
 }
 
 func slugOutcomes(projectRoot, slug string, st *ReviewStats) (map[commentKey]string, error) {

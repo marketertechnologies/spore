@@ -123,8 +123,9 @@ a label. In round 1 the reviewer requests changes on any comment,
 lows and questions included. From round 2 it requests changes only
 for a `high` or `medium`; an approve may still carry lows and
 questions, and you are not woken for them. A `request_changes` at
-round 3 escalates (see "Escalation"). A plain-string comment (an
-older reviewer body) is ungraded: treat it like a `medium`.
+round 3 escalates (see "Escalation"). A plain-string comment (only
+in a review written before strict grading) is ungraded: treat it like
+a `medium`.
 
 Your obligation per grade:
 

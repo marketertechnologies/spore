@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	spore "github.com/versality/spore"
 	"github.com/versality/spore/internal/task"
 )
 
@@ -126,6 +127,52 @@ func TestTaskAgentLines(t *testing.T) {
 	}
 	if len(lines) != 1 || lines[0].Name+": "+lines[0].String() != "worker: codex model=gpt-5.5 effort=medium" {
 		t.Errorf("worker lines = %+v", lines)
+	}
+}
+
+// Status names each role pane's body file: an override with the branch
+// its checkout is on, a bundled body with the spore version, or the
+// error a broken override spawns with.
+func TestTaskRoleBodyLines(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := newGitRepoFor(t, "demo-project")
+	runGit(t, root, "symbolic-ref", "HEAD", "refs/heads/feature-roles")
+	writeAgentsRoleTask(t, root, "[fleet.reviewers.B]\nmode = \"code-review\"\n", "")
+	dir := filepath.Join(root, "bootstrap", "roles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "engineer.md"), []byte("custom engineer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reviewer.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := TaskRoleBodyLines(root, "", "feature-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, l := range lines {
+		got = append(got, l.Name+": "+l.Source)
+	}
+	want := []string{
+		"engineer: " + filepath.Join(dir, "engineer.md") + " (project override, checkout on branch feature-roles)",
+		"reviewer-A: error: rolespawn: project role body " + filepath.Join(dir, "reviewer.md") + " is empty",
+		"reviewer-B: bundled reviewer-code-review.md (spore " + spore.Version() + ")",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("lines =\n%q\nwant\n%q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_STATE_HOME"), "spore")); err == nil {
+		t.Error("status materialized a bundled body")
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "tasks", "plain.md"), []byte("---\nstatus: active\nslug: plain\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if lines, err := TaskRoleBodyLines(root, "", "plain"); err != nil || lines != nil {
+		t.Errorf("plain task: lines = %v, err %v", lines, err)
 	}
 }
 
