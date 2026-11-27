@@ -18,7 +18,7 @@ Usage:
   spore install --dest <dir>
 
 Copies the bundled skill bodies (spore-bootstrap, diagram,
-select-agent) into <root>/.claude/skills/ and <root>/.agents/skills/
+select-agent, secrets-profile) into <root>/.claude/skills/ and <root>/.agents/skills/
 so claude-code and Codex in that project can discover and run them.
 Idempotent: re-runs only rewrite files whose contents drifted from
 the embedded copy. A file that matches neither the embedded copy nor

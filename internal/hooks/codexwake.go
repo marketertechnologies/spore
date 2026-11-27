@@ -226,7 +226,7 @@ func deliverCodex(ctx context.Context, inbox, key string, o codexWatchOpts) erro
 	if err != nil || len(claimed) == 0 {
 		return err
 	}
-	lines := renderClaimed(claimed)
+	lines := renderClaimed(inbox, claimed)
 	for start := 0; start < len(lines); {
 		end, msg := start, ""
 		for end < len(lines) {

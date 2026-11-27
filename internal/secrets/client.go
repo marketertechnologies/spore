@@ -40,6 +40,9 @@ func GH(project, stdin string, args []string, timeout time.Duration) (string, er
 	if resp.Exit != 0 {
 		return "", &ExitError{Code: resp.Exit, Stderr: strings.TrimSpace(resp.Stderr)}
 	}
+	if resp.Truncated {
+		return "", fmt.Errorf("gh %s: output over the broker's %d byte cap", strings.Join(args[:min(2, len(args))], " "), maxOutput)
+	}
 	return strings.TrimSpace(resp.Stdout), nil
 }
 

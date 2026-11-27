@@ -451,7 +451,7 @@
                   # dirs stay real and unmanaged siblings survive.
                   for root in ["/home/spore-test/.claude/skills", "/home/spore-test/.agents/skills"]:
                       machine.succeed(f"test -d {root} && test ! -L {root}")
-                      for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                      for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
                           machine.succeed(f"test -L {root}/{skill} && test -f {root}/{skill}/SKILL.md")
                   machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
 
@@ -475,7 +475,7 @@
                   assert market.endswith("-spore-claude-marketplace"), market
                   machine.succeed(f"test -f {market}/.claude-plugin/plugin.json")
                   machine.succeed(f"test -f {market}/.claude-plugin/marketplace.json")
-                  for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                  for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
                       machine.succeed(f"test -f {market}/bootstrap/skills/{skill}/SKILL.md")
 
                   # The user's tmux server is a lingering user unit in

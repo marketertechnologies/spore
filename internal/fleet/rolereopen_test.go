@@ -169,7 +169,7 @@ func TestGitHubMirrorReopenRedraftsAndLabelsCycle(t *testing.T) {
 	f.tick(t)
 	got := f.calls(t)[before:]
 	want := []string{
-		"pr view 12 --json isDraft --jq .isDraft",
+		"pr view 12 --json isDraft",
 		"pr ready 12 --undo",
 		"pr comment 12 --body-file -",
 	}
