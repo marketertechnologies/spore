@@ -233,9 +233,29 @@ func (r *Redactor) walk(v any, counts map[string]int) any {
 			t[i] = r.walk(t[i], counts)
 		}
 	case map[string]any:
+		// Keys left as they are go in first; a redacted key that
+		// collides with one already there (two home paths both
+		// [redacted]) gets a #n suffix instead of dropping an entry.
 		out := make(map[string]any, len(t))
+		var redacted []string
 		for k, x := range t {
-			out[r.scrub(k, counts)] = r.walk(x, counts)
+			if nk := r.scrub(k, nil); nk != k {
+				redacted = append(redacted, k)
+				continue
+			}
+			out[k] = r.walk(x, counts)
+		}
+		sort.Strings(redacted)
+		for _, k := range redacted {
+			base := r.scrub(k, counts)
+			nk := base
+			for n := 2; ; n++ {
+				if _, taken := out[nk]; !taken {
+					break
+				}
+				nk = base + "#" + strconv.Itoa(n)
+			}
+			out[nk] = r.walk(t[k], counts)
 		}
 		return out
 	}
@@ -307,13 +327,13 @@ func ghTextFlag(sub, verb, name string) string {
 
 // shortValueFlags are the short flags, per gh subcommand, that take a
 // value but carry no posted text. Only letters that take a value under
-// every verb are listed (pr -r and -s are booleans under review and
-// merge): treating a boolean as value-taking would hide the flags
-// after it in its group.
+// every verb are listed (pr -r, -s, -m and -a are booleans under
+// review or merge): treating a boolean as value-taking would hide the
+// flags after it in its group.
 var shortValueFlags = map[string]string{
 	"api":   "HXpqt",
-	"pr":    "RBHqLAalmpSTFt",
-	"issue": "RHqLAalmpSTFt",
+	"pr":    "RBHqLAlpSTFt",
+	"issue": "RqLAalmpSTFt",
 }
 
 // ShortValueFlag walks a short flag group (-iF, -Fk=v, -F=k=v) as

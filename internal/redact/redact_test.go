@@ -387,6 +387,11 @@ func TestGHCallFlagParsing(t *testing.T) {
 		{"view template", []string{"pr", "view", "5", "-t", "{{.body}} " + c}, []string{"pr", "view", "5", "-t", "{{.body}} " + c}, ""},
 		{"api template", []string{"api", "repos/o/r/pulls/1", "-t", c}, []string{"api", "repos/o/r/pulls/1", "-t", c}, ""},
 		{"text flag after bool", []string{"pr", "comment", "7", "-eb" + c}, []string{"pr", "comment", "7", "-eb" + red}, "--body"},
+		{"merge -mb", []string{"pr", "merge", "12", "-mb", c}, []string{"pr", "merge", "12", "-mb", red}, "--body"},
+		{"merge -mt", []string{"pr", "merge", "12", "-mt", c}, []string{"pr", "merge", "12", "-mt", red}, "--subject"},
+		{"review -ab", []string{"pr", "review", "12", "-ab", c}, []string{"pr", "review", "12", "-ab", red}, "--body"},
+		{"review -rb", []string{"pr", "review", "12", "-rb" + c}, []string{"pr", "review", "12", "-rb" + red}, "--body"},
+		{"merge -sb", []string{"pr", "merge", "12", "-sb=" + c}, []string{"pr", "merge", "12", "-sb=" + red}, "--body"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, got, hits := r.GHCall("", tc.args)
@@ -435,5 +440,28 @@ func TestRecordWithoutCmd(t *testing.T) {
 	}
 	if evs[0].Fields["cmd"] != "api" || strings.Contains(evs[0].Detail, canary) {
 		t.Fatalf("event = %+v", evs[0])
+	}
+}
+
+// TestGHCallJSONKeyCollision: keys redacted to the same text keep
+// every entry, and an untouched key is never overwritten.
+func TestGHCallJSONKeyCollision(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	doc := `{"files":{"/home/a/x.txt":{"content":"1"},"/home/b/y.txt":{"content":"2"},"[redacted]":{"content":"3"},"k":null}}`
+	out, _, _ := r.GHCall(doc, []string{"api", "gists", "--input", "-"})
+	var got struct{ Files map[string]any }
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 4 || strings.Contains(out, "/home/") {
+		t.Fatalf("files = %v", got.Files)
+	}
+	if c := got.Files["[redacted]"].(map[string]any)["content"]; c != "3" {
+		t.Fatalf("untouched key overwritten: %v", got.Files)
+	}
+	for _, k := range []string{"[redacted]#2", "[redacted]#3", "k"} {
+		if _, ok := got.Files[k]; !ok {
+			t.Errorf("missing %q in %v", k, got.Files)
+		}
 	}
 }
