@@ -60,6 +60,11 @@ type Env struct {
 	StateBase string
 	// Npmrc is ~/.npmrc; "" skips.
 	Npmrc string
+	// BundleConfig is bundler's global config (~/.bundle/config, or
+	// the file BUNDLE_USER_CONFIG names); "" skips. ProjectBundle
+	// lists project .bundle/config files.
+	BundleConfig  string
+	ProjectBundle []string
 	// SelfVersion is this binary's BuildVersion.
 	SelfVersion string
 
@@ -82,6 +87,7 @@ func Check(env Env) []Result {
 	out = append(out, checkFleetUnits(env)...)
 	out = append(out, checkSecrets(env))
 	out = append(out, checkNpmrc(env))
+	out = append(out, checkBundleConfig(env))
 	out = append(out, checkKillSwitch(env))
 	return out
 }
@@ -669,6 +675,92 @@ func checkNpmrc(env Env) Result {
 		ls[i] = strconv.Itoa(n)
 	}
 	return Result{name, Warn, fmt.Sprintf("%s line %s holds a literal auth token readable by sandboxed agents; use a ${VAR} reference, or a narrowly scoped token in a file named by NPM_CONFIG_USERCONFIG, which sandboxed agents can read too (see docs/sandbox.md)", env.Npmrc, strings.Join(ls, ", "))}
+}
+
+// bundleTokenRE matches the GitHub credential shapes bundler configs
+// carry: classic, fine-grained, OAuth and App installation tokens, and
+// the x-access-token user of an App token URL.
+var bundleTokenRE = regexp.MustCompile(`gh[ops]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|x-access-token`)
+
+// bundleTokenLines returns "line N (KEY)" for each line of a bundler
+// config holding a GitHub token. The key names the host, never the
+// value.
+func bundleTokenLines(data []byte) []string {
+	var out []string
+	for i, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || t[0] == '#' || !bundleTokenRE.MatchString(t) {
+			continue
+		}
+		k, _, ok := strings.Cut(t, ": ")
+		k = strings.Trim(strings.TrimSpace(k), `"'`)
+		if ok && envKeyRE.MatchString(k) {
+			out = append(out, fmt.Sprintf("line %d (%s)", i+1, k))
+		} else {
+			out = append(out, fmt.Sprintf("line %d", i+1))
+		}
+	}
+	return out
+}
+
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// checkBundleConfig flags a literal GitHub token in bundler's global
+// config or a project .bundle/config, and a global config readable by
+// anyone but its owner. The sandbox masks ~/.bundle/config; a project
+// .bundle/config sits in the worktree every agent reads, so a token
+// there fails. Never print the value.
+func checkBundleConfig(env Env) Result {
+	const name = "bundle tokens"
+	if env.BundleConfig == "" && len(env.ProjectBundle) == 0 {
+		return Result{name, Skip, "no HOME"}
+	}
+	var fails, warns []string
+	seen := 0
+	files := append([]string{env.BundleConfig}, env.ProjectBundle...)
+	for i, f := range files {
+		if f == "" {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			warns = append(warns, err.Error())
+			continue
+		}
+		seen++
+		global := i == 0
+		if lines := bundleTokenLines(data); len(lines) > 0 {
+			msg := f + " " + strings.Join(lines, ", ") + " holds a literal GitHub token"
+			if global {
+				warns = append(warns, msg)
+			} else {
+				fails = append(fails, msg+" readable by every agent in the project")
+			}
+		}
+		if !global {
+			continue
+		}
+		if fi, err := os.Stat(f); err == nil && fi.Mode().Perm()&0o077 != 0 {
+			warns = append(warns, fmt.Sprintf("%s is mode %04o (want 0600: chmod 600)", f, fi.Mode().Perm()))
+		}
+		if hasACL(f) {
+			warns = append(warns, f+" carries an ACL (setfacl -b)")
+		}
+	}
+	const hint = "; supply a read:packages token as BUNDLE_RUBYGEMS__PKG__GITHUB__COM from the environment and drop BUNDLE_GITHUB__COM (see docs/sandbox.md)"
+	switch {
+	case len(fails) > 0:
+		return Result{name, Fail, strings.Join(append(fails, warns...), "; ") + hint}
+	case len(warns) > 0:
+		return Result{name, Warn, strings.Join(warns, "; ") + hint}
+	case seen == 0:
+		return Result{name, Pass, "no bundler config found"}
+	default:
+		return Result{name, Pass, fmt.Sprintf("%d bundler config(s), no GitHub token, global one owner-only", seen)}
+	}
 }
 
 func checkKillSwitch(env Env) Result {

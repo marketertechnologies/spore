@@ -93,6 +93,7 @@
       "Read(~/.claude/.credentials.json)",
       "Edit(~/.claude/.credentials.json)",
       "Bash(*.claude/.credentials.json*)",
+      "Read(~/.bundle/config)",
       "Bash(git push --force *)",
       "Bash(git push -f *)",
       "Bash(git push * --force)",
@@ -155,7 +156,8 @@
         "~/.config/spore",
         "~/.local/state/spore/*/github-token.json",
         "~/.ssh",
-        "~/.claude/.credentials.json"
+        "~/.claude/.credentials.json",
+        "~/.bundle/config"
       ],
       "denyWrite": [
         "~/.local/state/spore/*/github.toml"

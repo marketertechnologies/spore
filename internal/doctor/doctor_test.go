@@ -98,11 +98,13 @@ func newEnv(t *testing.T) (Env, *fakeHost) {
 	env := Env{
 		SW: sw, DropIn: dropin, RepoRoot: repo, FlakeLock: lock, ClaudeBin: "claude",
 		ConfigDir: filepath.Join(dir, "config"), StateBase: filepath.Join(dir, "state"),
-		Npmrc:        filepath.Join(dir, "home", ".npmrc"),
-		SelfVersion:  "0.54.0 (abcdef1234567890)",
-		Run:          f.run,
-		Render:       hooks.ManagedSettings,
-		FleetEnabled: func() (bool, error) { return true, nil },
+		Npmrc:         filepath.Join(dir, "home", ".npmrc"),
+		BundleConfig:  filepath.Join(dir, "home", ".bundle", "config"),
+		ProjectBundle: []string{filepath.Join(dir, "proj", ".bundle", "config")},
+		SelfVersion:   "0.54.0 (abcdef1234567890)",
+		Run:           f.run,
+		Render:        hooks.ManagedSettings,
+		FleetEnabled:  func() (bool, error) { return true, nil },
 	}
 	return env, f
 }
@@ -263,6 +265,77 @@ func TestCheckNpmrc(t *testing.T) {
 		if strings.Contains(r.Detail, "CANARY") {
 			t.Errorf("%q: detail leaks the value: %q", tc.body, r.Detail)
 		}
+	}
+}
+
+func TestCheckBundleConfig(t *testing.T) {
+	env, _ := newEnv(t)
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Pass {
+		t.Errorf("absent = %+v", r)
+	}
+	global, proj := env.BundleConfig, env.ProjectBundle[0]
+	for _, f := range []string{global, proj} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(f, body string, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(f, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(f, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clean := "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_JOBS: \"4\"\n"
+	write(global, clean, 0o600)
+	write(proj, clean, 0o644)
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Pass {
+		t.Errorf("clean = %+v", r)
+	}
+
+	write(global, clean, 0o640)
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Warn || !strings.Contains(r.Detail, "mode 0640") {
+		t.Errorf("group-readable global = %+v, want warn naming the mode", r)
+	}
+	write(global, clean, 0o600)
+
+	for _, tc := range []struct{ body, want string }{
+		{"---\nBUNDLE_RUBYGEMS__PKG__GITHUB__COM: \"x:ghp_CANARYCANARYCANARY12\"\n", "line 2 (BUNDLE_RUBYGEMS__PKG__GITHUB__COM)"},
+		{"---\nBUNDLE_JOBS: \"4\"\nBUNDLE_GITHUB__COM: \"github_pat_CANARY_CANARY_CANARY\"\n", "line 3 (BUNDLE_GITHUB__COM)"},
+		{"BUNDLE_GITHUB__COM: \"x-access-token:CANARYCANARY\"\n", "line 1 (BUNDLE_GITHUB__COM)"},
+		{"BUNDLE_GITHUB__COM: \"gho_CANARYCANARY\"\nBUNDLE_X__COM: \"ghs_CANARYCANARY\"\n", "line 1 (BUNDLE_GITHUB__COM), line 2 (BUNDLE_X__COM)"},
+	} {
+		write(global, tc.body, 0o600)
+		r := find(t, Check(env), "bundle tokens")
+		if r.Status != Warn || !strings.Contains(r.Detail, tc.want) {
+			t.Errorf("global %q = %+v, want warn naming %q", tc.body, r, tc.want)
+		}
+		if strings.Contains(r.Detail, "CANARY") {
+			t.Errorf("global %q: detail leaks the value: %q", tc.body, r.Detail)
+		}
+		write(global, clean, 0o600)
+
+		write(proj, tc.body, 0o644)
+		r = find(t, Check(env), "bundle tokens")
+		if r.Status != Fail || !strings.Contains(r.Detail, proj+" "+tc.want) {
+			t.Errorf("project %q = %+v, want fail naming %q", tc.body, r, tc.want)
+		}
+		if strings.Contains(r.Detail, "CANARY") {
+			t.Errorf("project %q: detail leaks the value: %q", tc.body, r.Detail)
+		}
+		write(proj, clean, 0o644)
+	}
+
+	write(global, "# BUNDLE_GITHUB__COM: \"ghp_CANARYCANARYCANARY\"\n", 0o600)
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Pass {
+		t.Errorf("commented token = %+v, want pass", r)
+	}
+
+	env.BundleConfig, env.ProjectBundle = "", nil
+	if r := find(t, Check(env), "bundle tokens"); r.Status != Skip {
+		t.Errorf("no paths = %+v, want skip", r)
 	}
 }
 

@@ -35,6 +35,10 @@ type Redactor struct {
 
 var tokenRE = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-ant-[A-Za-z0-9_-]{16,})`)
 
+// urlCredRE is the password of URL userinfo, as bundler and git print
+// it (`https://x:<token>@rubygems.pkg.github.com`), whatever its shape.
+var urlCredRE = regexp.MustCompile(`(?i)\b(https?://[^\s/:@]+:)[^\s/@]+@`)
+
 // pemRE also takes a BEGIN line with no END: a truncated key is still
 // key material.
 var pemRE = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)`)
@@ -187,6 +191,7 @@ func (r *Redactor) scrub(s string, counts map[string]int) string {
 // secrets.env values and no home paths, so it is safe on refs.
 func scrubShapes(s string, counts map[string]int) string {
 	s = replaceRE(s, pemRE, ClassPEM, Mark, counts)
+	s = replaceRE(s, urlCredRE, ClassToken, "${1}"+Mark+"@", counts)
 	return replaceRE(s, tokenRE, ClassToken, Mark, counts)
 }
 

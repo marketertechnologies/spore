@@ -33,6 +33,7 @@ var defaultDeny = []string{
 	"Read(~/.claude/.credentials.json)",
 	"Edit(~/.claude/.credentials.json)",
 	"Bash(*.claude/.credentials.json*)",
+	"Read(~/.bundle/config)",
 	"Bash(git push --force *)",
 	"Bash(git push -f *)",
 	"Bash(git push * --force)",
