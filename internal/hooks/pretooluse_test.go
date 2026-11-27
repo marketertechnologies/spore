@@ -56,6 +56,8 @@ func TestPreToolUse_DefaultForbidden(t *testing.T) {
 		{"gh-push", "spore gh push wt/x", false, ""},
 		{"gh-push-lease", "spore gh push wt/x --force-with-lease=0123abc", false, ""},
 		{"gh-token-bare", "spore gh token", true, "spore gh pr|api|push"},
+		{"gh-push-in-prose", "echo 'use `spore gh push` / `spore gh pr`' >> notes.md", false, ""},
+		{"gh-token-backticked", "x=`spore gh token`", true, "sandbox"},
 		{"gh-unknown", "spore gh auth status", true, "sandbox"},
 		{"compound-push-force", "cd /w && git push -f", true, "force"},
 		{"force-with-lease", "git push --force-with-lease origin x", false, ""},

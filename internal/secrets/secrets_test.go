@@ -278,10 +278,14 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "view", "7", "--json", "isDraft"},
 		{"api", "repos/acme/alpha/pulls/7/reviews", "--hostname", "github.com", "--method", "POST", "--input", "-"},
 		{"api", "repos/acme/alpha/pulls/7/files", "--hostname", "github.com", "--paginate"},
-		{"api", "graphql", "--hostname", "github.com", "-f", "query=query { viewer { login } }", "-F", "number=7"},
+		{"api", "graphql", "--hostname", "github.com", "-f", "query=" + PRActivityQuery, "-f", "owner=acme", "-f", "name=alpha", "-F", "number=7"},
+		{"pr", "checks", "7", "--required", "--json", "name,state"},
+		{"api", "repos/acme/alpha/commits/9cc70240d3c90179350720a9e322f60d70bf60a8/check-runs"},
+		{"api", "repos/acme/alpha/commits/9cc7024/status", "--method", "GET"},
+		{"api", "repos/acme/alpha/commits/9cc7024"},
 	}
 	for _, a := range ok {
-		if err := checkGHArgs(a, repo); err != nil {
+		if err := checkGHArgs(a, "", repo); err != nil {
 			t.Errorf("%q: %v", a, err)
 		}
 	}
@@ -297,6 +301,10 @@ func TestCheckGHArgs(t *testing.T) {
 		{"api", "graphql", "-f", "query=mutation { deleteRef }"},
 		{"api", "repos/acme/alpha/pulls/7", "--method", "DELETE"},
 		{"api", "repos/acme/alpha/pulls/7", "--hostname", "evil.example"},
+		{"api", "repos/acme/alpha/commits/9cc7024/statuses", "--method", "POST"},
+		{"api", "repos/acme/alpha/commits/9cc7024/check-runs", "-f", "name=fake"},
+		{"api", "repos/acme/alpha/commits/9cc7024/comments"},
+		{"api", "repos/acme/other/commits/9cc7024/status"},
 		{"auth", "token"},
 		{"repo", "clone", "acme/alpha"},
 		// gh evaluates these expressions in the process holding the token.
@@ -315,7 +323,7 @@ func TestCheckGHArgs(t *testing.T) {
 		{"pr", "view", "7", "--", "--jq", "env"},
 	}
 	for _, a := range bad {
-		if err := checkGHArgs(a, repo); err == nil {
+		if err := checkGHArgs(a, "", repo); err == nil {
 			t.Errorf("%q accepted", a)
 		}
 	}
@@ -476,4 +484,217 @@ func TestListShowsNoValues(t *testing.T) {
 	if bytes.Contains(resp.Data, []byte("hunter2")) {
 		t.Fatal("list leaked a value")
 	}
+}
+
+// bloblessFixture is an origin that serves filtered fetches, and a
+// work clone whose origin/main holds two versions of one large file
+// (old is the first version's blob), on a local branch wt/edit with a
+// third version on top (sha). The broker's mirror is still cold.
+type bloblessFixture struct {
+	s                   *Server
+	c                   *Config
+	tmp, origin, work   string
+	big, body, old, sha string
+}
+
+func newBloblessFixture(t *testing.T) *bloblessFixture {
+	t.Helper()
+	f := &bloblessFixture{c: testConfig(t), tmp: t.TempDir()}
+	f.s = startServer(t, f.c)
+	f.origin = filepath.Join(f.tmp, "origin.git")
+	servingOrigin(t, f.tmp, f.origin)
+	origin := f.origin
+	f.s.remote = func(string) string { return origin }
+	f.s.mint = func(context.Context, string) (string, error) { return "ghs_testtoken", nil }
+
+	f.work = filepath.Join(f.tmp, "work")
+	git(t, f.tmp, "init", "--quiet", "-b", "main", f.work)
+	f.big = filepath.Join(f.work, "big.txt")
+	f.body = strings.Repeat("line of history that compresses well\n", 4000)
+	writeFile(t, f.big, f.body)
+	git(t, f.work, "add", "big.txt")
+	git(t, f.work, "commit", "--quiet", "-m", "base")
+	f.old = git(t, f.work, "rev-parse", "HEAD:big.txt")
+	writeFile(t, f.big, f.body+"v2\n")
+	git(t, f.work, "commit", "--quiet", "-am", "v2")
+	git(t, f.work, "remote", "add", "origin", f.origin)
+	git(t, f.work, "push", "--quiet", "origin", "main")
+	git(t, f.work, "fetch", "--quiet", "origin")
+	git(t, f.work, "checkout", "--quiet", "-b", "wt/edit")
+	writeFile(t, f.big, f.body+"v2\nv3\n")
+	git(t, f.work, "commit", "--quiet", "-am", "v3")
+	f.sha = git(t, f.work, "rev-parse", "HEAD")
+	return f
+}
+
+// servingOrigin makes a bare repo at dir that, like GitHub, serves
+// filtered fetches and lazy fetches of single objects.
+func servingOrigin(t *testing.T, tmp, dir string, cloneFrom ...string) {
+	t.Helper()
+	if len(cloneFrom) > 0 {
+		git(t, tmp, "clone", "--quiet", "--bare", cloneFrom[0], dir)
+	} else {
+		git(t, tmp, "init", "--quiet", "--bare", "-b", "main", dir)
+	}
+	git(t, dir, "config", "uploadpack.allowFilter", "true")
+	git(t, dir, "config", "uploadpack.allowAnySHA1InWant", "true")
+}
+
+func (f *bloblessFixture) mirror() string {
+	return filepath.Join(f.c.StateDir, "git", "alpha.git")
+}
+
+// assertNoBlob fails if the mirror holds blob locally (no lazy fetch).
+func (f *bloblessFixture) assertNoBlob(t *testing.T, blob, why string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", f.mirror(), "cat-file", "-e", blob)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if cmd.Run() == nil {
+		t.Fatalf("mirror holds the historical blob %s: %s", blob, why)
+	}
+}
+
+// A cold mirror fetches origin without blobs and pulls the delta bases
+// a thin bundle needs on demand, so a large history never moves.
+func TestPushColdMirrorIsBlobless(t *testing.T) {
+	f := newBloblessFixture(t)
+	if err := Push("alpha", f.work, "wt/edit", f.sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, f.origin, "rev-parse", "refs/heads/wt/edit"); got != f.sha {
+		t.Fatalf("origin has %s, want %s", got, f.sha)
+	}
+	f.assertNoBlob(t, f.old, "the cold fetch was not blobless")
+}
+
+// The fetch op on a cold mirror also stays blobless: a bundle thin
+// against the caller's commit pulls only the new blobs from origin.
+func TestFetchColdMirrorIsBlobless(t *testing.T) {
+	f := newBloblessFixture(t)
+	seed := filepath.Join(f.tmp, "seed")
+	git(t, f.tmp, "clone", "--quiet", f.origin, seed)
+	writeFile(t, filepath.Join(seed, "big.txt"), f.body+"v2\nupstream\n")
+	git(t, seed, "commit", "--quiet", "-am", "main moves")
+	git(t, seed, "push", "--quiet", "origin", "main")
+
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := git(t, f.work, "rev-parse", "refs/remotes/origin/main"), git(t, f.origin, "rev-parse", "main"); got != want {
+		t.Fatalf("fetched %s, want %s", got, want)
+	}
+	git(t, f.work, "cat-file", "-e", "refs/remotes/origin/main:big.txt")
+	f.assertNoBlob(t, f.old, "the cold fetch op was not blobless")
+}
+
+// A mirror filled by a full fetch before it went blobless keeps its
+// objects and takes the next push.
+func TestPushConvertsFullMirror(t *testing.T) {
+	f := newBloblessFixture(t)
+	m := f.mirror()
+	git(t, f.tmp, "init", "--quiet", "--bare", m)
+	git(t, m, "fetch", "--quiet", "--no-tags", f.origin, "+refs/heads/*:refs/remotes/origin/*")
+	if err := Push("alpha", f.work, "wt/edit", f.sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, f.origin, "rev-parse", "refs/heads/wt/edit"); got != f.sha {
+		t.Fatalf("origin has %s, want %s", got, f.sha)
+	}
+	if got := git(t, m, "config", "extensions.partialClone"); got != "origin" {
+		t.Fatalf("extensions.partialClone = %q, want origin", got)
+	}
+	cmd := exec.Command("git", "-C", m, "cat-file", "-e", f.old)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the full mirror lost the blob %s it already held: %v", f.old, err)
+	}
+	git(t, m, "fsck", "--connectivity-only")
+}
+
+// Lazy fetches follow the project's current repo URL: a mirror made
+// against an old origin pulls its missing delta bases from the new one.
+func TestPushLazyFetchFollowsRepoURL(t *testing.T) {
+	f := newBloblessFixture(t)
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.mirror(), "rev-parse", "--verify", "refs/remotes/origin/main")
+	f.assertNoBlob(t, git(t, f.work, "rev-parse", "main:big.txt"), "the base blob must be lazy-fetched for this test")
+
+	moved := filepath.Join(f.tmp, "moved.git")
+	servingOrigin(t, f.tmp, moved, f.origin)
+	if err := os.RemoveAll(f.origin); err != nil {
+		t.Fatal(err)
+	}
+	f.s.remote = func(string) string { return moved }
+	if err := Push("alpha", f.work, "wt/edit", f.sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, moved, "rev-parse", "refs/heads/wt/edit"); got != f.sha {
+		t.Fatalf("moved origin has %s, want %s", got, f.sha)
+	}
+}
+
+// A push through a mirror behind origin runs one batched fetch of its
+// branches. Checking the bundle's prerequisites must not lazy-fetch
+// them with no haves on top of it.
+func TestPushStaleMirrorFetchesOnce(t *testing.T) {
+	f := newBloblessFixture(t)
+	git(t, f.work, "checkout", "--quiet", "main")
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b", "c"} {
+		writeFile(t, filepath.Join(f.work, n+".txt"), n+"\n")
+		git(t, f.work, "add", n+".txt")
+		git(t, f.work, "commit", "--quiet", "-m", n)
+	}
+	git(t, f.work, "push", "--quiet", "origin", "main")
+	git(t, f.work, "fetch", "--quiet", "origin")
+	git(t, f.work, "checkout", "--quiet", "-b", "wt/stale")
+	writeFile(t, filepath.Join(f.work, "d.txt"), "d\n")
+	git(t, f.work, "add", "d.txt")
+	git(t, f.work, "commit", "--quiet", "-m", "d")
+	sha := git(t, f.work, "rev-parse", "HEAD")
+
+	count := filepath.Join(f.tmp, "uploads")
+	wrap := filepath.Join(f.tmp, "upload-pack")
+	if err := os.WriteFile(wrap, []byte("#!/bin/sh\necho x >> '"+count+"'\nexec git-upload-pack \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.mirror(), "config", "remote.origin.uploadpack", wrap)
+	if err := Push("alpha", f.work, "wt/stale", sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(count)
+	if n := bytes.Count(b, []byte("x")); n != 1 {
+		t.Fatalf("mirror ran upload-pack %d times, want 1 batched fetch", n)
+	}
+	if got, want := git(t, f.mirror(), "rev-parse", "refs/remotes/origin/main"), git(t, f.origin, "rev-parse", "main"); got != want {
+		t.Fatalf("mirror origin/main is %s, want %s: a lazy fetch stood in for the batched one", got, want)
+	}
+}
+
+// A mirror whose base moved on origin since its last fetch still knows
+// what origin holds before it pushes, so the push packs only the new
+// commits and never lazy-fetches the history's blobs.
+func TestPushMovedBaseStaysBlobless(t *testing.T) {
+	f := newBloblessFixture(t)
+	if err := Fetch("alpha", f.work, "main", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(f.tmp, "seed")
+	git(t, f.tmp, "clone", "--quiet", f.origin, seed)
+	writeFile(t, filepath.Join(seed, "other.txt"), "moved\n")
+	git(t, seed, "add", "other.txt")
+	git(t, seed, "commit", "--quiet", "-m", "main moves")
+	git(t, seed, "push", "--quiet", "origin", "main")
+
+	if err := Push("alpha", f.work, "wt/edit", f.sha, "", 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, f.origin, "rev-parse", "refs/heads/wt/edit"); got != f.sha {
+		t.Fatalf("origin has %s, want %s", got, f.sha)
+	}
+	f.assertNoBlob(t, f.old, "the push lazy-fetched the history it should have excluded")
 }

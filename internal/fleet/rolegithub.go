@@ -326,6 +326,9 @@ func (m *githubMirror) connect() (string, error) {
 // connectToken mints the app token in-process: the path for hosts
 // without the secrets broker.
 func (m *githubMirror) connectToken() error {
+	if err := ghapp.CheckBrokerHost(); err != nil {
+		return err
+	}
 	if err := m.cfg.Validate(); err != nil {
 		return err
 	}
