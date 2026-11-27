@@ -77,9 +77,12 @@ let
           local project="$1" project_root="$2"
           cd "$project_root"
 
+          # Workers (spore/<project>/<slug>) and role panes
+          # (spore-role/<project>/<slug>/<role>); the coordinator is
+          # reaped by the disabled reconcile pass.
           list_workers() {
             "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
-              | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
+              | ${pkgs.gnugrep}/bin/grep -E "^(spore/$project/[^/]+|spore-role/$project/[^/]+/[^/]+)$" \
               | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
           }
 
@@ -89,11 +92,14 @@ let
             return 0
           fi
 
-          while IFS= read -r s; do
-            slug="''${s##spore/$project/}"
+          # One tell per task: a role loop's tell reaches its active pane.
+          slugs="$(printf '%s\n' "$sessions" \
+            | ${pkgs.gnused}/bin/sed -E "s#^spore(-role)?/$project/([^/]+).*#\\2#" \
+            | ${pkgs.coreutils}/bin/sort -u)"
+          while IFS= read -r slug; do
             echo "spore-fleet-graceful: [$project] signalling $slug" >&2
             "$sporecli" task tell "$slug" "$message" || true
-          done <<< "$sessions"
+          done <<< "$slugs"
 
           deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
           while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
@@ -108,7 +114,7 @@ let
           echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
           list_workers | while IFS= read -r s; do
             [ -z "$s" ] && continue
-            "$tmuxcli" kill-session -t "$s" || true
+            "$tmuxcli" kill-session -t "=$s" || true
           done
         }
 
@@ -116,6 +122,16 @@ let
         drain_project '${name}' '${toString effectiveProjects.${name}.path}'
       '') projectNames}
   '';
+
+  # PATH for agent panes and the reconciler that spawns them.
+  agentPath = lib.makeBinPath ([
+    cfg.package
+    cfg.claudeCodePackage
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.git
+    pkgs.tmux
+  ] ++ lib.optional cfg.codex.enable cfg.codex.package);
 
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
     ${lib.optionalString brokered ''
@@ -337,8 +353,17 @@ in
         role loop), wired through SPORE_FLEET_MAX_WORKERS. A project's
         spore.toml `[fleet] max_workers` wins over it (`spore fleet
         reconcile` precedence: --max-workers > spore.toml > env >
-        built-in default 3).
+        built-in default 3). A role loop's engineer and reviewer
+        panes share one slot, so the agent count can exceed it; bound
+        memory with `agentMemoryMax`.
       '';
+    };
+
+    agentPath = lib.mkOption {
+      type = lib.types.str;
+      internal = true;
+      readOnly = true;
+      description = "PATH for agent panes and the reconciler that spawns them.";
     };
 
     interval = lib.mkOption {
@@ -545,6 +570,8 @@ in
         so existing deployments keep working.
       '';
 
+      services.spore-fleet.agentPath = agentPath;
+
       services.spore-fleet.gracefulDeploy = {
         preScript = "${preScript}/bin/spore-fleet-graceful-pre";
         postScript = "${postScript}/bin/spore-fleet-graceful-post";
@@ -650,10 +677,18 @@ in
           (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
             Unit = {
               Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
+            } // lib.optionalAttrs cfg.tmux.server.enable {
+              Wants = [ "spore-tmux.service" ];
+              After = [ "spore-tmux.service" ];
             };
             Service = {
               Type = "oneshot";
               TimeoutStartSec = "15min"; # outer bound over SPORE_FLEET_PASS_TIMEOUT (10m)
+              # A tmux server this pass had to start itself must outlive
+              # the pass; the default control-group mode killed it, and
+              # every pane, when the oneshot ended.
+              KillMode = "process";
+              Slice = "spore-agents.slice";
               WorkingDirectory = toString project.path;
               ExecStart = "${cfg.package}/bin/spore fleet reconcile";
               Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
@@ -668,14 +703,7 @@ in
                   # spore-worker-brief) can resolve `#!/usr/bin/env bash`
                   # and call `cat`/`mkdir`/`tee`/`date` without an
                   # in-shim PATH-augment workaround.
-                  PATH = lib.makeBinPath ([
-                    cfg.package
-                    cfg.claudeCodePackage
-                    pkgs.bashInteractive
-                    pkgs.coreutils
-                    pkgs.git
-                    pkgs.tmux
-                  ] ++ lib.optional cfg.codex.enable cfg.codex.package);
+                  PATH = agentPath;
                 } // matterEnv // cfg.extraEnv
               );
               NoNewPrivileges = true;

@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -538,5 +539,24 @@ func TestProbeRolePaneTmux(t *testing.T) {
 	missing, err := probeRolePaneTmux("probe-missing")
 	if err != nil || missing.Exists {
 		t.Errorf("missing probe = %+v, %v", missing, err)
+	}
+}
+
+// A has-session failure that is not "no such session" (a wedged
+// server, a call killed by its budget) leaves the pane state unknown
+// instead of reading as a gone session the pass would respawn.
+func TestProbeRolePaneTmuxFailureIsNotGone(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	bin := t.TempDir()
+	shim := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = has-session ]; then echo 'server exited unexpectedly' >&2; exit 1; fi\nexec %s \"$@\"\n", realTmux)
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if p, err := probeRolePaneTmux("probe-wedged"); err == nil {
+		t.Errorf("probe with a failing has-session = %+v, nil; want an error", p)
 	}
 }

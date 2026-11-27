@@ -47,7 +47,10 @@ func TestMain(m *testing.M) {
 			_ = os.Unsetenv(k)
 		}
 	}
-	// Tests that want a broker start their own; the host's must stay unreachable.
+	// The kill switch and the broker must be the test's own: the host
+	// config would pin FlagPath to the live flag, and a flag this
+	// process cannot write would be forwarded to the live broker.
+	HostConfigPath = filepath.Join(tmpdir, "no-host-config.json")
 	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
 	if err := os.Setenv("SPORE_COORDINATOR_STATE_DIR", filepath.Join(tmpdir, "coordinator")); err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)

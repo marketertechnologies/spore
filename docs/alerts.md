@@ -23,6 +23,10 @@ A successful turn in any spore pane (its Stop hook, `spore hooks watch-inbox`) d
 
 A usage-limit notice quotes the reset time when the banner has one. Claude Code resumes those panes itself about a minute after the reset. A 429 without a reset time ("not your usage limit") is never retried.
 
+## Coordinator crash loop
+
+A coordinator that dies fast 3 times in a row is left down (see `docs/fleet-module.md`, "Reconcile pass resilience"). Its own inbox is the one place nobody reads then, so the pass also raises a per-project operator alert, claim `coordinator-crash@<project>`: shown once on every attached tmux client and listed by `spore fleet status` as `alert: <time> [<project>] coordinator: ...` until a pass sees the coordinator alive again or runs with the fleet disabled. The usage-limit and login cooldown does not apply to it.
+
 ## Recovery
 
 Login expired:
