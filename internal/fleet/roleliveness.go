@@ -161,6 +161,9 @@ func ensureRolePane(spec RoleSpawnSpec, round int) error {
 		}
 		reason = fmt.Sprintf("session gone within %s of spawn", FastDeathWindow)
 	}
+	if why := takeRoleBodyExecFail(stateDir, key); why != "" {
+		reason += "; pane: " + why
+	}
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return err
@@ -443,4 +446,17 @@ func roleStallWindow(projectRoot string) time.Duration {
 		fmt.Fprintf(os.Stderr, "role-loop spore.toml: %v\n", err)
 	}
 	return time.Duration(n) * time.Minute
+}
+
+// takeRoleBodyExecFail returns and removes the reason a role pane's
+// launch line recorded for refusing to start the agent, so the next
+// death is not blamed on it.
+func takeRoleBodyExecFail(stateDir, key string) string {
+	path := roleBodyExecFailPath(stateDir, key)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	_ = os.Remove(path)
+	return strings.TrimSpace(string(b))
 }

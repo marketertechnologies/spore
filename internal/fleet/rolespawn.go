@@ -141,7 +141,7 @@ func (s RoleSpawnSpec) TmuxArgs() ([]string, error) {
 	}
 	args = append(args, task.SandboxSessionEnv(s.ProjectRoot, cwd)...)
 	prelude := task.LoadPreStart(s.ProjectRoot).Prelude(s.ProjectRoot, s.Slug, roleKey(s))
-	args = append(args, roleShellCommand(prelude, withBody, rolePath))
+	args = append(args, roleShellCommand(prelude, withBody, rolePath, roleBodyExecFailPath(filepath.Join(taskDir, "state"), roleKey(s))))
 	return args, nil
 }
 
@@ -350,20 +350,33 @@ func readRoleTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 
 // roleShellCommand execs the agent with the role body as its first
 // prompt, behind the pre-start prelude when there is one; on hook
-// failure the note heads the body. A body that is unreadable or empty
-// at exec time fails the pane instead of starting a bare agent with no
-// role: the exit counts as a death. The cause is on the pane's stderr
-// only; the respawn's ResolveRoleBody names it to the coordinator only
-// if the body is still broken from the coordinator's side.
-func roleShellCommand(prelude, cmdWithBody, rolePath string) string {
+// failure the note heads the body. A body that is unreadable, empty or
+// whitespace only at exec time fails the pane instead of starting a
+// bare agent with no role: the exit counts as a death. With
+// remain-on-exit off the pane's stderr is lost, so the reason is also
+// written to failPath for ensureRolePane to quote in its notice.
+func roleShellCommand(prelude, cmdWithBody, rolePath, failPath string) string {
 	note := ""
 	if prelude != "" {
 		note = fmt.Sprintf("${%[1]s:+$%[1]s\n\n}", task.PreStartNoteVar)
 	}
+	q := shellSingleQuote(rolePath)
+	msg := shellSingleQuote(fmt.Sprintf("role body %s is unreadable or empty; not starting the agent without its role", rolePath))
+	record := ""
+	if failPath != "" {
+		record = fmt.Sprintf(`{ mkdir -p %s && printf '%%s\n' %s > %s; } 2>/dev/null; `,
+			shellSingleQuote(filepath.Dir(failPath)), msg, shellSingleQuote(failPath))
+	}
 	return prelude + fmt.Sprintf(
-		`if [ -r %[1]s ] && [ -s %[1]s ]; then exec %[2]s "%[3]s$(cat %[1]s)"; else echo "spore: role body "%[1]s" is unreadable or empty; not starting the agent without its role" >&2; exit 1; fi`,
-		shellSingleQuote(rolePath), cmdWithBody, note,
+		`if [ -r %[1]s ] && grep -q '[^[:space:]]' %[1]s 2>/dev/null; then exec %[2]s "%[3]s$(cat %[1]s)"; else %[4]secho "spore: "%[5]s >&2; exit 1; fi`,
+		q, cmdWithBody, note, record, msg,
 	)
+}
+
+// roleBodyExecFailPath is where a role pane's launch line records why
+// it refused to start the agent.
+func roleBodyExecFailPath(stateDir, key string) string {
+	return filepath.Join(stateDir, "rolebody-exec-"+key)
 }
 
 // SpawnRole creates the tmux session for spec, idempotently. A live

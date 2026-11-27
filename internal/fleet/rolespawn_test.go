@@ -196,7 +196,7 @@ func TestRoleSpawnPreStartUnsetKeepsArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := roleShellCommand("", withBody, body)
+	want := roleShellCommand("", withBody, body, roleBodyExecFailPath(filepath.Join(task.RoleTaskDir(root, "feature-x"), "state"), "engineer"))
 	if got := args[len(args)-1]; got != want {
 		t.Errorf("shell command = %q, want unchanged %q", got, want)
 	}
@@ -252,7 +252,7 @@ func TestRoleShellCommandRuns(t *testing.T) {
 			if c.prelude != "" {
 				prelude = task.PreStart{Cmd: c.cmd}.Prelude(root, "feat", "engineer")
 			}
-			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "printf %s", rolePath)).CombinedOutput()
+			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "printf %s", rolePath, "")).CombinedOutput()
 			if err != nil {
 				t.Fatalf("run: %v: %s", err, out)
 			}
@@ -263,8 +263,9 @@ func TestRoleShellCommandRuns(t *testing.T) {
 	}
 }
 
-// A body that is missing, empty or unreadable when the pane execs
-// fails the pane; the agent never starts without its role.
+// A body that is missing, empty, whitespace only or unreadable when
+// the pane execs fails the pane; the agent never starts without its
+// role, and the reason lands in the fail file for the liveness notice.
 func TestRoleShellCommandRefusesBareAgent(t *testing.T) {
 	if _, err := exec.LookPath("flock"); err != nil {
 		t.Skip("flock not on PATH")
@@ -276,6 +277,7 @@ func TestRoleShellCommandRefusesBareAgent(t *testing.T) {
 	}{
 		{"missing", false, func(string) error { return nil }},
 		{"empty", false, func(p string) error { return os.WriteFile(p, nil, 0o644) }},
+		{"whitespace only", false, func(p string) error { return os.WriteFile(p, []byte("\n \t\n"), 0o644) }},
 		{"unreadable", false, func(p string) error { return os.WriteFile(p, []byte("body"), 0o000) }},
 		{"empty behind prelude", true, func(p string) error { return os.WriteFile(p, nil, 0o644) }},
 	} {
@@ -293,7 +295,8 @@ func TestRoleShellCommandRefusesBareAgent(t *testing.T) {
 				prelude = task.PreStart{Cmd: "true"}.Prelude(root, "feat", "engineer")
 			}
 			marker := filepath.Join(root, "agent-ran")
-			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "touch "+shellSingleQuote(marker), rolePath)).CombinedOutput()
+			failPath := filepath.Join(root, "state", "rolebody-exec-engineer")
+			out, err := exec.Command("sh", "-c", roleShellCommand(prelude, "touch "+shellSingleQuote(marker), rolePath, failPath)).CombinedOutput()
 			if err == nil {
 				t.Fatalf("pane exited 0: %s", out)
 			}
@@ -302,6 +305,9 @@ func TestRoleShellCommandRefusesBareAgent(t *testing.T) {
 			}
 			if !strings.Contains(string(out), "is unreadable or empty") {
 				t.Errorf("stderr = %q", out)
+			}
+			if b, err := os.ReadFile(failPath); err != nil || !strings.Contains(string(b), rolePath+" is unreadable or empty") {
+				t.Errorf("fail file = %q, %v", b, err)
 			}
 		})
 	}
