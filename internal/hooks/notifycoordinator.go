@@ -12,14 +12,20 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/versality/spore/internal/task"
 )
 
 // NotifyCoordinator writes a poke file into the coordinator's project
-// inbox at $SPORE_COORDINATOR_STATE_DIR/<slug>/inbox/. The poke is a
+// inbox at <task.CoordinatorStateDir>/<slug>/inbox/. The poke is a
 // JSON file following the tell protocol ({ts, source, body}), written
 // atomically via .tmp.
 func NotifyCoordinator(slug string) error {
-	return notifyCoordinatorAt(coordinatorInbox(slug), "notification", "poke")
+	inbox, err := coordinatorInbox(slug)
+	if err != nil {
+		return err
+	}
+	return notifyCoordinatorAt(inbox, "notification", "poke")
 }
 
 // NotifyCoordinatorEvent writes a tell envelope with the given source
@@ -28,7 +34,11 @@ func NotifyCoordinator(slug string) error {
 // transition from inside the coordinator's own hooks still need the
 // envelope to land (their own idempotency guard prevents repeats).
 func NotifyCoordinatorEvent(project, source, body string) error {
-	return notifyCoordinatorAt(coordinatorInbox(project), source, body)
+	inbox, err := coordinatorInbox(project)
+	if err != nil {
+		return err
+	}
+	return notifyCoordinatorAt(inbox, source, body)
 }
 
 // NotifyDedupWindow is how long one worker's notification suppresses
@@ -101,7 +111,10 @@ func NotifyCoordinatorEnv(stdin io.Reader) error {
 	if project == "" || os.Getenv("SPORE_ROLE") != "" {
 		return nil
 	}
-	inbox := coordinatorInbox(project)
+	inbox, err := coordinatorInbox(project)
+	if err != nil {
+		return err
+	}
 	if os.Getenv("SPORE_TASK_INBOX") == inbox {
 		return nil
 	}
@@ -244,12 +257,10 @@ type tellEvent struct {
 	Body   string `json:"body"`
 }
 
-func coordinatorInbox(slug string) string {
-	root := os.Getenv("SPORE_COORDINATOR_STATE_DIR")
-	if root == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			root = filepath.Join(home, ".local", "state", "spore", "coordinator")
-		}
+func coordinatorInbox(slug string) (string, error) {
+	root, err := task.CoordinatorStateDir()
+	if err != nil {
+		return "", fmt.Errorf("notify-coordinator: %w", err)
 	}
-	return filepath.Join(root, slug, "inbox")
+	return filepath.Join(root, slug, "inbox"), nil
 }

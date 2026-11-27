@@ -198,3 +198,15 @@ func TestHooksSettingsMergesSporeTomlPermissions(t *testing.T) {
 		t.Fatalf("runHooksSettings with unknown [permissions] key = %d, want 1", code)
 	}
 }
+
+func TestHookSessionReadsPayload(t *testing.T) {
+	var got string
+	captureHook(t, `{"hook_event_name":"Stop","session_id":"0f2c-abc"}`, func() int { got = hookSession(); return 0 })
+	if got != "0f2c-abc" {
+		t.Errorf("hookSession() = %q", got)
+	}
+	captureHook(t, "", func() int { got = hookSession(); return 0 })
+	if got != "" {
+		t.Errorf("empty stdin: hookSession() = %q", got)
+	}
+}

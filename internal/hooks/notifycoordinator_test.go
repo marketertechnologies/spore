@@ -355,3 +355,33 @@ func TestNotifyCoordinatorEnv_SelfPokeIsNoop(t *testing.T) {
 		t.Errorf("expected inbox not created (self-poke skipped), got err=%v", err)
 	}
 }
+
+func TestNotifyCoordinator_HonorsXDGStateHome(t *testing.T) {
+	home, xdg := t.TempDir(), t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", xdg)
+	if err := NotifyCoordinator("proj"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingJSON(t, filepath.Join(xdg, "spore", "coordinator", "proj", "inbox")); len(got) != 1 {
+		t.Errorf("XDG inbox holds %v, want one notice", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local")); !os.IsNotExist(err) {
+		t.Errorf("notice touched HOME/.local (err %v)", err)
+	}
+}
+
+func TestNotifyCoordinator_NoStateBaseIsAnError(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if err := NotifyCoordinator("proj"); err == nil {
+		t.Error("NotifyCoordinator with no HOME and no XDG_STATE_HOME: err = nil")
+	}
+	if entries, _ := os.ReadDir(cwd); len(entries) != 0 {
+		t.Errorf("notice written under the cwd: %v", entries)
+	}
+}

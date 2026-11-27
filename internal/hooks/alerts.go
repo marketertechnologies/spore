@@ -33,6 +33,7 @@ const alertCooldown = 15 * time.Minute
 // spore reads. Error is the matcher value: rate_limit,
 // authentication_failed, server_error, ...
 type StopFailureInput struct {
+	SessionID            string `json:"session_id"`
 	Error                string `json:"error"`
 	LastAssistantMessage string `json:"last_assistant_message"`
 }
@@ -86,7 +87,7 @@ func StopFailure(in StopFailureInput) error {
 	}
 	var errs []error
 	if inbox := os.Getenv("SPORE_TASK_INBOX"); inbox != "" {
-		errs = append(errs, RequeueInflight(inbox))
+		errs = append(errs, RequeueInflight(inbox, in.SessionID))
 	}
 	recordStopFailure(project, in)
 	kind := alertKindFor(in.Error)
