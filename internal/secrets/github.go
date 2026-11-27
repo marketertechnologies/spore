@@ -102,11 +102,11 @@ func (s *Server) gh(c Caller, req Request) Response {
 	if err != nil {
 		return Response{Error: "refused: " + err.Error()}
 	}
-	if err := checkGHArgs(req.Args, repo); err != nil {
-		return Response{Error: "refused: gh " + err.Error()}
-	}
 	r := s.redactor(req.Project)
 	stdin, args := r.GHCall(req.Stdin, req.Args)
+	if err := checkGHArgs(args, stdin, repo); err != nil {
+		return Response{Error: "refused: gh " + err.Error()}
+	}
 	home, err := os.MkdirTemp("", "spore-secrets-gh-")
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -153,13 +153,12 @@ var ghFlags = map[string]bool{
 
 var ghPRVerbs = map[string]bool{"list": true, "view": true, "ready": true, "edit": true, "create": true, "comment": true, "checks": true}
 
-var mutationRE = regexp.MustCompile(`(?i)\bmutation\b`)
-
 // checkGHArgs allows the shapes the role-loop mirror sends: `gh pr
 // list|view|ready|edit|create|comment`, plus `gh pr checks` and
-// `gh api` GETs of a commit's CI status for coordinators, and `gh api`
-// on the repo's own pulls or issues, or a read-only GraphQL query.
-func checkGHArgs(args []string, repo string) error {
+// `gh api` GETs of a commit's CI status for coordinators, `gh api` on
+// the repo's own pulls or issues, and `gh api graphql` with one of
+// graphqlQueries. stdin is what gh reads for `--input -`.
+func checkGHArgs(args []string, stdin, repo string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("needs a subcommand")
 	}
@@ -181,6 +180,8 @@ func checkGHArgs(args []string, repo string) error {
 	default:
 		return fmt.Errorf("%s is not allowed", args[0])
 	}
+	graphql := args[0] == "api" && args[1] == "graphql"
+	fields, input := map[string]string{}, false
 	draft := false
 	for i := 2; i < len(args); i++ {
 		a := args[i]
@@ -206,6 +207,7 @@ func checkGHArgs(args []string, repo string) error {
 			if val != "-" {
 				return fmt.Errorf("%s must be - (stdin)", name)
 			}
+			input = input || name == "--input"
 		case "-F", "--field":
 			// Under pr, -F is --body-file.
 			if args[0] == "pr" && val != "-" {
@@ -214,9 +216,12 @@ func checkGHArgs(args []string, repo string) error {
 			if _, v, _ := strings.Cut(val, "="); strings.HasPrefix(v, "@") {
 				return fmt.Errorf("%s must not read a file", name)
 			}
+			if err := addField(fields, graphql, val); err != nil {
+				return err
+			}
 		case "-f", "--raw-field":
-			if k, v, _ := strings.Cut(val, "="); k == "query" && mutationRE.MatchString(v) {
-				return fmt.Errorf("graphql mutations are not allowed")
+			if err := addField(fields, graphql, val); err != nil {
+				return err
 			}
 		case "--hostname":
 			if val != host {
@@ -234,6 +239,39 @@ func checkGHArgs(args []string, repo string) error {
 	if args[0] == "pr" && args[1] == "create" && !draft {
 		return fmt.Errorf("pr create must be --draft")
 	}
+	if !graphql {
+		return nil
+	}
+	query, hasQuery := fields["query"]
+	delete(fields, "query")
+	if input {
+		if hasQuery || len(fields) > 0 {
+			return fmt.Errorf("graphql takes --input - or fields, not both")
+		}
+		var err error
+		if query, fields, err = graphqlBody(stdin); err != nil {
+			return err
+		}
+	} else if !hasQuery {
+		return fmt.Errorf("graphql needs a query")
+	}
+	return checkGraphQL(query, fields, ownerRepo)
+}
+
+// addField records a graphql call's key=value field. A repeated key is
+// refused rather than guessing which value gh sends.
+func addField(fields map[string]string, graphql bool, kv string) error {
+	if !graphql {
+		return nil
+	}
+	k, v, ok := strings.Cut(kv, "=")
+	if !ok {
+		return fmt.Errorf("graphql field %q needs key=value", kv)
+	}
+	if _, dup := fields[k]; dup {
+		return fmt.Errorf("graphql field %q is repeated", k)
+	}
+	fields[k] = v
 	return nil
 }
 
