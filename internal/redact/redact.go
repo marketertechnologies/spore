@@ -172,18 +172,29 @@ func (r *Redactor) scrub(s string, counts map[string]int) string {
 			s = strings.ReplaceAll(s, sec.value, "[redacted:"+sec.name+"]")
 		}
 	}
-	replace := func(re *regexp.Regexp, class, repl string) {
-		if n := len(re.FindAllStringIndex(s, -1)); n > 0 {
-			add(class, n)
-			s = re.ReplaceAllString(s, repl)
-		}
-	}
-	replace(pemRE, ClassPEM, Mark)
-	replace(tokenRE, ClassToken, Mark)
+	s = scrubShapes(s, counts)
 	if r.home != nil {
-		replace(r.home, ClassHomePath, "${1}"+Mark)
+		s = replaceRE(s, r.home, ClassHomePath, "${1}"+Mark, counts)
 	}
 	return s
+}
+
+// scrubShapes redacts PEM private keys and token shapes only: no
+// secrets.env values and no home paths, so it is safe on refs.
+func scrubShapes(s string, counts map[string]int) string {
+	s = replaceRE(s, pemRE, ClassPEM, Mark, counts)
+	return replaceRE(s, tokenRE, ClassToken, Mark, counts)
+}
+
+func replaceRE(s string, re *regexp.Regexp, class, repl string, counts map[string]int) string {
+	n := len(re.FindAllStringIndex(s, -1))
+	if n == 0 {
+		return s
+	}
+	if counts != nil {
+		counts[class] += n
+	}
+	return re.ReplaceAllString(s, repl)
 }
 
 // JSON redacts every string inside a JSON document. Redacting the
@@ -227,7 +238,8 @@ func (r *Redactor) walk(v any, counts map[string]int) any {
 
 // refFieldKeys are gh api field keys whose values are refs, logins,
 // repo names or enums, never prose: a secrets.env value colliding with
-// one must not break the call.
+// one must not break the call, so their values get only the token and
+// PEM patterns.
 var refFieldKeys = map[string]bool{
 	"head": true, "base": true, "ref": true, "sha": true, "commit_id": true,
 	"owner": true, "repo": true, "name": true, "number": true, "path": true,
@@ -279,11 +291,14 @@ func ghTextFlag(sub, verb, name string) string {
 
 // GHCall redacts what a gh call (args without the leading "gh")
 // posts: stdin (JSON-aware after `--input -`), the values of --title
-// and --body, and the values of gh api fields, in every spelling:
-// `--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`. Other args are left alone,
-// as are ref-like field keys (refFieldKeys), since they carry refs,
-// logins and repo names that a secrets.env value could collide with.
-// The hits say what was redacted where, never the value.
+// and --body, and the keys and values of gh api fields, in every
+// spelling: `--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`. Other args are
+// left alone. Values of ref-like keys (refFieldKeys) get only the
+// token and PEM patterns, since they carry refs, logins and repo names
+// that a secrets.env value could collide with. A field key is
+// redacted too; a hit in it is placed at "field <key> key". The hits
+// say what was redacted where (the key in Where is redacted), never
+// the value.
 func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit) {
 	args = append([]string(nil), args...)
 	sub, verb := "", ""
@@ -304,12 +319,21 @@ func (r *Redactor) GHCall(stdin string, args []string) (string, []string, []Hit)
 	text := func(flag, v string) string {
 		if flag == "--field" {
 			k, val, ok := strings.Cut(v, "=")
-			if !ok || refFieldKeys[fieldKey(k)] {
-				return v
-			}
+			key := fieldKey(k)
+			where := "field " + r.scrub(key, nil)
 			counts := map[string]int{}
-			val = r.scrub(val, counts)
-			note("field "+fieldKey(k), counts)
+			k = r.scrub(k, counts)
+			note(where+" key", counts)
+			if !ok {
+				return k
+			}
+			counts = map[string]int{}
+			if refFieldKeys[key] {
+				val = scrubShapes(val, counts)
+			} else {
+				val = r.scrub(val, counts)
+			}
+			note(where, counts)
 			return k + "=" + val
 		}
 		counts := map[string]int{}

@@ -499,3 +499,76 @@ func TestGHRedactsEveryFormThroughBroker(t *testing.T) {
 		}
 	}
 }
+
+type ghEvent struct{ where, class string }
+
+// ghRefAndKeyCases: a token in a ref-like field value and a secret in
+// a field key reach neither gh nor the ledger.
+var ghRefAndKeyCases = []struct {
+	name   string
+	args   []string
+	secret string
+	want   []ghEvent
+	broker bool
+}{
+	{"labels token", []string{"api", "repos/acme/proj/issues/9/labels", "-f", "labels[]=" + ghToken}, ghToken, []ghEvent{{"field labels", "token"}}, true},
+	{"graphql name token", []string{"api", "graphql", "-f", "query=query{viewer{login}}", "-f", "name=" + ghToken}, ghToken, []ghEvent{{"field name", "token"}}, false},
+	{"secret key", []string{"api", "repos/acme/proj/issues/9/comments", "-f", ghCanary + "=v"}, ghCanary, []ghEvent{{"field [redacted:API_KEY] key", "secrets_env"}}, true},
+	{"secret nested key and value", []string{"api", "repos/acme/proj/issues/9/comments", "-f", "body[" + ghCanary + "]=" + ghCanary}, ghCanary, []ghEvent{
+		{"field [redacted:API_KEY] key", "secrets_env"}, {"field [redacted:API_KEY]", "secrets_env"},
+	}, true},
+	{"token key", []string{"api", "repos/acme/proj/issues/9/comments", "-f", ghToken + "=v"}, ghToken, []ghEvent{{"field [redacted] key", "token"}}, true},
+}
+
+var ghToken = "ghp_" + strings.Repeat("Xy7", 12)
+
+func checkGHRefAndKey(t *testing.T, root string, args []string, secret string, want []ghEvent) {
+	t.Helper()
+	withStdin(t, "")
+	before := len(ghRedactionEvents(t, root))
+	code, out, errOut := captureFn(t, func() int { return runGH(args) })
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, secret) || !strings.Contains(out, "[redacted") {
+		t.Fatalf("gh got %q", out)
+	}
+	evs := ghRedactionEvents(t, root)[before:]
+	if len(evs) != len(want) {
+		t.Fatalf("new redaction events = %+v, want %+v", evs, want)
+	}
+	for i, e := range evs {
+		if raw, _ := json.Marshal(e); strings.Contains(string(raw), secret) {
+			t.Errorf("event carries the secret: %s", raw)
+		}
+		if e.Fields["where"] != want[i].where || e.Fields["class"] != want[i].class {
+			t.Errorf("event %d = %+v, want %+v", i, e.Fields, want[i])
+		}
+	}
+}
+
+func TestGHRedactsRefsAndKeysWithoutBroker(t *testing.T) {
+	root := ghTestProject(t)
+	noBroker(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	ghSecretsEnv(t, filepath.Join(cfg, "spore"))
+	fakeBin(t, "gh", ghEchoScript)
+	for _, c := range ghRefAndKeyCases {
+		t.Run(c.name, func(t *testing.T) { checkGHRefAndKey(t, root, c.args, c.secret, c.want) })
+	}
+}
+
+func TestGHRedactsRefsAndKeysThroughBroker(t *testing.T) {
+	root := ghTestProject(t)
+	t.Setenv("SPORE_TASK_SLUG", "demo")
+	sd := startTestBroker(t, root)
+	ghSecretsEnv(t, filepath.Join(sd, filepath.Base(root)))
+	fakeBin(t, "gh", ghEchoScript)
+	for _, c := range ghRefAndKeyCases {
+		if c.broker {
+			t.Run(c.name, func(t *testing.T) { checkGHRefAndKey(t, root, c.args, c.secret, c.want) })
+		}
+	}
+}

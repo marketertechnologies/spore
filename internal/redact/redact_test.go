@@ -257,3 +257,77 @@ func TestGHCallStdin(t *testing.T) {
 		t.Errorf("text hits = %+v", hits)
 	}
 }
+
+// TestGHCallRefKeysGetShapes: a ref-like key still passes a colliding
+// secrets.env value, but a token or PEM in its value is redacted.
+func TestGHCallRefKeysGetShapes(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	tok := "ghp_" + strings.Repeat("Ab1", 12)
+	pem := "-----BEGIN RSA PRIVATE KEY-----\nMIIx\n-----END RSA PRIVATE KEY-----"
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		want  []string
+		where string
+		class string
+	}{
+		{"labels token", []string{"api", "repos/o/r/issues/1/labels", "-f", "labels[]=" + tok}, []string{"api", "repos/o/r/issues/1/labels", "-f", "labels[]=" + Mark}, "field labels", ClassToken},
+		{"graphql name token", []string{"api", "graphql", "-f", "query=q", "-f", "name=" + tok}, []string{"api", "graphql", "-f", "query=q", "-f", "name=" + Mark}, "field name", ClassToken},
+		{"head pem", []string{"api", "repos/o/r/pulls", "-f", "head=" + pem}, []string{"api", "repos/o/r/pulls", "-f", "head=" + Mark}, "field head", ClassPEM},
+		{"ref secrets.env kept", []string{"api", "repos/o/r/pulls", "-f", "head=" + canary}, []string{"api", "repos/o/r/pulls", "-f", "head=" + canary}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, hits := r.GHCall("", tc.args)
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("args:\n got %q\nwant %q", got, tc.want)
+			}
+			if tc.where == "" {
+				if len(hits) != 0 {
+					t.Fatalf("hits = %+v, want none", hits)
+				}
+				return
+			}
+			want := Hit{Where: tc.where, Class: tc.class, Count: 1}
+			if len(hits) != 1 || hits[0] != want {
+				t.Fatalf("hits = %+v, want %+v", hits, want)
+			}
+		})
+	}
+}
+
+// TestGHCallFieldKeys: a secret in a field key is redacted before gh
+// sees it, and no hit's Where carries it.
+func TestGHCallFieldKeys(t *testing.T) {
+	r, _ := newTestRedactor(t)
+	tok := "ghp_" + strings.Repeat("Ab1", 12)
+	red := "[redacted:API_KEY]"
+	for _, tc := range []struct {
+		name string
+		arg  string
+		want string
+		hits []Hit
+	}{
+		{"secrets.env key", canary + "=v", red + "=v", []Hit{{"field " + red + " key", ClassSecretsEnv, 1}}},
+		{"token key", tok + "=v", Mark + "=v", []Hit{{"field " + Mark + " key", ClassToken, 1}}},
+		{"nested key and value", "body[" + canary + "]=" + canary, "body[" + red + "]=" + red, []Hit{
+			{"field " + red + " key", ClassSecretsEnv, 1}, {"field " + red, ClassSecretsEnv, 1},
+		}},
+		{"key without value", canary, red, []Hit{{"field " + red + " key", ClassSecretsEnv, 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"api", "repos/o/r/issues/1/comments", "-f", tc.arg}
+			_, got, hits := r.GHCall("", args)
+			if got[3] != tc.want {
+				t.Fatalf("field = %q, want %q", got[3], tc.want)
+			}
+			if len(hits) != len(tc.hits) {
+				t.Fatalf("hits = %+v, want %+v", hits, tc.hits)
+			}
+			for i, h := range hits {
+				if h != tc.hits[i] || strings.Contains(h.Where, canary) || strings.Contains(h.Where, tok) {
+					t.Errorf("hit %d = %+v, want %+v", i, h, tc.hits[i])
+				}
+			}
+		})
+	}
+}
