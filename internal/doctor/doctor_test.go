@@ -333,6 +333,22 @@ func TestCheckBundleConfig(t *testing.T) {
 		t.Errorf("commented token = %+v, want pass", r)
 	}
 
+	if err := os.Remove(global); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(os.DevNull, global); err != nil {
+		t.Fatal(err)
+	}
+	r := find(t, Check(env), "bundle tokens")
+	if r.Status != Skip || !strings.Contains(r.Detail, "masked by the sandbox") || strings.Contains(r.Detail, "mode") {
+		t.Errorf("masked global = %+v, want skip naming the mask and no mode warning", r)
+	}
+	write(proj, "BUNDLE_GITHUB__COM: \"ghp_CANARYCANARYCANARY\"\n", 0o644)
+	r = find(t, Check(env), "bundle tokens")
+	if r.Status != Fail || !strings.Contains(r.Detail, "masked by the sandbox") || strings.Contains(r.Detail, "CANARY") {
+		t.Errorf("masked global, project token = %+v, want fail that still notes the mask", r)
+	}
+
 	env.BundleConfig, env.ProjectBundle = "", nil
 	if r := find(t, Check(env), "bundle tokens"); r.Status != Skip {
 		t.Errorf("no paths = %+v, want skip", r)

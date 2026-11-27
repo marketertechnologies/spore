@@ -60,9 +60,10 @@ type Env struct {
 	StateBase string
 	// Npmrc is ~/.npmrc; "" skips.
 	Npmrc string
-	// BundleConfig is bundler's global config (~/.bundle/config, or
-	// the file BUNDLE_USER_CONFIG names); "" skips. ProjectBundle
-	// lists project .bundle/config files.
+	// BundleConfig is ~/.bundle/config, masked from sandboxed
+	// commands; "" skips. ProjectBundle lists bundler configs agents
+	// can read (project .bundle/config, BUNDLE_CONFIG,
+	// BUNDLE_USER_CONFIG).
 	BundleConfig  string
 	ProjectBundle []string
 	// SelfVersion is this binary's BuildVersion.
@@ -716,10 +717,17 @@ func checkBundleConfig(env Env) Result {
 		return Result{name, Skip, "no HOME"}
 	}
 	var fails, warns []string
-	seen := 0
+	seen, masked := 0, ""
 	files := append([]string{env.BundleConfig}, env.ProjectBundle...)
 	for i, f := range files {
 		if f == "" {
+			continue
+		}
+		// Inside the sandbox the global file is a /dev/null mask (a
+		// 0666 character device): grading its mode or content would
+		// misreport the real file.
+		if fi, err := os.Stat(f); i == 0 && err == nil && !fi.Mode().IsRegular() {
+			masked = f + " is masked by the sandbox (not a regular file); run spore doctor from an operator shell to check it"
 			continue
 		}
 		data, err := os.ReadFile(f)
@@ -751,11 +759,17 @@ func checkBundleConfig(env Env) Result {
 		}
 	}
 	const hint = "; supply a read:packages token as BUNDLE_RUBYGEMS__PKG__GITHUB__COM from the environment and drop BUNDLE_GITHUB__COM (see docs/sandbox.md)"
+	notes := append(fails, warns...)
+	if masked != "" {
+		notes = append(notes, masked)
+	}
 	switch {
 	case len(fails) > 0:
-		return Result{name, Fail, strings.Join(append(fails, warns...), "; ") + hint}
+		return Result{name, Fail, strings.Join(notes, "; ") + hint}
 	case len(warns) > 0:
-		return Result{name, Warn, strings.Join(warns, "; ") + hint}
+		return Result{name, Warn, strings.Join(notes, "; ") + hint}
+	case masked != "":
+		return Result{name, Skip, masked}
 	case seen == 0:
 		return Result{name, Pass, "no bundler config found"}
 	default:
