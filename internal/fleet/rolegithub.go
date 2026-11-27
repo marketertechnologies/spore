@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -279,6 +280,28 @@ func (m *githubMirror) run(snap Snapshot) error {
 			pending = append(pending, e)
 		}
 	}
+	connected := false
+	// Settle the event left in flight before the check hold can defer
+	// it: posting another event would overwrite Inflight, and the
+	// deferred one would later post twice.
+	if i := slices.IndexFunc(pending, func(e mirrorEvent) bool { return e.name == m.state.Inflight }); i >= 0 {
+		if _, err := m.connect(); err != nil {
+			return err
+		}
+		connected = true
+		e := pending[i]
+		m.marker = mirrorMarker(m.state.Reopen, e.name)
+		landed, err := m.alreadyPosted(e)
+		if err != nil {
+			return fmt.Errorf("%s: %w", e.name, err)
+		}
+		if landed {
+			m.state.Posted = append(m.state.Posted, e.name)
+			pending = slices.Delete(pending, i, i+1)
+		}
+		m.state.Inflight = ""
+		m.save()
+	}
 	pending, m.checked, m.gated, err = holdForCheck(m.projectRoot, m.slug, snap, pending)
 	if err != nil {
 		return err
@@ -286,23 +309,17 @@ func (m *githubMirror) run(snap Snapshot) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	if _, err := m.connect(); err != nil {
-		return err
+	if !connected {
+		if _, err := m.connect(); err != nil {
+			return err
+		}
 	}
 	for _, e := range pending {
 		m.marker = mirrorMarker(m.state.Reopen, e.name)
-		landed := false
-		if m.state.Inflight == e.name {
-			if landed, err = m.alreadyPosted(e); err != nil {
-				return fmt.Errorf("%s: %w", e.name, err)
-			}
-		}
-		if !landed {
-			m.state.Inflight = e.name
-			m.save()
-			if err := m.apply(e); err != nil {
-				return fmt.Errorf("%s: %w", e.name, err)
-			}
+		m.state.Inflight = e.name
+		m.save()
+		if err := m.apply(e); err != nil {
+			return fmt.Errorf("%s: %w", e.name, err)
 		}
 		m.state.Posted = append(m.state.Posted, e.name)
 		m.state.Inflight = ""

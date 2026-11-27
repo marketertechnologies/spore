@@ -91,3 +91,55 @@ func TestGitHubMirrorPostIdempotentAcrossLostSave(t *testing.T) {
 		t.Errorf("engineer comments = %d, want 3 (the missing one posted)", n)
 	}
 }
+
+// An event left in flight is settled before the check hold defers it.
+// Otherwise an earlier event posted on the same tick takes over the
+// single in-flight slot and the deferred event, once released, posts
+// a second time.
+func TestGitHubMirrorSettlesInflightBeforeCheckHold(t *testing.T) {
+	f := newMirrorFixture(t, "draft")
+	f.configureCheck(t)
+	writeEng(1)(t, f.root, f.slug)
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 1, runGit(t, f.wt, "rev-parse", "HEAD")))
+	f.tick(t)
+	mustWriteReview(t, f.root, f.slug, task.ReviewerA, 1, task.Review{Verdict: task.VerdictRequestChanges, Summary: "needs tests", Prefix: "R",
+		Comments: []task.ReviewComment{highBug}})
+	f.tick(t)
+	writeEng(2)(t, f.root, f.slug)
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 2, f.commit(t, "two")))
+	f.tick(t)
+	const comment = "pr comment 12 --body-file -"
+	if n := countCalls(f.calls(t), comment); n != 1 {
+		t.Fatalf("engineer comments = %d, want 1", n)
+	}
+
+	// Both saves lost, the engineer reply in flight; only it is on the PR.
+	listed, err := json.Marshal([]map[string]string{{"body": "<!-- spore-mirror: cycle 1 engineer-round-2.json -->"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("FAKE_GH_LISTED"), listed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := f.state(t)
+	st.Posted = slices.DeleteFunc(st.Posted, func(p string) bool { return p == "A/round-1.json" || p == "engineer-round-2.json" })
+	st.Inflight = "engineer-round-2.json"
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(githubStatePath(f.root, f.slug), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A new commit re-arms the gate: the reply is held, the review goes out.
+	head3 := f.commit(t, "three")
+	f.tick(t)
+	if st := f.state(t); !st.posted("A/round-1.json") || !st.posted("engineer-round-2.json") || st.Inflight != "" {
+		t.Fatalf("state = %+v", st)
+	}
+	touchMarker(t, task.CheckPassPath(f.root, f.slug, 2, head3))
+	f.tick(t)
+	if n := countCalls(f.calls(t), comment); n != 1 {
+		t.Errorf("engineer comments = %d, want 1: the landed reply was posted again", n)
+	}
+}
