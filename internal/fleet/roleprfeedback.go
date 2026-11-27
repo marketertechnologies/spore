@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/versality/spore/internal/secrets"
 )
 
 // PRActivity is the slice of a PR's GitHub history that
@@ -310,31 +312,6 @@ type ghFeedbackSource struct {
 	m *githubMirror
 }
 
-// prActivityQuery takes the latest 100 of each list and the latest 50
-// comments per thread; older feedback predates any useful cutoff on a
-// PR the loop already cycled.
-const prActivityQuery = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      timelineItems(last: 50, itemTypes: [READY_FOR_REVIEW_EVENT]) {
-        nodes { ... on ReadyForReviewEvent { createdAt actor { __typename login } } }
-      }
-      reviews(last: 100) {
-        nodes { state body submittedAt createdAt author { __typename login } }
-      }
-      reviewThreads(last: 100) {
-        nodes {
-          isResolved path line originalLine
-          comments(last: 50) { nodes { body diffHunk createdAt author { __typename login } } }
-        }
-      }
-      comments(last: 100) {
-        nodes { body createdAt author { __typename login } }
-      }
-    }
-  }
-}`
-
 func (s *ghFeedbackSource) PRActivity(pr int) (PRActivity, error) {
 	repo, err := s.m.connect()
 	if err != nil {
@@ -342,7 +319,7 @@ func (s *ghFeedbackSource) PRActivity(pr int) (PRActivity, error) {
 	}
 	parts := strings.Split(repo, "/")
 	out, err := s.m.gh("", "api", "graphql", "--hostname", parts[0],
-		"-f", "query="+prActivityQuery, "-f", "owner="+parts[1], "-f", "name="+parts[2], "-F", "number="+strconv.Itoa(pr))
+		"-f", "query="+secrets.PRActivityQuery, "-f", "owner="+parts[1], "-f", "name="+parts[2], "-F", "number="+strconv.Itoa(pr))
 	if err != nil {
 		return PRActivity{}, err
 	}
