@@ -53,7 +53,12 @@ func TestGitHubMirrorPostIdempotentAcrossLostSave(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(os.Getenv("FAKE_GH_LISTED"), []byte(f.log(t)), 0o644); err != nil {
+	// Two pages, the way --paginate prints them; the marker is on the second.
+	page2, err := json.Marshal([]map[string]string{{"body": f.log(t)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("FAKE_GH_LISTED"), append([]byte(`[{"body":"unrelated"}]`+"\n"), page2...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	lose("A/round-1.json", "engineer-round-2.json")
@@ -65,7 +70,7 @@ func TestGitHubMirrorPostIdempotentAcrossLostSave(t *testing.T) {
 	if n := countCalls(calls, "pr comment 12 --body-file -"); n != 2 {
 		t.Errorf("engineer comments = %d, want a repost: it was not in flight, so it is not looked up", n)
 	}
-	if n := countCalls(calls, "api repos/acme/widget/pulls/12/reviews --hostname github.com --paginate --jq .[].body"); n != 1 {
+	if n := countCalls(calls, "api repos/acme/widget/pulls/12/reviews --hostname github.com --paginate"); n != 1 {
 		t.Errorf("review lookups = %d, want 1", n)
 	}
 	if st := f.state(t); st.Inflight != "" || !st.posted("A/round-1.json") || !st.posted("engineer-round-2.json") {
@@ -73,13 +78,13 @@ func TestGitHubMirrorPostIdempotentAcrossLostSave(t *testing.T) {
 	}
 
 	// In flight but not on GitHub: the post never landed, so it goes out.
-	if err := os.WriteFile(os.Getenv("FAKE_GH_LISTED"), nil, 0o644); err != nil {
+	if err := os.WriteFile(os.Getenv("FAKE_GH_LISTED"), []byte(`[{"body":"unrelated"}]`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	lose("engineer-round-2.json")
 	f.tick(t)
 	calls = f.calls(t)
-	if n := countCalls(calls, "api repos/acme/widget/issues/12/comments --hostname github.com --paginate --jq .[].body"); n != 1 {
+	if n := countCalls(calls, "api repos/acme/widget/issues/12/comments --hostname github.com --paginate"); n != 1 {
 		t.Errorf("comment lookups = %d, want 1", n)
 	}
 	if n := countCalls(calls, "pr comment 12 --body-file -"); n != 3 {

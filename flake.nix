@@ -304,6 +304,7 @@
                   };
                   claudeManagedSettings.plugin.enable = true;
                   gracefulDeploy.timeout = 5;
+                  agentMemoryMax = "1G";
                   tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
                     enable = true;
@@ -450,7 +451,7 @@
                   # dirs stay real and unmanaged siblings survive.
                   for root in ["/home/spore-test/.claude/skills", "/home/spore-test/.agents/skills"]:
                       machine.succeed(f"test -d {root} && test ! -L {root}")
-                      for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                      for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
                           machine.succeed(f"test -L {root}/{skill} && test -f {root}/{skill}/SKILL.md")
                   machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
 
@@ -474,18 +475,47 @@
                   assert market.endswith("-spore-claude-marketplace"), market
                   machine.succeed(f"test -f {market}/.claude-plugin/plugin.json")
                   machine.succeed(f"test -f {market}/.claude-plugin/marketplace.json")
-                  for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                  for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
                       machine.succeed(f"test -f {market}/bootstrap/skills/{skill}/SKILL.md")
 
-                  # Graceful-deploy: pre-script disables the kill-switch
-                  # and tells every active worker to wrap up; post-script
-                  # re-enables it. With no live tmux sessions the pre-
-                  # script exits after the disable + "no active workers"
-                  # branch and never blocks on the timeout.
+                  # The user's tmux server is a lingering user unit in
+                  # spore-agents.slice: up with nobody logged in, panes
+                  # under the slice's MemoryMax, and a reconcile pass
+                  # (KillMode=process) leaves it running.
+                  def as_user(cmd):
+                      return f"runuser -u spore-test -- {cmd}"
+                  def tmux_user(args):
+                      return as_user(f"${tmux} {args}")
+                  user_wait("is-active spore-tmux.service")
+                  machine.wait_until_succeeds(tmux_user("list-sessions"), timeout=30)
+                  mem = machine.succeed(usercmd("show spore-agents.slice -p MemoryMax")).strip()
+                  assert mem == "MemoryMax=1073741824", mem
+                  for key, want in [("KillMode", "process"), ("Slice", "spore-agents.slice")]:
+                      got = machine.succeed(usercmd(
+                          f"show spore-fleet-reconcile-project.service -p {key}")).strip()
+                      assert got == f"{key}={want}", got
+                  machine.succeed(tmux_user("new-session -d -s spore/pilot/op 'sleep 600'"))
+                  pane = machine.succeed(tmux_user("list-panes -t =spore/pilot/op -F '#{pane_pid}'")).strip()
+                  cgroup = machine.succeed(f"cat /proc/{pane}/cgroup")
+                  assert "/spore-agents.slice/" in cgroup, cgroup
+                  user_wait("start spore-fleet-reconcile-project.service")
+                  machine.succeed(tmux_user("has-session -t =spore/pilot/op"))
+
+                  # Graceful-deploy: pre-script disables the kill-switch,
+                  # tells every worker and role loop to wrap up, then kills
+                  # their sessions at the timeout; post-script re-enables
+                  # it. The operator's pilot session is left alone.
                   machine.succeed("touch /home/spore-test/.local/state/spore/fleet-enabled")
                   machine.succeed("chown spore-test:users /home/spore-test/.local/state/spore/fleet-enabled")
+                  machine.succeed(tmux_user("new-session -d -s spore/project/wk 'sleep 600'"))
+                  machine.succeed(tmux_user("new-session -d -s spore-role/project/rl/engineer 'sleep 600'"))
+                  machine.succeed(tmux_user("new-session -d -s spore-role/project/rl/reviewer-A 'sleep 600'"))
                   machine.succeed("${preScript}")
                   machine.fail("test -e /home/spore-test/.local/state/spore/fleet-enabled")
+                  left = machine.succeed(tmux_user("list-sessions -F '#{session_name}'")).split()
+                  assert left == ["spore/pilot/op"], left
+                  tells = machine.succeed("grep '^task tell' /home/spore-test/spore-stub.log").splitlines()
+                  assert sorted(t.split()[2] for t in tells) == ["rl", "wk"], tells
                   machine.succeed("${postScript}")
                   machine.succeed("test -e /home/spore-test/.local/state/spore/fleet-enabled")
 
@@ -515,6 +545,19 @@
                   machine.succeed(f"journalctl -b -u {unit} -o cat | grep -q 're-enabling kill-switch'")
                   status = machine.succeed(f"systemctl show -p Result {unit}")
                   assert status.strip() == "Result=success", status
+
+                  # After a reboot the tmux server is back with nobody
+                  # logged in, again inside the agent slice.
+                  machine.shutdown()
+                  machine.start()
+                  machine.wait_for_unit("multi-user.target")
+                  machine.wait_for_unit(r"home-manager-spore\x2dtest.service")
+                  machine.wait_for_unit("default.target", user="spore-test")
+                  user_wait("is-active spore-tmux.service")
+                  machine.wait_until_succeeds(tmux_user("list-sessions"), timeout=30)
+                  pid = machine.succeed(usercmd("show spore-tmux.service -p MainPID --value")).strip()
+                  cgroup = machine.succeed(f"cat /proc/{pid}/cgroup")
+                  assert "/spore-agents.slice/spore-tmux.service" in cgroup, cgroup
                 '';
             };
           };

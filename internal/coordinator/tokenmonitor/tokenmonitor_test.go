@@ -224,3 +224,22 @@ func TestRespawnCommandUsesConfiguredLauncher(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
+
+func TestCoordinatorStateDirHonorsXDGStateHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", xdg)
+	if got, want := defaultStateDir(), filepath.Join(xdg, "spore", "coordinator"); got != want {
+		t.Errorf("defaultStateDir() = %q, want %q", got, want)
+	}
+}
+
+func TestNoStateBaseMatchesNoCoordinator(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if c := (Config{Inbox: "/any/inbox"}).Defaults(); c.IsCoordinator() {
+		t.Errorf("IsCoordinator with StateDir %q = true", c.StateDir)
+	}
+}

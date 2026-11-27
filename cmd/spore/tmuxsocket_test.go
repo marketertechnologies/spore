@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/versality/spore/internal/fleet"
+	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/secrets"
 )
 
@@ -38,6 +40,11 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "TestMain: setenv:", err)
 		os.Exit(2)
 	}
+	// Never the host's kill switch, broker or broker marker (see the fleet TestMain).
+	fleet.HostConfigPath = filepath.Join(tmpdir, "no-host-config.json")
+	_ = os.Unsetenv("SPORE_FLEET_FLAG")
+	_ = os.Setenv("SPORE_SECRETS_SOCKET", filepath.Join(tmpdir, "no-broker.sock"))
+	ghapp.BrokerHostMarker = filepath.Join(tmpdir, "no-broker-marker")
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "new-session", "-d", "-s", "keepalive", "sleep 86400").Run()
 	code := m.Run()
 	_ = exec.Command("tmux", "-L", testTmuxSocket, "kill-server").Run()

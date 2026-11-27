@@ -32,7 +32,7 @@ Usage:
 
 Subcommands:
   pr       Run gh pr <verb> as the app (create --draft, view, list,
-           comment, edit, ready). --body-file <path> (api: --input
+           comment, edit, ready, checks). --body-file <path> (api: --input
            <path>) is read here, from the cwd repo or $TMPDIR only,
            and fed to gh on stdin. In an agent pane, run each call
            with no redirect, pipe or cd chain: those keep it in the
@@ -58,10 +58,14 @@ Subcommands:
 
 On a host running the secrets broker, pr, api and push go through it
 and its allowlist applies: pr list|view|ready|edit|create --draft|
-comment, api on the repo's own pulls and issues or a read-only GraphQL
-query, and pushes of branches matching the project's push_branch
-(default ^wt/...). token and exec refuse there: the App key is not
-readable (docs/secrets.md).
+comment|checks, api on the repo's own pulls and issues, a GET of a
+commit's CI status (commits/<sha>[/check-runs|check-suites|status|
+statuses]) or the GraphQL queries spore itself sends (no mutations, no
+other repos), and pushes of branches matching the project's
+push_branch (default ^wt/...). token and exec refuse there: the App
+key is not readable. On a host with /etc/spore/secrets-broker.json no
+subcommand reads the App key, even when the socket is unreachable
+(docs/secrets.md).
 
 See docs/github-app.md for the one-time app setup.
 `

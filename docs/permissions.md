@@ -17,6 +17,7 @@ Claude Code evaluates `permissions.deny` in every mode, including `bypassPermiss
 | `Bash(git push --force *)`, `Bash(git push -f *)` | Force push with the flag first. |
 | `Bash(git push * --force)`, `Bash(git push * --force *)`, `Bash(git push * -f)`, `Bash(git push * -f *)` | Force push with the flag after the remote or refspec. |
 | `Bash(git push +*)`, `Bash(git push * +*)` | A `+refspec` (`git push origin +branch`, `+HEAD:branch`) force-updates that ref without any flag. `+*` has no space before `*`, so it is a plain glob, not a word-bounded prefix. Any argument starting with `+` is denied, including a push option (`git push -o +ci.skip origin x`); that cost is accepted. |
+| `Edit(//**/.git)`, `Edit(//**/.git/**)`, `Edit(//**/*.git/hooks/**)`, `Edit(//**/*.git/config)`, `Edit(//**/.envrc)`, `Edit(//**/.mcp.json)`, `Edit(//**/.claude/settings*.json)`, `Edit(//**/.claude/hooks/**)`, `Edit(//**/.claude/agents/**)`, `Edit(//**/.claude/commands/**)`, `Edit(~/.claude.json)`, `Edit(~/.claude/plugins/**)`, the shell (bash, zsh, fish) and husky startup files, `~/.npmrc`, `~/.yarnrc`, `~/.yarnrc.yml`, tmux, direnv, git, systemd user and `environment.d`, `~/.local/bin`, `~/.ssh` and `~/.config/spore` | Keeps the Write and Edit tools off files an unsandboxed process later runs (git hooks and config, shell startup, Claude Code settings, hooks and MCP servers). The list and its effect on Bash are in docs/sandbox.md ("File tools versus the Bash sandbox"). |
 
 What still works:
 
@@ -24,7 +25,7 @@ What still works:
 - `spore-with-secrets <cmd>`: the shim sources the files in a subprocess. Read rules cover Claude's Read tool and file commands it recognizes on the command line (`cat`, `head`, `sed`, ...), not a process that opens the file itself.
 
 The Read rules are a speed bump, not a fence: `grep . secrets.env`, `base64 key.pem`, `source secrets.env; env`, or a copy followed by `cat` still print the contents. For the credentials file, a command that does not spell the path (`cd ~/.claude && cat < .credentials.json`; deny rules do not see input redirects) or a script that opens it gets through. They stop the accidental read, not a determined one. Since 0.60.0 the Claude Code sandbox closes these paths at the OS level for agent Bash commands: see docs/sandbox.md.
-- `~/.config/spore/coordinator-role.md` and other non-secret config: only `secrets.env` and `*.pem` are denied, not the whole directory. Likewise only `.credentials.json` under `~/.claude`, not `settings.json` or the rest.
+- Reading `~/.config/spore/coordinator-role.md` and other non-secret config: only `secrets.env` and `*.pem` are unreadable, not the whole directory. Writing anywhere under `~/.config/spore` with the tools is denied. Under `~/.claude` the tools may still write memory (`projects/*/memory/`) and `skills/`; only the login, `settings*.json`, `hooks/` and `plugins/` are denied.
 - `git push --force-with-lease` and `--force-if-includes`: the trailing ` *` is word-bounded, so `--force` does not prefix-match them. The GitHub App mirror (`internal/fleet/rolegithub.go`) pushes from Go anyway, outside the Bash tool.
 - Plain pushes, including `spore gh exec -- git push -u origin <branch>`.
 

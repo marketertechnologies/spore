@@ -150,23 +150,26 @@ func inlineCommentBody(id string, c task.ReviewComment) string {
 func (m *githubMirror) anchorsInDiff(anchors []inlineComment) ([]inlineComment, bool) {
 	host, ownerRepo := m.repoParts()
 	out, err := m.gh("", "api", fmt.Sprintf("repos/%s/pulls/%d/files", ownerRepo, m.state.PRNumber),
-		"--hostname", host, "--paginate", "--jq", ".[] | {filename, patch}")
+		"--hostname", host, "--paginate")
 	if err != nil {
 		return nil, false
 	}
 	lines := map[string]map[int]bool{}
+	// --paginate prints one JSON array per page, back to back.
 	dec := json.NewDecoder(strings.NewReader(out))
 	for {
-		var f struct {
+		var page []struct {
 			Filename string `json:"filename"`
 			Patch    string `json:"patch"`
 		}
-		if err := dec.Decode(&f); err == io.EOF {
+		if err := dec.Decode(&page); err == io.EOF {
 			break
 		} else if err != nil {
 			return nil, false
 		}
-		lines[f.Filename] = rightSideLines(f.Patch)
+		for _, f := range page {
+			lines[f.Filename] = rightSideLines(f.Patch)
+		}
 	}
 	var kept []inlineComment
 	for _, a := range anchors {

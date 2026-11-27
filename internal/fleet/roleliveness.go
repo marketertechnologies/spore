@@ -53,8 +53,9 @@ type paneProbe struct {
 }
 
 func probeRolePaneTmux(session string) (paneProbe, error) {
-	if !hasSession(session) {
-		return paneProbe{}, nil
+	exists, err := sessionExists(session)
+	if err != nil || !exists {
+		return paneProbe{}, err
 	}
 	out, err := callbudget.Command("tmux", "display-message", "-p", "-t", session,
 		"#{pane_dead}\t#{pane_current_command}\t#{session_created}").Output()

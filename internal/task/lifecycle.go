@@ -136,25 +136,22 @@ func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error
 // and branch are left untouched. Used by the fleet reconciler when a
 // task leaves active.
 func Reap(tasksDir, projectRoot, slug string) error {
-	killAllSlugSessions(tasksDir, projectRoot, slug)
-	return nil
+	return killAllSlugSessions(tasksDir, projectRoot, slug)
 }
 
 // SpawnedSlugs lists slugs of every tmux session that matches the
-// "spore/<project>/<slug>" pattern. Returns an empty slice (and a
-// nil error) when no tmux server is running.
+// "spore/<project>/<slug>" pattern. Empty (nil error) when no tmux
+// server is running; a listing that fails otherwise is an error, so a
+// slow or wedged server never reads as "every session died".
 func SpawnedSlugs(projectRoot string) ([]string, error) {
-	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	names, err := ListSessions()
 	if err != nil {
-		// tmux exits non-zero with "no server running" or no
-		// sessions; treat both as empty.
-		return nil, nil
+		return nil, err
 	}
 	prefix := tmuxSessionPrefix(projectRoot)
 	var slugs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, prefix) {
+	for _, line := range names {
+		if !strings.HasPrefix(line, prefix) {
 			continue
 		}
 		slugs = append(slugs, strings.TrimPrefix(line, prefix))
@@ -165,11 +162,11 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 
 // SpawnedRoleSlugs lists the slugs that have at least one
 // "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
-// tmux server is running.
+// tmux server is running; other listing failures are errors.
 func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
-	out, err := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	names, err := ListSessions()
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	project, err := ProjectName(projectRoot)
 	if err != nil {
@@ -178,8 +175,8 @@ func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
 	prefix := "spore-role/" + project + "/"
 	seen := map[string]bool{}
 	var slugs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+	for _, line := range names {
+		rest, ok := strings.CutPrefix(line, prefix)
 		if !ok {
 			continue
 		}
@@ -312,7 +309,9 @@ func Done(tasksDir, slug string, force bool) error {
 
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 
-	killAllSlugSessions(tasksDir, projectRoot, slug)
+	if err := killAllSlugSessions(tasksDir, projectRoot, slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done: %v\n", err)
+	}
 	if _, statErr := os.Stat(worktree); statErr == nil {
 		if out, err := gitCmd(projectRoot, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore task done %s: git worktree remove %s: %v: %s\n",

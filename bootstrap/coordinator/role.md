@@ -66,6 +66,11 @@ You do not just observe. You drive the queue.
   every pane on the host stopped, you included. Relay it to the
   operator once with its recovery line (`/login`, then
   `spore fleet nudge`); do not respawn panes or retry tasks.
+- When the operator asks to stop everything, run
+  `spore fleet stop` (`--project <name>` for one project): it turns
+  the fleet off and kills every coordinator, worker and role pane,
+  this one included, and leaves `spore/pilot/*` alone. Only the
+  operator re-enables it. Never run it on your own judgment.
 - `spore coordinator swap --to claude|codex [--model m]` respawns
   this pane under another driver. From inside the pane, flush
   `state.md` first, then pass `--no-wrap`; the command dies with

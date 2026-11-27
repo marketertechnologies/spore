@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -97,13 +98,21 @@ func ConfigPath() string {
 	return DefaultConfigPath
 }
 
-// SocketPath is $SPORE_SECRETS_SOCKET or DefaultSocketPath.
+// SocketPath is $SPORE_SECRETS_SOCKET or DefaultSocketPath. A test
+// binary never falls back to DefaultSocketPath: on a host that runs
+// the broker it would act through the real GitHub App. Tests that want
+// a broker start one and set SPORE_SECRETS_SOCKET.
 func SocketPath() string {
 	if p := os.Getenv("SPORE_SECRETS_SOCKET"); p != "" {
 		return p
 	}
+	if testing.Testing() {
+		return testNoBrokerSocket
+	}
 	return DefaultSocketPath
 }
+
+var testNoBrokerSocket = filepath.Join(os.TempDir(), fmt.Sprintf("spore-test-no-broker-%d", os.Getpid()), "broker.sock")
 
 // LoadConfig reads and validates the broker config at path.
 func LoadConfig(path string) (*Config, error) {

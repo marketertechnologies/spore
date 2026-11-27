@@ -1,7 +1,9 @@
 package fleet
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -32,11 +34,27 @@ func (m *githubMirror) alreadyPosted(e mirrorEvent) (bool, error) {
 	}
 	host, ownerRepo := m.repoParts()
 	out, err := m.gh("", "api", fmt.Sprintf("repos/%s/"+list, ownerRepo, m.state.PRNumber),
-		"--hostname", host, "--paginate", "--jq", ".[].body")
+		"--hostname", host, "--paginate")
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(out, m.marker), nil
+	// --paginate prints one JSON array per page, back to back.
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var page []struct {
+			Body string `json:"body"`
+		}
+		if err := dec.Decode(&page); err == io.EOF {
+			return false, nil
+		} else if err != nil {
+			return false, fmt.Errorf("decode %s: %w", fmt.Sprintf(list, m.state.PRNumber), err)
+		}
+		for _, p := range page {
+			if strings.Contains(p.Body, m.marker) {
+				return true, nil
+			}
+		}
+	}
 }
 
 // withMarker ends body with the event marker, when there is one.

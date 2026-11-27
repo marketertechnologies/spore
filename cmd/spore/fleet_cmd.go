@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ Usage:
   spore fleet replenish-hook
   spore fleet enable
   spore fleet disable
+  spore fleet stop [--project NAME]
   spore fleet status
   spore fleet nudge [--dry-run]
   spore fleet worker-agent [claude|codex | --clear]
@@ -55,9 +57,20 @@ Subcommands:
                   spawning on the next pass).
   disable         Remove the kill-switch flag (the reconciler stops
                   spawning; running sessions are left alone).
-  status          Print the kill-switch state, any active usage-limit or
-                  login alert, and the list of slugs whose session is
-                  currently alive.
+  stop            Emergency stop: remove the kill-switch flag (as
+                  disable), then kill every agent session spore spawned:
+                  spore/<project>/coordinator, spore/<project>/<slug>
+                  workers and spore-role/<project>/<slug>/<role> panes.
+                  Host-wide unless --project names one project. Matches
+                  the exact spawned name shape plus the session's own
+                  SPORE_TASK_SLUG/WT_PROJECT, so spore/pilot/* shells
+                  and other sessions survive. Prints each killed
+                  session. Re-enabling needs root or a pilot when the
+                  flag is broker-owned.
+  status          Print the kill-switch state, any active alert (usage
+                  limit, login, coordinator crash loop), the worker
+                  sessions and role panes alive for the cwd project,
+                  and the agent count against max-workers.
   nudge           Resume every agent pane stopped by an API error (usage
                   limit, expired login): type a "continue" message into
                   each pane the StopFailure hook recorded, plus any spore
@@ -75,7 +88,9 @@ Subcommands:
 
 Flags (reconcile):
   --max-workers N   Override concurrency cap (worker sessions plus live
-                    role loops, one slot each). Precedence: this flag,
+                    role loops, one slot each; a role loop's engineer
+                    and reviewer panes share its slot, and a done loop
+                    takes none). Precedence: this flag,
                     then spore.toml [fleet] max_workers, then
                     $SPORE_FLEET_MAX_WORKERS (host default), then
                     $WT_FLEET_FLOOR, then 3.
@@ -105,6 +120,8 @@ func runFleet(args []string) error {
 		return runFleetEnable(rest)
 	case "disable":
 		return runFleetDisable(rest)
+	case "stop":
+		return runFleetStop(rest)
 	case "status":
 		return runFleetStatus(rest)
 	case "nudge":
@@ -207,6 +224,59 @@ func runFleetDisable(args []string) error {
 	return nil
 }
 
+func runFleetStop(args []string) error {
+	fs := flag.NewFlagSet("fleet stop", flag.ContinueOnError)
+	project := fs.String("project", "", "stop only this project's sessions")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return fmt.Errorf("usage: spore fleet stop [--project NAME]")
+	}
+	res, err := fleet.Stop(*project)
+	return reportStop(res, err, fleet.KillSession, os.Stdout, os.Stderr)
+}
+
+// reportStop prints a Stop result and, last, kills the caller's own
+// session when Stop left it (killing it ends this process, so
+// anything left to say goes out first).
+func reportStop(res fleet.StopResult, err error, kill func(string) error, stdout, stderr io.Writer) error {
+	if res.Disabled {
+		p, _ := fleet.FlagPath()
+		fmt.Fprintf(stdout, "fleet: disabled (%s removed)\n", p)
+	}
+	for _, s := range res.Killed {
+		fmt.Fprintf(stdout, "killed: %s\n", s)
+	}
+	for _, s := range res.Failed {
+		fmt.Fprintf(stderr, "not killed: %s\n", s)
+	}
+	if len(res.Killed)+len(res.Failed) == 0 && res.Self == "" && err == nil {
+		fmt.Fprintln(stdout, "killed: none (no spore agent sessions running)")
+	}
+	if len(res.Failed) > 0 {
+		err = errors.Join(err, fmt.Errorf("%d session(s) not killed", len(res.Failed)))
+	}
+	if res.Self == "" {
+		return err
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "spore: %v\n", err)
+	}
+	fmt.Fprintf(stdout, "killed: %s (this session)\n", res.Self)
+	syncWriter(stdout)
+	syncWriter(stderr)
+	// err is already on stderr: a failed kill reports only itself.
+	if kerr := kill(res.Self); kerr != nil {
+		return fmt.Errorf("own session %s: %w", res.Self, kerr)
+	}
+	return err
+}
+
+func syncWriter(w io.Writer) {
+	if f, ok := w.(*os.File); ok {
+		_ = f.Sync()
+	}
+}
+
 func runFleetStatus(args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("usage: spore fleet status")
@@ -237,14 +307,41 @@ func runFleetStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	panes, err := fleet.RolePanes(root)
+	if err != nil {
+		return err
+	}
+	coordinator := 0
+	workers := 0
 	if len(slugs) == 0 {
 		fmt.Println("sessions: none")
-		return nil
+	} else {
+		fmt.Println("sessions:")
+		for _, s := range slugs {
+			if s == fleet.CoordinatorSlug {
+				coordinator = 1
+			} else {
+				workers++
+			}
+			fmt.Printf("  %s%s\n", s, sessionAgentSuffix(root, s))
+		}
 	}
-	fmt.Println("sessions:")
-	for _, s := range slugs {
-		fmt.Printf("  %s%s\n", s, sessionAgentSuffix(root, s))
+	loops := map[string]bool{}
+	if len(panes) == 0 {
+		fmt.Println("role panes: none")
+	} else {
+		fmt.Println("role panes:")
+		for _, p := range panes {
+			loops[p.Slug] = true
+			fmt.Printf("  %s/%s\n", p.Slug, p.Role)
+		}
 	}
+	maxWorkers, err := resolveMaxWorkers(0, root)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("agents: %d running (coordinator %d, workers %d, role panes %d); slots %d/%d (a worker or a role loop takes one)\n",
+		coordinator+workers+len(panes), coordinator, workers, len(panes), workers+len(loops), maxWorkers)
 	return nil
 }
 

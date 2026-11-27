@@ -105,6 +105,9 @@ func ghOutsideSandbox(cmd string) string {
 		if len(args) > 0 {
 			sub, args = args[0], args[1:]
 		}
+		// Prose that quotes the command (a heredoc or echo naming
+		// `spore gh push`) leaves quoting glued to the subcommand.
+		sub = strings.Trim(sub, "`'\"()")
 		switch sub {
 		case "exec":
 			if len(args) > 0 && args[0] == "--" {
