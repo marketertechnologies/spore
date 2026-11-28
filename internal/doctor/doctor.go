@@ -60,6 +60,12 @@ type Env struct {
 	StateBase string
 	// Npmrc is ~/.npmrc; "" skips.
 	Npmrc string
+	// BundleConfig is ~/.bundle/config, masked from sandboxed
+	// commands; "" skips. ProjectBundle lists bundler configs agents
+	// can read (project .bundle/config, BUNDLE_CONFIG,
+	// BUNDLE_USER_CONFIG).
+	BundleConfig  string
+	ProjectBundle []string
 	// SelfVersion is this binary's BuildVersion.
 	SelfVersion string
 
@@ -82,6 +88,7 @@ func Check(env Env) []Result {
 	out = append(out, checkFleetUnits(env)...)
 	out = append(out, checkSecrets(env))
 	out = append(out, checkNpmrc(env))
+	out = append(out, checkBundleConfig(env))
 	out = append(out, checkKillSwitch(env))
 	return out
 }

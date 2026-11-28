@@ -54,12 +54,16 @@ var DefaultAllowWrite = []string{
 }
 
 // DefaultDenyRead is unreadable from every sandboxed command. Claude
-// Code also folds Read(...) deny rules into this list.
+// Code also folds Read(...) deny rules into this list. Bundler treats
+// the masked ~/.bundle/config as empty (it skips a zero-size file
+// without opening it), so registry credentials come from BUNDLE_<HOST>
+// env instead (docs/sandbox.md).
 var DefaultDenyRead = []string{
 	"~/.config/spore",
 	"~/.local/state/spore/*/github-token.json",
 	"~/.ssh",
 	"~/.claude/.credentials.json",
+	"~/.bundle/config",
 }
 
 // DefaultDenyWrite stops a sandboxed command repointing the GitHub App

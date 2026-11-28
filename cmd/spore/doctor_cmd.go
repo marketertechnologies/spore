@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -36,6 +37,12 @@ Checks (one pass/warn/fail/skip line each):
   secrets file modes      secrets.env, *.pem, *.key, github-token.json,
                           github.toml under ~/.config/spore and the spore
                           state dir are 0600 or stricter
+  npmrc tokens            no literal registry token in ~/.npmrc
+  bundle tokens           no GitHub token in ~/.bundle/config, a file
+                          BUNDLE_CONFIG / BUNDLE_USER_CONFIG /
+                          BUNDLE_USER_HOME names, or the cwd project's
+                          app config (.bundle/config);
+                          ~/.bundle/config is 0600 with no ACL
   kill switch             fleet-enabled flag state
 
 Flags:
@@ -79,10 +86,11 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 		*repo = sporeCheckout()
 	}
 	home := os.Getenv("HOME")
-	configDir, npmrc := "", ""
+	configDir, npmrc, bundleConfig := "", "", ""
 	if home != "" {
 		configDir = filepath.Join(home, ".config", "spore")
 		npmrc = filepath.Join(home, ".npmrc")
+		bundleConfig = filepath.Join(home, ".bundle", "config")
 	}
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
 		configDir = filepath.Join(d, "spore")
@@ -90,18 +98,20 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 	stateBase, _ := events.BaseDir()
 
 	results := doctor.Check(doctor.Env{
-		SW:           *sw,
-		DropIn:       *dropin,
-		RepoRoot:     *repo,
-		FlakeLock:    *lock,
-		ClaudeBin:    *claude,
-		ConfigDir:    configDir,
-		StateBase:    stateBase,
-		Npmrc:        npmrc,
-		SelfVersion:  spore.BuildVersion(),
-		Run:          doctorRun,
-		Render:       hooks.ManagedSettings,
-		FleetEnabled: fleet.Enabled,
+		SW:            *sw,
+		DropIn:        *dropin,
+		RepoRoot:      *repo,
+		FlakeLock:     *lock,
+		ClaudeBin:     *claude,
+		ConfigDir:     configDir,
+		StateBase:     stateBase,
+		Npmrc:         npmrc,
+		BundleConfig:  bundleConfig,
+		ProjectBundle: projectBundleConfigs(),
+		SelfVersion:   spore.BuildVersion(),
+		Run:           doctorRun,
+		Render:        hooks.ManagedSettings,
+		FleetEnabled:  fleet.Enabled,
 	})
 	fails, warns := doctor.Counts(results)
 	if *asJSON {
@@ -120,6 +130,53 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// projectBundleConfigs lists the bundler configs besides
+// ~/.bundle/config that the sandbox leaves readable: files the
+// BUNDLE_CONFIG / BUNDLE_USER_CONFIG / BUNDLE_USER_HOME env names, and
+// the app config (.bundle/config, or BUNDLE_APP_CONFIG) of the cwd's
+// worktree and main checkout when the cwd is in a git repo.
+func projectBundleConfigs() []string {
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		for _, o := range out {
+			if o == p {
+				return
+			}
+		}
+		out = append(out, p)
+	}
+	add(os.Getenv("BUNDLE_CONFIG"))
+	add(os.Getenv("BUNDLE_USER_CONFIG"))
+	if h := os.Getenv("BUNDLE_USER_HOME"); h != "" {
+		add(filepath.Join(h, "config"))
+	}
+	b, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	top := strings.TrimSpace(string(b))
+	if err != nil || top == "" {
+		return out
+	}
+	// Bundler resolves a relative BUNDLE_APP_CONFIG against the app root.
+	appConfig := ".bundle"
+	if a := os.Getenv("BUNDLE_APP_CONFIG"); a != "" {
+		appConfig = a
+	}
+	roots := []string{top}
+	if root, err := task.MainRepoRoot(top); err == nil {
+		roots = append(roots, root)
+	}
+	for _, r := range roots {
+		if filepath.IsAbs(appConfig) {
+			add(filepath.Join(appConfig, "config"))
+		} else {
+			add(filepath.Join(r, appConfig, "config"))
+		}
+	}
+	return out
 }
 
 // sporeCheckout returns the cwd's main repo when it is a spore

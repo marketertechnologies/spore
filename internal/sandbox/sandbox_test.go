@@ -113,7 +113,7 @@ func TestManagedBlockShape(t *testing.T) {
 	if network["strictAllowlist"] != true {
 		t.Fatal("strictAllowlist must be on: bypass mode answers the network prompt with allow")
 	}
-	for _, p := range []string{"~/.config/spore", "~/.claude/.credentials.json", "~/.ssh"} {
+	for _, p := range []string{"~/.config/spore", "~/.claude/.credentials.json", "~/.ssh", "~/.bundle/config"} {
 		if !strings.Contains(string(b), `"`+p+`"`) {
 			t.Errorf("denyRead lacks %s", p)
 		}

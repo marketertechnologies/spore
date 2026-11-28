@@ -73,6 +73,29 @@ func TestStringTokenShapes(t *testing.T) {
 	}
 }
 
+func TestStringURLCredentials(t *testing.T) {
+	r := New("")
+	for in, want := range map[string]string{
+		"Retrying download gem from https://x:CANARY-opaque-1234@rubygems.pkg.github.com/org/ due to error": "Retrying download gem from https://x:[redacted]@rubygems.pkg.github.com/org/ due to error",
+		"https://x:ghp_" + strings.Repeat("Ab1", 12) + "@rubygems.pkg.github.com/":                          "https://x:[redacted]@rubygems.pkg.github.com/",
+		"git clone HTTPS://x-access-token:CANARY@github.com/o/r.git":                                        "git clone HTTPS://x-access-token:[redacted]@github.com/o/r.git",
+		"https://:CANARY-empty-user@github.com/o/r":                                                         "https://:[redacted]@github.com/o/r",
+	} {
+		hits := map[string]int{}
+		if got := r.scrub(in, hits); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+		if hits[ClassToken] != 1 {
+			t.Errorf("%q: token hits = %d, want 1", in, hits[ClassToken])
+		}
+	}
+	for _, keep := range []string{"https://github.com/o/r", "see https://example.com:8443/x", "mail user@example.com"} {
+		if got := r.String(keep); got != keep {
+			t.Errorf("String(%q) = %q, want unchanged", keep, got)
+		}
+	}
+}
+
 func TestStringPEM(t *testing.T) {
 	r := New("")
 	full := "key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nAAAA\n-----END RSA PRIVATE KEY-----\ndone"
