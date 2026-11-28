@@ -53,7 +53,8 @@ ending in `(absent: pr_flow off)` means no App is configured for
 this project. Config is per project: an App set up for one project
 does not carry over to another. Run this before telling the
 operator no App exists, and confirm a token mints with
-`spore gh token`.
+`spore gh exec -- gh api installation/repositories --jq .total_count` (it prints the number of repos
+the App reaches, not the token).
 
 ### Set up for a new project
 
@@ -61,13 +62,14 @@ The org has one App and one installation, shared by every
 teammate; each teammate brings their own private key. App creation
 and teammate onboarding (key generation, finding the ids) live in
 `docs/github-app.md` in the spore repo. Once the ids and key are in
-hand:
+hand, the operator runs (from their own shell: inside a sandboxed
+pane the guard denies `config --set` and `token`):
 
 ```
 spore gh config --set app_id=<app id> \
   --set installation_id=<installation id> \
   --set private_key=~/.config/spore/<project>/github-app.pem
-spore gh token
+spore gh exec -- gh api installation/repositories --jq .total_count
 ```
 
 `--set key=` deletes a key. `origin` must be https
@@ -78,19 +80,42 @@ own key.
 ### Use
 
 ```
-spore gh exec -- gh pr view <number>
-spore gh exec -- gh pr review <number> --comment --body "..."
-spore gh exec -- git push -u origin <feature-branch>
+spore gh push <feature-branch>
+spore gh pr create --draft --base <base> --head <feature-branch> --title "..." --body-file body.md
+spore gh pr view <number>
+spore gh pr comment <number> --body-file comment.md
+spore gh pr ready <number>
+spore gh api repos/<owner>/<repo>/pulls/<number>/comments
 ```
 
-`exec` sets `GH_TOKEN` to an installation token and injects a git
-credential helper, so both `gh` and `git push` over https act as
-the App. For raw API calls, `spore gh token` prints the token:
+`spore gh` reads `--body-file <path>` itself (the path must be in
+the cwd repo or `$TMPDIR`) and hands it to gh on stdin. Run each
+call as one command: Claude Code takes `spore gh` out of the sandbox
+only without a redirect, pipe or `cd ... &&` chain, and inside the
+sandbox it cannot read the App key on a host without the broker.
 
-```
-curl -sH "Authorization: Bearer $(spore gh token)" \
-  https://api.github.com/repos/<owner>/<repo>/pulls
-```
+`push` sends the local branch from the cwd repo (worktrees too) and
+sets its upstream; a rewritten branch needs
+`--force-with-lease=<sha>` (the commit origin's branch is at), there
+is no bare force. `pr` and `api` run `gh pr` / `gh api` as the App.
+On a host with the secrets broker these go through it, limited to
+`pr list|view|ready|edit|create --draft|comment`, `api` on the
+repo's own pulls and issues, and branches matching the project's
+`push_branch` (default `^wt/...`); `spore gh exec` and `token`
+refuse there. Without the broker they inject the App token like
+`spore gh exec -- <cmd>`, which still works for anything else
+(`gh pr review`, other API paths).
+
+Never run `spore gh token` from an agent pane, and never put a
+token in a command line (`https://x-access-token:<token>@...`,
+`GH_TOKEN=<token> gh ...`): the token lands in the transcript.
+`exec` keeps it in the child's environment.
+
+`spore gh` runs outside the Claude Code sandbox (it reads the App
+key), so in agent panes the PreToolUse guard allows only
+`spore gh pr|api|push`, `spore gh exec` around `git` or `gh`, and
+read-only `spore gh config`
+(docs/sandbox.md in the spore repo).
 
 This is an installation token. Endpoints that need the App's own
 JWT (`GET /app`, anything under `/app/installations`) reject it with 401 "A JSON web token could not be
@@ -104,7 +129,7 @@ decoded"; that is expected, not a broken setup.
 - Reach for `spore-with-secrets gh` when the action should carry
   the operator's identity, or when `spore gh config` is absent.
 - `pr_flow=draft` only turns on the role loop's draft-PR mirror.
-  Plain `spore gh exec` / `spore gh token` work without it.
+  `spore gh pr|api|push` and `spore gh exec` work without it.
 
 ### Policy caveat
 

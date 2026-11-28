@@ -2,6 +2,404 @@
 
 ## Unreleased
 
+- Bundler credentials out of agent reach (0.72.0): `~/.bundle/config` held a classic and a fine-grained GitHub token, readable by every sandboxed command and the Read tool. The sandbox floor now masks it (`filesystem.denyRead`) and the deny set gains `Read(~/.bundle/config)`. Bundler skips the zero-size mask without opening it, so sandboxed `bundle install` keeps working with no global settings; registry credentials come from `BUNDLE_<HOST>` env. New `spore doctor` check `bundle tokens`: warns on a GitHub token (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `x-access-token`) in `~/.bundle/config` or on a mode wider than 0600 or an ACL on it, and fails on a token in the cwd project's app config (`.bundle/config` or `BUNDLE_APP_CONFIG`) or a file `BUNDLE_CONFIG` / `BUNDLE_USER_CONFIG` / `BUNDLE_USER_HOME` names; it names the line and key, never the value. Outbound redaction (`internal/redact`) now also blanks the password of URL userinfo (`https://x:<token>@host`) whatever its shape. `scripts/sandbox-probe.sh` gains a canary containment check for `~/.bundle/config` and a must-work `bundle install` check. Tool output in transcripts is still not redacted (documented gap). Consumer impact (marketer, crm-gateway): sandboxed bundler no longer sees `~/.bundle/config`; supply `BUNDLE_RUBYGEMS__PKG__GITHUB__COM` (a `read:packages` token) from the pane environment, move non-secret global settings to the project `.bundle/config` or env, and fetch changed private `github:` gem sources from an operator shell (docs/sandbox.md, Consumer impact). `bundle config set --global` fails inside the sandbox.
+- Redaction in every flag form (0.71.1): text spore posts to GitHub escaped redaction when spelled `--body=<text>` / `--title=<text>`, `-b` / `-t`, or as a `gh api` field value (`-f`, `-F`, `--field`, `--raw-field`, any spelling), and `spore gh pr|api` on a host without the secrets broker posted everything unredacted. One redactor (`internal/redact` `GHCall`) now covers stdin (JSON-aware after `--input -` or `--input=-`), `--title` / `--body`, `--comment` / `-c` under `close` / `reopen`, `--subject` under `pr merge` and api field values in every spelling (short groups such as `-iF k=v` included), for the role-loop mirror, the broker and `spore gh` alike; field keys are redacted too, and values of ref-like keys (`head`, `base`, `sha`, `owner`, `name`, `labels`, ...) get only the token and PEM patterns, so a secrets.env value colliding with a ref does not break the call. Each redaction appends a `redaction` event (pattern class, place, count; never the value) to the project ledger, the broker returning its hits for the caller to record, and `spore report` shows `redactions: N (per class)`. On hosts without the broker, `spore gh pr|api` now reads a piped body itself before gh runs, capped at 4 MiB as the broker path already was; a terminal stdin still goes to gh untouched. The client-side guard against `gh api` fields reading a file (`-F k=@path`) now also catches `-F=k=@path` and short groups (`-iF k=@path`). Fleet and cmd tests pin `SPORE_SECRETS_SOCKET` to an absent path, so a host running the broker no longer fails them. Consumer impact: none beyond `[redacted]` appearing in the new places and the new report line.
+- Role loop review quality (0.71.0), from the 2026-11-24/25/26 validation runs (P3.2, P3.4, P3.6, P3.7).
+  - **Broken role body overrides fail loudly.** A `bootstrap/roles/<role>.md` override that is unreadable or empty (or whitespace only) now fails the spawn like a dangling symlink already did: no pane starts, and the coordinator gets one `<slug>: <role> not spawned: ...` notice per distinct error. Before, the launch line's `[ -r ] && [ -s ]` test silently started a bare agent with no role. The launch line no longer has a bare-agent fallback at all: a body that breaks between spawn and exec (unreadable, empty or whitespace only) fails the pane, which the respawn cap then handles, and the respawn notice quotes the reason the pane recorded.
+  - **Strict grading.** A verdict of `request_changes` with no comments is bounced at every round (it used to be accepted, and at round 3 escalated on nothing), and a plain-string comment in a strict review is bounced instead of counting as an ungraded `medium`. A new `state/grade-exempt-files` marker, written on the first drive by this binary, grandfathers the files already on disk, so in-flight loops are not rewound. The reviewer bodies now say both rules.
+  - **`spore task review-stats` counts archived cycles.** Reviews under `.spore/<slug>/cycles/<n>/` (moved there by `spore task reopen`) are tallied with that cycle's engineer outcomes and validated against that cycle's `state/` markers, `operator-overrides` included. Before, they were dropped silently.
+  - **PR mirror posts once across a crash.** Each mirror comment and review ends with a hidden `<!-- spore-mirror: cycle <n> <event> -->` marker, and the event is saved as `inflight` in `github.json` before it is posted. A tick that finds an event still in flight looks for its marker on the PR before anything else is posted (and before the check gate can defer it), so a post that landed before its save is not duplicated. The lookups (`gh api .../issues/<n>/comments` and `.../pulls/<n>/reviews`, `--paginate`) fit the broker's existing allowlist.
+  - **Role body source in `spore task status`.** A `body:` line per role pane names the override path with the branch its checkout is on, the bundled body with the spore version, or the spawn error. Role bodies are read from the project checkout, not the task worktree, so a checkout on the wrong branch is visible.
+  - Consumer impact: a reviewer pane running a project role override that still writes plain-string comments or comment-less `request_changes` gets its new verdicts bounced with the rule (files on disk at upgrade are exempt); update such overrides to the graded shape. A project with an empty or unreadable role override sees that role stop spawning, with a coordinator notice, instead of running without a role. Mirrored PR comments and reviews carry an invisible HTML comment at the end. `spore task status` prints three extra `body:` lines for role tasks; scripts parsing it by line prefix are unaffected.
+- Fleet emergency stop, a tmux server that survives reboots, memory cap (0.70.0). See `docs/fleet-module.md` ("Emergency stop", "tmux server and memory", "Reconcile pass resilience").
+  - **`spore fleet stop [--project NAME]`.** Removes the kill-switch flag like `disable`, then kills every coordinator, worker and role pane spore spawned (host-wide without `--project`) and prints each one. Sessions must match the exact spawned name shape and carry the `SPORE_TASK_SLUG` / `WT_PROJECT` spore sets on spawn; `spore/pilot/*` and hand-made sessions survive. The flag going away mid-pass now stops that pass before its next spawn. A session it cannot inspect or kill is listed under `not killed` and makes the command exit non-zero; run from the coordinator, any error is printed before its own session goes. `disable` keeps its meaning. The coordinator role gains a line: run `spore fleet stop` when the operator asks to stop everything.
+  - **Agents can stop, not re-enable.** `disable` / `stop` from a sandboxed pane, where the flag write fails with `EROFS`, now go through the secrets broker (before, only `EACCES` did, so they failed). When `/etc/spore/secrets-broker.json` sets `fleet_flag`, `SPORE_FLEET_FLAG` is ignored, so an agent can no longer point it at its own file and reconcile while the fleet is off.
+  - **Reconcile.** A failed or timed-out `tmux list-sessions` ends the pass with an error instead of reading as "no sessions", which faked respawns and crash-loop notices for healthy workers. The role-pane probe and task teardown treat a failed `tmux has-session` / `list-sessions` the same way: unknown state, not a missing session. Only a missing or refused socket counts as "no server"; a socket the caller cannot reach (permission denied) is a failure. A role loop in phase `done` (PR ready, no panes) no longer takes a `max_workers` slot; the temporary, uncommitted `max_workers` bump in the host checkout's `spore.toml` can go. A role loop's panes still share one slot (documented); `spore fleet status` now lists role panes and prints the real agent count against the cap. A coordinator crash loop also raises an operator alert (tmux message, `alert:` line in `spore fleet status`), cleared when the coordinator runs again or the fleet is disabled.
+  - **NixOS module.** New `spore-tmux` user service (`tmux.server.enable`, default on) runs the fleet user's tmux server (`tmux -D`) in `spore-agents.slice`, so it is back after a reboot with nobody logged in; the reconcile units want it, order after it, run in the slice and set `KillMode=process`, so a pass no longer kills a server it started. New `agentMemoryMax` (default null) sets the slice's `MemoryMax`; tmux puts every pane in a scope inside the server's slice, so it bounds all agents. The graceful-deploy drain now tells, waits for and kills `spore-role/<project>/...` panes too, and kills sessions by exact name.
+  - Consumer impact (every host on the module): after `nixos-rebuild switch` the `spore-tmux` unit starts; while a server started from an SSH login still owns the socket it waits, and takes over once that server exits (at the latest at the next reboot), so the memory cap and reboot survival apply from then. Panes created by the unit's server get its environment (`PATH` with the reconciler's tools and the system profile, `LANG`, `LOCALE_ARCHIVE`, `SPORE_FLEET_MAX_WORKERS`, `SPORE_HOST_ID`, `SPORE_FLEET_FLAG` with the broker), not the environment of whatever process happened to start the server. Restarting `spore-tmux.service` kills every session, pilot shells included; home-manager leaves it running on switch. Pilot shells count toward `agentMemoryMax`. Scripts that relied on `SPORE_FLEET_FLAG` overriding the broker config's flag must drop it.
+- Lint repo test under nix flake check (0.69.3): `TestDefaultLintsCleanOnRepo` ran the `claude-size` lint on the repo root, which calls `git ls-files`, and the `spore-go-test` check copies the source without `.git`, so `nix flake check` failed. The test now skips when the repo root is not a git work tree; it still runs in a checkout and in CI. Test-only; no consumer impact.
+- Inbox exactly-once with concurrent watchers, XDG state paths, broker-free tests (0.69.2): a Stop-hook watcher starting up acked (moved from `inflight/` to `read/`) another watcher's just-claimed message before it was read and printed, so with several watchers at settle 0 some messages were lost while looking acked. A drain now claims into a private `inbox/claiming/<pid>-*/` dir and moves a message to `inflight/` only after printing it; the drain holds a flock on its claim dir, and an unlocked claim dir (its watcher died) goes back to the inbox on the next run. Inflight messages are now kept per Claude Code session (`inflight/<session_id>/` from the hook payload, `inflight/.nosession/` without one), so a session's Stop acks and its StopFailure requeues only that session's turn; loose files in `inflight/` from older builds, and other sessions' dirs untouched for 24 hours (respawn, /clear), are acked by the next Stop. Coordinator inbox notices and the token monitors now resolve the coordinator state dir under `XDG_STATE_HOME` like every other spore state path (they used `$HOME/.local/state` only). Test binaries never fall back to the host broker socket (`/run/spore-secrets/broker.sock`): on a host that runs the broker, `go test ./internal/fleet` sent requests to it and failed 15 tests. `docs/secrets.md` documents the sandbox recipe (absent `SPORE_SECRETS_SOCKET`, private `TMPDIR`), which `scripts/pr-before-after.sh` and `bootstrap/smoke.sh` now apply. Consumer impact: none; without `XDG_STATE_HOME` every path is unchanged, and with it the notices now land in the inbox the coordinator already watches.
+- No empty coordinator pokes (0.69.1): the managed `Notification` hook (`spore hooks notify-coordinator`) wrote a bare `poke` to the coordinator inbox on every idle or permission notification in every role and worker pane; 113 of 134 messages in one coordinator's inbox were these. It now stays silent in role panes (`$SPORE_ROLE` set), drops `idle_prompt` and other info-only notification types, forwards the rest as `worker <slug>: <type>: <message>` from the hook's stdin payload, and collapses repeats of the same type and message from one worker (within 30 seconds for permission prompts and other requests the worker waits on, 5 minutes for the rest). Consumer impact: this is the managed hook every consumer pane runs; coordinators stop waking on idle reminders and see which worker needs a permission answer. Takes effect on the next deploy, no pane respawn needed. See docs/fleet-module.md.
+- `secrets-profile` skill (0.69.0): `/secrets-profile` (or "give agents access to X") walks an agent through adding, widening or removing a secrets broker profile. The agent reads the host broker config, designs the narrowest profile per docs/secrets.md and gets the operator's OK, writes `new.nix` plus a root `apply.sh` (a presence check for the variable that never prints it and runs before anything changes, owner and mode reset, backup, install, rebuild, `spore secrets check`, and a rollback when the rebuild or the check fails) after checking the change on a copy of `/etc/nixos`, hands over two operator steps (`sudoedit` the value, run the script), then verifies one allowed and one refused call. New `spore secrets check [--config <path>]` runs the broker's config validation without serving, so a profile with a bad regexp, an undeclared `${VAR}` or an unknown project is caught before the rebuild (the skill runs it on the rendered config) and right after it (`apply.sh` rolls back on failure). Bundled like the other skills (`spore install`, the home-manager links, the plugin marketplace). docs/secrets.md now says what the broker does: a coordinator pane claims the task `coordinator`, so it reaches its own project's profiles plus grants, not every profile; only a caller with no `SPORE_TASK_SLUG` reaches every profile. The docs/secrets.md Sentry example's URL pattern no longer lets `../` escape its path prefix; copy the new shape into any profile built from the old one. No broker behaviour change. Consumer impact: another project's profile needs `sudo spore secrets grant coordinator <profile> --for <duration> --project <coordinator's project>`, as before; the skill appears after the next rebuild (home-manager) or `spore install`.
+- File tools off code-execution paths (0.68.0): the managed floor gains `Edit(...)` deny rules (an Edit rule also covers Write and NotebookEdit) for files an unsandboxed process later runs: any `.git` directory or worktree pointer file at any depth, a bare repo's hooks and config, `.envrc`, `.mcp.json`, `.claude/settings*.json`, `.claude/hooks/**`, `.claude/agents/**` and `.claude/commands/**` (home included), `~/.claude.json`, `~/.claude/plugins/**`, the shell (bash, zsh, fish) and husky startup files, `~/.npmrc` and the yarnrc files, tmux, direnv, git, systemd user and `environment.d` config, `~/.local/bin`, `~/.ssh` and `~/.config/spore`. The sandbox wraps only Bash, so before this a prompt-injected agent could Write a git hook or `~/.bashrc` that runs later outside it. Memory dirs, `~/.claude/skills`, `~/.local/state/spore`, `$TMPDIR`, `.claude/rules/` and the rest of the project tree stay writable. `default_deny = false` drops the new rules with the rest of the default set. `scripts/sandbox-probe.sh` gains file-tool checks and `--files-only`. See docs/sandbox.md ("File tools versus the Bash sandbox").
+  - Consumer impact: hosts pick up the rules on their next `nixos-rebuild switch` (managed drop-in) or by reinstalling `~/.claude/settings.json` from `share/spore/settings.json`; panes get them on their next spawn. Agents can no longer edit a project's `.claude/settings.json`, `.claude/agents/`, `.claude/commands/`, `.envrc` or `.mcp.json` with the tools, nor `~/.npmrc`; the operator edits those. Bash file commands and redirects that write into `.git/` or the home files above (`echo x >> .git/info/exclude`, `rm -rf repo/.git`, `>> ~/.bashrc`) are denied as well; git itself (`init`, `commit`, `config`, `clone`, `worktree add`) is unaffected. Codex panes do not get these rules.
+- Broker gh runs no caller expressions (0.67.1, security): the secrets broker allowed `--jq` on its `gh` op, and gh's jq can read `env`, so `--jq '[env.GH_TOKEN|explode[]]|map(.+1)|implode'` returned a shifted copy of the App installation token that the output redaction did not match; with `api.github.com` reachable from sandboxed panes that token bypassed every broker rule. `--jq` is gone from the allowlist and `--jq`/`-q`/`--template`/`-t` are refused (the short and template forms were never on it); the role-loop mirror now asks for `--json` and decodes it in Go (`pr view --json isDraft`, and the paginated `pulls/<n>/files` arrays for inline review anchors). The broker also stops putting the token in gh's environment: each call gets a private `GH_CONFIG_DIR` with a `hosts.yml`. Fleet and `cmd/spore` tests now pin `SPORE_SECRETS_SOCKET` away from a live host broker. Consumer impact: every project's brokered gh calls; a caller passing `--jq`, `-q`, `--template` or `-t` through the broker (`spore gh pr` / `spore gh api` on a broker host) is now refused and must filter the `--json` output itself. Broker-less hosts are unchanged.
+- Broker GitHub allowlist hardening (0.65.0): the secrets broker's `gh api graphql` filter refused `mutation` only in `-f`/`--raw-field`, so `-F`/`--field query=mutation{...}` and a `--input -` JSON body ran mutations (merge a PR, force `updateRefs`, create or delete refs) as the App; and any GraphQL read reached other repos of the App's installation. The broker now lexes the query from every field spelling and from the `--input -` body (keys matched exactly, no repeats, no trailing data), refuses any definition other than a query or fragment, and runs only the GraphQL queries spore itself sends (the role loop's PR feedback read) with `$owner`/`$name` pinned to the project's repo. Separately, on a host with `/etc/spore/secrets-broker.json`, every `spore gh` subcommand, the role-loop mirror and the base fetch no longer fall back to reading the App key or a cached token when `SPORE_SECRETS_SOCKET` points at nothing or the socket is down; `spore gh` and the mirror fail with a pointer to the socket, and the base fetch warns with it and fetches without the App token. Consumer impact: on broker hosts every `gh api graphql` call except spore's own PR feedback query is refused, including ad-hoc reads like `query { viewer { login } }`, any `repository(owner:, name:)` query, `organization`, `search`, `node(s)`, `viewer.repositories`, and every mutation and subscription; use `spore gh pr view --json ...` or `spore gh api repos/<owner>/<repo>/pulls/<n>/...` instead. Broker-less hosts are unchanged.
+- Body-file test under nix builds (0.62.2): `TestGHPRBodyFileReadByClient` wrote its body file to `$TMPDIR`, but the client accepts `$TMPDIR` only under `/tmp`, and nix builds run with `TMPDIR=/build`, so `nix build .#spore` (and every host switch to 0.62.0 or 0.62.1) failed in `checkPhase`. The `/tmp` bound is now a package variable the test points at its own `TMPDIR`; runtime behaviour is unchanged. No consumer impact beyond the build working again.
+- Sandbox stops hiding `~/.npmrc` (0.62.1): Claude Code mounts `/dev/null` over every `denyRead` file path, even a missing one, and yarn 1 reads `.npmrc` from every ancestor of the cwd, so every yarn command in a project under `$HOME` failed in sandboxed panes with `EACCES ... open '/home/<user>/.npmrc'`. The floor (managed drop-in and handover `settings.json`) drops `~/.npmrc` from `denyRead`. `spore doctor` gains an `npmrc tokens` check that warns, by line number and without the value, when `~/.npmrc` sets `_authToken`, `_auth` or `_password` to a literal instead of a `${VAR}` reference; a file named by `NPM_CONFIG_USERCONFIG` is readable by agents too, so only a narrowly scoped token (`read:packages`) belongs there. `scripts/sandbox-probe.sh` now checks that a non-secret `~/.npmrc` is readable. Consumer impact (marketer, marketer-frontend): yarn works in sandboxed panes after the deploy and a pane respawn; move any literal token out of `~/.npmrc` first. See docs/sandbox.md.
+- `spore gh pr|api|push` (0.62.0): coordinators and plain workers can push a branch and open, comment on and mark ready a draft PR on a host running the secrets broker. `spore gh pr <verb> ...` and `spore gh api <path> ...` run `gh pr` / `gh api` as the project's App, through the broker's `gh` op and allowlist when its socket is present, else with the App token like `spore gh exec`; `--body-file <path>` is read by the client (cwd repo or `$TMPDIR` only) and sent as stdin, so a body needs no redirect, which would keep the call in the sandbox where the App key is unreadable on broker-less hosts; a sandboxed call that cannot read the key says so. `spore gh push <branch> [--force-with-lease=<sha>]` pushes the local branch from the cwd repo (worktree aware) through the broker's `push` op (a git bundle) or `git push -u origin <branch>`; no bare force in either path. The broker now refuses `gh pr ... -F <file>` (`-F` is `--body-file` under `gh pr` and read a file as the broker user). The PreToolUse guard allows the new subcommands; `spore gh token` and `spore gh exec` around anything but git and gh stay denied. `services.spore-fleet.secrets.projects.<name>.pushBranch` (already present) lets a project push branches other than `wt/...`. Consumer impact: the coordinator role text and the `github` recipe now tell agents to use `spore gh pr|api|push` instead of `spore gh exec` around gh or git push; panes pick the new role text up on respawn. The new commands also work on broker-less hosts, so nothing else changes there.
+- Secrets broker (0.61.0): `services.spore-fleet.secrets.enable` moves project secrets and the GitHub App key to a `spore-secrets` system user the agents cannot read as (human pilots read through the `spore-pilots` group) and runs `spore secrets serve` behind `spore-secrets.socket`. Agents use profiles with `spore secrets run <profile> -- <command> [args]`: allowlisted commands with positional argument patterns, run with only the profile's variables, output redacted, every call in an audit log. Profiles are config entries (`secrets.profiles`); the coordinator may use every profile, a worker its own project's plus `spore secrets grant <task> <profile> --for <duration>` (root or pilots, expiring). The role-loop mirror pushes (as git bundles, task branches only, leased rewrites only), runs its gh calls (an allowlist of the shapes it sends) and fetches bases through the broker; `spore gh token` and `spore gh exec` refuse on such hosts. The kill-switch flag moves to `/var/lib/spore-fleet/fleet-enabled` (`SPORE_FLEET_FLAG`): agents may stop the fleet, only root or a pilot re-enables it. tmux options moved to `nixosModules/spore-fleet-tmux.nix` (no option changes). See `docs/secrets.md` for the migration steps.
+- Redaction test fix (0.60.0): `TestStringHomePaths` used a temp dir as `HOME`; on GitHub runners that sits under `/home/runner`, so the generic `/home/<user>` rule fired and CI failed on every push since 0.57.0. The test now uses a fixed `HOME` outside `/home`. Test-only; no consumer impact.
+- Agent sandbox (0.60.0): every coordinator, worker and role pane runs its Bash commands inside Claude Code's sandbox (bubblewrap plus a network proxy), so a copied file, a script or `cat` through a variable can no longer read a secret, and nothing outside the worktree, `$TMPDIR` and the tool caches is writable. The managed drop-in and the handover `settings.json` gain a `sandbox` floor: the `dangerouslyDisableSandbox` escape ignored, reads of `~/.config/spore`, `~/.local/state/spore/*/github-token.json`, `~/.ssh`, `~/.claude/.credentials.json` and `~/.npmrc` denied, `~/.cache`, `~/go` and `~/.local/state/spore` writable, and a strict network allowlist (Anthropic API, GitHub, Go proxy and sum DB, cache.nixos.org, npm, yarn and rubygems registries). Spore turns the sandbox on per pane through `SPORE_SANDBOX_SETTINGS` and `--settings`; `spore.toml` `[sandbox]` takes `enabled = false` (opt-out, `spore lint` warns), `allow_domains`, `allow_write` and `excluded_commands`. `spore gh` runs outside the sandbox to reach the App key; the PreToolUse guard now allows only `spore gh exec` around `git` or `gh` and read-only `spore gh config` (no `spore gh token`, no `config --set`). Spawns add the sandbox's placeholder files to `info/exclude` and create an empty `.gitmodules`, without which `git add -A` and `nix develop` fail in a sandbox. New `spore sandbox settings|prepare` and `scripts/sandbox-probe.sh` (real `claude -p` against a mock API). The NixOS module adds `socat` and `bubblewrap` to the system profile. Consumer impact (marketer, crm-gateway): sandboxed commands get their own network namespace, so host `localhost` TCP services (crm-gateway RabbitMQ) are unreachable; daemons started by `bin/with-services up` die when that Bash call returns (use `bin/with-services exec`); `spore-with-secrets` cannot read secrets; private gems from `rubygems.pkg.github.com` need `allow_domains`; Docker scripts need an opt-out. Panes pick the sandbox up when their tmux session is recreated after the deploy. Details and per-project entries: docs/sandbox.md.
+- Role loop GitHub mirror waits for the engineer check (0.59.2). With `[fleet.roles.engineer] check` set, the draft-PR mirror pushes, opens the PR and posts an engineer round only once the check passed or gave up (`check-failed`) at the worktree HEAD; a give-up now mirrors the round right away in every phase (before, it waited for a later passing round unless the loop was escalated). Each push sends the exact commit the gate cleared, not a HEAD re-read after it. Before a review is posted, the mirror pushes the commit the reviewer read, so a fix committed after a failed check is on GitHub before the verdict on it; a later, unchecked revision commit stays local. With no `check` configured nothing changes. Consumer impact (marketer, marketer-frontend role loops, which set `check`): draft PRs, pushes and engineer comments now wait for the check; the hosts still run 0.40.0, which predates any mirror hold, so this is where the 2026-11-26 report (a round-2 push 7s and a round-1 PR 93s before the check passed) gets fixed. CI on the PR branch only runs on checked commits.
+- Engineer-check lock test race (0.59.1): `waitOnHeldLock` waits until the run under test reports it found the lock held, instead of sleeping three poll intervals, so `TestEngineerCheckWaiterShowsHolderAttempt` no longer fails under full-suite load. Test-only behavior; no consumer impact.
+- Morning report and doctor (0.59.0). See `docs/report.md` and `docs/doctor.md`.
+  - **Events ledger.** Each project gets an append-only `<state dir>/spore/<project>/events.jsonl` (rotates to `.1` past 1 MiB). Spore records task start/pause/block/done, worker spawn/respawn/crash-loop cap, coordinator spawn/respawn/crash-loop cap, role-pane respawns and caps, role-loop phase changes and verdicts, `StopFailure` alerts (error kind and reset time only), reconcile passes skipped (lock held, fleet disabled, budget; once per hour per reason) or failed, and PRs opened (role-loop PR mirror and `spore gh exec -- gh pr create`). No prompt text or model output; details are scrubbed for token shapes.
+  - **`spore report [--since 12h] [--project <name>|--all] [--full]`.** One-screen digest of the ledger plus live state: tasks by status, done and started, PRs opened, an attention block (escalations, blocked tasks, coordinator down, crash loops, alerts, failed or skipped passes), what is running. `--full` lists every event.
+  - **`spore doctor [--json]`.** Pass/warn/fail line per check: deployed binary vs this binary, vs a spore checkout's VERSION and vs the spore rev in the host flake.lock; the live managed settings drop-in vs what the binary renders (hooks, deny list, sandbox block when rendered, other keys); Claude Code vs the last verified version (2.1.329); fleet reconcile timer, path units and last run per project; secret file modes under `~/.config/spore` and the state dir; the kill switch. Exits 1 on any fail.
+  - **Smoke.** `scripts/smoke-post-upgrade.sh` runs `spore doctor` last and counts its exit as a fail.
+  - Consumer impact: two new commands, no behavior change to existing ones. Ledger files appear under the state dir from the first pass after the upgrade. Expect `spore doctor` to fail on first run where `github.toml` was written group-readable (`chmod 600` it) and on any host whose drop-in predates the binary (rebuild).
+- Usage-limit and login alerts (0.58.0). See `docs/alerts.md`.
+  - **Alerts.** New `spore hooks stop-failure`, bound to Claude Code's `StopFailure` event (a turn ended in an API error) in the managed settings drop-in and the handover `settings.json`. On a 429 `rate_limit` or a 401 `authentication_failed` it sends one `spore-alert` notice per incident to the project's coordinator inbox and one per host to the operator (tmux message on every attached client, and `alert:` lines in `spore fleet status`). The usage-limit notice quotes the reset time when Claude Code shows one; the login notice carries the runbook (`/login` once, then `spore fleet nudge`).
+  - **`spore fleet nudge`.** Resumes every pane stopped by an API error: the panes the hook recorded, plus any `spore/` or `spore-role/` pane whose screen shows `Please run /login` or an `API Error` that is not being retried. Never types into `spore/pilot/` sessions. Refuses while `claude auth status --json` reports the host logged out. `--dry-run` lists them.
+  - **Inbox redelivery.** `spore hooks watch-inbox` claims messages into `inbox/inflight/` and acks them into `inbox/read/` on the next Stop hook (which only runs after a successful turn). A turn that ends in an API error puts them back as `redeliver-<name>.json`; they are delivered again with a `redelivered` marker, so a message Claude Code kept in context can arrive twice.
+  - **Budget is read-only.** `spore budget` (and the replenish hook) no longer refreshes the OAuth token or writes `~/.claude/.credentials.json` or the account store files. Refresh tokens rotate, so spore's refresh raced Claude Code's own and could log out every session. On a 401 the budget is marked stale (`usage-stale`) until Claude Code refreshes the login.
+  - **Credentials blanking** is Claude Code's own (it writes an empty token after a failed refresh); spore never wrote an empty token, and now never writes the file. Recovery is documented in `docs/alerts.md`.
+  - Consumer impact: hosts pick up the new hook on their next `nixos-rebuild switch` (managed drop-in) or by reinstalling `~/.claude/settings.json` from `share/spore/settings.json`; running panes get it on their next spawn, and until then `spore fleet nudge` still finds them by screen. Tools that read `inbox/read/` for delivered messages see a message there only after the turn that got it succeeds; in flight it sits in `inbox/inflight/`. `spore budget` output can stay stale (instead of refreshing) while the login is expired. The coordinator role gains a line on relaying `spore-alert` notices.
+- Redact GitHub posts (0.57.0): everything the role loop's GitHub mirror posts (PR title and body, reviews, inline comments, engineer comments, the final `pr` title and body) goes through one redaction step, `internal/redact`. Values of 8+ characters from the layered `secrets.env` files become `[redacted:NAME]`; GitHub tokens (`ghp_`, `ghs_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`), `sk-ant-` keys, PEM private keys and paths under `$HOME`, `/home/<user>` or `/Users/<user>` become `[redacted]`. `spore gh token` help now warns that its output lands in agent transcripts; the GitHub recipe, the App docs and the coordinator role verify and push with `spore gh exec -- ...` instead of printing a token. Consumers (marketer, crm-gateway) pick it up on the next release.
+- Per-role model and effort (0.56.0): spore.toml gains `[agents.coordinator]`, `[agents.worker]`, `[agents.engineer]`, `[agents.reviewer]` and `[agents.reviewer.<A|B>]` tables with `model` and `effort`, and a task's `model:` / `effort:` frontmatter overrides them for that task's panes. Claude panes get `--model` / `--effort`, codex panes `-m` / `model_reasoning_effort`; codex rejects `effort = "max"` at spawn. With nothing set, every spawn argv is unchanged. `spore fleet status` prints the coordinator's and each worker session's resolved agent, model and effort; `spore task status` prints one `agent:` line per pane. Unknown `[agents.*]` tables and keys warn on stderr (the `spore config check` schema from #148 needs these sections added when both land). Consumer impact:
+  - A claude task with `model:` or `effort:` in its frontmatter now passes them to claude (before, only codex read them).
+  - `[agents.coordinator]` `model` wins over `[coordinator]` `model`. A direct `claude` or `codex` coordinator now gets the configured model as a flag, not only as `SPORE_COORDINATOR_MODEL`.
+  - `spore coordinator swap` also sets or clears `SPORE_COORDINATOR_EFFORT` in the session env; a swap to the other driver drops the configured effort.
+  - Launchers: `spore-worker-brief` passes `SPORE_AGENT_MODEL` / `SPORE_AGENT_EFFORT` to claude; `spore-coordinator-launch` now passes `SPORE_COORDINATOR_EFFORT` to claude as `--effort` (codex still defaults to `high`). A host that exports `SPORE_COORDINATOR_EFFORT` for a codex coordinator now hands it to a claude coordinator too. Hosts pick the launchers up on their next `nixos-rebuild switch`.
+- Remove unwired code (0.55.0): deleted `spore coordinator state-debt`, `verify-done`, `loop-guard` and `monitor` with their packages (`internal/coordinator/verify`, `loopguard`, `statedebt`), `spore budget capture` and `spore budget stop-hook` (with the band markers under `$AGENT_BUDGET_STATE_DIR/markers/`), and the test-only `fleet.RoleWatcher`. None had a hook binding in the managed drop-in, the handover `settings.json` or the NixOS module, and no live code called them. Kept: the budget pricing table (the transcript fallback behind `budget.Advice`, which gates `spore fleet replenish-hook`) and the api-mode spool reader (`AGENT_BUDGET_MODE=api` or an external producer still feed it). Consumer impact: `docs/budget.md` told consumers they could wire `spore budget stop-hook` as a Stop hook and feed `spore budget capture`; both now exit 2 with "unknown subcommand", so drop any such binding from a project or user `settings.json`. The four coordinator subcommands were listed in `spore coordinator --help` only; a script calling them now gets exit 2. Stale `markers/` files can be deleted by hand.
+- Config and setup fixes (0.47.0), from the 2026-11-24/25 validation runs.
+  - **spore.toml typos are reported.** Unknown sections and unknown keys in `[fleet]`, `[lint]`, `[coordinator]` and every other section the kernel reads print as warnings from `spore fleet reconcile`, `spore coordinator start|restart|status|swap` and `spore lint` (new `spore-toml` lint, warn only). The new `spore config check` exits 1 on them. An unknown `[coordinator]` key no longer silently zeroes the whole section: the known keys load and the error goes to stderr. Consumer impact: hosts with typos in spore.toml start seeing warnings; run `spore config check` to list them.
+  - **max_workers precedence.** `spore fleet reconcile` now takes `--max-workers`, then spore.toml `[fleet] max_workers`, then `SPORE_FLEET_MAX_WORKERS`, then `WT_FLEET_FLOOR`, then 3. Consumer impact: on NixOS module hosts (which always set `SPORE_FLEET_MAX_WORKERS` from `maxWorkers`), a project's `[fleet] max_workers` now takes effect; before it was ignored. The module option description is fixed to match.
+  - **Lints.** `claude-size` (40-line top-level sections in a `CLAUDE.md`) and `claude-subdir` (sections that belong in a subdir's `CLAUDE.md`) now run in `spore lint` and the `validation-green` bootstrap stage. Both skip fenced code, and a file with a lone `# ` title splits on `## `. Consumer impact: `spore lint` can newly fail on long `CLAUDE.md` sections; split them or opt out per section with `<!-- lint: size-ok -->` / `<!-- lint: scope-ok -->`. The lint lists in the instruction files, design doc, spore-bootstrap skill and validation-green stage now match the real set and the 800-line file-size limit.
+  - **spore install keeps local edits.** Each skill dir gets a `.spore-install.sha256` manifest. A skill file that matches neither the new bundled copy, the recorded one nor any version shipped before 0.47.0 is kept and named in a stderr warning; `--force` overwrites it. Consumer impact: the manifest file appears next to the installed skills (commit it with them); edited skills stop being clobbered on reinstall.
+  - **spore bootstrap exit code.** A blocked run exits 3 instead of 0 (0 done, 1 error, 2 usage). Consumer impact: scripts that run `spore bootstrap` under `set -e` now stop on a blocked stage.
+  - **Coordinator token monitor.** Caps are overridable with `SPORE_COORDINATOR_TOKEN_SOFT`, `SPORE_COORDINATOR_TOKEN_WRAP` (finish-unit) and `SPORE_COORDINATOR_TOKEN_FORCE`. The printed respawn command relaunches the agent the coordinator was spawned with (`SPORE_COORDINATOR_AGENT`, else `[coordinator] driver`) with its role file, instead of a hard-coded `/usr/local/bin/spore-coordinator-launch`.
+  - **Swap host-launcher fallback** is overridable with `SPORE_COORDINATOR_HOST_LAUNCHER`; tests point it at an absent path so a swap test never reaches the host launcher.
+- Task CLI correctness (0.46.0): `spore task` merge, worktree paths, pause, block and role-drive now do what the docs say. Consumer impact: a refused or failed `merge` no longer leaves local `main` moved; `pause` and `block` no longer kill an idle worker after 5 minutes and `SPORE_IDLE_REAP_SECS` is gone; `role-drive` on a non-active task now exits non-zero; `spore task` run from inside `.worktrees/<slug>` now edits the main checkout's task files instead of the worktree copy; `spore fleet reconcile` now kills role panes of a task set to done by hand.
+  - Merge order: the inbox and evidence gates run before the fast-forward, next to the `just check` gate. If `git push origin main:main` fails, local `main` is reset (`git reset --keep`) to where it was and the task file is restored, so the repo is left as it was.
+  - Gitignored `tasks/`: `merge` flips the task file on disk and skips `git add`/`git commit` for it, so one run lands the task.
+  - Worktree paths: `edit`, `pick`, `merge`, `drift`, `start`, `pause`, `block`, `done`, `verify`, `new` and `ls` resolve `tasks/` through `git rev-parse --git-common-dir`, like `tell`, `reopen` and `role-drive` already did.
+  - Pause and block: no teardown at all, matching the coordinator role doc and the CLI help. The reconciler already kept paused and blocked sessions.
+  - Role-drive: refuses a `loop: role` task whose status is not `active`, before it creates any role state or worktree.
+  - Hand-edited done: `spore fleet reconcile` lists `spore-role/<project>/<slug>/*` panes and reaps them when the task is not active, paused or blocked.
+  - Dirty worktree on respawn: a worker respawned onto a worktree with uncommitted changes gets a leading note listing up to 20 dirty paths. `spore-worker-brief` now puts any spawn note (this one, or a pre-start hook failure) above the brief instead of dropping it; hosts pick that up when the handover shims are reinstalled.
+- Fleet resilience (0.45.0): the reconciler survives crashes, bad tasks and hangs. Consumer impact: `max_workers` now bounds role loops too, a crash-looping worker or coordinator stops being respawned after 3 fast deaths, a coordinator stuck at its launcher's greet shell is killed and respawned, a reconcile pass can now fail on a time budget, concurrent passes and `spore task start` serialise on a per-project lock, and `replenish-hook` no longer reconciles outside the session's project. See `docs/fleet-module.md` ("Reconcile pass resilience").
+  - **Worker crash loop.** A worker that dies before any pass saw it alive for 60s is a fast death. After 3 in a row the pass stops respawning it, prints it as crash-looped and tells the coordinator inbox once; a healthy run resets the count, and pausing and restarting the task re-arms it.
+  - **Role pane crash loop.** With `remain-on-exit off` (tmux's default) a crashing role agent removes its session, which used to respawn uncounted forever. A session that vanishes before it ran 60s now counts toward the 3-per-round cap, with one escalation notice. A token-monitor wrap after a long run still respawns silently.
+  - **Coordinator.** A coordinator session whose first pane is dead, or is an idle shell with no child process after 30s (the launcher's greet fallback), is killed and respawned under the same 3-fast-deaths cap, with one inbox notice at the cap. A coordinator that fails to spawn is a warning; workers and role loops still run.
+  - **Bad task files.** A task file with no frontmatter, no slug, a slug that does not match the file name, or a slug that is not a valid `wt/<slug>` branch is skipped with one deduplicated coordinator notice. A task that fails to assign, spawn or reap is a warning instead of aborting the pass.
+  - **Hung pass.** Each git/tmux/matter call runs under `SPORE_FLEET_CALL_TIMEOUT` (default `2m`) and is killed with its process group past it; the whole pass under `SPORE_FLEET_PASS_TIMEOUT` (default `10m`), after which `spore fleet reconcile` kills in-flight calls and exits non-zero. The NixOS module sets `TimeoutStartSec=15min` on each reconcile oneshot. Downstream: picked up on the next `nixos-rebuild switch`.
+  - **Role loops count toward `max_workers`.** Each role loop with a live pane takes one slot, like a worker session; a role loop without panes waits for a free slot and shows as skipped. Hosts that sized `max_workers` for workers only may want to raise it.
+  - **Reconcile lock.** One pass at a time per project: a pass that finds the project's reconcile lock (`<state dir>/<project>/fleet/reconcile.lock`) held exits 0 quietly. `spore task start` spawns under the same lock (waiting up to 2 minutes for a running pass), so the `tasks/` path unit its status flip wakes no longer races it into `fatal: a branch named wt/<slug> already exists`.
+  - **Stray coordinator.** `spore fleet replenish-hook` exits quietly unless the cwd's repo is `$SPORE_PROJECT_ROOT` (else a repo named `$WT_PROJECT`), so a `claude -p` started from a coordinator pane in another repo no longer spawns a coordinator there. A session with neither variable set no longer reconciles from the hook.
+- Usage-limit and login alerts (0.50.0). See `docs/alerts.md`.
+  - **Alerts.** New `spore hooks stop-failure`, bound to Claude Code's `StopFailure` event (a turn ended in an API error) in the managed settings drop-in and the handover `settings.json`. On a 429 `rate_limit` or a 401 `authentication_failed` it sends one `spore-alert` notice per incident to the project's coordinator inbox and one per host to the operator (tmux message on every attached client, and `alert:` lines in `spore fleet status`). The usage-limit notice quotes the reset time when Claude Code shows one; the login notice carries the runbook (`/login` once, then `spore fleet nudge`).
+  - **`spore fleet nudge`.** Resumes every pane stopped by an API error: the panes the hook recorded, plus any `spore/` or `spore-role/` pane whose screen shows `Please run /login` or an `API Error` that is not being retried. Never types into `spore/pilot/` sessions. Refuses while `claude auth status --json` reports the host logged out. `--dry-run` lists them.
+  - **Inbox redelivery.** `spore hooks watch-inbox` claims messages into `inbox/inflight/` and acks them into `inbox/read/` on the next Stop hook (which only runs after a successful turn). A turn that ends in an API error puts them back as `redeliver-<name>.json`; they are delivered again with a `redelivered` marker, so a message Claude Code kept in context can arrive twice.
+  - **Budget is read-only.** `spore budget` (and the replenish hook) no longer refreshes the OAuth token or writes `~/.claude/.credentials.json` or the account store files. Refresh tokens rotate, so spore's refresh raced Claude Code's own and could log out every session. On a 401 the budget is marked stale (`usage-stale`) until Claude Code refreshes the login.
+  - **Credentials blanking** is Claude Code's own (it writes an empty token after a failed refresh); spore never wrote an empty token, and now never writes the file. Recovery is documented in `docs/alerts.md`.
+  - Consumer impact: hosts pick up the new hook on their next `nixos-rebuild switch` (managed drop-in) or by reinstalling `~/.claude/settings.json` from `share/spore/settings.json`; running panes get it on their next spawn, and until then `spore fleet nudge` still finds them by screen. Tools that read `inbox/read/` for delivered messages see a message there only after the turn that got it succeeds; in flight it sits in `inbox/inflight/`. `spore budget` output can stay stale (instead of refreshing) while the login is expired. The coordinator role gains a line on relaying `spore-alert` notices.
+- Credentials deny (0.40.9): the default `permissions.deny` set gains `Read(~/.claude/.credentials.json)`, `Edit(~/.claude/.credentials.json)` and `Bash(*.claude/.credentials.json*)`, so an agent's Read, Edit and Write tools and Bash commands that name the Claude login file (`cat`, `base64`, `grep`, `jq`, `cp`) are denied. Claude Code still reads the file itself; the rules are a speed bump like the `secrets.env` ones. Rendered into the project settings, the managed drop-in and the handover `settings.json`.
+- Migration 002 scope (0.40.8): `002-rails-rule-pickup.sh` now edits only spore consumer repos (`spore.toml` at the repo root) and only consumer lists that carry a `# target:` line; it no longer writes into look-alike `rules/consumers/` trees or a user's own text files under `$HOME`. A consumer repo without `spore.toml` is skipped. Hosts that already ran 002 keep it in the migrations ledger, so the new logic does not re-run there and lines the old version appended to look-alike trees are not removed; check `rules/consumers/*.txt` and `rules/lang/rails-migrations.md` outside spore repos by hand. The migrations README forbids blind `$HOME` scans.
+- Inbox fixes (0.40.7): `spore task tell` writes each message under `inbox/.tmp/` and hard-links it into place, so a watcher can no longer claim an empty file and lose the message; `spore hooks watch-inbox` renders every message as one line, `inbox (claimed source: "<source>", unverified): <body>`, with line breaks in the body escaped, so a dropped file cannot pose as the operator, and moves a file that fails to parse to `inbox/quarantine/` with a warning line instead of printing an empty message.
+- Role loop (0.40.6): `spore task tell <slug>` on a `loop: role` task types the message into the active role pane (or the engineer once done) instead of the worker inbox no role pane reads; it exits 1 when no pane takes it.
+- Host and hooks fixes (0.40.5), found during the 0.40.0 host upgrade.
+  - **Coordinator respawn after switch.** The graceful-deploy post
+    step re-enabled the fleet inside activation, before
+    `/run/current-system` switched, so respawned coordinators ran
+    SessionStart hooks that did not exist yet (`load-state-md.pl`
+    exit 127, no `state.md`). Activation now queues
+    `spore-fleet-graceful-post.service`, which switch-to-configuration
+    starts once the new system is current. Downstream: hosts pick this
+    up on their next `nixos-rebuild switch`. Activation runs the new
+    generation's scripts, so the switch onto 0.40.5 already uses it. A
+    failing post step (`spore fleet enable`) now shows as a failed
+    `spore-fleet-graceful-post.service` and a non-zero switch exit;
+    before, activation ignored it.
+  - **+refspec force push denied.** `git push origin +branch` and
+    `+HEAD:branch` are now blocked by `permissions.deny`
+    (`Bash(git push +*)`, `Bash(git push * +*)`) and the PreToolUse
+    guard. `--force-with-lease` and `--force-if-includes` stay allowed.
+    Downstream: managed settings update on the next switch; hosts with
+    a hand-installed `~/.claude/settings.json` reinstall it from
+    `share/spore/settings.json`.
+  - **NormalizeCommand** skips leading `NAME=value` assignments, so a
+    hook command with an env prefix matches its managed copy.
+  - **Shared coordinator role** gains a "GitHub PR flow" section for
+    projects with a GitHub App and `pr_flow = "draft"`. Consumers can
+    drop the generic part from their project role.
+- Role-loop fixes (0.40.4): with `[fleet.roles.engineer] check` set, the draft-PR mirror holds the push and PR reply for an engineer round until its check passes at HEAD; `spore task done` and `spore task merge` kill the task's `spore-role/...` panes; `spore task done` counts unmerged commits against the task's `base:` (local or `origin/<base>`) instead of main; concurrent `spore hooks engineer-check` runs on one round are serialised by a lock and the waiter reuses the first run's result; `spore task status` prints `review-A (held: check)` while the check is pending.
+- Compose (0.40.0): path-scoped rule fragments, an AGENTS.md import
+  mode, and a 200-line root target, following Claude Code's current
+  memory guidance (root `CLAUDE.md` under about 200 lines, area rules
+  in `.claude/rules/*.md` with `paths:` frontmatter).
+  - **Path-scoped fragments.** A fragment may open with
+    `paths: ["app/graphql/**", ...]` frontmatter (flow list, block
+    list, or comma-separated string). `spore compose --consumer <name>
+    --write` renders it to `.claude/rules/<fragment-id>.md` (Claude
+    Code's frontmatter format, then the same `<!-- generated from ...
+    -->` marker as the root file) instead of inlining it, so it loads
+    only when Claude touches a matching file. `--write` also deletes
+    stale generated rule files; it removes only files that carry the
+    marker, never hand-written rules or symlinks. Plain `spore compose`
+    still prints the root body to stdout and notes on stderr when it
+    left path-scoped rules out. `--root <dir>` (default `.`) sets
+    where `--write` lands and where the `rails` / `align` predicates
+    are read, so composing for another checkout matches what its
+    `claude-drift` lint expects. `--write` refuses an output path
+    that is a symlink (an `AGENTS.md -> CLAUDE.md` link would otherwise
+    lose the body in import mode) and needs `# target:` lines in the
+    consumer file. Codex does not read `.claude/rules/`,
+    so those fragments are Claude-only.
+  - **Mirror mode.** A consumer file may set `# mirror: copy|import`.
+    `copy` (default) is today's behaviour: identical `CLAUDE.md` and
+    `AGENTS.md`. `import` puts the body in `AGENTS.md` (which Codex
+    reads directly) and makes `CLAUDE.md` a stub: the marker plus an
+    `@AGENTS.md` import line.
+  - **Lints.** `claude-drift` now checks the generated
+    `.claude/rules/` files (missing, drifted, stale) and the import
+    stub. `agents-mirror` accepts a `CLAUDE.md` that imports its
+    sibling `AGENTS.md` with `@AGENTS.md`. `claude-totalsize` reads
+    `[lint]` `root_line_limit`, `root_char_limit` and
+    `subdir_line_limit` from `spore.toml`.
+  - **Migration: root line limit 400 -> 200.** With no
+    `root_line_limit` in `spore.toml`, a root `CLAUDE.md` /
+    `AGENTS.md` of 201-400 lines is now a warning (`warn:` on stderr,
+    exit 0, does not block the `validation-green` stage); above 400
+    stays an error, as before. Nothing that was green turns red on
+    upgrade. Setting `root_line_limit` makes that number a strict
+    limit with no warning band: pin `400` to keep the old behaviour
+    and silence the warning, or `200` to enforce the new target.
+    The grace band is expected to go away in a later release, making
+    200 strict by default.
+  - **Downstream.** Consumers need no change to stay green. marketer
+    (429-line root file) can tag its area-specific fragments (for
+    example GraphQL rules with `paths: ["app/graphql/**"]`) with
+    `paths:` and rerun
+    `spore compose --consumer <name> --write` to move them into
+    `.claude/rules/` and shrink the root file toward 200 lines;
+    commit the generated `.claude/rules/` files with the root file.
+    Consumers that want one source file for both agents can add
+    `# mirror: import`.
+- Claude Code managed settings and plugin (0.39.0). The spore-fleet module gains `claudeManagedSettings.enable` (default true), which writes `/etc/claude-code/managed-settings.d/50-spore.json` with spore's Notification, PreToolUse, SessionStart and Stop hooks (including the 0.35.0 force-push guard and the 0.36.0 engineer-check) plus the 0.35.0 default `permissions.deny` set, run through `/run/current-system/sw` (the module adds the spore package and links the shims' `share/spore/hooks`), so they no longer go stale in `~/.claude/hooks/` and survive a rebuild plus GC under a live session. The JSON comes from the new `spore hooks settings --managed` (`hooks.HostEvents`), which `bootstrap/handover/settings.json` is now tested against. Migration `004-managed-settings-prune.sh` backs up `~/.claude/settings.json` and removes the entries the drop-in provides (matched by event, matcher and command), keeping everything else and leaving a symlinked file alone; it is a no-op without the drop-in. New `spore hooks prune-settings --file PATH` does the same for any settings file, and `spore hooks settings` (stdin) now leaves out bindings the drop-in provides. The repo root is a plugin marketplace (`.claude-plugin/`) with a `spore` plugin over `bootstrap/skills/`: `/plugin marketplace add marketertechnologies/spore`. `claudeManagedSettings.plugin.enable` (default false) registers a store copy and enables `spore@spore`. Downstream impact: after the operator's `nixos-rebuild switch`, every Claude Code session of every account on the host runs spore's hooks, including sessions outside spore projects: most hooks self-gate, but the `block-bg-bash` guard, the force-push guard and the deny rules apply to all of them, and a project's `[permissions] default_deny = false` cannot lift them; the Codex `hooks.json` now calls spore through `/run/current-system/sw` too; `~/.claude/settings.json` is rewritten with sorted keys (backup kept); consumer repos still carrying the four Stop hooks in `.claude/settings.json` run them twice until they prune them; plugin skills are namespaced (`/spore:select-agent`).
+- Role loop (0.38.0): line-anchored review comments on the draft PR.
+  The mirror posts each verdict through `gh api .../pulls/<n>/reviews`
+  (`event: COMMENT`, `commit_id` = the last pushed sha) instead of
+  `gh pr review --comment`. Every graded comment whose `where` is
+  `path:line` becomes an inline comment on that diff line, headed by
+  its ID, grade and category, with the text, trigger and suggestion;
+  the review body keeps the heading, summary and the remaining
+  comments. On HTTP 422 (an anchor outside the diff) it retries with
+  the anchors the PR's file patches confirm and folds the rest into
+  the body, or posts everything in the body when it cannot tell.
+  `reviewer-code-review.md` now transcribes the skill's
+  `ReportFindings` fields directly: `file:line` to `where`, `summary`
+  to `text`, `failure_scenario` to `trigger`, `category` to
+  `category`.
+- Role loop (0.37.0): `spore task reopen <slug> --from-pr` appends the
+  PR's human feedback to the reopen note, alone or after `--note`.
+  It reads the PR from `github.json` with `gh api graphql` as the
+  GitHub App and keeps what arrived since the loop last marked the
+  PR ready or was reopened: review bodies (`COMMENTED`,
+  `CHANGES_REQUESTED`), inline comments with `path:line` and a
+  trimmed diff hunk, and PR comments. Bot and app authors and
+  resolved threads are skipped. The note groups inline comments by
+  file, then general comments. With no new feedback and no `--note`,
+  reopen refuses, and it checks the loop can be reopened before it
+  calls GitHub. The PR's reopen comment shows only the operator note
+  and a pointer, not the feedback, and is cut at 60000 characters.
+- Fleet (0.36.1): new `wt/<slug>` branches fork from a freshly
+  fetched base instead of the main checkout's HEAD. The base is the
+  task's `base:` frontmatter, else `origin/HEAD`'s branch, else
+  `main`, else `master`; spore fetches just that ref with a 30s
+  non-interactive deadline (serialized per repository; a timeout
+  skips further fetches in the same process for two minutes) and
+  forks `--no-track` from the remote ref when it is ahead, else from
+  the local branch (kept on divergence, with a warning, so unpushed
+  commits are never dropped). A missing remote or failed fetch warns
+  and falls back to the base branch's existing refs, then HEAD.
+  With an https origin and GitHub App credentials in `github.toml`
+  (no `pr_flow` needed), the fetch authenticates as the app the way
+  `spore gh exec` does; the token stays out of argv, URLs and git
+  config, and a failed mint falls back to a plain fetch.
+  Existing branches are reused as they are. `[fleet] worktree_base =
+  "head"` keeps the old behaviour; an unknown value warns. A
+  `.worktreeinclude` at the project root copies matching ignored
+  files (such as `.env`) into each new worktree without overwriting,
+  skipping symlinks that could reach the main checkout; the pattern
+  subset is in `docs/worker-dispatch.md`. `spore task merge` now
+  refuses a task whose fork base is not `main` (land it through a
+  PR). Consumers can drop `pre_start` scripts that fetch the base
+  branch.
+- Role loop (0.36.0): engineer check gate. `spore.toml`
+  `[fleet.roles.engineer] check = "<shell cmd>"` (plus
+  `check_timeout_seconds`, default 900) makes the project's checks a
+  hard gate before review. New Stop hook `spore hooks engineer-check`
+  (shipped in `bootstrap/handover/settings.json`, timeout 3600s):
+  in an engineer role pane (`SPORE_ROLE=engineer`) with a new
+  engineer response, it runs `check` in the task worktree; a failure
+  exits 2 with the command, exit code and last 40 lines, blocking the
+  stop; a pass records `state/check-pass-<round>-<sha>`; the third
+  failure on one round and HEAD records `check-failed-*` and lets the
+  stop through. The driver holds reviewers (no wake, no fresh spawn)
+  while the latest response has neither marker at the worktree HEAD,
+  records the state in the snapshot (`spore task status` prints
+  `check:`), wakes the engineer once if the response outlives the
+  check timeout unchecked, and on a give-up hands off with the failure
+  named in the reviewer wake. Role bodies: the engineer runs the
+  check itself first; reviewers skip the full suite on a pass marker.
+  Downstream impact: nothing changes until a project sets `check`.
+  Hosts must pick up the new handover settings (or add the Stop hook
+  to their own settings) for the gate to fire; without the hook every
+  role-loop response waits out the timeout and the engineer is then
+  woken to run `spore hooks engineer-check` by hand. Codex engineer
+  panes have no Stop hook wiring and always take that path. Projects
+  with a hand-rolled gate on `spore task done` (marketer's PreToolUse
+  hook) can move the command into `check` and drop the hook.
+  The shipped hook command first checks that `spore hooks` lists
+  `engineer-check`, so a host still on an older binary (which exits 2
+  on an unknown subcommand, blocking every stop) skips it, and so
+  does any pane whose `SPORE_ROLE` is not `engineer`. A stop after a
+  `request_changes` verdict and before the next response is
+  mid-revision and is not checked.
+- Hooks (0.35.0): hard guardrails in settings, not prompts. Generated
+  and shipped settings now carry a default `permissions.deny` set that
+  holds under `--dangerously-skip-permissions`: `SendMessage`,
+  `Read(~/.config/spore/**/secrets.env)`,
+  `Read(~/.config/spore/**/*.pem)`, and six `Bash(git push ...)`
+  force-push rules (`--force` / `-f`, before or after the refspec;
+  `--force-with-lease` stays allowed). `spore hooks settings` merges
+  `spore.toml` `[permissions] deny = [...]` with the defaults (deduped)
+  and `default_deny = false` drops the guardrail set (`SendMessage`
+  stays). `bootstrap/handover/settings.json` now also wires
+  `spore hooks pretooluse` on Bash next to `block-bg-bash.pl`; its
+  force-push pattern now catches trailing `-f` / `--force`, flag
+  clusters such as `-fu`, `git -C dir push` and other git options, and
+  wrappers such as `spore gh exec --`, and no
+  longer blocks `--force-with-lease`. Downstream impact: marketer and
+  crm-gateway pick this up on their next settings render; on existing
+  hosts reinstall `~/.claude/settings.json` from
+  `share/spore/settings.json`. Agents that read `secrets.env` or a
+  `.pem` with Read/`cat`, or force-push from Bash, now get a deny. The
+  secret Read rules are a speed bump, not a fence: other Bash commands
+  can still print those files. See `docs/permissions.md`.
+- Role loop (0.34.1): fixes from the PR #110 review.
+  `spore task force-approve <slug> <A|B> --reason <text>` records an
+  `operator_override` on the reviewer's escalated final verdict once
+  the engineer's fix pass has landed; a forced approve skips the
+  grade/round rule, so the operator's override is no longer bounced
+  and silently undone. Only the content the command records (by
+  sha256) in `state/operator-overrides` may carry the field, so a
+  reviewer can neither force its own approve nor rewrite a forced
+  file; the command also clears the escalation marker.
+  `spore task reopen` takes the drive and `github.json` locks before
+  it moves anything, so a busy mirror refuses cleanly instead of
+  leaving a half-reopened loop;
+  drive ticks now hold a per-slug `drive.lock` and a busy tick only
+  reports; a lock that cannot be taken at all is an error, not a busy
+  tick. The PR mirror counts A's escalation fix pass like the phase
+  machine after a force-approve, so B's engineer rounds are no longer
+  skipped or posted one verdict late, and it posts the override with
+  its reason. B's escalation fix pass stays in the mirror after B is
+  forced, and the verdict comment, ready PR body and summary.md mark a
+  forced verdict as force-approved by the operator.
+- Role loop (0.34.0): `spore task reopen <slug> --note <text>`
+  (or `--note-file`) runs a new engineer -> review A -> review B cycle
+  on a done or escalated role task, on the same branch, worktree and
+  PR. The finished cycle's `responses/`, `reviews/`, `summary.md` and
+  `state/` markers move to `.spore/<slug>/cycles/<n>/`, so the derived
+  phase restarts at engineer-initial with fresh round caps; the note
+  is appended to `spec.md` as `## Operator reopen (cycle N)`, which
+  the engineer and reviewer role bodies now treat as this cycle's
+  requirement. With the draft-PR flow, `github.json` keeps the PR and
+  last push, the mirror moves the PR back to draft, posts the note,
+  heads the cycle's posts `(cycle N, round M)`, and marks it ready
+  again at done. Refuses mid-loop, on a non-active task, or without a
+  note.
+- Role loop (0.33.2): design defects grade as `medium`. Reviewer
+  rubrics (`reviewer.md`, `reviewer-code-review.md`, and
+  `docs/role-loop.md`) now grade a change that breaks a documented
+  project convention (`CLAUDE.md` / `AGENTS.md` rules) or puts a
+  responsibility in the wrong layer as `medium`, with the convention
+  or layer as its `trigger`; `low` keeps local code-quality notes no
+  convention requires. Before, such findings were `low`, so the
+  engineer could decline them and the reviewer could not re-raise
+  them. `engineer.md` adds that "moving it is churn" is not a valid
+  pushback on a design-defect `medium`.
+- Role loop (0.33.1): reviewer order, comment IDs, final PR text.
+  Behaviour change: without an explicit `mode`, reviewer slot A now
+  runs the requirements review (`fleet`) and slot B the
+  `/code-review` bug hunt: requirements first, code review last. The
+  non-claude fallback follows the defaulted slot, so a defaulted B
+  drops to `fleet` on codex. spore's own spore.toml pins A = fleet,
+  B = code-review (effort medium). Slots get display names from
+  their mode, not their letter: `Requirements review` (comment ID
+  prefix `R`) and `Code review` (`C`); when both slots share a mode,
+  B becomes `Requirements review 2` (`S`) or `Code review 2` (`D`).
+  Reviewer panes get `SPORE_REVIEWER_PREFIX` and
+  `SPORE_REVIEWER_LABEL` and copy the prefix into the verdict as
+  `prefix`. Each comment has a stable ID `<prefix><round>.<n>` (n
+  from 1, `R1.3` is `comment` index 2); a verdict without `prefix`
+  is numbered with its instance letter (`A1.2`, `Reviewer A`).
+  Graded comments must be sorted high, medium, low, question; an
+  unsorted verdict is bounced like any invalid file, except verdicts
+  already on disk when the tree is first driven by this binary
+  (`state/order-exempt-files`). The PR mirror heads reviews
+  `**Requirements review (round 1): request changes**` and lists
+  `**R1.1** | medium | correctness | `path:line` - text` in file
+  order; `Review #1` / `Review #2` are gone. Engineer outcomes take
+  optional `detail` and `sha`, and an engineer PR comment starts with
+  an `| ID | Grade | Outcome | Details |` table in ID order (grade
+  joined from the verdict), followed by the free text minus entries
+  the table already details. The engineer wake, escalation comment
+  and PR footer use labels and IDs; `spore task review-stats` adds a
+  per-reviewer table. Engineer responses may carry `pr: {title,
+  body}`; at done the mirror applies the latest one with `gh pr edit`
+  (body plus final verdicts and the spore footer), once, and an edit
+  failure never blocks `gh pr ready`. Role bodies: reviewers sort by
+  severity, cite by ID, and close declined lows by ID; the code-review
+  body notes that the skill's inline comments carry no ID and the
+  review body is the numbered list; the engineer records an outcome
+  with a one-line detail per comment and keeps `pr` current; the
+  fleet reviewer checks `pr` as a low. Consumer impact: projects
+  without reviewer config swap their review order (pin both `mode`s
+  to keep A = code-review); projects overriding `bootstrap/roles/
+  reviewer*.md` keep working with letter IDs and should port the
+  `prefix` and sorting rules, since an unsorted graded verdict is now
+  rejected.
+
+- Role loop: graded review comments. Each `comments` entry in a
+  review file is now an object `{severity, category, where, text,
+  reason, trigger, suggestion}`: severity `high` / `medium` / `low`
+  (likelihood times impact) or `question` (the reviewer is unsure;
+  the engineer must answer), category one of `security`,
+  `correctness`, `spec`, `data-loss`, `edge-case`, `test`, `perf`,
+  `maintainability`, `nit` (a label only). High and medium require a
+  `reason` and a concrete `trigger` (the inputs or steps that cause
+  the failure); anything the reviewer could not verify is low or
+  question. `suggestion` (optional, any grade) carries replacement
+  code or a small diff. The grade alone decides the verdict, per
+  reviewer round: in round 1 any comment, lows and questions
+  included, requires `request_changes`; from round 2 only a high or
+  medium does, and lows and questions ride on an `approve` (kept on
+  record and mirrored, the engineer is not woken). A file whose
+  verdict contradicts its grades for its round is bounced with the
+  round and rule named. A `request_changes` at round 3 escalates:
+  the engineer is woken once to address the high/medium comments, no
+  re-review follows, and the operator decides (`spore task status`
+  shows the pending fix pass; the PR escalation comment says so). A
+  force-approve of A's final verdict counts that fix pass toward A
+  only if it landed before B's first verdict, so B never waits for a
+  round that is not coming. Role bodies: reviewers get the rubric,
+  the per-round rule, project calibration from
+  `$SPORE_PROJECT_ROOT/REVIEW.md` when present (it overrides the
+  rubric examples, not the verdict rules), no new lows on code
+  unchanged since their previous round, and no re-raising a low the
+  engineer declined; the engineer gets per-grade duties (high: fix;
+  medium: fix or push back with a reason; low: implement if simple
+  or sensible, else decline or defer with a reason; question:
+  answer) and the escalation fix pass. Engineer responses may record
+  per-comment `outcomes` (`fixed` / `pushed_back` / `declined` /
+  `answered`), and the new `spore task review-stats` tallies comments
+  raised per severity and category with those outcomes (the rest
+  count as unrecorded). The draft-PR mirror lists graded comments by
+  severity with the trigger and a fenced suggestion; `spore task
+  status` shows high/medium, low, question and ungraded counts.
+  Plain-string comments still parse: a review with only strings
+  keeps its written verdict as before; in a graded review a string
+  counts like a medium. Consumer impact: reviewers spawned on the new
+  bodies write graded comments; a low costs a revision round only in
+  round 1; a high/medium without `trigger` is rejected; projects
+  overriding `bootstrap/roles/reviewer*.md` keep working (ungraded)
+  and should port the grading section; a graded review with a
+  verdict that contradicts its round's rule is now rejected.
+
 - Role loop: role bodies (`engineer.md`, `reviewer.md`,
   `reviewer-code-review.md`) ship embedded in the binary. A project's
   `bootstrap/roles/<name>.md` still overrides the bundled body; with

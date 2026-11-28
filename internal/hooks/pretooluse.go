@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -37,8 +38,16 @@ func DefaultForbidden() []ForbiddenPattern {
 			Reason: "rm -rf /: refusing root-tree wipe",
 		},
 		{
-			Re:     regexp.MustCompile(`\bgit[[:space:]]+push[[:space:]]+(--force|-f)\b`),
-			Reason: "git push --force: confirm with the operator before force-pushing",
+			// Matches inside quoted text on purpose, so `bash -c "git push -f"`
+			// is caught; a command that only mentions a force push is denied too.
+			Re:     regexp.MustCompile(`\bgit(?:[[:space:]]+(?:-[cC][[:space:]]+(?:"[^"]*"|'[^']*'|[^[:space:]]+)|-[^[:space:]]+))*[[:space:]]+push\b[^|;&\n]*[[:space:]](?:--force|-[a-zA-Z]*f[a-zA-Z]*|["']?\\?\+[^[:space:];|&)]+)(?:[[:space:];|&)]|$)`),
+			Reason: "git push --force (or a +refspec): confirm with the operator before force-pushing",
+		},
+		{
+			// A configured push refspec (`git -c remote.origin.push=+...`)
+			// force-pushes with no + on the push command line itself.
+			Re:     regexp.MustCompile(`\bgit[[:space:]][^|;&\n]*-c[[:space:]]*["']?remote\.[^[:space:]=]+\.push=["']?\\?\+[^|;&\n]*[[:space:]]push\b`),
+			Reason: "git push with a +refspec in remote.<name>.push: confirm with the operator before force-pushing",
 		},
 	}
 }
@@ -62,14 +71,63 @@ func PreToolUse(req Request, forbidden []ForbiddenPattern) Response {
 	}
 	for _, p := range forbidden {
 		if p.Re.MatchString(cmd) {
-			return Response{
-				HookSpecificOutput: &HookSpecificOutput{
-					HookEventName:            "PreToolUse",
-					PermissionDecision:       Deny,
-					PermissionDecisionReason: p.Reason,
-				},
-			}
+			return deny(p.Reason)
 		}
 	}
+	if reason := ghOutsideSandbox(cmd); reason != "" {
+		return deny(reason)
+	}
 	return Response{}
+}
+
+func deny(reason string) Response {
+	return Response{
+		HookSpecificOutput: &HookSpecificOutput{
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       Deny,
+			PermissionDecisionReason: reason,
+		},
+	}
+}
+
+var sporeGH = regexp.MustCompile(`\bspore[[:space:]]+gh\b([^;|&\n]*)`)
+
+// ghOutsideSandbox vets `spore gh`, which the sandbox excludes so it
+// can read the GitHub App key: an agent may run `spore gh pr|api|push`,
+// `spore gh exec` around git or gh, and read-only `spore gh config`.
+// Anything else behind it would run unsandboxed (exec of another
+// program), print the token, or repoint the key (config --set).
+// Returns the deny reason, or "".
+func ghOutsideSandbox(cmd string) string {
+	for _, m := range sporeGH.FindAllStringSubmatch(cmd, -1) {
+		args := strings.Fields(m[1])
+		sub := ""
+		if len(args) > 0 {
+			sub, args = args[0], args[1:]
+		}
+		// Prose that quotes the command (a heredoc or echo naming
+		// `spore gh push`) leaves quoting glued to the subcommand.
+		sub = strings.Trim(sub, "`'\"()")
+		switch sub {
+		case "exec":
+			if len(args) > 0 && args[0] == "--" {
+				args = args[1:]
+			}
+			prog := ""
+			if len(args) > 0 {
+				prog = filepath.Base(strings.Trim(args[0], `"'`))
+			}
+			if prog != "git" && prog != "gh" {
+				return "spore gh exec runs outside the Claude Code sandbox with the GitHub App token: wrap only git or gh, or use spore gh pr|api|push"
+			}
+		case "config":
+			if strings.Contains(m[1], "--set") {
+				return "spore gh config --set changes the GitHub App setup: ask the operator to run it"
+			}
+		case "pr", "api", "push", "", "help", "-h", "--help":
+		default:
+			return "spore gh " + sub + " runs outside the Claude Code sandbox: use spore gh pr|api|push instead of handling the token"
+		}
+	}
+	return ""
 }

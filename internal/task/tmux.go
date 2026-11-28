@@ -1,13 +1,13 @@
 package task
 
 import (
+	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 func tmuxSessionName(projectRoot, slug string) string {
@@ -32,13 +32,6 @@ func tmuxSessionPrefix(projectRoot string) string {
 	return fmt.Sprintf("spore/%s/", filepath.Base(projectRoot))
 }
 
-// IdleReapThreshold is how long a tmux session must sit without
-// activity before pause/block reaps it. Sessions younger than this
-// are kept alive: a mid-tool-call rower or a pane the operator just
-// stopped typing into is not "abandoned". Override via
-// SPORE_IDLE_REAP_SECS for tests / operator tuning.
-const IdleReapThreshold = 5 * time.Minute
-
 // matchingSlugSessions lists every tmux session whose name slot for
 // this slug matches, regardless of formula drift between spawn and
 // kill. Catches three shapes:
@@ -47,18 +40,26 @@ const IdleReapThreshold = 5 * time.Minute
 //   - wt-style "<icon> <project>/<slug>" or "<icon> <project>/<slug> [tag]"
 //   - any external spawner that recorded its own name in frontmatter
 //     and embedded "<project>/<slug>" in it
+//   - role-loop panes "spore-role/<project>/<slug>/<role>", only with
+//     withRoles (done/merge teardown)
 //
-// Returns nil when tmux isn't running or no session matches. Pure
+// Returns nil when tmux isn't running or no session matches, and an
+// error when the listing fails, so a wedged server is not read as
+// nothing to kill. Pure
 // substring scan: the slug-end boundary is enforced by requiring the
 // next char to be end-of-string or a space (so slug "foo" doesn't
 // kill "foo-bar").
-func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+func matchingSlugSessions(tasksDir, projectRoot, slug string, withRoles bool) ([]string, error) {
+	sessions, err := ListSessions()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	project := filepath.Base(projectRoot)
 	needle := project + "/" + slug
+	rolePrefix := "spore-role/" + needle + "/"
+	if name, err := ProjectName(projectRoot); err == nil {
+		rolePrefix = "spore-role/" + name + "/" + slug + "/"
+	}
 	recorded := ""
 	if m, err := readTaskMeta(tasksDir, slug); err == nil {
 		recorded = m.Session
@@ -72,8 +73,11 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 		seen[name] = true
 		matches = append(matches, name)
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line == "" {
+	for _, line := range sessions {
+		if strings.HasPrefix(line, rolePrefix) {
+			if withRoles {
+				add(line)
+			}
 			continue
 		}
 		i := strings.Index(line, needle)
@@ -89,76 +93,68 @@ func matchingSlugSessions(tasksDir, projectRoot, slug string) []string {
 	if recorded != "" && hasSession(recorded) {
 		add(recorded)
 	}
-	return matches
+	return matches, nil
 }
 
 // killAllSlugSessions tears down every tmux session matching slug
-// for the project. Errors are surfaced to stderr so a broken kill is
-// visible; this is best-effort cleanup and the status flip stays the
-// source of truth. Pass-through no-op when tmux isn't running or
-// nothing matches.
-func killAllSlugSessions(tasksDir, projectRoot, slug string) {
-	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
-		if out, err := exec.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
+// for the project. Kill errors are surfaced to stderr so a broken
+// kill is visible; a failed listing is returned, since nothing was
+// killed. No-op when tmux isn't running or nothing matches.
+func killAllSlugSessions(tasksDir, projectRoot, slug string) error {
+	names, err := matchingSlugSessions(tasksDir, projectRoot, slug, true)
+	if err != nil {
+		return fmt.Errorf("%s sessions left running: %w", slug, err)
+	}
+	for _, name := range names {
+		if out, err := callbudget.Command("tmux", "kill-session", "-t", name).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore: tmux kill-session %s: %v: %s\n",
 				name, err, strings.TrimSpace(string(out)))
 		}
 	}
-}
-
-// reapIdleSlugSessions kills only the matching sessions whose tmux
-// activity is older than IdleReapThreshold (paused/blocked semantics:
-// keep mid-run sessions alive). projectRoot is derived from tasksDir;
-// any read or parse failure leaves the session alone.
-func reapIdleSlugSessions(tasksDir, slug string) {
-	projectRoot, err := projectRootFromTasksDir(tasksDir)
-	if err != nil {
-		return
-	}
-	threshold := IdleReapThreshold
-	if v := os.Getenv("SPORE_IDLE_REAP_SECS"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
-			threshold = time.Duration(secs) * time.Second
-		}
-	}
-	now := time.Now()
-	for _, name := range matchingSlugSessions(tasksDir, projectRoot, slug) {
-		idle, ok := sessionIdle(name, now)
-		if !ok {
-			continue
-		}
-		if idle < threshold {
-			continue
-		}
-		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
-	}
-}
-
-// sessionIdle reports how long a tmux session has gone without pane
-// activity. Returns (0, false) when the activity stamp can't be read
-// (session gone, tmux quiet, garbage value); the false signals the
-// caller to leave the session alone rather than treat unknown as
-// stale.
-func sessionIdle(name string, now time.Time) (time.Duration, bool) {
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_activity}").Output()
-	if err != nil {
-		return 0, false
-	}
-	s := strings.TrimSpace(string(out))
-	if s == "" {
-		return 0, false
-	}
-	secs, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	last := time.Unix(secs, 0)
-	if last.After(now) {
-		return 0, true
-	}
-	return now.Sub(last), true
+	return nil
 }
 
 func hasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+	return callbudget.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+// TmuxNoServer reports whether a tmux client's stderr says no server
+// is listening: none was started, or its socket is gone or stale. A
+// socket the caller cannot reach (EACCES from a sandbox, a foreign
+// uid) is not "no server": the sessions may all be running.
+func TmuxNoServer(stderr string) bool {
+	if strings.Contains(stderr, "no server running") {
+		return true
+	}
+	if !strings.Contains(stderr, "error connecting to") {
+		return false
+	}
+	return strings.Contains(stderr, "(No such file or directory)") || strings.Contains(stderr, "(Connection refused)")
+}
+
+// ListSessions returns every tmux session name. No server (or a stale
+// socket) is an empty list; any other failure, a call killed by its
+// budget included, is an error.
+func ListSessions() ([]string, error) {
+	cmd := callbudget.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if TmuxNoServer(msg) {
+			return nil, nil
+		}
+		if msg != "" {
+			return nil, fmt.Errorf("tmux list-sessions: %w: %s", err, msg)
+		}
+		return nil, fmt.Errorf("tmux list-sessions: %w", err)
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }

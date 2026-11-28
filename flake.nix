@@ -238,6 +238,9 @@
               touch $out
             '';
           } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            nixosModules-spore-secrets = pkgs.testers.runNixOSTest
+              (import ./nixosModules/tests/secrets-broker.nix { inherit self home-manager; });
+
             nixosModules-spore-fleet = pkgs.testers.runNixOSTest {
               name = "spore-fleet-module";
               nodes.machine = { config, lib, pkgs, ... }: {
@@ -245,6 +248,13 @@
                   self.nixosModules.spore-fleet
                   home-manager.nixosModules.home-manager
                 ];
+
+                # Test VMs omit switch-to-configuration by default; the
+                # graceful-deploy check below drives a real switch.
+                system.switch.enable = true;
+                # A second generation to switch to, so /run/current-system
+                # changes during the graceful-deploy switch below.
+                specialisation.next.configuration.environment.etc."spore-generation".text = "next";
 
                 users.users.spore-test = {
                   isNormalUser = true;
@@ -270,11 +280,15 @@
                     echo "$*" >> "$trace"
                     case "$1 $2" in
                       "fleet reconcile") echo "stub: reconcile" ; exit 0 ;;
-                      "fleet enable") : > "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
+                      "fleet enable")
+                        : > "''${HOME}/.local/state/spore/fleet-enabled"
+                        readlink -f /run/current-system > "''${HOME}/fleet-enable-system"
+                        exit 0 ;;
                       "fleet disable") rm -f "''${HOME}/.local/state/spore/fleet-enabled" ; exit 0 ;;
                       "task tell") shift 2; echo "stub: tell $*" ; exit 0 ;;
                       "install --dest") cp -r ${./bootstrap/skills}/. "$3" ; exit 0 ;;
                       "hooks codex-config") printf '{"hooks":{"stub":"%s"}}\n' "$4" ; exit 0 ;;
+                      "hooks settings") shift 2; printf '{"stub":"%s"}\n' "$*" ; exit 0 ;;
                       "migrate --auto")
                         for t in bash find grep tail dirname mkdir cat; do
                           command -v "$t" >> "''${HOME}/spore-migrate-path.log" || { echo "missing $t" >> "''${HOME}/spore-migrate-path.log"; exit 1; }
@@ -288,7 +302,9 @@
                     enable = true;
                     package = pkgs.writeShellScriptBin "codex" "exit 0";
                   };
+                  claudeManagedSettings.plugin.enable = true;
                   gracefulDeploy.timeout = 5;
+                  agentMemoryMax = "1G";
                   tmux.defaultShell = "${pkgs.bashInteractive}/bin/bash";
                   matters.linear = {
                     enable = true;
@@ -394,6 +410,11 @@
                   user_wait("is-active spore-fleet-reconcile-flag-project.path")
                   user_wait("is-active spore-fleet-reconcile-tasks-project.path")
 
+                  # A hung pass must not hold the oneshot forever.
+                  timeout = machine.succeed(usercmd(
+                      "show spore-fleet-reconcile-project.service -p TimeoutStartUSec")).strip()
+                  assert timeout == "TimeoutStartUSec=15min", timeout
+
                   # The matters.linear option must surface as the
                   # env-var contract the matter loader reads. Inspect
                   # the rendered unit env directly so the wire format
@@ -419,30 +440,82 @@
 
                   # codex.enable: codex on the system and reconciler
                   # PATH, ~/.codex/hooks.json rendered by the package's
-                  # own `hooks codex-config` with hooks pinned to it.
+                  # own `hooks codex-config`, hooks through /run/current-system/sw.
                   machine.succeed("test -x /run/current-system/sw/bin/codex")
                   assert "-codex/bin" in env, env
                   hooks = machine.succeed("cat /home/spore-test/.codex/hooks.json")
-                  assert '"stub":"/nix/store/' in hooks and hooks.strip().endswith('/bin/spore"}}'), hooks
+                  assert '"stub":"/run/current-system/sw/bin/spore"' in hooks, hooks
 
                   # Host-wide skills: one directory link per skill under
                   # Claude Code's and Codex's user scopes, so the scope
                   # dirs stay real and unmanaged siblings survive.
                   for root in ["/home/spore-test/.claude/skills", "/home/spore-test/.agents/skills"]:
                       machine.succeed(f"test -d {root} && test ! -L {root}")
-                      for skill in ["diagram", "select-agent", "spore-bootstrap"]:
+                      for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
                           machine.succeed(f"test -L {root}/{skill} && test -f {root}/{skill}/SKILL.md")
                   machine.succeed("test -x /home/spore-test/.agents/skills/diagram/diagram")
 
-                  # Graceful-deploy: pre-script disables the kill-switch
-                  # and tells every active worker to wrap up; post-script
-                  # re-enables it. With no live tmux sessions the pre-
-                  # script exits after the disable + "no active workers"
-                  # branch and never blocks on the timeout.
+                  # Managed settings drop-in: rendered by the package's
+                  # own `hooks settings --managed`, hooks run through the
+                  # system profile (survives rebuild + GC under a live
+                  # session), plugin marketplace pointing at a store copy
+                  # with manifests and skills.
+                  import json, re
+                  managed = json.loads(machine.succeed(
+                      "cat /etc/claude-code/managed-settings.d/50-spore.json"))["stub"]
+                  assert managed.startswith(
+                      "--managed --spore /run/current-system/sw/bin/spore"
+                      " --hooks-dir /run/current-system/sw/share/spore/hooks"), managed
+                  machine.succeed("test -x /run/current-system/sw/bin/spore")
+                  for hook in ["block-bg-bash.pl", "load-state-md.pl"]:
+                      machine.succeed(f"test -x /run/current-system/sw/share/spore/hooks/{hook}")
+                  market_match = re.search(r"--marketplace (\S+)", managed)
+                  assert market_match is not None, managed
+                  market = market_match.group(1)
+                  assert market.endswith("-spore-claude-marketplace"), market
+                  machine.succeed(f"test -f {market}/.claude-plugin/plugin.json")
+                  machine.succeed(f"test -f {market}/.claude-plugin/marketplace.json")
+                  for skill in ["diagram", "select-agent", "spore-bootstrap", "secrets-profile"]:
+                      machine.succeed(f"test -f {market}/bootstrap/skills/{skill}/SKILL.md")
+
+                  # The user's tmux server is a lingering user unit in
+                  # spore-agents.slice: up with nobody logged in, panes
+                  # under the slice's MemoryMax, and a reconcile pass
+                  # (KillMode=process) leaves it running.
+                  def as_user(cmd):
+                      return f"runuser -u spore-test -- {cmd}"
+                  def tmux_user(args):
+                      return as_user(f"${tmux} {args}")
+                  user_wait("is-active spore-tmux.service")
+                  machine.wait_until_succeeds(tmux_user("list-sessions"), timeout=30)
+                  mem = machine.succeed(usercmd("show spore-agents.slice -p MemoryMax")).strip()
+                  assert mem == "MemoryMax=1073741824", mem
+                  for key, want in [("KillMode", "process"), ("Slice", "spore-agents.slice")]:
+                      got = machine.succeed(usercmd(
+                          f"show spore-fleet-reconcile-project.service -p {key}")).strip()
+                      assert got == f"{key}={want}", got
+                  machine.succeed(tmux_user("new-session -d -s spore/pilot/op 'sleep 600'"))
+                  pane = machine.succeed(tmux_user("list-panes -t =spore/pilot/op -F '#{pane_pid}'")).strip()
+                  cgroup = machine.succeed(f"cat /proc/{pane}/cgroup")
+                  assert "/spore-agents.slice/" in cgroup, cgroup
+                  user_wait("start spore-fleet-reconcile-project.service")
+                  machine.succeed(tmux_user("has-session -t =spore/pilot/op"))
+
+                  # Graceful-deploy: pre-script disables the kill-switch,
+                  # tells every worker and role loop to wrap up, then kills
+                  # their sessions at the timeout; post-script re-enables
+                  # it. The operator's pilot session is left alone.
                   machine.succeed("touch /home/spore-test/.local/state/spore/fleet-enabled")
                   machine.succeed("chown spore-test:users /home/spore-test/.local/state/spore/fleet-enabled")
+                  machine.succeed(tmux_user("new-session -d -s spore/project/wk 'sleep 600'"))
+                  machine.succeed(tmux_user("new-session -d -s spore-role/project/rl/engineer 'sleep 600'"))
+                  machine.succeed(tmux_user("new-session -d -s spore-role/project/rl/reviewer-A 'sleep 600'"))
                   machine.succeed("${preScript}")
                   machine.fail("test -e /home/spore-test/.local/state/spore/fleet-enabled")
+                  left = machine.succeed(tmux_user("list-sessions -F '#{session_name}'")).split()
+                  assert left == ["spore/pilot/op"], left
+                  tells = machine.succeed("grep '^task tell' /home/spore-test/spore-stub.log").splitlines()
+                  assert sorted(t.split()[2] for t in tells) == ["rl", "wk"], tells
                   machine.succeed("${postScript}")
                   machine.succeed("test -e /home/spore-test/.local/state/spore/fleet-enabled")
 
@@ -451,6 +524,40 @@
                   # and cwd handling worked.
                   machine.succeed("grep -q 'fleet disable' /home/spore-test/spore-stub.log")
                   machine.succeed("grep -q 'fleet enable' /home/spore-test/spore-stub.log")
+
+                  # Under switch-to-configuration the post step runs as a
+                  # unit started after activation (once /run/current-system
+                  # points at the new system), not inside the activation
+                  # script. The unit has no wantedBy, so it only runs when
+                  # activation queues it.
+                  unit = "spore-fleet-graceful-post.service"
+                  machine.fail(f"journalctl -b -u {unit} -o cat | grep -q re-enabling")
+                  machine.succeed("rm -f /home/spore-test/fleet-enable-system")
+                  machine.succeed("/run/current-system/specialisation/next/bin/switch-to-configuration test")
+                  machine.succeed("test -e /home/spore-test/.local/state/spore/fleet-enabled")
+                  # `fleet enable` ran with /run/current-system already on
+                  # the new generation, not the booted one.
+                  booted = machine.succeed("readlink -f /run/booted-system").strip()
+                  current = machine.succeed("readlink -f /run/current-system").strip()
+                  seen = machine.succeed("cat /home/spore-test/fleet-enable-system").strip()
+                  assert current != booted, (current, booted)
+                  assert seen == current, (seen, current, booted)
+                  machine.succeed(f"journalctl -b -u {unit} -o cat | grep -q 're-enabling kill-switch'")
+                  status = machine.succeed(f"systemctl show -p Result {unit}")
+                  assert status.strip() == "Result=success", status
+
+                  # After a reboot the tmux server is back with nobody
+                  # logged in, again inside the agent slice.
+                  machine.shutdown()
+                  machine.start()
+                  machine.wait_for_unit("multi-user.target")
+                  machine.wait_for_unit(r"home-manager-spore\x2dtest.service")
+                  machine.wait_for_unit("default.target", user="spore-test")
+                  user_wait("is-active spore-tmux.service")
+                  machine.wait_until_succeeds(tmux_user("list-sessions"), timeout=30)
+                  pid = machine.succeed(usercmd("show spore-tmux.service -p MainPID --value")).strip()
+                  cgroup = machine.succeed(f"cat /proc/{pid}/cgroup")
+                  assert "/spore-agents.slice/spore-tmux.service" in cgroup, cgroup
                 '';
             };
           };

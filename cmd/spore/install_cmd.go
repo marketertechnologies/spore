@@ -14,14 +14,17 @@ import (
 const installUsage = `spore install - drop spore skills into a target project
 
 Usage:
-  spore install [--root <path>]
+  spore install [--root <path>] [--force]
   spore install --dest <dir>
 
 Copies the bundled skill bodies (spore-bootstrap, diagram,
-select-agent) into <root>/.claude/skills/ and <root>/.agents/skills/
+select-agent, secrets-profile) into <root>/.claude/skills/ and <root>/.agents/skills/
 so claude-code and Codex in that project can discover and run them.
 Idempotent: re-runs only rewrite files whose contents drifted from
-the embedded copy.
+the embedded copy. A file that matches neither the embedded copy nor
+the bundled version installed before (recorded in each skill dir's
+.spore-install.sha256) is a local edit: it is kept and named in a
+warning on stderr. --force overwrites it.
 
 With --dest, copies the skills flat into <dir>/<name>/ instead. The
 spore-fleet NixOS module uses this to render the host-wide skill tree
@@ -31,12 +34,14 @@ Flags:
   --root   Project root to install into. Defaults to the current
            directory.
   --dest   Directory to copy the skills into directly. Excludes --root.
+  --force  Overwrite locally edited skill files too.
 `
 
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	root := fs.String("root", "", "project root (default: cwd)")
 	destDir := fs.String("dest", "", "copy skills flat into this directory")
+	force := fs.Bool("force", false, "overwrite locally edited skill files")
 	help := fs.Bool("h", false, "show help")
 	helpLong := fs.Bool("help", false, "show help")
 	fs.SetOutput(io.Discard)
@@ -78,7 +83,7 @@ func runInstall(args []string) int {
 		dest = cwd
 	}
 
-	res, err := install.Install(dest, spore.BundledSkills, "bootstrap/skills")
+	res, err := install.Install(dest, spore.BundledSkills, "bootstrap/skills", install.Options{Force: *force})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore install:", err)
 		return 1
@@ -87,8 +92,14 @@ func runInstall(args []string) int {
 		rel, _ := filepath.Rel(dest, p)
 		fmt.Printf("wrote %s\n", rel)
 	}
-	if len(res.Written) == 0 {
+	for _, p := range res.Kept {
+		rel, _ := filepath.Rel(dest, p)
+		fmt.Fprintf(os.Stderr, "spore install: warning: kept %s: local edits differ from the bundled copy; rerun with --force to overwrite\n", rel)
+	}
+	if len(res.Written) == 0 && len(res.Kept) == 0 {
 		fmt.Println("install: already up to date")
+	} else if len(res.Written) == 0 {
+		fmt.Printf("installed 0 file(s); kept %d locally edited\n", len(res.Kept))
 	} else {
 		fmt.Printf("installed %d file(s) under %s/{.claude,.agents}/skills/\n", len(res.Written), dest)
 	}

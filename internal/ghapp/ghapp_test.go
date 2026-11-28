@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/versality/spore/internal/task"
 )
 
 func genKey(t *testing.T, dir string, pkcs8 bool) (*rsa.PrivateKey, string) {
@@ -343,5 +347,159 @@ func TestGHRepo(t *testing.T) {
 		if _, err := GHRepo(in); err == nil {
 			t.Errorf("GHRepo(%q) accepted", in)
 		}
+	}
+}
+
+func TestFetchEnv(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"PATH=/bin"}
+	// The test token server is the app's API, so its host is the git host.
+	origin := "https://127.0.0.1/o/r.git"
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no github.toml: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("operator_login = \"op\"\n")
+	if _, err := FetchEnv(context.Background(), root, origin, base); !errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("no app credentials: err = %v, want ErrNoFetchAuth", err)
+	}
+
+	key, keyPath := genKey(t, t.TempDir(), false)
+	ts := newTokenServer(t, &key.PublicKey, time.Now().Add(time.Hour))
+	// No pr_flow: a read-only fetch needs only the app credentials.
+	write(fmt.Sprintf("app_id = 1\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, ts.URL))
+	got, err := FetchEnv(context.Background(), root, origin, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Env(base, "ghs_test1"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("env = %q, want Env(base, token) = %q", got, want)
+	}
+
+	// The credential helper answers any host, so another host must not
+	// even mint a token.
+	for _, other := range []string{"https://gitlab.example.com/o/r.git", "http://127.0.0.1/o/r.git", "ssh://git@127.0.0.1/o/r.git", "https://127.0.0.1.evil.example/o/r.git", "::bad"} {
+		calls := ts.calls.Load()
+		if env, err := FetchEnv(context.Background(), root, other, base); !errors.Is(err, task.ErrNoFetchAuth) || env != nil {
+			t.Errorf("origin %q: env=%v err=%v, want ErrNoFetchAuth and no env", other, env != nil, err)
+		}
+		if ts.calls.Load() != calls {
+			t.Errorf("origin %q: minted a token", other)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	write(fmt.Sprintf("app_id = 2\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, srv.URL))
+	if _, err := FetchEnv(context.Background(), root, origin, base); err == nil || errors.Is(err, task.ErrNoFetchAuth) {
+		t.Fatalf("mint failure: err = %v, want a mint error", err)
+	}
+}
+
+func TestGitHost(t *testing.T) {
+	for api, want := range map[string]string{
+		"":                                "github.com",
+		"https://api.github.com/":         "github.com",
+		"https://ghe.corp.example/api/v3": "ghe.corp.example",
+		"https://api.acme.ghe.com":        "acme.ghe.com",
+		"http://127.0.0.1:8080":           "127.0.0.1",
+	} {
+		if got := (Config{APIURL: api}).GitHost(); got != want {
+			t.Errorf("GitHost(%q) = %q, want %q", api, got, want)
+		}
+	}
+}
+
+// On a broker host an env override that hides the socket must not
+// reach the App key or a token cached before the broker took it over.
+func TestProjectTokenRefusedOnBrokerHost(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key, keyPath := genKey(t, t.TempDir(), false)
+	ts := newTokenServer(t, &key.PublicKey, time.Now().Add(time.Hour))
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf("app_id = 1\ninstallation_id = 77\nprivate_key = %q\napi_url = %q\n", keyPath, ts.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectToken(context.Background(), root); err != nil {
+		t.Fatalf("no marker: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "secrets-broker.json")
+	if err := os.Symlink("/etc/static/spore/secrets-broker.json", marker); err != nil {
+		t.Fatal(err)
+	}
+	orig := BrokerHostMarker
+	BrokerHostMarker = marker
+	t.Cleanup(func() { BrokerHostMarker = orig })
+	calls := ts.calls.Load()
+	if tok, err := ProjectToken(context.Background(), root); !errors.Is(err, ErrBrokerHost) || tok.Token != "" {
+		t.Fatalf("ProjectToken: tok=%q err=%v, want ErrBrokerHost", tok.Token, err)
+	}
+	if env, err := FetchEnv(context.Background(), root, "https://127.0.0.1/o/r.git", nil); !errors.Is(err, ErrBrokerHost) || env != nil {
+		t.Fatalf("FetchEnv: env=%v err=%v, want ErrBrokerHost", env != nil, err)
+	}
+	if ts.calls.Load() != calls {
+		t.Fatal("minted a token on a broker host")
+	}
+}
+
+func TestCheckBrokerHost(t *testing.T) {
+	orig := BrokerHostMarker
+	t.Cleanup(func() { BrokerHostMarker = orig })
+	file := filepath.Join(t.TempDir(), "etc-spore")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	BrokerHostMarker = filepath.Join(file, "secrets-broker.json")
+	if err := CheckBrokerHost(); err != nil {
+		t.Errorf("marker under a regular file (ENOTDIR): %v, want nil", err)
+	}
+	BrokerHostMarker = file
+	if err := CheckBrokerHost(); !errors.Is(err, ErrBrokerHost) {
+		t.Errorf("marker present: %v, want ErrBrokerHost", err)
+	}
+
+	// The agent-side github.toml on a broker host has no App fields;
+	// the base fetch must still say why, not fall back silently.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), "proj")
+	cfgPath, err := ConfigPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("pr_flow = \"draft\"\noperator_login = \"op\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FetchEnv(context.Background(), root, "https://github.com/o/r.git", nil); !errors.Is(err, ErrBrokerHost) {
+		t.Errorf("FetchEnv with agent-side github.toml: %v, want ErrBrokerHost", err)
 	}
 }

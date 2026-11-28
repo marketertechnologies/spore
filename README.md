@@ -57,7 +57,8 @@ spore bootstrap
 
 `spore bootstrap` is re-entrant. Each run checks what it can prove,
 records the completed gates, then prints the first blocker that still
-needs operator or repo work. In plain terms, bootstrap moves through:
+needs operator or repo work. It exits 0 once every stage is done and 3
+while a stage blocks, so a script can tell the two apart. In plain terms, bootstrap moves through:
 
 1. map the repo and collect project facts;
 2. find the test and validation commands;
@@ -248,6 +249,31 @@ engineer and reviewers stay on one agent. `SPORE_AGENT_BINARY` is the
 claude worker launcher and is ignored for `agent: codex`, which starts
 codex on the brief directly.
 
+### Model and effort per role
+
+Each role can pin the model and effort its agent CLI starts with. Unset keys keep the CLI default:
+
+```toml
+# spore.toml
+[agents.coordinator]
+model = "opus"
+effort = "high"        # low|medium|high|xhigh|max (very-high = xhigh)
+
+[agents.worker]
+model = "sonnet"
+
+[agents.engineer]
+effort = "xhigh"
+
+[agents.reviewer]      # both reviewer slots
+model = "sonnet"
+
+[agents.reviewer.B]    # one slot, over [agents.reviewer] key by key
+effort = "low"
+```
+
+A task overrides its own panes with `model:` and `effort:` in the frontmatter, for every pane that runs the task's agent (a reviewer slot pinned to another agent keeps its config). Claude gets `--model` / `--effort`; codex gets `-m` / `model_reasoning_effort` and rejects `max`. An unset codex effort still follows the task's `complexity:`, an unset codex model `SPORE_CODEX_MODEL`. `[agents.coordinator]` `model` wins over `[coordinator]` `model`; `spore coordinator swap` to the other driver drops the effort. Launchers read `SPORE_AGENT_MODEL` / `SPORE_AGENT_EFFORT` (worker) and `SPORE_COORDINATOR_MODEL` / `SPORE_COORDINATOR_EFFORT` (coordinator). `spore fleet status` and `spore task status` print what each pane resolves to. Unknown `[agents.*]` tables and keys warn on stderr. The reviewer slot `effort` under `[fleet.reviewers.<A|B>]` is the `/code-review` level, not this one.
+
 ## Editor
 
 The coordinator can connect to the operator's VS Code window (Claude
@@ -274,18 +300,38 @@ When the NixOS module is enabled with `gracefulDeploy.enable =
 true` (the default), pre and post activation hooks drain active
 workers around `nixos-rebuild switch` and colmena deploys:
 
-- pre-activation disables the kill-switch, drops a wrap-up
-  message into every active worker's inbox, waits up to
-  `gracefulDeploy.timeout` seconds for them to flush, then kills
-  any holdouts;
+- pre-activation disables the kill-switch, tells every worker
+  and role loop to wrap up (`spore task tell`; a role loop's tell
+  reaches its active pane), waits up to `gracefulDeploy.timeout`
+  seconds for their sessions (`spore/<project>/<slug>` and
+  `spore-role/<project>/<slug>/<role>`) to exit, then kills any
+  holdouts;
 - post-activation re-enables the kill-switch so the next
-  reconcile pass repopulates the fleet.
+  reconcile pass repopulates the fleet. On `nixos-rebuild switch` /
+  `test` this runs as `spore-fleet-graceful-post.service`, which the
+  activation script queues in `/run/nixos/activation-restart-list`;
+  switch-to-configuration starts it after `/run/current-system`
+  points at the new system, so respawned coordinators find their
+  SessionStart hooks under `/run/current-system/sw`.
 
 The `preScript` and `postScript` paths are also exposed as
 read-only options so a colmena `deployment.preActivation` /
 `postActivation` hook can drive the same drain remotely. Set
 `gracefulDeploy.enable = false` for one-off worker tiers whose
 tasks should never see a wrap-up signal.
+
+## Claude Code Settings and Plugin
+
+The NixOS module writes spore's Claude Code hooks and `permissions.deny` to the managed settings drop-in `/etc/claude-code/managed-settings.d/50-spore.json` (`claudeManagedSettings.enable`, default true), rendered by `spore hooks settings --managed` with commands under `/run/current-system/sw`. It applies to every account on the host; the `block-bg-bash` guard, the force-push guard and the deny rules are not gated to spore sessions. Migration 004 then prunes the same entries from `~/.claude/settings.json` after a backup. Projects drop their duplicated Stop hooks with `spore hooks prune-settings --file .claude/settings.json`.
+
+The repo is also a Claude Code plugin marketplace carrying the spore skills:
+
+```
+/plugin marketplace add marketertechnologies/spore
+/plugin install spore@spore
+```
+
+Details, including the opt-in `claudeManagedSettings.plugin.enable`: [docs/fleet-module.md](docs/fleet-module.md#claude-code-managed-settings).
 
 ## Developer Entry
 
@@ -351,7 +397,9 @@ Main extension points:
 - [internal/hooks/](internal/hooks/) emits and runs Claude Code and
   Codex hook bindings; both agents share the same payload shape, wired
   through `.claude/settings.json` and the user-level
-  `~/.codex/hooks.json` (`spore hooks codex-config`).
+  `~/.codex/hooks.json` (`spore hooks codex-config`). The default
+  `permissions.deny` set and the PreToolUse guard are in
+  [docs/permissions.md](docs/permissions.md).
 - [internal/lints/](internal/lints/) holds portable repo lints.
 - [internal/composer/](internal/composer/) renders instruction files
   from rule fragments in [rules/](rules/).

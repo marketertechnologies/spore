@@ -46,7 +46,7 @@ func runLint(args []string) int {
 		warnOnly := l.Name() == "task-evidence" && taskEvidenceWarnOnly
 		for _, i := range issues {
 			line := prefix(l.Name(), i.String())
-			if warnOnly {
+			if warnOnly || i.Warn {
 				fmt.Fprintln(os.Stderr, "warn: "+line)
 				continue
 			}

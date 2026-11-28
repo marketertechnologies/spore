@@ -39,8 +39,10 @@ Drop-in substrate, generic enough to plant in any project repo.
 - Hook patterns. `Stop` (auto-commit on green), `PreToolUse`
   (forbidden-command guard), with a pluggable shape so each project
   adds its own.
-- Minimal lint set. drift, file-size, comment-noise, em-dash. These
-  are general; they apply to any source tree.
+- Portable lint set. em-dash, file-size, comment-noise, decoration,
+  instruction drift and size, agent mirrors, task evidence, tmux test
+  sockets, spore.toml keys. The full list with limits lives in
+  `bootstrap/stages/validation-green.md`.
 - Distribution. Vendored binaries via a single install script for
   non-Nix consumers; flake input or submodule for Nix consumers.
 
@@ -123,19 +125,7 @@ in your tree".
 
 ## Naming: coordinator and worker
 
-Spore's internal defaults are `dispatcher` (coordinator) and `runner`
-(worker), used in spore's own repo, docs, and tests.
-
-When spore initiates in a downstream project, the bootstrap flow
-**prompts the operator of that project** for the two role names
-during the `repo-mapped` stage, before any kernel files are written.
-Defaults are `dispatcher` / `runner`; the operator can accept the
-defaults or pick anything (`foreman` / `crew`, `pilot` / `cell`,
-`captain` / `hand`, or anything fitting the project's voice).
-
-The picked names get baked into the project's instruction files, the task
-driver's CLI, and the rendered hook plumbing. Renaming after the
-fact is not free but is a recipe, not a fork.
+The two agent roles are `coordinator` and `worker`. The names are fixed across spore and every consumer: the CLI, tmux session names (`spore/<project>/coordinator`, `spore/<project>/<task-slug>`), env (`SPORE_TASK_SLUG=coordinator`) and the rendered rules all use them. Bootstrap does not prompt for other names.
 
 ## Sync model with the upstream harness
 

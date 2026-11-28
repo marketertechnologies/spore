@@ -19,8 +19,10 @@ import (
 	spore "github.com/versality/spore"
 	"github.com/versality/spore/internal/align"
 	"github.com/versality/spore/internal/composer"
+	"github.com/versality/spore/internal/ghapp"
 	"github.com/versality/spore/internal/infect"
 	"github.com/versality/spore/internal/lang"
+	"github.com/versality/spore/internal/task"
 )
 
 const usage = `spore - LLM-coding-agent harness kernel
@@ -36,6 +38,7 @@ Commands:
   align      Track and exit the pilot-agent alignment period.
   bootstrap  Walk a fresh project through the stage gates.
   install    Drop the spore skills into .claude/skills/ and .agents/skills/.
+  config     Check spore.toml for unknown sections and keys.
   infect     Bootstrap a fresh server with NixOS via nixos-anywhere.
   lint       Run portable lints over the working tree.
   hooks      Install or run claude-code / git hooks.
@@ -47,6 +50,10 @@ Commands:
   show       Open <path>[:<line>[:<col>]] in the connected editor.
   code       Editor helpers (workspace: VS Code multi-root of all worktrees).
   gh         Act on GitHub as the project's GitHub App (config, token, exec).
+  report     Morning digest: the events ledger plus live task and fleet state.
+  doctor     Drift checks (binary, managed settings, Claude Code, units, secrets).
+  sandbox    Claude Code sandbox settings for spore panes (settings, prepare).
+  secrets    Use project secrets through the secrets broker without reading them.
 `
 
 const lintUsage = `spore lint - run portable lints over the working tree
@@ -57,7 +64,14 @@ Usage:
 Flags:
   --root   Repo root to lint. Defaults to the current directory.
 
-Exits non-zero when any lint reports an issue.
+Exits non-zero when any lint reports an issue. Advisory findings
+print to stderr with a "warn:" prefix and do not fail the run.
+
+spore.toml [lint] keys (all optional, integers):
+  root_line_limit    Root CLAUDE.md / AGENTS.md line cap. Unset: warn
+                     above 200 lines, fail above 400.
+  root_char_limit    Root file char cap (default 40000).
+  subdir_line_limit  Subdirectory CLAUDE.md / AGENTS.md cap (default 150).
 `
 
 const hooksUsage = `spore hooks - install or run kernel hooks
@@ -72,13 +86,39 @@ Subcommands:
                          stdin, write the response JSON to stdout.
   stop                   Read a claude-code Stop JSON request from stdin,
                          write the (currently no-op) response JSON.
-  settings               Read a hook binding JSON from stdin, emit a
-                         deterministic settings.json to stdout.
+  engineer-check         Stop-hook for role-loop engineer panes: run the
+                         [fleet.roles.engineer] check on a new engineer
+                         response, exit 2 with the failure tail.
+                         Reads $SPORE_ROLE / $SPORE_PROJECT_ROOT /
+                         $SPORE_TASK_SLUG; a no-op anywhere else.
+  settings [--managed-file PATH]
+                         Read a hook binding JSON from stdin, emit a
+                         deterministic settings.json to stdout. Bindings
+                         the managed settings file already runs (default
+                         /etc/claude-code/managed-settings.d/50-spore.json,
+                         when present; "" disables) are left out.
+                         permissions.deny merges the kernel defaults
+                         with spore.toml [permissions] at the repo root.
+  settings --managed [--spore PATH] [--hooks-dir DIR] [--marketplace DIR]
+                         Emit the host-wide managed settings drop-in:
+                         spore's hooks plus permissions.deny. --marketplace
+                         also registers DIR as the spore plugin marketplace
+                         and enables spore@spore.
+  prune-settings --file PATH [--managed-file PATH]
+                         Back up PATH, then drop the hooks and deny rules
+                         the managed settings file provides. No-op when
+                         nothing matches.
   codex-config [--spore PATH]
                          Emit the user-level Codex hooks.json
                          ($CODEX_HOME/hooks.json) to stdout.
   watch-inbox [slug]          Stop-hook: block on inbox, exit 2 on message.
-                              With no slug, reads $SPORE_TASK_INBOX.
+                              With no slug, reads $SPORE_TASK_INBOX. Also
+                              acks the last turn's messages and clears
+                              this pane's usage-limit/login alert.
+  stop-failure                StopFailure hook (a turn ended in an API
+                              error): put the turn's inbox messages back
+                              and, on a usage limit or expired login,
+                              alert the coordinator and the operator once.
   watch-inbox --codex [--pid N]
                               Long-running sidecar: deliver $SPORE_TASK_INBOX
                               envelopes to this session's codex thread via
@@ -88,7 +128,11 @@ Subcommands:
                               session_id as this session's thread id.
   notify-coordinator [project]
                               Write a poke to the coordinator's project inbox.
-                              With no project, reads $WT_PROJECT.
+                              With no project (the Notification hook), reads
+                              $WT_PROJECT and the hook payload on stdin, and
+                              forwards only a worker notification that needs
+                              attention, collapsing bursts of the same type
+                              and message.
 `
 
 const infectUsage = `spore infect - bootstrap a fresh server with NixOS via nixos-anywhere
@@ -120,6 +164,8 @@ freshly provisioned VM that has no data worth keeping.
 `
 
 func main() {
+	task.SetFetchAuth(ghapp.FetchEnv)
+	task.SetBrokerFetch(brokerFetch)
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -160,12 +206,22 @@ func main() {
 			os.Exit(1)
 		}
 	case "bootstrap":
-		if err := runBootstrap(args); err != nil {
+		err := runBootstrap(args)
+		if errors.Is(err, errBootstrapBlocked) {
+			os.Exit(exitBootstrapBlocked)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "spore bootstrap:", err)
 			os.Exit(1)
 		}
 	case "install":
 		os.Exit(runInstall(args))
+	case "report":
+		os.Exit(runReportMain(args))
+	case "doctor":
+		os.Exit(runDoctorMain(args))
+	case "config":
+		os.Exit(runConfig(args))
 	case "budget":
 		os.Exit(runBudget(args))
 	case "coordinator":
@@ -182,6 +238,10 @@ func main() {
 		os.Exit(runCode(args))
 	case "gh":
 		os.Exit(runGH(args))
+	case "sandbox":
+		os.Exit(runSandbox(args))
+	case "secrets":
+		os.Exit(runSecrets(args))
 	default:
 		fmt.Fprintf(os.Stderr, "spore: unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)
@@ -192,6 +252,8 @@ func runCompose(args []string) error {
 	fs := flag.NewFlagSet("compose", flag.ContinueOnError)
 	consumer := fs.String("consumer", "", "consumer name (file under <rules>/consumers/<name>.txt)")
 	rulesDir := fs.String("rules", "rules", "rule pool directory")
+	write := fs.Bool("write", false, "write the targets and .claude/rules files under --root and delete stale generated rule files, instead of printing the root body")
+	outRoot := fs.String("root", ".", "project root: predicates (rails, align) read it, and --write outputs land under it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,7 +262,7 @@ func runCompose(args []string) error {
 	}
 
 	consumerPath := filepath.Join(*rulesDir, "consumers", *consumer+".txt")
-	root, err := os.Getwd()
+	root, err := filepath.Abs(*outRoot)
 	if err != nil {
 		return err
 	}
@@ -212,12 +274,28 @@ func runCompose(args []string) error {
 		"align": alignActive,
 		"rails": lang.IsRails(root),
 	}}
-	out, err := composer.Compose(*rulesDir, consumerPath, opts)
+	r, err := composer.Render(*rulesDir, consumerPath, opts)
 	if err != nil {
 		return err
 	}
-	_, err = os.Stdout.WriteString(out)
-	return err
+	if !*write {
+		if len(r.Rules) > 0 || r.Mirror == composer.MirrorImport {
+			fmt.Fprintf(os.Stderr, "spore compose: stdout is the root body only (%d path-scoped rule(s), mirror %s); use --write to render every file\n", len(r.Rules), r.Mirror)
+		}
+		_, err = os.Stdout.WriteString(r.Root)
+		return err
+	}
+	res, err := composer.Write(*outRoot, r)
+	if err != nil {
+		return err
+	}
+	for _, p := range res.Written {
+		fmt.Println("wrote", p)
+	}
+	for _, p := range res.Removed {
+		fmt.Println("removed stale", p)
+	}
+	return nil
 }
 
 // boolFlag mirrors the unexported interface stdlib `flag` uses to tell

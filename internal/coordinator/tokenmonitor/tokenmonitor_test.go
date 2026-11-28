@@ -185,8 +185,11 @@ func assertRespawnPaneMessage(t *testing.T, msg string) {
 	if !strings.Contains(msg, `"$(tmux display-message -p '#S'):0"`) {
 		t.Errorf("message must self-target via display-message, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "/usr/local/bin/spore-coordinator-launch") {
-		t.Errorf("message must exec the coordinator-launch shim, got:\n%s", msg)
+	if !strings.Contains(msg, `'exec claude --dangerously-skip-permissions'`) {
+		t.Errorf("message must exec the default agent when Respawn is unset, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "/usr/local/bin") {
+		t.Errorf("message must not name a host path, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "tmux kill-session") {
 		t.Errorf("message must not instruct kill-session (drops attached SSH), got:\n%s", msg)
@@ -213,35 +216,30 @@ func TestAppendLedger(t *testing.T) {
 	}
 }
 
-// LedgerVerdict must read rows written before the force band existed
-// (no force_cap / force_fired keys) and count a force-only firing as a
-// working hook.
-func TestLedgerVerdictOldAndForceRows(t *testing.T) {
-	dir := t.TempDir()
-	ledgerFile := filepath.Join(dir, "ledger.jsonl")
-	rows := "" +
-		// Old-shape row: session crossed soft cap, fired hard. Not broken.
-		`{"ts":"t","session_id":"old-ok","ctx":191000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":true}` + "\n" +
-		// New-shape row: crossed soft cap, only force fired. Not broken.
-		`{"ts":"t","session_id":"force-ok","ctx":201000,"soft_cap":150000,"hard_cap":190000,"force_cap":200000,"soft_fired":false,"hard_fired":false,"force_fired":true}` + "\n"
-	if err := os.WriteFile(ledgerFile, []byte(rows), 0o600); err != nil {
-		t.Fatal(err)
+func TestRespawnCommandUsesConfiguredLauncher(t *testing.T) {
+	cfg := Config{Respawn: `exec /opt/launch "$(cat 'role.md')"`}
+	got := cfg.RespawnCommand()
+	want := `tmux respawn-pane -k -t "$(tmux display-message -p '#S'):0" 'exec /opt/launch "$(cat '\''role.md'\'')"'`
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
 	}
-	if broken, sids := LedgerVerdict(ledgerFile, 150000, 2); broken {
-		t.Errorf("verdict broken=%v (%s), want working hook", broken, sids)
-	}
+}
 
-	// Two trailing signal sessions that never fired anything: broken.
-	rows += `{"ts":"t","session_id":"dead1","ctx":160000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":false}` + "\n"
-	rows += `{"ts":"t","session_id":"dead2","ctx":160000,"soft_cap":150000,"hard_cap":190000,"soft_fired":false,"hard_fired":false}` + "\n"
-	if err := os.WriteFile(ledgerFile, []byte(rows), 0o600); err != nil {
-		t.Fatal(err)
+func TestCoordinatorStateDirHonorsXDGStateHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", xdg)
+	if got, want := defaultStateDir(), filepath.Join(xdg, "spore", "coordinator"); got != want {
+		t.Errorf("defaultStateDir() = %q, want %q", got, want)
 	}
-	broken, sids := LedgerVerdict(ledgerFile, 150000, 2)
-	if !broken {
-		t.Fatal("verdict working, want broken after two silent signal sessions")
-	}
-	if !strings.Contains(sids, "dead1") || !strings.Contains(sids, "dead2") {
-		t.Errorf("broken sessions = %q, want dead1 dead2", sids)
+}
+
+func TestNoStateBaseMatchesNoCoordinator(t *testing.T) {
+	t.Setenv("SPORE_COORDINATOR_STATE_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if c := (Config{Inbox: "/any/inbox"}).Defaults(); c.IsCoordinator() {
+		t.Errorf("IsCoordinator with StateDir %q = true", c.StateDir)
 	}
 }

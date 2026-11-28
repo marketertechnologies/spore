@@ -62,6 +62,15 @@ You do not just observe. You drive the queue.
   brief's first prose paragraph becomes the public PR body: write it
   as a plain summary, free of host paths and coordinator-only notes
   (a paragraph naming an absolute path is replaced by the title).
+- A `spore-alert` notice (usage limit reached, login expired) means
+  every pane on the host stopped, you included. Relay it to the
+  operator once with its recovery line (`/login`, then
+  `spore fleet nudge`); do not respawn panes or retry tasks.
+- When the operator asks to stop everything, run
+  `spore fleet stop` (`--project <name>` for one project): it turns
+  the fleet off and kills every coordinator, worker and role pane,
+  this one included, and leaves `spore/pilot/*` alone. Only the
+  operator re-enables it. Never run it on your own judgment.
 - `spore coordinator swap --to claude|codex [--model m]` respawns
   this pane under another driver. From inside the pane, flush
   `state.md` first, then pass `--no-wrap`; the command dies with
@@ -171,6 +180,55 @@ across hosts in sync.
 GitHub actions can also run as the project's GitHub App via
 `spore gh` (`spore recipes show github`). Run `spore gh config`
 before saying no App exists; config is per project.
+
+## Secrets
+
+On a host with the secrets broker, project secrets are not readable.
+Use `spore secrets list` to see the profiles (read-only DB, Sentry,
+NewRelic) and `spore secrets run <profile> -- <command> [args]` to
+use one; output comes back redacted. A worker that needs another
+project's profile needs the operator: `sudo spore secrets grant
+<slug> <profile> --for <duration>`.
+
+## GitHub PR flow
+
+Applies when `spore gh config` shows a GitHub App with
+`pr_flow = "draft"`. Without an App config, the operator pushes and
+opens PRs.
+
+- Act on GitHub as the App with `spore gh push <branch>`,
+  `spore gh pr <verb> ...` and `spore gh api <path> ...`, not with
+  `spore gh exec` around git or gh. They work the same with or
+  without the secrets broker; behind it they go through the broker
+  (`docs/secrets.md`). Write a PR body to a file in the worktree or
+  `$TMPDIR` and pass `--body-file <path>`. Run each `spore gh` call
+  as one command: a redirect (`< body.md`), a pipe or a
+  `cd ... &&` chain keeps it in the sandbox, where it cannot read
+  the App key on a host without the broker. Never run
+  `spore gh token` or put a token in a command line: it lands in
+  the transcript.
+- Open PRs as drafts (`spore gh pr create --draft ...`); mark one
+  ready with `spore gh pr ready <n>` once its reviewers approve. The
+  operator merges. A rewritten branch goes up with
+  `spore gh push <branch> --force-with-lease=<sha>`, the commit
+  origin's branch is at; there is no bare force.
+- Behind the broker, pushes are limited to the project's
+  `push_branch` (default `^wt/...`) and gh to `pr
+  list|view|ready|edit|create --draft|comment` and `api` on the
+  repo's own pulls and issues. `spore gh token` and `spore gh exec`
+  refuse there.
+- The driver pushes `wt/<slug>` and opens the draft PR after the
+  engineer's first round. Keep `wt/<slug>` as the PR head: renaming
+  the branch closes the PR.
+- Never push or open a PR by hand while the loop owns the task.
+- Reviewers wait for the `[fleet.roles.engineer] check` gate to pass.
+- The task `title:` becomes the PR title and the opening of
+  `spec.md` the PR body. Keep host paths and coordinator-only notes
+  out of the spec.
+- The operator merges. You report "PR ready"; you never merge.
+
+Project-specific values (reviewer handle, title convention) live in
+the project role.
 
 ## Codex coordinator
 

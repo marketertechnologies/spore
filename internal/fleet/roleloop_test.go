@@ -1,9 +1,7 @@
 package fleet
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/versality/spore/internal/task"
 )
@@ -26,10 +24,11 @@ func writeEng(round int) stepFn {
 func writeRev(instance task.ReviewerInstance, round int, verdict string) stepFn {
 	return func(t *testing.T, root, slug string) {
 		t.Helper()
-		if err := task.WriteReview(root, slug, instance, round, task.Review{
-			Verdict: verdict,
-			Summary: "test verdict",
-		}); err != nil {
+		rev := task.Review{Verdict: verdict, Summary: "test verdict"}
+		if verdict == task.VerdictRequestChanges {
+			rev.Comments = []task.ReviewComment{highBug}
+		}
+		if err := task.WriteReview(root, slug, instance, round, rev); err != nil {
 			t.Fatalf("WriteReview %s round=%d: %v", instance, round, err)
 		}
 	}
@@ -99,6 +98,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after A round 1 request_changes\n want: %+v\n got:  %+v", want, got)
@@ -114,6 +114,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after engineer round 2\n want: %+v\n got:  %+v", want, got)
@@ -143,6 +144,7 @@ func TestDeriveSnapshotReviseLoop(t *testing.T) {
 		CurrentReviewer: task.ReviewerB,
 		ReviewerRound:   1,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
 	}
 	if got != want {
 		t.Errorf("after B round 1 request_changes\n want: %+v\n got:  %+v", want, got)
@@ -191,6 +193,9 @@ func TestDeriveSnapshotEscalateAtRound3A(t *testing.T) {
 		CurrentReviewer: task.ReviewerA,
 		ReviewerRound:   3,
 		LastVerdict:     task.VerdictRequestChanges,
+		LastCounts:      task.GradeCounts{HighMedium: 1},
+		// The final request_changes owes one engineer fix pass.
+		EscalationFixPending: true,
 	}
 	if got != want {
 		t.Fatalf("escalation snapshot mismatch\n want: %+v\n got:  %+v", want, got)
@@ -201,8 +206,8 @@ func TestDeriveSnapshotEscalateAtRound3A(t *testing.T) {
 	// fooled into looking like review-A round 4 is pending.
 	writeEng(4)(t, root, slug)
 	got, _ = DeriveSnapshot(root, slug)
-	if got.Phase != PhaseEscalated {
-		t.Errorf("phase after engineer round 4 = %s, want %s", got.Phase, PhaseEscalated)
+	if got.Phase != PhaseEscalated || got.EscalationFixPending {
+		t.Errorf("after engineer round 4: phase %s, fix pending %v; want %s, false", got.Phase, got.EscalationFixPending, PhaseEscalated)
 	}
 }
 
@@ -225,103 +230,16 @@ func TestDeriveSnapshotEscalateAtRound3B(t *testing.T) {
 		t.Fatalf("DeriveSnapshot: %v", err)
 	}
 	want := Snapshot{
-		Slug:            slug,
-		Phase:           PhaseEscalated,
-		EngineerRound:   3,
-		CurrentReviewer: task.ReviewerB,
-		ReviewerRound:   3,
-		LastVerdict:     task.VerdictRequestChanges,
+		Slug:                 slug,
+		Phase:                PhaseEscalated,
+		EngineerRound:        3,
+		CurrentReviewer:      task.ReviewerB,
+		ReviewerRound:        3,
+		LastVerdict:          task.VerdictRequestChanges,
+		LastCounts:           task.GradeCounts{HighMedium: 1},
+		EscalationFixPending: true,
 	}
 	if got != want {
 		t.Errorf("B escalation snapshot mismatch\n want: %+v\n got:  %+v", want, got)
-	}
-}
-
-func TestWatcherTickReportsChange(t *testing.T) {
-	root := t.TempDir()
-	slug := "tick"
-	w := NewRoleWatcher(root, slug)
-
-	// First tick: bootstrap = changed.
-	snap, changed, err := w.Tick()
-	if err != nil {
-		t.Fatalf("first Tick: %v", err)
-	}
-	if !changed {
-		t.Errorf("first Tick changed=false, want true (bootstrap)")
-	}
-	if snap.Phase != PhaseEngineerInitial {
-		t.Errorf("first Tick phase=%s, want %s", snap.Phase, PhaseEngineerInitial)
-	}
-
-	// No artifact change: changed=false.
-	_, changed, err = w.Tick()
-	if err != nil {
-		t.Fatalf("second Tick: %v", err)
-	}
-	if changed {
-		t.Errorf("second Tick changed=true on unchanged tree")
-	}
-
-	// Engineer writes round 1: tick reports change.
-	writeEng(1)(t, root, slug)
-	snap, changed, err = w.Tick()
-	if err != nil {
-		t.Fatalf("third Tick: %v", err)
-	}
-	if !changed {
-		t.Errorf("third Tick changed=false after artifact write")
-	}
-	if snap.Phase != PhaseReviewA {
-		t.Errorf("third Tick phase=%s, want %s", snap.Phase, PhaseReviewA)
-	}
-}
-
-func TestWatcherTerminalAfterDone(t *testing.T) {
-	root := t.TempDir()
-	slug := "terminal"
-	w := NewRoleWatcher(root, slug)
-
-	writeEng(1)(t, root, slug)
-	writeRev(task.ReviewerA, 1, task.VerdictApprove)(t, root, slug)
-	writeRev(task.ReviewerB, 1, task.VerdictApprove)(t, root, slug)
-
-	if _, _, err := w.Tick(); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
-	if !w.Terminal() {
-		t.Errorf("Terminal()=false after done snapshot")
-	}
-}
-
-func TestWatcherRunEmitsAndClosesOnTerminal(t *testing.T) {
-	root := t.TempDir()
-	slug := "run"
-
-	// Pre-seed a fully-approved tree so the first Tick lands in
-	// PhaseDone and the Run loop emits + exits.
-	writeEng(1)(t, root, slug)
-	writeRev(task.ReviewerA, 1, task.VerdictApprove)(t, root, slug)
-	writeRev(task.ReviewerB, 1, task.VerdictApprove)(t, root, slug)
-
-	w := NewRoleWatcher(root, slug)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	events, errs := w.Run(ctx, 10*time.Millisecond)
-
-	var got []Snapshot
-	for snap := range events {
-		got = append(got, snap)
-	}
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("Run error: %v", err)
-		}
-	}
-	if len(got) != 1 {
-		t.Fatalf("events = %d, want 1 (terminal-on-bootstrap)", len(got))
-	}
-	if got[0].Phase != PhaseDone {
-		t.Errorf("event phase = %s, want %s", got[0].Phase, PhaseDone)
 	}
 }

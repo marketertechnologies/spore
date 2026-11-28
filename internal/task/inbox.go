@@ -25,9 +25,6 @@ func Tell(slug, msg string) error {
 // TellDir is Tell against an explicit inbox dir, for callers that
 // read the inbox from a session env rather than the cwd project.
 func TellDir(dir, slug, msg string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	now := time.Now()
 	payload := struct {
 		Slug string `json:"slug"`
@@ -48,25 +45,52 @@ func tellInboxDir(slug string) (string, error) {
 	return InboxDir(slug)
 }
 
+var linkFile = os.Link
+
+// writeUniqueInboxFile writes body under dir/.tmp and hard-links it to
+// the first free "<stamp>[-n].json" in dir. The link is the publish: a
+// watcher never sees the final name before the body is complete, and
+// link fails with EEXIST instead of clobbering a colliding message. On
+// a filesystem without hard links it falls back to renaming onto a name
+// that was free a moment ago, which only a same-stamp writer can race.
 func writeUniqueInboxFile(dir string, stamp int64, body []byte) error {
+	tmpDir := filepath.Join(dir, ".tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(tmpDir, fmt.Sprintf("%d-*.json", stamp))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 	for n := 0; n < 1000; n++ {
 		name := fmt.Sprintf("%d.json", stamp)
 		if n > 0 {
 			name = fmt.Sprintf("%d-%d.json", stamp, n)
 		}
-		path := filepath.Join(dir, name)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		final := filepath.Join(dir, name)
+		err := linkFile(tmp.Name(), final)
 		if os.IsExist(err) {
 			continue
 		}
-		if err != nil {
-			return err
+		if err == nil {
+			return nil
 		}
-		if _, err := f.Write(body); err != nil {
-			_ = f.Close()
-			return err
+		if _, serr := os.Lstat(final); !os.IsNotExist(serr) {
+			continue
 		}
-		return f.Close()
+		return os.Rename(tmp.Name(), final)
 	}
 	return fmt.Errorf("inbox: no free message filename for stamp %d", stamp)
 }

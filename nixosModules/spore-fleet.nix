@@ -1,8 +1,12 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 
 let
   cfg = config.services.spore-fleet;
   stateRel = ".local/state/spore/fleet-enabled";
+  # Behind the secrets broker the flag lives where the agent cannot
+  # write it (spore-fleet-secrets.nix).
+  brokered = cfg.secrets.enable;
+  flagPath = if brokered then cfg.secrets.fleetFlag else "%h/${stateRel}";
 
   # effectiveProjects collapses the legacy single-project schema and
   # the multi-project schema into one attrset of { <name> = { path }; }.
@@ -58,6 +62,7 @@ let
   ];
 
   preScript = pkgs.writeShellScriptBin "spore-fleet-graceful-pre" ''
+        ${lib.optionalString brokered "rm -f '${cfg.secrets.fleetFlag}'"}
         ${asUserPreamble}
 
         timeout=${toString cfg.gracefulDeploy.timeout}
@@ -72,9 +77,12 @@ let
           local project="$1" project_root="$2"
           cd "$project_root"
 
+          # Workers (spore/<project>/<slug>) and role panes
+          # (spore-role/<project>/<slug>/<role>); the coordinator is
+          # reaped by the disabled reconcile pass.
           list_workers() {
             "$tmuxcli" list-sessions -F '#{session_name}' 2>/dev/null \
-              | ${pkgs.gnugrep}/bin/grep -E "^spore/$project/" \
+              | ${pkgs.gnugrep}/bin/grep -E "^(spore/$project/[^/]+|spore-role/$project/[^/]+/[^/]+)$" \
               | ${pkgs.gnugrep}/bin/grep -v "^spore/$project/coordinator$" || true
           }
 
@@ -84,11 +92,14 @@ let
             return 0
           fi
 
-          while IFS= read -r s; do
-            slug="''${s##spore/$project/}"
+          # One tell per task: a role loop's tell reaches its active pane.
+          slugs="$(printf '%s\n' "$sessions" \
+            | ${pkgs.gnused}/bin/sed -E "s#^spore(-role)?/$project/([^/]+).*#\\2#" \
+            | ${pkgs.coreutils}/bin/sort -u)"
+          while IFS= read -r slug; do
             echo "spore-fleet-graceful: [$project] signalling $slug" >&2
             "$sporecli" task tell "$slug" "$message" || true
-          done <<< "$sessions"
+          done <<< "$slugs"
 
           deadline=$(( $(${pkgs.coreutils}/bin/date +%s) + timeout ))
           while [ "$(${pkgs.coreutils}/bin/date +%s)" -lt "$deadline" ]; do
@@ -103,7 +114,7 @@ let
           echo "spore-fleet-graceful: [$project] timeout (''${timeout}s); killing remaining workers" >&2
           list_workers | while IFS= read -r s; do
             [ -z "$s" ] && continue
-            "$tmuxcli" kill-session -t "$s" || true
+            "$tmuxcli" kill-session -t "=$s" || true
           done
         }
 
@@ -112,7 +123,23 @@ let
       '') projectNames}
   '';
 
+  # PATH for agent panes and the reconciler that spawns them.
+  agentPath = lib.makeBinPath ([
+    cfg.package
+    cfg.claudeCodePackage
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.git
+    pkgs.tmux
+  ] ++ lib.optional cfg.codex.enable cfg.codex.package);
+
   postScript = pkgs.writeShellScriptBin "spore-fleet-graceful-post" ''
+    ${lib.optionalString brokered ''
+      # Only root re-enables a brokered fleet; the agent user cannot.
+      echo "spore-fleet-graceful: re-enabling kill-switch" >&2
+      ${pkgs.coreutils}/bin/install -o ${cfg.secrets.user} -g ${cfg.secrets.user} -m 0644 /dev/null '${cfg.secrets.fleetFlag}'
+      exit 0
+    ''}
     ${asUserPreamble}
 
     sporecli='${cfg.package}/bin/spore'
@@ -132,37 +159,11 @@ let
     );
 
   # Rendered by the spore CLI itself so the binding set has one source
-  # (internal/hooks/codexconfig.go). Hook commands pin cfg.package.
+  # (internal/hooks/codexconfig.go). Hook commands call the system
+  # profile spore, not cfg.package, so a long-lived session survives GC.
   codexHooks = pkgs.runCommand "spore-codex-hooks.json" { } ''
-    ${cfg.package}/bin/spore hooks codex-config --spore ${cfg.package}/bin/spore > $out
+    ${cfg.package}/bin/spore hooks codex-config --spore /run/current-system/sw/bin/spore > $out
   '';
-
-  # Skill bodies come from cfg.package (`spore install --dest`), so the
-  # binary stays the single source. The name list comes from this
-  # module's source tree (same flake revision as the default package)
-  # to avoid import-from-derivation; the build fails if the two drift.
-  skillNames = lib.attrNames (lib.filterAttrs (_: type: type == "directory")
-    (builtins.readDir ../bootstrap/skills));
-  sporeSkills = pkgs.runCommand "spore-skills" { } ''
-    ${cfg.package}/bin/spore install --dest $out > /dev/null
-    got="$(cd $out && LC_ALL=C ls -1 | tr '\n' ' ')"
-    want="${lib.concatStringsSep " " skillNames} "
-    if [ "$got" != "$want" ]; then
-      echo "spore-skills: package ships [$got], module expects [$want]" >&2
-      exit 1
-    fi
-  '';
-
-  # One directory link per skill: Codex skips file symlinks during skill
-  # discovery (so home.file `recursive` is out), and per-name links
-  # leave unmanaged siblings such as ~/.claude/skills/synced alone.
-  # ~/.agents/skills is Codex's user scope; it is read from $HOME, not
-  # CODEX_HOME, so per-session coordinator homes see it unchanged.
-  skillFiles = lib.listToAttrs (lib.concatMap
-    (root: map
-      (name: lib.nameValuePair "${root}/${name}" { source = "${sporeSkills}/${name}"; })
-      skillNames)
-    [ ".claude/skills" ".agents/skills" ]);
 
   enabledMatters = lib.filterAttrs (_: m: m.enable) cfg.matters;
 
@@ -237,6 +238,8 @@ let
   };
 in
 {
+  imports = [ ./spore-fleet-claude.nix ./spore-fleet-secrets.nix ./spore-fleet-tmux.nix ];
+
   options.services.spore-fleet = {
     enable = lib.mkEnableOption "spore fleet reconciler (systemd-user)";
 
@@ -346,12 +349,21 @@ in
       type = lib.types.ints.positive;
       default = 3;
       description = ''
-        Concurrency cap. Wired through SPORE_FLEET_MAX_WORKERS so
-        an explicit `[fleet] max_workers` in the project's
-        spore.toml still wins (matching `spore fleet reconcile`
-        precedence: --max-workers > env > spore.toml > built-in
-        default).
+        Host default concurrency cap (one slot per worker or live
+        role loop), wired through SPORE_FLEET_MAX_WORKERS. A project's
+        spore.toml `[fleet] max_workers` wins over it (`spore fleet
+        reconcile` precedence: --max-workers > spore.toml > env >
+        built-in default 3). A role loop's engineer and reviewer
+        panes share one slot, so the agent count can exceed it; bound
+        memory with `agentMemoryMax`.
       '';
+    };
+
+    agentPath = lib.mkOption {
+      type = lib.types.str;
+      internal = true;
+      readOnly = true;
+      description = "PATH for agent panes and the reconciler that spawns them.";
     };
 
     interval = lib.mkOption {
@@ -465,7 +477,9 @@ in
         description = ''
           Absolute path to the post-activation script. Drop into
           colmena's `deployment.postActivation` to re-enable the
-          fleet kill-switch after a successful deploy.
+          fleet kill-switch after a successful deploy. Local
+          activation runs it from spore-fleet-graceful-post.service
+          once the new system is current; running both is harmless.
         '';
       };
     };
@@ -525,85 +539,9 @@ in
       };
     };
 
-    tmux = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = cfg.enable;
-        defaultText = lib.literalExpression "config.services.spore-fleet.enable";
-        description = ''
-          Prepend spore's tmux baseline to `/etc/tmux.conf`: deep
-          scrollback, mouse wheel into copy-mode, Claude Code TUI
-          passthrough and extended keys, and half-page wheel scroll
-          in copy-mode. Lines the host adds to
-          `environment.etc."tmux.conf".text` render after this block,
-          so a host's own `set` lines win.
-        '';
-      };
-
-      historyLimit = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 250000;
-        description = ''
-          Scrollback lines per pane. tmux's own default (2000) loses
-          long agent output. Also seeds `programs.tmux.historyLimit`
-          (at mkDefault) so enabling the stock NixOS tmux module does
-          not reset it to 2000.
-        '';
-      };
-
-      mouse = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Wheel enters copy-mode and pages history. Shift+drag keeps
-          terminal-native selection.
-        '';
-      };
-
-      defaultShell = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = lib.literalExpression ''"''${pkgs.bashInteractive}/bin/bash"'';
-        description = ''
-          Pin tmux's default-shell. Set this when the operator user's
-          login shell is `spore-attach`: tmux otherwise inherits it
-          and mis-parses the `-c CMD` it uses for new panes.
-        '';
-      };
-
-      extraConfig = lib.mkOption {
-        type = lib.types.lines;
-        default = "";
-        description = "Extra tmux lines appended to spore's baseline block.";
-      };
-    };
   };
 
   config = lib.mkMerge [
-    (lib.mkIf cfg.tmux.enable {
-      programs.tmux.historyLimit = lib.mkDefault cfg.tmux.historyLimit;
-
-      environment.etc."tmux.conf".text = lib.mkBefore (
-        lib.optionalString (cfg.tmux.defaultShell != null) ''
-          set -g default-shell ${cfg.tmux.defaultShell}
-        ''
-        + ''
-          set -g history-limit ${toString cfg.tmux.historyLimit}
-          set -g mouse ${if cfg.tmux.mouse then "on" else "off"}
-          set -g allow-passthrough on
-          set -g detach-on-destroy off
-          set -s extended-keys on
-          set -as terminal-features 'xterm*:extkeys'
-          bind -n S-PageUp copy-mode -eu
-          bind -T copy-mode WheelUpPane send -N25 -X scroll-up
-          bind -T copy-mode WheelDownPane send -N25 -X scroll-down
-          bind -T copy-mode-vi WheelUpPane send -N25 -X scroll-up
-          bind -T copy-mode-vi WheelDownPane send -N25 -X scroll-down
-        ''
-        + cfg.tmux.extraConfig
-      );
-    })
-
     (lib.mkIf cfg.enable {
       assertions = [
         {
@@ -632,6 +570,8 @@ in
         so existing deployments keep working.
       '';
 
+      services.spore-fleet.agentPath = agentPath;
+
       services.spore-fleet.gracefulDeploy = {
         preScript = "${preScript}/bin/spore-fleet-graceful-pre";
         postScript = "${postScript}/bin/spore-fleet-graceful-post";
@@ -655,6 +595,15 @@ in
       # The NIXOS_ACTION gate keeps boot-time activation a no-op: there
       # is nothing to drain on a fresh boot, and disabling the flag
       # there would leave the reconciler paused until the next deploy.
+      #
+      # The post step must not run inside activation: activation
+      # scripts run before the activate script repoints
+      # /run/current-system, so a coordinator respawned there starts
+      # against managed-settings hooks under /run/current-system/sw
+      # that do not exist yet (exit 127, state.md never loads). The
+      # activation script only queues spore-fleet-graceful-post.service
+      # in /run/nixos/activation-restart-list; switch-to-configuration
+      # starts it after activation, once the new system is current.
       #
       # spore-shims runs on every activation: it symlinks the six host
       # shims into /usr/local/bin/ and sweeps any non-symlink left over
@@ -684,7 +633,8 @@ in
             done
           '';
           spore-migrate = {
-            deps = [ "users" ];
+            # etc: migration 004 checks the managed settings drop-in.
+            deps = [ "users" "etc" ];
             text = ''
               ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- \
                 ${pkgs.coreutils}/bin/env PATH=${migratePath} \
@@ -703,42 +653,57 @@ in
             deps = [ "spore-fleet-pre" ];
             text = ''
               case "''${NIXOS_ACTION:-}" in
-                switch|test) ${postScript}/bin/spore-fleet-graceful-post || true ;;
+                switch|test)
+                  install -d -m 0755 /run/nixos
+                  echo spore-fleet-graceful-post.service >> /run/nixos/activation-restart-list ;;
               esac
             '';
           };
         })
       ];
 
-      home-manager.users.${cfg.user} = {
-        home.file = skillFiles;
+      # No wantedBy: it runs only when spore-fleet-post queues it.
+      systemd.services.spore-fleet-graceful-post = lib.mkIf cfg.gracefulDeploy.enable {
+        description = "spore fleet: re-enable the kill-switch after a switch";
+        after = [ "home-manager-${utils.escapeSystemdPath cfg.user}.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${postScript}/bin/spore-fleet-graceful-post";
+        };
+      };
 
+      home-manager.users.${cfg.user} = {
         systemd.user.services = lib.mapAttrs'
           (name: project: lib.nameValuePair "spore-fleet-reconcile-${name}" {
             Unit = {
               Description = "spore fleet reconciler [${name}] (host=${cfg.hostId})";
+            } // lib.optionalAttrs cfg.tmux.server.enable {
+              Wants = [ "spore-tmux.service" ];
+              After = [ "spore-tmux.service" ];
             };
             Service = {
               Type = "oneshot";
+              TimeoutStartSec = "15min"; # outer bound over SPORE_FLEET_PASS_TIMEOUT (10m)
+              # A tmux server this pass had to start itself must outlive
+              # the pass; the default control-group mode killed it, and
+              # every pane, when the oneshot ended.
+              KillMode = "process";
+              Slice = "spore-agents.slice";
               WorkingDirectory = toString project.path;
               ExecStart = "${cfg.package}/bin/spore fleet reconcile";
               Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (
                 {
                   SPORE_FLEET_MAX_WORKERS = toString cfg.maxWorkers;
                   SPORE_HOST_ID = cfg.hostId;
+                } // lib.optionalAttrs brokered {
+                  SPORE_FLEET_FLAG = cfg.secrets.fleetFlag;
+                } // {
                   # bashInteractive + coreutils land on PATH so the shims
                   # the reconciler spawns (spore-coordinator-launch,
                   # spore-worker-brief) can resolve `#!/usr/bin/env bash`
                   # and call `cat`/`mkdir`/`tee`/`date` without an
                   # in-shim PATH-augment workaround.
-                  PATH = lib.makeBinPath ([
-                    cfg.package
-                    cfg.claudeCodePackage
-                    pkgs.bashInteractive
-                    pkgs.coreutils
-                    pkgs.git
-                    pkgs.tmux
-                  ] ++ lib.optional cfg.codex.enable cfg.codex.package);
+                  PATH = agentPath;
                 } // matterEnv // cfg.extraEnv
               );
               NoNewPrivileges = true;
@@ -770,7 +735,7 @@ in
             "spore-fleet-reconcile-flag-${name}" = {
               Unit.Description = "Trigger spore-fleet-reconcile [${name}] when the kill-switch flag changes";
               Path = {
-                PathChanged = "%h/${stateRel}";
+                PathChanged = flagPath;
                 Unit = "spore-fleet-reconcile-${name}.service";
               };
               Install.WantedBy = [ "default.target" ];
@@ -791,7 +756,9 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.codex.enable) {
-      environment.systemPackages = [ cfg.codex.package ];
+      # hooks.json calls spore through /run/current-system/sw so a
+      # long-lived Codex session survives a rebuild plus GC.
+      environment.systemPackages = [ cfg.codex.package cfg.package ];
       home-manager.users.${cfg.user}.home.file.".codex/hooks.json".source = codexHooks;
     })
   ];

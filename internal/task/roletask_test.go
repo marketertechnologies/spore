@@ -173,7 +173,7 @@ func TestReviewRoundtrip(t *testing.T) {
 		Author:   string(ReviewerA),
 		Verdict:  VerdictRequestChanges,
 		Summary:  "naming drift in state machine",
-		Comments: []string{"Phase enum should be string", "drop the helper struct"},
+		Comments: []ReviewComment{{Severity: SeverityLow, Category: "nit", Text: "Phase enum should be string"}, {Severity: SeverityLow, Category: "nit", Text: "drop the helper struct"}},
 	}
 	if err := WriteReview(root, "demo", ReviewerA, 1, in); err != nil {
 		t.Fatalf("WriteReview: %v", err)
@@ -274,7 +274,7 @@ func TestListReviewRoundsEmpty(t *testing.T) {
 
 func TestListReviewRoundsMixed(t *testing.T) {
 	root := t.TempDir()
-	if err := WriteReview(root, "demo", ReviewerA, 1, Review{Verdict: VerdictRequestChanges, Summary: "s"}); err != nil {
+	if err := WriteReview(root, "demo", ReviewerA, 1, Review{Verdict: VerdictRequestChanges, Summary: "s", Comments: []ReviewComment{{Severity: SeverityLow, Category: "nit", Text: "x"}}}); err != nil {
 		t.Fatalf("write A1: %v", err)
 	}
 	if err := WriteReview(root, "demo", ReviewerA, 2, Review{Verdict: VerdictApprove, Summary: "s"}); err != nil {

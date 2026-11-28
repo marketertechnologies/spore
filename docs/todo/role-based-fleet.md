@@ -147,7 +147,8 @@ another round.
 - Re-engaging reviewer A after B raises a substantive issue. B's
   judgment stands; operator can manually re-trigger A if they want.
 - Per-comment severity, line-anchored comments. Freeform comment
-  strings are enough for v1.
+  strings are enough for v1. (Since landed as graded comments; see
+  `docs/role-loop.md`.)
 - Configurable round cap. Hardcoded at 3.
 - Posting local artifacts to the GH PR for audit-trail. v2 if the
   operator wants the iteration history visible to non-spore

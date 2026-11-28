@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,7 +125,7 @@ func TestDeliverCodexQueuesRenderedBatchAndClaims(t *testing.T) {
 	if len(q.calls) != 1 {
 		t.Fatalf("queue calls = %d, want 1 batch", len(q.calls))
 	}
-	want := "[2026-10-21T00:00:00Z] worker: ready abc\n[2026-10-21T00:00:01Z] tell: hi"
+	want := "[2026-10-21T00:00:00Z] inbox (claimed source: \"worker\", unverified): ready abc\n[2026-10-21T00:00:01Z] inbox (claimed source: \"tell\", unverified): hi"
 	if q.calls[0].thread != "thread-1" || q.calls[0].msg != want {
 		t.Errorf("queued %+v, want thread-1 / %q", q.calls[0], want)
 	}
@@ -173,6 +174,44 @@ func TestDeliverCodexSplitsOversizeBatches(t *testing.T) {
 	}
 }
 
+func TestDeliverCodexQuarantineWarningSurvivesBatchSplit(t *testing.T) {
+	inbox := coordInbox(t)
+	RecordCodexThread(inbox, "k", Request{SessionID: "thread-1"})
+	big := strings.Repeat("x", maxCodexMessage-200)
+	writeTell(t, filepath.Join(inbox, "1.json"), `{"ts":"t","source":"s","body":"`+big+`"}`)
+	writeTell(t, filepath.Join(inbox, "2.json"), "")
+	q := &fakeQueue{}
+	if err := deliverCodex(context.Background(), inbox, "k", testCodexOpts(q, nil, &bytes.Buffer{})); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.calls) != 2 {
+		t.Fatalf("queue calls = %d, want the warning in its own batch", len(q.calls))
+	}
+	want := "[warning] inbox: unreadable message " + filepath.Join(inbox, "quarantine", "2.json") + ": "
+	if !strings.HasPrefix(q.calls[1].msg, want) {
+		t.Errorf("second batch = %q, want prefix %q", q.calls[1].msg, want)
+	}
+}
+
+func TestDeliverCodexFailureRestoresQuarantined(t *testing.T) {
+	inbox := coordInbox(t)
+	RecordCodexThread(inbox, "k", Request{SessionID: "thread-1"})
+	writeTell(t, filepath.Join(inbox, "1.json"), "")
+	q := &fakeQueue{fail: 1}
+	if err := deliverCodex(context.Background(), inbox, "k", testCodexOpts(q, nil, &bytes.Buffer{})); err == nil {
+		t.Fatal("want error from failed queue")
+	}
+	if len(pendingJSON(t, inbox)) != 1 {
+		t.Fatal("failed delivery did not return the unreadable envelope to the inbox")
+	}
+	if err := deliverCodex(context.Background(), inbox, "k", testCodexOpts(q, nil, &bytes.Buffer{})); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.calls) != 1 || !strings.HasPrefix(q.calls[0].msg, "[warning] inbox: unreadable message ") {
+		t.Errorf("queued %+v, want the warning on retry", q.calls)
+	}
+}
+
 // Two drains racing on one inbox (Claude asyncRewake drain plus the
 // codex sidecar, or two sidecars) must deliver each envelope once.
 func TestDeliverCodexNoDoubleDelivery(t *testing.T) {
@@ -194,7 +233,7 @@ func TestDeliverCodexNoDoubleDelivery(t *testing.T) {
 		defer wg.Done()
 		deliverCodex(context.Background(), inbox, "b", testCodexOpts(q, nil, &bytes.Buffer{}))
 	}()
-	go func() { defer wg.Done(); drainInbox(inbox, &claude) }()
+	go func() { defer wg.Done(); drainInbox(inbox, "", &claude, io.Discard) }()
 	wg.Wait()
 
 	total := strings.Count(claude.String(), "\n")
@@ -225,7 +264,7 @@ func TestWatchInboxCodexLoopDeliversOnWakeAndStops(t *testing.T) {
 	if err := watchInboxCodex(ctx, inbox, "k", testCodexOpts(q, w, &bytes.Buffer{})); err != nil {
 		t.Fatal(err)
 	}
-	if len(q.calls) != 1 || q.calls[0].msg != "[t] s: late" {
+	if len(q.calls) != 1 || q.calls[0].msg != "[t] inbox (claimed source: \"s\", unverified): late" {
 		t.Errorf("queue calls = %+v, want the envelope that landed after start", q.calls)
 	}
 	if !w.closed {

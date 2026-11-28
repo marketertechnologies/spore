@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/versality/spore/internal/hooks"
 )
@@ -33,14 +35,20 @@ func runHooks(args []string) int {
 		return runHooksPreToolUse()
 	case "stop":
 		return runHooksStop()
+	case "engineer-check":
+		return runHooksEngineerCheck()
 	case "settings":
-		return runHooksSettings()
+		return runHooksSettings(rest)
+	case "prune-settings":
+		return runHooksPruneSettings(rest)
 	case "codex-config":
 		return runHooksCodexConfig(rest)
 	case "watch-inbox":
 		return runHooksWatchInbox(rest)
 	case "notify-coordinator":
 		return runHooksNotifyCoordinator(rest)
+	case "stop-failure":
+		return runHooksStopFailure()
 	case "codex-session-start":
 		return runHooksCodexSessionStart()
 	default:
@@ -100,6 +108,18 @@ func runHooksStop() int {
 	return writeHookResponse(resp)
 }
 
+// runHooksEngineerCheck leaves stdin unread: the hook needs only env,
+// and the engineer may run it by hand from a shell with no payload.
+func runHooksEngineerCheck() int {
+	res, err := hooks.EngineerCheck(hooks.EngineerCheckInputFromEnv())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks engineer-check:", err)
+		return 0
+	}
+	fmt.Fprint(os.Stderr, res.Stderr)
+	return res.Code
+}
+
 func readHookRequest() (hooks.Request, error) {
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -139,7 +159,28 @@ type settingsInputBin struct {
 	AsyncRewake bool   `json:"asyncRewake,omitempty"`
 }
 
-func runHooksSettings() int {
+func runHooksSettings(args []string) int {
+	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
+	managed := fs.Bool("managed", false, "emit the host-wide managed settings drop-in")
+	spore := fs.String("spore", "spore", "spore command the managed hooks invoke")
+	hooksDir := fs.String("hooks-dir", "/run/current-system/sw/share/spore/hooks", "directory holding block-bg-bash.pl and load-state-md.pl")
+	marketplace := fs.String("marketplace", "", "register this directory as the spore plugin marketplace")
+	managedFile := fs.String("managed-file", hooks.DefaultManagedSettingsPath, "skip bindings this managed settings file provides")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: spore hooks settings [--managed-file PATH] | --managed [--spore PATH] [--hooks-dir DIR] [--marketplace DIR]")
+		return 2
+	}
+	if *managed {
+		out, err := hooks.ManagedSettings(*spore, *hooksDir, *marketplace)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+			return 1
+		}
+		os.Stdout.Write(out)
+		return 0
+	}
+
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
@@ -162,12 +203,71 @@ func runHooksSettings() int {
 			})
 		}
 	}
-	out, err := hooks.Settings(events)
+	if *managedFile != "" {
+		set, ok, err := hooks.LoadManagedSet(*managedFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+			return 1
+		}
+		if ok {
+			var dropped []string
+			events, dropped = hooks.FilterManaged(events, set)
+			for _, d := range dropped {
+				fmt.Fprintf(os.Stderr, "spore hooks settings: %s runs from %s; left out\n", d, *managedFile)
+			}
+		}
+	}
+	perms := hooks.DefaultPermissions()
+	if root, err := repoRoot(); err == nil {
+		if perms, err = hooks.LoadPermissions(root); err != nil {
+			fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
+			return 1
+		}
+	}
+	out, err := hooks.SettingsWith(events, perms)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spore hooks settings:", err)
 		return 1
 	}
 	os.Stdout.Write(out)
+	return 0
+}
+
+func runHooksPruneSettings(args []string) int {
+	fs := flag.NewFlagSet("prune-settings", flag.ContinueOnError)
+	file := fs.String("file", "", "settings.json to prune")
+	managedFile := fs.String("managed-file", hooks.DefaultManagedSettingsPath, "managed settings file that provides the hooks")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *file == "" {
+		fmt.Fprintln(os.Stderr, "usage: spore hooks prune-settings --file PATH [--managed-file PATH]")
+		return 2
+	}
+	set, ok, err := hooks.LoadManagedSet(*managedFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks prune-settings:", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "spore hooks prune-settings: %s not found; nothing provides the hooks, refusing to prune\n", *managedFile)
+		return 1
+	}
+	removed, backup, err := hooks.PruneSettingsFile(*file, set, time.Now())
+	if errors.Is(err, hooks.ErrSymlinkSettings) {
+		fmt.Printf("%v; left as is\n", err)
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks prune-settings:", err)
+		return 1
+	}
+	if len(removed) == 0 {
+		fmt.Printf("%s: nothing to prune\n", *file)
+		return 0
+	}
+	fmt.Printf("%s: backed up to %s\n", *file, backup)
+	for _, r := range removed {
+		fmt.Printf("%s: removed %s\n", *file, r)
+	}
 	return 0
 }
 
@@ -192,6 +292,9 @@ func runHooksWatchInbox(args []string) int {
 	if len(args) > 0 && args[0] == "--codex" {
 		return runHooksWatchInboxCodex(args[1:])
 	}
+	if err := hooks.ClearAlerts(); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks watch-inbox: clear alerts:", err)
+	}
 	var err error
 	switch len(args) {
 	case 0:
@@ -203,9 +306,9 @@ func runHooksWatchInbox(args []string) int {
 			// the hook produces no stderr noise.
 			return 0
 		}
-		err = hooks.WatchInboxAt(inbox)
+		err = hooks.WatchInboxAt(inbox, hookSession())
 	case 1:
-		err = hooks.WatchInbox(args[0])
+		err = hooks.WatchInbox(args[0], hookSession())
 	default:
 		fmt.Fprintln(os.Stderr, "usage: spore hooks watch-inbox [slug]")
 		return 2
@@ -219,6 +322,32 @@ func runHooksWatchInbox(args []string) int {
 	}
 	return 0
 }
+
+// hookSession returns the session_id of the hook payload on stdin, or
+// "" when there is none: a terminal, an empty or non-JSON stdin, or a
+// writer that keeps stdin open past hookStdinWait.
+func hookSession() string {
+	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice != 0 {
+		return ""
+	}
+	got := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+		got <- b
+	}()
+	select {
+	case b := <-got:
+		var in struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(b, &in)
+		return in.SessionID
+	case <-time.After(hookStdinWait):
+		return ""
+	}
+}
+
+const hookStdinWait = 2 * time.Second
 
 func runHooksWatchInboxCodex(args []string) int {
 	fs := flag.NewFlagSet("watch-inbox --codex", flag.ContinueOnError)
@@ -272,10 +401,27 @@ func runHooksCodexSessionStart() int {
 	return 0
 }
 
+// runHooksStopFailure always exits 0: Claude Code ignores StopFailure
+// output and exit codes, so errors only go to stderr for the debug log.
+func runHooksStopFailure() int {
+	var in hooks.StopFailureInput
+	body, err := io.ReadAll(os.Stdin)
+	if err == nil {
+		err = json.Unmarshal(body, &in)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-failure: read payload:", err)
+	}
+	if err := hooks.StopFailure(in); err != nil {
+		fmt.Fprintln(os.Stderr, "spore hooks stop-failure:", err)
+	}
+	return 0
+}
+
 func runHooksNotifyCoordinator(args []string) int {
 	switch len(args) {
 	case 0:
-		if err := hooks.NotifyCoordinatorEnv(); err != nil {
+		if err := hooks.NotifyCoordinatorEnv(readHookPayload(os.Stdin, notifyPayloadTimeout)); err != nil {
 			fmt.Fprintln(os.Stderr, "spore hooks notify-coordinator:", err)
 			return 1
 		}
@@ -289,6 +435,30 @@ func runHooksNotifyCoordinator(args []string) int {
 	default:
 		fmt.Fprintln(os.Stderr, "usage: spore hooks notify-coordinator [project]")
 		return 2
+	}
+}
+
+// notifyPayloadTimeout stays under the hook's 5 s timeout. Claude Code
+// closes stdin after the payload; a manual call on a pipe that never
+// closes gives up instead of hanging.
+const notifyPayloadTimeout = 2 * time.Second
+
+// readHookPayload returns the hook payload on f, or nil when f is a
+// terminal or nothing arrives before EOF within timeout.
+func readHookPayload(f *os.File, timeout time.Duration) io.Reader {
+	if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice != 0 {
+		return nil
+	}
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		return bytes.NewReader(b)
+	case <-time.After(timeout):
+		return nil
 	}
 }
 

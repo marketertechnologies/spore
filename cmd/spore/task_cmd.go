@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,15 +36,33 @@ Subcommands:
                                Merge wt/<slug> into main; push origin main:main only.
                                Refuses on red 'just check' (exit 2);
                                --force-merge-red bypasses with a logged reason.
-  tell <slug> <message>        Append a message to the slug's inbox dir.
+  tell <slug> <message>        Append a message to the slug's inbox dir. On a
+                               loop: role task, type it into the active role's
+                               pane instead (exit 1 if no pane takes it).
   verify <slug>                Print the evidence verdict for slug.
   waybar                       Print JSON chip for waybar custom module.
   drift                        Auto-commit task file changes.
   status <slug>                Print role-loop phase, round, last verdict.
+  review-stats                 Tally role-loop review comments by reviewer,
+                               severity and category, with the engineer's
+                               recorded outcome.
+  reopen <slug> --note <text>  Start a new engineer + review cycle on a done or
+                               escalated role task, on the same branch and PR.
+                               Archives the cycle to .spore/<slug>/cycles/<n>/,
+                               appends the note to spec.md, re-drafts the PR.
+                               --note-file <path> reads the note from a file.
+                               --from-pr appends the PR's human feedback since
+                               the loop last marked it ready or was reopened
+                               (alone, or after --note).
+  force-approve <slug> <A|B> --reason <text>
+                               Override a reviewer's escalated final
+                               verdict to approve once the engineer's
+                               fix pass landed; its comments stay on
+                               record and the reason is posted to the PR.
   role-drive <slug>            Advance the role-loop by one tick: cache spec,
                                spawn/reap role panes per phase, wake the
                                engineer on request_changes, write the summary
-                               on done.
+                               on done. Refuses a task that is not active.
 
 Flags for 'new':
   --draft                      Set status=draft (default).
@@ -101,6 +120,12 @@ func runTask(args []string) error {
 		return runTaskDrift(rest)
 	case "status":
 		return runTaskStatus(rest)
+	case "review-stats":
+		return runTaskReviewStats(rest)
+	case "reopen":
+		return runTaskReopen(rest)
+	case "force-approve":
+		return runTaskForceApprove(rest)
 	case "role-drive":
 		return runTaskRoleDrive(rest)
 	default:
@@ -112,11 +137,11 @@ func runTaskEdit(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task edit <slug>")
 	}
-	return task.Edit("tasks", args[0])
+	return task.Edit(resolveTasksDir(), args[0])
 }
 
 func runTaskPick(_ []string) error {
-	slug, err := task.Pick("tasks")
+	slug, err := task.Pick(resolveTasksDir())
 	if err != nil {
 		return err
 	}
@@ -153,7 +178,7 @@ func runTaskMerge(args []string) error {
 	if slug == "" {
 		return fmt.Errorf("usage: spore task merge <slug> [--force-merge-red <reason>]")
 	}
-	err := task.MergeWithOptions("tasks", slug, task.MergeOptions{ForceMergeRed: force})
+	err := task.MergeWithOptions(resolveTasksDir(), slug, task.MergeOptions{ForceMergeRed: force})
 	if err != nil {
 		var gateErr *task.MergeGateError
 		if errors.As(err, &gateErr) {
@@ -205,7 +230,7 @@ func resolveProjectRoot() string {
 }
 
 func runTaskDrift(_ []string) error {
-	return task.AutoCommitDrift("tasks")
+	return task.AutoCommitDrift(resolveTasksDir())
 }
 
 func runTaskStatus(args []string) error {
@@ -221,17 +246,124 @@ func runTaskStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("slug:     %s\n", snap.Slug)
-	fmt.Printf("phase:    %s\n", snap.Phase)
-	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	printRoleSnapshot(snap)
+	lines, err := fleet.TaskAgentLines(projectRoot, resolveTasksDir(), slug)
+	if err != nil {
+		return err
 	}
+	for _, l := range lines {
+		fmt.Printf("agent:    %s: %s\n", l.Name, l)
+	}
+	bodies, err := fleet.TaskRoleBodyLines(projectRoot, resolveTasksDir(), slug)
+	if err != nil {
+		return err
+	}
+	for _, b := range bodies {
+		fmt.Printf("body:     %s: %s\n", b.Name, b.Source)
+	}
+	return nil
+}
+
+func runTaskReviewStats(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: spore task review-stats")
+	}
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	st, err := task.CollectReviewStats(projectRoot)
+	if err != nil {
+		return err
+	}
+	return task.WriteReviewStats(os.Stdout, st)
+}
+
+func printRoleSnapshot(snap fleet.Snapshot) {
+	fmt.Printf("slug:     %s\n", snap.Slug)
+	fmt.Printf("phase:    %s\n", snap.PhaseLabel())
+	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
+	if snap.CurrentReviewer == "" {
+		return
+	}
+	if snap.Check != task.CheckOff {
+		fmt.Printf("check:    %s (engineer round %d, HEAD %.12s)\n", snap.Check, snap.EngineerRound, snap.CheckSHA)
+	}
+	verdict := snap.LastVerdict
+	if verdict == "" {
+		fmt.Printf("reviewer: %s round %d, last verdict (none)\n", snap.CurrentReviewer, snap.ReviewerRound)
+		return
+	}
+	n := snap.LastCounts
+	counts := fmt.Sprintf("%d high/medium, %d low, %d question", n.HighMedium, n.Low, n.Question)
+	if n.Ungraded > 0 {
+		counts += fmt.Sprintf(", %d ungraded", n.Ungraded)
+	}
+	fmt.Printf("reviewer: %s round %d, last verdict %s (%s)\n",
+		snap.CurrentReviewer, snap.ReviewerRound, verdict, counts)
+	if snap.EscalationFixPending {
+		fmt.Println("engineer: fix pass pending (escalated; no re-review)")
+	}
+}
+
+func runTaskReopen(args []string) error {
+	fs := flag.NewFlagSet("task reopen", flag.ContinueOnError)
+	note := fs.String("note", "", "what the new cycle must change")
+	noteFile := fs.String("note-file", "", "read the note from this file")
+	fromPR := fs.Bool("from-pr", false, "append the PR's new human review feedback to the note")
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || (*note != "" && *noteFile != "") || (*note == "" && *noteFile == "" && !*fromPR) {
+		return fmt.Errorf("usage: spore task reopen <slug> [--note <text> | --note-file <path>] [--from-pr]")
+	}
+	if *noteFile != "" {
+		b, err := os.ReadFile(*noteFile)
+		if err != nil {
+			return err
+		}
+		*note = string(b)
+	}
+	slug := fs.Arg(0)
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	if *fromPR {
+		if err := fleet.CheckReopenable(projectRoot, resolveTasksDir(), slug); err != nil {
+			return err
+		}
+		if *note, err = fleet.ReopenNoteFromPR(projectRoot, slug, *note, fleet.NewGitHubPRFeedbackSource(projectRoot, slug)); err != nil {
+			return err
+		}
+	}
+	cycle, err := fleet.ReopenRoleLoop(projectRoot, resolveTasksDir(), slug, *note)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: reopened as cycle %d; the fleet reconciler starts the engineer on its next tick\n", slug, cycle)
+	return nil
+}
+
+func runTaskForceApprove(args []string) error {
+	fs := flag.NewFlagSet("task force-approve", flag.ContinueOnError)
+	reason := fs.String("reason", "", "why the operator overrides the verdict")
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 || *reason == "" {
+		return fmt.Errorf("usage: spore task force-approve <slug> <A|B> --reason <text>")
+	}
+	slug, inst := fs.Arg(0), task.ReviewerInstance(strings.ToUpper(fs.Arg(1)))
+	projectRoot, err := task.MainRepoRoot("")
+	if err != nil {
+		return fmt.Errorf("resolve main repo: %w", err)
+	}
+	round, err := fleet.ForceApproveReview(projectRoot, resolveTasksDir(), slug, inst, *reason)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: reviewer %s round %d force-approved; the next drive tick moves the loop on\n", slug, inst, round)
 	return nil
 }
 
@@ -249,17 +381,10 @@ func runTaskRoleDrive(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("slug:     %s\n", snap.Slug)
-	fmt.Printf("phase:    %s\n", snap.Phase)
-	fmt.Printf("engineer: round %d\n", snap.EngineerRound)
-	if snap.CurrentReviewer != "" {
-		verdict := snap.LastVerdict
-		if verdict == "" {
-			verdict = "(none)"
-		}
-		fmt.Printf("reviewer: %s round %d, last verdict %s\n",
-			snap.CurrentReviewer, snap.ReviewerRound, verdict)
+	if snap.DriveSkipped {
+		fmt.Fprintf(os.Stderr, "%s: another drive, reopen or force-approve holds the loop; this tick only reports\n", slug)
 	}
+	printRoleSnapshot(snap)
 	return nil
 }
 
@@ -272,7 +397,7 @@ func runTaskStart(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: spore task start <slug> [--agent claude|codex]")
 	}
-	session, err := task.StartWithOptions("tasks", fs.Arg(0), task.StartOptions{Agent: *agent})
+	session, err := task.StartWithOptions(resolveTasksDir(), fs.Arg(0), task.StartOptions{Agent: *agent})
 	if err != nil {
 		return err
 	}
@@ -284,14 +409,14 @@ func runTaskPause(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task pause <slug>")
 	}
-	return task.Pause("tasks", args[0])
+	return task.Pause(resolveTasksDir(), args[0])
 }
 
 func runTaskBlock(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task block <slug>")
 	}
-	return task.Block("tasks", args[0])
+	return task.Block(resolveTasksDir(), args[0])
 }
 
 func runTaskDone(args []string) error {
@@ -307,21 +432,40 @@ func runTaskDone(args []string) error {
 			return fmt.Errorf("spore task done: unknown flag: %s", a)
 		}
 	}
-	return task.Done("tasks", slug, force)
+	return task.Done(resolveTasksDir(), slug, force)
 }
 
 func runTaskTell(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: spore task tell <slug> <message>")
 	}
-	return task.Tell(args[0], args[1])
+	slug, msg := args[0], args[1]
+	if slug != "coordinator" {
+		role, err := task.IsRoleLoop(resolveTasksDir(), slug)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "%s: %v; writing to the worker inbox\n", slug, err)
+		}
+		if role {
+			projectRoot, err := task.MainRepoRoot("")
+			if err != nil {
+				return fmt.Errorf("resolve main repo: %w", err)
+			}
+			session, err := fleet.TellRole(projectRoot, slug, msg)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "%s: delivered to %s\n", slug, session)
+			return nil
+		}
+	}
+	return task.Tell(slug, msg)
 }
 
 func runTaskVerify(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: spore task verify <slug>")
 	}
-	verdict, diags, err := task.Verify("tasks", args[0])
+	verdict, diags, err := task.Verify(resolveTasksDir(), args[0])
 	if err != nil {
 		return err
 	}
@@ -372,7 +516,7 @@ func runTaskNew(args []string) error {
 		return fmt.Errorf("title must not be empty")
 	}
 
-	tasksDir := "tasks"
+	tasksDir := resolveTasksDir()
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		return err
 	}
@@ -453,7 +597,7 @@ func runTaskLs(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional args: %v", fs.Args())
 	}
-	metas, err := task.List("tasks")
+	metas, err := task.List(resolveTasksDir())
 	if err != nil {
 		return err
 	}
@@ -470,7 +614,9 @@ func runTaskLs(args []string) error {
 	return nil
 }
 
-// resolveTasksDir returns an absolute tasks/ path. Priority:
+// resolveTasksDir returns an absolute tasks/ path; every task
+// subcommand uses it so a call from inside .worktrees/<slug> acts on
+// the main repo's task files, not the worktree copy. Priority:
 //  1. SPORE_TASKS_DIR env var (explicit override)
 //  2. git root from cwd (works when called from project root)
 //  3. first entry in ~/.config/wt/projects (fallback for waybar/systemd callers)

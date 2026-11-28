@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/hooks"
 	"github.com/versality/spore/internal/task"
 )
@@ -37,7 +37,9 @@ import (
 //   - When the snapshot is PhaseDone, writes a synthesized summary at
 //     .spore/<slug>/summary.md (idempotent: skip if file already
 //     exists).
-//   - When the snapshot is PhaseEscalated, leaves panes alive.
+//   - When the snapshot is PhaseEscalated, leaves panes alive and,
+//     until the engineer answers the final verdict, wakes it once for
+//     a fix pass at the high/medium comments. No reviewer is woken.
 //   - Bounces any role file that fails validation back to its author
 //     (see bounceInvalidRoleFiles). Runs after the spawn pass so the
 //     owning pane is up to receive the wake.
@@ -50,15 +52,32 @@ import (
 // Returns the snapshot observed after side effects.
 func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	// Checked before anything touches .spore/<slug>/, so a refused
-	// drive on a generic task leaves no role state behind.
-	if err := task.RequireRoleLoop(tasksDir, slug); err != nil {
+	// drive on a generic or non-active task leaves no role state behind.
+	if err := task.RequireActiveRoleLoop(tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
 	}
+	unlock, err := lockRoleDrive(projectRoot, slug)
+	if errors.Is(err, errLockHeld) {
+		// A drive, reopen or force-approve holds the slug: report only.
+		snap, err := DeriveSnapshot(projectRoot, slug)
+		snap.DriveSkipped = err == nil
+		return snap, err
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: %w", slug, err)
+	}
+	defer unlock()
 	if err := task.CacheSpecFromTaskFile(projectRoot, tasksDir, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: cache spec: %w", slug, err)
 	}
 	if err := task.EnsureLegacyMarker(projectRoot, slug); err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: legacy marker: %w", slug, err)
+	}
+	if err := task.EnsureOrderExemptMarker(projectRoot, slug); err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: order-exempt marker: %w", slug, err)
+	}
+	if err := task.EnsureGradeExemptMarker(projectRoot, slug); err != nil {
+		return Snapshot{}, fmt.Errorf("drive %s: grade-exempt marker: %w", slug, err)
 	}
 	// Own the worktree precondition explicitly. The role panes cwd
 	// into <projectRoot>/.worktrees/<slug>/; without this call the
@@ -71,6 +90,7 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("drive %s: snapshot: %w", slug, err)
 	}
+	recordRoleProgress(projectRoot, slug, snap)
 
 	prFlow := githubFlow(projectRoot)
 	engineer := EngineerSpec(projectRoot, slug)
@@ -98,6 +118,19 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		}
 		reviewer := ReviewerSpec(projectRoot, slug, snap.CurrentReviewer)
 		reviewer.TasksDir = tasksDir
+		if snap.Check == task.CheckPending {
+			// A fresh reviewer starts reviewing on spawn, so round 0
+			// is not spawned at all; a live one is kept but not woken.
+			if snap.ReviewerRound >= 1 {
+				if err := ensureRolePane(reviewer, snap.ReviewerRound); err != nil {
+					return snap, fmt.Errorf("drive %s: ensure reviewer %s: %w", slug, snap.CurrentReviewer, err)
+				}
+			}
+			if err := wakeEngineerForCheck(projectRoot, slug, snap); err != nil {
+				return snap, fmt.Errorf("drive %s: wake engineer for check: %w", slug, err)
+			}
+			break
+		}
 		if err := ensureRolePane(reviewer, snap.ReviewerRound); err != nil {
 			return snap, fmt.Errorf("drive %s: ensure reviewer %s: %w", slug, snap.CurrentReviewer, err)
 		}
@@ -108,7 +141,7 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		if err := writeSummary(projectRoot, slug); err != nil {
 			return snap, fmt.Errorf("drive %s: write summary: %w", slug, err)
 		}
-		if err := clearEscalationMarkers(projectRoot, slug); err != nil {
+		if err := clearEscalationMarkers(projectRoot, slug, ""); err != nil {
 			return snap, fmt.Errorf("drive %s: clear escalation markers: %w", slug, err)
 		}
 		created, err := writeReadyMarker(projectRoot, slug)
@@ -125,14 +158,24 @@ func DriveRoleLoop(projectRoot, tasksDir, slug string) (Snapshot, error) {
 		_, _ = ReapRole(ReviewerSpec(projectRoot, slug, task.ReviewerB))
 	case PhaseEscalated:
 		// Leave panes alive per spec: the operator inspects. Drop a
-		// marker so the waybar chip can surface the escalation.
+		// marker so the waybar chip can surface the escalation. The
+		// marker goes first: DeriveSnapshot reads it to account for
+		// the fix pass woken below.
 		created, err := writeEscalationMarker(projectRoot, slug, snap)
 		if err != nil {
 			return snap, fmt.Errorf("drive %s: write escalation marker: %w", slug, err)
 		}
 		if created {
-			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: escalated (reviewer %s, round %d)",
+			notifyRoleLoop(projectRoot, fmt.Sprintf("%s: escalated (reviewer %s, round %d); engineer asked to address the high/medium comments once, operator intervention required",
 				slug, snap.CurrentReviewer, snap.ReviewerRound))
+		}
+		if snap.EscalationFixPending {
+			if err := ensureRolePane(engineer, snap.EngineerRound); err != nil {
+				return snap, fmt.Errorf("drive %s: ensure engineer: %w", slug, err)
+			}
+			if err := wakeEngineer(projectRoot, slug, snap); err != nil {
+				return snap, fmt.Errorf("drive %s: wake engineer: %w", slug, err)
+			}
 		}
 	}
 
@@ -159,8 +202,17 @@ func activeRole(projectRoot, slug string, snap Snapshot) (RoleSpawnSpec, int, st
 		return EngineerSpec(projectRoot, slug), snap.EngineerRound,
 			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1), true
 	case PhaseReviewA, PhaseReviewB:
+		if snap.Check == task.CheckPending {
+			return EngineerSpec(projectRoot, slug), snap.EngineerRound,
+				task.CheckPassPath(projectRoot, slug, snap.EngineerRound, snap.CheckSHA), true
+		}
 		return ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), snap.ReviewerRound,
 			task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound+1), true
+	case PhaseEscalated:
+		if snap.EscalationFixPending {
+			return EngineerSpec(projectRoot, slug), snap.EngineerRound,
+				task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1), true
+		}
 	}
 	return RoleSpawnSpec{}, 0, "", false
 }
@@ -174,9 +226,23 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 		return nil
 	}
 	verdictPath := task.ReviewPath(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
-	msg := fmt.Sprintf("Reviewer %s requested changes at round %d. Read %s and start the revision.",
-		snap.CurrentReviewer, snap.ReviewerRound, verdictPath)
-	_, err := wakeSession(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
+	label, prefix := reviewerName(projectRoot, slug, snap.CurrentReviewer, snap.ReviewerRound)
+	who := fmt.Sprintf("%s (reviewer %s, comment IDs %s%d.N)", label, snap.CurrentReviewer, prefix, snap.ReviewerRound)
+	msg := fmt.Sprintf("%s requested changes at round %d. Read %s and start the revision; cite comments by ID in your response.",
+		who, snap.ReviewerRound, verdictPath)
+	if snap.Phase == PhaseEscalated {
+		// A fully ungraded (legacy) verdict has no grades to name.
+		what := "its comments"
+		if n := snap.LastCounts; n.HighMedium+n.Low+n.Question > 0 {
+			what = "its high and medium comments (lows are optional; answer any questions)"
+		}
+		msg = fmt.Sprintf("%s requested changes at round %d, the final round: the loop is escalated to the operator. "+
+			"Read %s and address %s in one fix pass, then write %s. "+
+			"No re-review follows; the operator takes it from there.",
+			who, snap.ReviewerRound, verdictPath, what,
+			task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound+1))
+	}
+	_, err := wakeRole(EngineerSpec(projectRoot, slug), engineerWakeMarkerStem(snap), msg)
 	return err
 }
 
@@ -185,15 +251,27 @@ func wakeEngineer(projectRoot, slug string, snap Snapshot) error {
 // already issued a verdict (ReviewerRound >= 1): the phase moving back
 // to review-* then means a fresh engineer response landed and the idle
 // pane must be told. Round 0 is a freshly spawned reviewer that starts
-// from its role body; no nudge needed.
+// from its role body; it is woken only to hear that the engineer gave
+// up on a failing check. The wake carries the check result when the
+// gate is configured.
 func wakeReviewer(projectRoot, slug string, snap Snapshot) error {
-	if snap.CurrentReviewer == "" || snap.ReviewerRound < 1 {
+	if snap.CurrentReviewer == "" {
 		return nil
 	}
+	spec := ReviewerSpec(projectRoot, slug, snap.CurrentReviewer)
+	note := checkNote(projectRoot, slug, snap)
+	if snap.ReviewerRound < 1 {
+		if snap.Check != task.CheckFailed {
+			return nil
+		}
+		stem := fmt.Sprintf("check-failed-reviewer-%s-%d", snap.CurrentReviewer, snap.EngineerRound)
+		_, err := wakeRole(spec, stem, strings.TrimSpace(note))
+		return err
+	}
 	respPath := task.EngineerResponsePath(projectRoot, slug, snap.EngineerRound)
-	msg := fmt.Sprintf("Engineer responded to your round %d verdict. Read %s and review round %d.",
-		snap.ReviewerRound, respPath, snap.ReviewerRound+1)
-	_, err := wakeSession(ReviewerSpec(projectRoot, slug, snap.CurrentReviewer), reviewerWakeMarkerStem(snap), msg)
+	msg := fmt.Sprintf("Engineer responded to your round %d verdict. Read %s and review round %d.%s",
+		snap.ReviewerRound, respPath, snap.ReviewerRound+1, note)
+	_, err := wakeRole(spec, reviewerWakeMarkerStem(snap), msg)
 	return err
 }
 
@@ -285,7 +363,9 @@ const wakeSubmitSettle = 500 * time.Millisecond
 // is lost, so the caller must leave the marker unwritten and retry
 // next tick. After sending, a submission that cannot be verified
 // (message still pending, or the prompt vanished) retries Enter once
-// and then errors, again leaving the marker unwritten.
+// and then errors, again leaving the marker unwritten. The text goes
+// with -l so one naming a key is typed, not pressed; tmux still eats a
+// trailing ';' as a command separator, so free text must not end msg.
 func sendWakeVerified(session, msg string) (bool, error) {
 	pane, err := capturePane(session)
 	if err != nil {
@@ -296,12 +376,12 @@ func sendWakeVerified(session, msg string) (bool, error) {
 	if !hasInputPrompt(pane) {
 		return false, nil
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", session, msg).Run(); err != nil {
+	if err := callbudget.Command("tmux", "send-keys", "-t", session, "-l", "--", msg).Run(); err != nil {
 		return false, fmt.Errorf("tmux send-keys text: %w", err)
 	}
 	time.Sleep(wakePasteSettle)
 	for range 2 {
-		if err := exec.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
+		if err := callbudget.Command("tmux", "send-keys", "-t", session, "Enter").Run(); err != nil {
 			return false, fmt.Errorf("tmux send-keys enter: %w", err)
 		}
 		time.Sleep(wakeSubmitSettle)
@@ -317,7 +397,7 @@ func sendWakeVerified(session, msg string) (bool, error) {
 }
 
 func capturePane(session string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", session).Output()
+	out, err := callbudget.Command("tmux", "capture-pane", "-p", "-t", session).Output()
 	return string(out), err
 }
 
@@ -483,184 +563,15 @@ func notifyRoleLoop(projectRoot, body string) {
 	}
 }
 
-// clearEscalationMarkers removes any `escalated-*` files under the
-// task's state dir. Called on PhaseDone so an operator force-approve
-// after an escalation clears the chip. A missing state dir is fine.
-func clearEscalationMarkers(projectRoot, slug string) error {
-	dir := filepath.Join(task.RoleTaskDir(projectRoot, slug), "state")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "escalated-") {
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
-}
-
 // sessionCreated returns the `#{session_created}` stamp tmux assigns
 // the named session at spawn (a unix timestamp). Used by the engineer
 // wake marker to detect a respawn: a fresh pane gets a different
 // stamp, so the marker name changes and the next drive tick re-fires
 // the send-keys nudge.
 func sessionCreated(name string) (string, error) {
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_created}").Output()
+	out, err := callbudget.Command("tmux", "display-message", "-p", "-t", name, "#{session_created}").Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// summaryFingerprintPrefix is the leading marker the synthesised
-// summary embeds (after the date line). Encodes the counts of inputs
-// the summary was built from, so a later drive tick can tell whether
-// the on-disk file is stale relative to the current artifact tree.
-const summaryFingerprintPrefix = "<!-- summary-fingerprint:"
-
-// writeSummary synthesises .spore/<slug>/summary.md from the on-disk
-// review threads. Idempotent across drive ticks with stable inputs,
-// but regenerates when the embedded fingerprint disagrees with the
-// current artifact counts: a leftover summary from a previous task
-// lifecycle (different engineer/reviewer round counts) cannot shadow
-// a fresh run, and a hand-edited summary that strips the fingerprint
-// is treated as stale (the marker fence is rebuilt).
-func writeSummary(projectRoot, slug string) error {
-	path := filepath.Join(task.RoleTaskDir(projectRoot, slug), "summary.md")
-	fp, err := computeSummaryFingerprint(projectRoot, slug)
-	if err != nil {
-		return err
-	}
-	if existing, err := os.ReadFile(path); err == nil {
-		if extractSummaryFingerprint(existing) == fp {
-			return nil
-		}
-	}
-	body, err := buildSummary(projectRoot, slug, fp)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(body), 0o644)
-}
-
-// computeSummaryFingerprint returns the artifact-count signature the
-// next writeSummary will compare against the file's embedded marker.
-// Shape: "engineer=<E> A=<NA> B=<NB>".
-func computeSummaryFingerprint(projectRoot, slug string) (string, error) {
-	eng, err := task.ListEngineerRounds(projectRoot, slug)
-	if err != nil {
-		return "", err
-	}
-	a, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerA)
-	if err != nil {
-		return "", err
-	}
-	b, err := task.ListReviewRounds(projectRoot, slug, task.ReviewerB)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("engineer=%d A=%d B=%d", len(eng), len(a), len(b)), nil
-}
-
-// extractSummaryFingerprint reads the embedded marker out of an
-// existing summary.md body. Returns "" when the marker is missing or
-// malformed; the caller treats that as "regenerate".
-func extractSummaryFingerprint(body []byte) string {
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, summaryFingerprintPrefix) {
-			continue
-		}
-		line = strings.TrimPrefix(line, summaryFingerprintPrefix)
-		line = strings.TrimSuffix(line, "-->")
-		return strings.TrimSpace(line)
-	}
-	return ""
-}
-
-func buildSummary(projectRoot, slug, fingerprint string) (string, error) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s: review summary\n\n", slug)
-	fmt.Fprintf(&b, "Generated %s\n\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "%s %s -->\n\n", summaryFingerprintPrefix, fingerprint)
-
-	for _, instance := range []task.ReviewerInstance{task.ReviewerA, task.ReviewerB} {
-		rounds, err := task.ListReviewRounds(projectRoot, slug, instance)
-		if err != nil {
-			return "", err
-		}
-		fmt.Fprintf(&b, "## reviewer %s\n\n", instance)
-		if len(rounds) == 0 {
-			b.WriteString("No rounds recorded.\n\n")
-			continue
-		}
-		for _, r := range rounds {
-			rev, err := task.ReadReview(projectRoot, slug, instance, r)
-			if errors.Is(err, task.ErrInvalidRoleFile) {
-				continue
-			}
-			if err != nil {
-				return "", err
-			}
-			fmt.Fprintf(&b, "### round %d -> %s\n\n", r, rev.Verdict)
-			if rev.Summary != "" {
-				fmt.Fprintf(&b, "%s\n\n", rev.Summary)
-			}
-			if len(rev.Comments) > 0 {
-				for _, c := range rev.Comments {
-					fmt.Fprintf(&b, "- %s\n", c)
-				}
-				b.WriteString("\n")
-			}
-		}
-	}
-
-	engRounds, err := task.ListEngineerRounds(projectRoot, slug)
-	if err != nil {
-		return "", err
-	}
-	if len(engRounds) > 0 {
-		b.WriteString("## engineer responses\n\n")
-		for _, r := range engRounds {
-			resp, err := task.ReadEngineerResponse(projectRoot, slug, r)
-			if errors.Is(err, task.ErrInvalidRoleFile) {
-				continue
-			}
-			if err != nil {
-				return "", err
-			}
-			fmt.Fprintf(&b, "### round %d\n\n", r)
-			writeEngineerResponse(&b, resp)
-		}
-	}
-
-	return b.String(), nil
-}
-
-// writeEngineerResponse renders resp's lists and notes; shared by the
-// summary and the PR mirror's engineer comment.
-func writeEngineerResponse(b *strings.Builder, resp task.EngineerResponse) {
-	list := func(head string, items []string) {
-		if len(items) == 0 {
-			return
-		}
-		b.WriteString(head + ":\n")
-		for _, c := range items {
-			fmt.Fprintf(b, "- %s\n", c)
-		}
-		b.WriteString("\n")
-	}
-	list("Addressed", resp.Addressed)
-	list("Pushback", resp.Pushback)
-	if resp.Notes != "" {
-		fmt.Fprintf(b, "Notes: %s\n\n", resp.Notes)
-	}
-	list("Proposed follow-ups", resp.Followups)
 }

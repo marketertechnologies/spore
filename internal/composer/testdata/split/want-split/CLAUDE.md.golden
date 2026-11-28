@@ -1,0 +1,9 @@
+<!-- generated from rules/consumers/split.txt; edit fragments, not this file. -->
+
+# Root rule
+
+Applies everywhere.
+
+# Plain
+
+Empty frontmatter stays in the root file.

@@ -3,7 +3,9 @@
 `spore budget` aggregates Anthropic spend across all claude-code
 sessions for the current user on this host into rolling short (5h)
 and long (7d) windows, then surfaces threshold-band advice
-("ok"/"tighten"/"ration") for stop-hook gating and one-line summaries.
+("ok"/"tighten"/"ration") for the fleet replenish gate and one-line
+summaries. `spore fleet replenish-hook` skips its reconcile pass when the
+advice is `tighten` or `ration`.
 
 ## Subcommands
 
@@ -11,9 +13,6 @@ and long (7d) windows, then surfaces threshold-band advice
 spore budget refresh       Recompute state.json from the configured collection mode.
 spore budget query         Print state.json with a fresh advice band.
 spore budget summary       Human one-liner. Default when no subcommand is given.
-spore budget capture       Read one JSON header line from stdin, append to spool.
-spore budget stop-hook     Stop-hook helper: exit 2 with stderr reminder on a
-                           fresh band crossing, exit 0 otherwise.
 spore budget debug-usage   Hit /usage once and print raw + parsed response
                            (bypasses the freshness throttle; diagnostic).
 ```
@@ -29,8 +28,7 @@ Two rolling windows, each with its own cap:
 
 The advice band is the OR of the two windows: if either window is in
 "ration", the advice is `ration`. Otherwise, if either is in
-"tighten", the advice is `tighten`. Otherwise `ok`. Per-window bands
-are tracked separately for the stop-hook fresh-crossing detector.
+"tighten", the advice is `tighten`. Otherwise `ok`.
 
 Caps are configurable via `AGENT_BUDGET_SHORT_CAP` and
 `AGENT_BUDGET_LONG_CAP` (USD floats). Caps only matter in transcript
@@ -91,12 +89,14 @@ than 30 minutes) flips into api mode.
 `refresh` reads `~/.claude/.credentials.json`, hits
 `https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer
 <accessToken>` and `anthropic-beta: oauth-2025-04-20`, and stores the
-returned utilization percent and `resets_at` per window. On a 401 with
-a refresh token present, the binary refreshes once via
-`https://platform.claude.com/v1/oauth/token` and retries; the rolled
-credentials are written back via mktemp+rename. Other HTTP failures
-keep the previous snapshot but flag it `Stale` so consumers can decide
-whether to trust it.
+returned utilization percent and `resets_at` per window. The probe is
+read-only: spore never refreshes the OAuth token and never writes the
+credentials file (or the per-account store files). Refresh tokens
+rotate, so a refresh from spore races Claude Code's own refresh and can
+leave every session on the host holding a dead token. A 401, like any
+other HTTP failure, keeps the previous snapshot but flags it `Stale` so
+consumers can decide whether to trust it; the budget recovers once
+Claude Code refreshes the login itself (or after `/login`).
 
 A freshness gate prevents hammering `/usage`: successive `refresh`
 calls within 60 seconds reuse the cached snapshot. Override with
@@ -104,67 +104,17 @@ calls within 60 seconds reuse the cached snapshot. Override with
 
 ### API mode
 
-Producers append filtered headerLine records to
+An external producer appends headerLine records to
 `$AGENT_BUDGET_STATE_DIR/api-headers.jsonl` (mode 0600, append-only via
-`O_APPEND`). The capture surface keeps only `anthropic-ratelimit-*`
-and `anthropic-priority-*` headers to avoid leaking request metadata.
+`O_APPEND`), keeping only `anthropic-ratelimit-*` and
+`anthropic-priority-*` headers. spore has no writer for the spool; it
+only reads it.
 
 `refresh` in api mode reads the most recent line, picks the bucket
 with the lowest remaining/limit ratio (the one closest to 429), and
 emits a windowState carrying that frac plus the bucket name and reset
 clock. Long window falls back to transcript-est until Anthropic
 exposes a weekly header.
-
-`spore budget capture` is a stdin shim for shell-script callers and
-tests; in-process callers should write the line directly.
-
-## Stop-hook contract
-
-`spore budget stop-hook` is the entry point for a claude-code Stop
-hook. It does not read stdin or write JSON; it only signals via exit
-code and stderr.
-
-| Exit | Meaning |
-| ---- | ------- |
-| 0    | No fresh band crossing, or band == "ok". Silent; nothing on stderr. |
-| 2    | Fresh crossing into "tighten" or "ration". Prints a one-line reminder on stderr. |
-
-Spore's stop-hook does not gate on an orchestrator-identity env: the
-consumer wires the hook into their settings.json only for the agents
-they want monitored. Any orchestrator-shape gating (e.g. firing only
-for dispatcher turns, not runner turns) belongs in the consumer's
-hook config, not in this binary.
-
-### Marker semantics
-
-`spore budget` keeps per-window-per-band markers under
-`$AGENT_BUDGET_STATE_DIR/markers/`:
-
-```
-short-tighten  short-ration  long-tighten  long-ration
-```
-
-Invariants:
-
-- band == ok:      both markers absent.
-- band == tighten: tighten marker present, ration marker absent.
-- band == ration:  both markers present (so a future drop back to
-  tighten does not re-fire the tighten reminder).
-
-A "fresh crossing" is defined as creating a marker that was absent on
-entry. Drop a marker by hand to re-arm the reminder for a window.
-
-### Reminder text
-
-```
-AGENT BUDGET (tighten): short=82% (resets in 1h12m), long=18%.
-Defer non-urgent runner starts. Route lightweight turns through a cheaper
-model. Reserve top-tier models for tool-use loops and code edits.
-```
-
-The "(resets in ...)" hint appears only on the binding window for the
-band - the one whose frac actually crossed. The advice tail is band-
-specific.
 
 ## State file
 

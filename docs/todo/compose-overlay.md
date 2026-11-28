@@ -1,4 +1,4 @@
-**Status**: not-started
+**Status**: not-started; v0.40.0 path-scoped fragments are orthogonal and layer onto it unchanged
 
 # composer: support layered rule pools
 
@@ -62,3 +62,10 @@ list file (`rules.lst`) describing the overlay chain.
   current design and we should keep it that way.
 
 ## Progress
+
+- v0.40.0 (`feat/compose-path-rules`) did not add overlays. It added
+  per-fragment `paths:` frontmatter and `.claude/rules/` output. Both
+  key off the fragment id, so an overlay that resolves an id from a
+  local pool needs no extra work: the resolved fragment's own
+  frontmatter decides root versus `.claude/rules/`. An overlay should
+  keep `Render` pure (pool list, consumer, predicates).

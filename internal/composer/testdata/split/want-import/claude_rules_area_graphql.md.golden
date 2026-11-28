@@ -1,0 +1,11 @@
+---
+paths:
+  - "app/graphql/**"
+  - "spec/graphql/**/*.rb"
+---
+
+<!-- generated from rules/consumers/split.txt; edit fragments, not this file. -->
+
+# GraphQL
+
+Resolvers stay thin.

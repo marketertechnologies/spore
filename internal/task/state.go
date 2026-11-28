@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/versality/spore/internal/callbudget"
 )
 
 // StateDir returns "$XDG_STATE_HOME/spore/<project>" if XDG_STATE_HOME
@@ -168,14 +170,35 @@ func CountUnreadInbox(slug string) (int, string, error) {
 // (see defaultBranch). Returns 0 when the branch does not exist
 // (already deleted by a prior merge).
 func UnmergedCommits(projectRoot, branch string) (int, error) {
+	return UnmergedCommitsAgainst(projectRoot, branch, "")
+}
+
+// UnmergedCommitsAgainst is UnmergedCommits measured against base (a
+// task's `base:`, normalized) instead of the integration target. A
+// commit counts as merged when either the local base or origin/<base>
+// reaches it, since a PR merged on GitHub lands on origin first. An
+// empty base, or one with neither ref, falls back to defaultBranch.
+func UnmergedCommitsAgainst(projectRoot, branch, base string) (int, error) {
 	if gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() != nil {
 		return 0, nil
 	}
-	baseRef, err := defaultBranch(projectRoot)
-	if err != nil {
-		return 0, err
+	var refs []string
+	if base = normalizeBase(base); base != "" {
+		for _, ref := range []string{"refs/heads/" + base, "refs/remotes/origin/" + base} {
+			if refExists(projectRoot, ref) {
+				refs = append(refs, ref)
+			}
+		}
 	}
-	out, err := gitCmd(projectRoot, "rev-list", baseRef+".."+branch).Output()
+	if len(refs) == 0 {
+		baseRef, err := defaultBranch(projectRoot)
+		if err != nil {
+			return 0, err
+		}
+		refs = []string{baseRef}
+	}
+	args := append([]string{"rev-list", "refs/heads/" + branch, "--not"}, refs...)
+	out, err := gitCmd(projectRoot, args...).Output()
 	if err != nil {
 		return 0, err
 	}
@@ -222,5 +245,5 @@ func gitCmd(projectRoot string, args ...string) *exec.Cmd {
 		abs = projectRoot
 	}
 	full := append([]string{"-c", "safe.directory=" + abs, "-C", projectRoot}, args...)
-	return exec.Command("git", full...)
+	return callbudget.Command("git", full...)
 }

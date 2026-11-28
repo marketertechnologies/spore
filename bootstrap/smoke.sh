@@ -33,6 +33,7 @@ trap 'rm -rf "$work"' EXIT
 
 export XDG_STATE_HOME="$state"
 export HOME="$home"
+export SPORE_SECRETS_SOCKET="$work/no-broker.sock"
 
 mkdir -p "$work/proj"
 cd "$work/proj"
@@ -90,10 +91,11 @@ for i in 4 5 6 7 8 9 10; do "$spore_bin" align note "pref$i"; done
 "$spore_bin" align flip
 
 # Walk the bootstrap.
-out="$("$spore_bin" bootstrap 2>&1)"
+rc=0
+out="$("$spore_bin" bootstrap 2>&1)" || rc=$?
 echo "$out"
-if ! echo "$out" | grep -q "bootstrap complete"; then
-  echo "smoke: bootstrap did not complete; current state:" >&2
+if [ "$rc" -ne 0 ] || ! echo "$out" | grep -q "bootstrap complete"; then
+  echo "smoke: bootstrap did not complete (exit $rc); current state:" >&2
   "$spore_bin" bootstrap status >&2 || true
   exit 1
 fi

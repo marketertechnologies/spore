@@ -85,6 +85,77 @@ func (e Entry) Bool() (bool, error) {
 	return false, fmt.Errorf("line %d: %s: want true or false, got %q", e.Line, e.Key, e.Value)
 }
 
+// Strings parses e.Value as a single-line TOML array of strings, such
+// as ["a", 'b']. Basic strings honour the \" \\ \t \n \r escapes and
+// reject the rest; literal strings are taken verbatim. A trailing comma
+// is allowed.
+func (e Entry) Strings() ([]string, error) {
+	bad := func(why string) error {
+		return fmt.Errorf("line %d: %s: want a one-line array of strings, %s", e.Line, e.Key, why)
+	}
+	v := strings.TrimSpace(e.Value)
+	if len(v) < 2 || v[0] != '[' || v[len(v)-1] != ']' {
+		return nil, bad(fmt.Sprintf("got %q", e.Value))
+	}
+	body := v[1 : len(v)-1]
+	skipSpace := func(i int) int {
+		for i < len(body) && (body[i] == ' ' || body[i] == '\t') {
+			i++
+		}
+		return i
+	}
+	out := []string{}
+	i := skipSpace(0)
+	for i < len(body) {
+		q := body[i]
+		if q != '"' && q != '\'' {
+			return nil, bad(fmt.Sprintf("unquoted element at %q", body[i:]))
+		}
+		i++
+		var b strings.Builder
+		closed := false
+		for i < len(body) {
+			ch := body[i]
+			i++
+			if ch == q {
+				closed = true
+				break
+			}
+			if q == '"' && ch == '\\' {
+				if i >= len(body) {
+					return nil, bad("unterminated string")
+				}
+				switch body[i] {
+				case '"', '\\':
+					ch = body[i]
+				case 't':
+					ch = '\t'
+				case 'n':
+					ch = '\n'
+				case 'r':
+					ch = '\r'
+				default:
+					return nil, bad(fmt.Sprintf("unsupported escape \\%c", body[i]))
+				}
+				i++
+			}
+			b.WriteByte(ch)
+		}
+		if !closed {
+			return nil, bad("unterminated string")
+		}
+		out = append(out, b.String())
+		i = skipSpace(i)
+		if i < len(body) {
+			if body[i] != ',' {
+				return nil, bad(fmt.Sprintf("missing comma at %q", body[i:]))
+			}
+			i = skipSpace(i + 1)
+		}
+	}
+	return out, nil
+}
+
 // StripComment drops a trailing `# comment`, ignoring `#` inside quotes.
 func StripComment(line string) string {
 	inQuote := byte(0)
@@ -92,7 +163,9 @@ func StripComment(line string) string {
 		ch := line[i]
 		switch {
 		case inQuote != 0:
-			if ch == inQuote {
+			if inQuote == '"' && ch == '\\' {
+				i++
+			} else if ch == inQuote {
 				inQuote = 0
 			}
 		case ch == '"' || ch == '\'':

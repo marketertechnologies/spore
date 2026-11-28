@@ -4,24 +4,38 @@ With `pr_flow = "draft"`, the role loop runs on a visible draft PR. A
 GitHub App pushes the task branch, opens the PR, and posts every
 round; the operator gives the only approval and merges. Design and
 locked decisions: `docs/todo/github-app-pr-flow.md`. For ad-hoc use
-from a coordinator (detect, `spore gh exec`, App vs personal token),
-see `spore recipes show github`.
+from a coordinator (detect, `spore gh pr|api|push`, App vs personal token),
+see `spore recipes show github`. On a host running the secrets broker the App key lives with the broker and the mirror pushes through it; see `docs/secrets.md`.
 
 ## What happens
 
 ```
 engineer round 1 done  -> push branch (app), open DRAFT PR, assign operator
-review verdict         -> COMMENT review "Review #1 (round N): <verdict>" (A) / "Review #2" (B)
-engineer round 2+      -> push, PR comment "Engineer (round N)"
-PhaseDone              -> gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
+review verdict         -> COMMENT review "<label> (round N): <verdict>", items numbered R1.1, C2.3, ...; `path:line` items inline on the diff
+engineer round 2+      -> push, PR comment "Engineer (round N)": outcome table by ID, then notes
+PhaseDone              -> gh pr edit (engineer `pr` title/body, if any); gh pr ready; coordinator: "<slug>: done, PR #N ready for operator approval: <url>"
 PhaseEscalated         -> one PR comment naming the cap and reviewer; PR stays draft
 ```
+
+`<label>` is the slot's display name from its mode (`Requirements
+review`, `Code review`; see "Comment IDs" in `docs/role-loop.md`).
 
 `DriveRoleLoop` does all of it (`internal/fleet/rolegithub.go`). Agents
 still only write their `.spore/<slug>/` files; GitHub is a mirror,
 never read back for phase. The app never submits `APPROVE` or
 `REQUEST_CHANGES`: it is the PR author, and the operator stays the
 only real gate.
+
+The PR opens with the task title and the brief's first paragraph.
+At done, the driver replaces both with the `pr` object of the latest
+engineer response that carries one (`{"title", "body"}`, see
+`bootstrap/roles/engineer.md`): `gh pr edit --title ... --body-file -`
+with the engineer's body, a line with each reviewer's final verdict,
+and the spore footer. Without any `pr` the PR keeps its opening title
+and body. The applied response and a hash of its `pr` are recorded as
+`pr_description` in `github.json`, so a re-tick never edits twice. An
+edit failure is logged and told to the coordinator once, is not
+retried, and never holds back `gh pr ready`.
 
 Mirror state lives in `.spore/<slug>/github.json` (PR number and url,
 last pushed sha, posted file names, ready flag, last error). Each tick
@@ -36,9 +50,23 @@ with git and gh prompts disabled, so a hung connection delays a tick
 by about a minute at most. Deleting `github.json` re-posts every
 comment; an open PR for the branch is adopted, not duplicated.
 
+Every comment and review body the mirror posts ends with a hidden marker, `<!-- spore-mirror: cycle <n> <event> -->`. Before a post the event is saved as `inflight` in `github.json`; after GitHub accepts it, the event moves to the posted list. A tick that still finds an event in flight (the process died, or the call failed or timed out after GitHub got it) reads the PR's reviews or issue comments (`--paginate`, bodies only) and records the event as posted when its marker is there, instead of posting it twice. Events that post nothing (engineer round 1, `ready`) need no lookup: re-running them changes nothing on GitHub (a re-run `ready` can repeat the done notice).
+
 Every gh call runs with `GH_REPO` set from `origin`'s URL, so gh and
 `git push` always target the same repo; without it gh prefers an
 `upstream` remote in a fork-style clone.
+
+A verdict is posted with `gh api repos/<owner>/<repo>/pulls/<n>/reviews`
+(`event: COMMENT`, `commit_id` = the last pushed sha). Each graded
+comment whose `where` is `path:line` becomes an inline comment
+(`side: RIGHT`) carrying its ID, grade, text, trigger and suggestion;
+the rest stay in the review body. GitHub rejects the whole review
+with HTTP 422 when an anchor is outside the diff and posts nothing,
+so the mirror retries: it reads `pulls/<n>/files` and keeps only the
+anchors on a line the patches show, folding the others into the body.
+When the patches cannot be read, no anchor is left, or that retry is
+rejected too, the review goes out with every comment in the body. A
+verdict is recorded as posted only after GitHub accepts it.
 
 The PR body is the first prose paragraph of `.spore/<slug>/spec.md`
 (the task brief, skipping headings and the `**Status**` line) plus a
@@ -46,6 +74,10 @@ fixed footer; a paragraph naming an absolute path (`/...` or `~/...`)
 is replaced by the task title. Everyone with repo access reads it, so
 open the brief with a plain summary: no host paths, no
 coordinator-only notes. The rest of the brief stays off GitHub.
+
+Everything the mirror posts (PR title and body, review bodies, inline comments, engineer comments, the final `pr` title and body) passes through one redaction step (`internal/redact`) on its way to gh. It replaces, with `[redacted]`: every value of 8 or more characters in the layered secrets files (`${XDG_CONFIG_HOME:-~/.config}/spore/secrets.env`, then `.../spore/<project>/secrets.env`), marked `[redacted:NAME]` with the variable name, never the value; GitHub token shapes (`ghp_`, `ghs_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`) and Anthropic keys (`sk-ant-`); PEM private key blocks; and absolute paths under `$HOME`, `/home/<user>` or `/Users/<user>`. Shorter secrets.env values are left alone, since they would shred ordinary prose. Commit contents are not scanned. The same step covers `spore gh pr|api` on every host (locally, or broker-side behind the secrets broker). Redacted are stdin (JSON-aware after `--input -` or `--input=-`, object keys included), the values of `--title` / `--body` (and `-b` under `gh pr` and `gh issue`; `-t` under `create` and `edit`, where it is the title, and as `--subject` under `gh pr merge`; elsewhere `-t` is `--template` and left alone), `--comment` / `-c` under `close` and `reopen`, `--subject` under `gh pr merge`, and the values of `gh api` fields (`-f`, `-F`, `--field`, `--raw-field`), in every spelling: `--x v`, `--x=v`, `-x v`, `-xv`, `-x=v`, and a short group such as `-iF k=v`, scanned as gh parses it: the first value-taking flag in the group takes the rest. The verb is found past a leading `-R` / `--repo`. Field keys are redacted too (`-f '<secret>=v'`, `-f 'body[<secret>]=v'`). Refs, logins, repo names and other flags are left alone. A field whose key names a ref or enum (`head`, `base`, `ref`, `sha`, `commit_id`, `owner`, `repo`, `name`, `number`, `path`, `assignees`, `reviewers`, `team_reviewers`, `labels`, `state`, `event`, `side`, `start_side`) gets only the token and PEM patterns: a secrets.env value colliding with one would break the call, but a token shape is never a real ref.
+
+Each redaction appends a `redaction` event to the project ledger (`fields`: `class` is `secrets_env`, `token`, `pem` or `home_path`; `where` is the flag, `field <key>`, `field <key> key` (the secret sat in the key) or `stdin`, the key itself redacted; `count`; `via` is `mirror` or `spore-gh`; `cmd` is the gh verb or API path, query string dropped, redacted by whoever found the hit), never the matched value, and `spore report` sums them per class (docs/report.md). Behind the broker the broker returns its hits and the caller records them, since the broker cannot write the ledger.
 
 The PR base is the task's `base:` frontmatter (a stack parent branch),
 else the remote default branch (`git symbolic-ref
@@ -82,7 +114,7 @@ existing app skip to [Teammate onboarding](#teammate-onboarding).
      --set operator_login=<github login> \
      --set "commit_name=<your name>" --set commit_email=<email linked to that login> \
      --set pr_flow=draft
-   spore gh token
+   spore gh exec -- gh api installation/repositories --jq .total_count
    ```
 
 ## Teammate onboarding
@@ -127,7 +159,7 @@ Below, `<pem>` is `~/.config/spore/<project>/github-app.pem`.
 6. Continue with [One-time setup](#one-time-setup) steps 4-5: https
    `origin`, `spore gh config --set ...` with your own
    `private_key`, `operator_login`, `commit_name`, `commit_email`, then
-   `spore gh token`.
+   `spore gh exec -- gh api installation/repositories --jq .total_count`.
 
 ## Config
 
@@ -156,7 +188,21 @@ flow was turned on keep their old identity until respawned.
 
 ## `spore gh`
 
-- `spore gh token` prints an installation token. Tokens are cached in
+- `spore gh push <branch> [--force-with-lease=<sha>]`,
+  `spore gh pr <verb> [args...]` and `spore gh api <path> [args...]`
+  are what agents use: push the local branch from the cwd repo
+  (worktrees included) and run `gh pr` / `gh api` as the app. On a
+  host with the secrets broker they go through it and its allowlist
+  (`docs/secrets.md`); elsewhere they run like `spore gh exec`
+  around `git push -u origin <branch>` or `gh`. Push never
+  force-pushes without a lease. `--body-file <path>` (or `--input
+  <path>` for `api`) is read by spore itself, from the cwd repo or
+  `$TMPDIR` only, and fed to gh on stdin. Run each call as one
+  command: a redirect, pipe or `cd ... &&` chain keeps it in the
+  sandbox, where it cannot read the App key without the broker.
+- `spore gh token` prints an installation token, for humans only:
+  run from an agent pane, the token lands in the transcript. Agents
+  use `spore gh pr|api|push`. Tokens are cached in
   `$XDG_STATE_HOME/spore/<project>/github-token.json` (0600) until 5
   minutes before expiry; changing `app_id` or `installation_id`
   invalidates the cache.
@@ -170,8 +216,11 @@ flow was turned on keep their old identity until respawned.
 
 ## Limits (v1)
 
-- Review comments are not line-anchored.
-- Human PR comments are not read back into the loop.
+- Human PR comments are not read back into a running loop. The
+  operator pulls them in on demand with `spore task reopen <slug>
+  --from-pr`, which reads the feedback left since the loop last
+  marked the PR ready or was reopened (see "Reopening a finished
+  loop" in `docs/role-loop.md`).
 - Signed commits: if a repo requires them, agent commits fail that
   rule. Not solved.
 - A task already mid-loop when the flow is turned on gets its

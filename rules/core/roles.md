@@ -1,5 +1,3 @@
 ## Roles
 
-spore uses `dispatcher` (coordinator) and `runner` (worker) internally.
-Downstream projects pick their own names during bootstrap; the kernel
-parameterizes both. When working in this repo, use the internal names.
+spore has two agent roles: the `coordinator` (one per project; dispatches tasks, talks to the operator) and the `worker` (one per task, in its own worktree). A `loop: role` task runs an `engineer` plus reviewers instead of a single worker. Use these names in code, docs and rules.

@@ -1,0 +1,3 @@
+# Root rule
+
+Applies everywhere.

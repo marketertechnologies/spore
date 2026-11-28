@@ -5,6 +5,7 @@ package ghapp
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -68,6 +69,18 @@ func (c Config) API() string {
 	return strings.TrimRight(c.APIURL, "/")
 }
 
+// GitHost is the host git clones from for this app: github.com for
+// the default API, else the API's host without a leading "api."
+// (GitHub Enterprise Server serves the API under /api/v3 on the git
+// host; GHE.com serves it on api.<subdomain>.ghe.com).
+func (c Config) GitHost() string {
+	u, err := url.Parse(c.API())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "api.")
+}
+
 // Validate checks the keys an enabled flow needs to mint a token and
 // attribute commits.
 func (c Config) Validate() error {
@@ -81,6 +94,14 @@ func (c Config) Validate() error {
 	if c.PrivateKey == "" {
 		missing = append(missing, "private_key")
 	}
+	return c.missing(missing)
+}
+
+// ValidateFlow checks only the attribution keys: behind the secrets
+// broker the app keys live in the broker's own github.toml.
+func (c Config) ValidateFlow() error { return c.missing(nil) }
+
+func (c Config) missing(missing []string) error {
 	if c.Enabled() {
 		for k, v := range map[string]string{
 			"operator_login": c.OperatorLogin,

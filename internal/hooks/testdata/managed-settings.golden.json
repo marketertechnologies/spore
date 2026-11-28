@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks notify-coordinator",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore-shims/share/spore/hooks/block-bg-bash.pl",
+            "timeout": 5,
+            "type": "command"
+          },
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks pretooluse",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore-shims/share/spore/hooks/load-state-md.pl",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore coordinator token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore worker token-monitor",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore fleet replenish-hook",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "[ \"$SPORE_ROLE\" = engineer ] || exit 0; /nix/store/0000000000000000000000000000000-spore/bin/spore hooks 2\u003e\u00261 | grep -q engineer-check || exit 0; exec /nix/store/0000000000000000000000000000000-spore/bin/spore hooks engineer-check",
+            "timeout": 3600,
+            "type": "command"
+          },
+          {
+            "asyncRewake": true,
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks watch-inbox",
+            "timeout": 604800,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "/nix/store/0000000000000000000000000000000-spore/bin/spore hooks stop-failure",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "SendMessage",
+      "Read(~/.config/spore/**/secrets.env)",
+      "Read(~/.config/spore/**/*.pem)",
+      "Read(~/.claude/.credentials.json)",
+      "Edit(~/.claude/.credentials.json)",
+      "Bash(*.claude/.credentials.json*)",
+      "Read(~/.bundle/config)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)",
+      "Bash(git push +*)",
+      "Bash(git push * +*)",
+      "Edit(//**/.git)",
+      "Edit(//**/.git/**)",
+      "Edit(//**/*.git/hooks/**)",
+      "Edit(//**/*.git/config)",
+      "Edit(//**/.envrc)",
+      "Edit(//**/.mcp.json)",
+      "Edit(//**/.claude/settings*.json)",
+      "Edit(//**/.claude/hooks/**)",
+      "Edit(//**/.claude/agents/**)",
+      "Edit(//**/.claude/commands/**)",
+      "Edit(~/.claude.json)",
+      "Edit(~/.claude/plugins/**)",
+      "Edit(~/.bashrc)",
+      "Edit(~/.bash_profile)",
+      "Edit(~/.bash_login)",
+      "Edit(~/.bash_logout)",
+      "Edit(~/.profile)",
+      "Edit(~/.zshrc)",
+      "Edit(~/.zshenv)",
+      "Edit(~/.zprofile)",
+      "Edit(~/.zlogin)",
+      "Edit(~/.tmux.conf)",
+      "Edit(~/.config/tmux/**)",
+      "Edit(~/.config/direnv/**)",
+      "Edit(~/.gitconfig)",
+      "Edit(~/.config/git/**)",
+      "Edit(~/.config/systemd/user/**)",
+      "Edit(~/.config/environment.d/**)",
+      "Edit(~/.huskyrc)",
+      "Edit(~/.config/husky/**)",
+      "Edit(~/.config/fish/**)",
+      "Edit(~/.npmrc)",
+      "Edit(~/.yarnrc)",
+      "Edit(~/.yarnrc.yml)",
+      "Edit(~/.local/bin/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.config/spore/**)"
+    ]
+  },
+  "sandbox": {
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [
+      "spore gh *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "~/.cache",
+        "~/go",
+        "~/.local/state/spore"
+      ],
+      "denyRead": [
+        "~/.config/spore",
+        "~/.local/state/spore/*/github-token.json",
+        "~/.ssh",
+        "~/.claude/.credentials.json",
+        "~/.bundle/config"
+      ],
+      "denyWrite": [
+        "~/.local/state/spore/*/github.toml"
+      ]
+    },
+    "network": {
+      "allowAllUnixSockets": true,
+      "allowedDomains": [
+        "api.anthropic.com",
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "proxy.golang.org",
+        "sum.golang.org",
+        "cache.nixos.org",
+        "channels.nixos.org",
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "rubygems.org",
+        "index.rubygems.org"
+      ],
+      "strictAllowlist": true
+    }
+  }
+}

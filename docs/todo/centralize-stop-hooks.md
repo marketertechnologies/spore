@@ -1,4 +1,4 @@
-**Status**: step 1 landed; template already covered; live-file + per-project cleanup pending
+**Status**: superseded in 0.39.0 by the spore-fleet managed settings drop-in (steps 2-3 and the settings refresh follow-up); per-project cleanup is `spore hooks prune-settings --file .claude/settings.json` in each consumer. See `docs/fleet-module.md`.
 
 # centralize claude-code Stop hooks at host level
 

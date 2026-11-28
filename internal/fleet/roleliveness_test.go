@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,14 +252,19 @@ func TestEnsureRolePaneCapsRespawnsPerRound(t *testing.T) {
 	}
 }
 
-// A token-monitor wrap kills its own session. Any number of those in
-// one round must respawn silently and leave the cap untouched.
-func TestEnsureRolePaneMissingSessionNeverCounts(t *testing.T) {
+// A token-monitor wrap kills its own session after a long run. Any
+// number of those in one round must respawn silently and leave the
+// cap untouched.
+func TestEnsureRolePaneMissingAfterHealthyRunNeverCounts(t *testing.T) {
 	root, inbox := livenessFixture(t)
 	f := stubPanes(t)
 	spec := EngineerSpec(root, "demo")
 	session, _ := spec.SessionName()
 	for range 2 * MaxRoleRespawns {
+		if err := ensureRolePane(spec, 0); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(FastDeathWindow)
 		if err := ensureRolePane(spec, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -283,6 +289,74 @@ func TestEnsureRolePaneMissingSessionNeverCounts(t *testing.T) {
 	bodies := envBodies(t, inbox)
 	if len(bodies) != 1 || !strings.Contains(bodies[0], "respawn 1/3") {
 		t.Errorf("notices = %q, want one respawn 1/3", bodies)
+	}
+}
+
+// With remain-on-exit off a crashing agent takes its session with it.
+// A session gone before it ever ran FastDeathWindow counts toward the
+// per-round cap; past the cap nothing is spawned and the coordinator
+// hears once.
+func TestEnsureRolePaneCountsFastMissingSession(t *testing.T) {
+	root, inbox := livenessFixture(t)
+	f := stubPanes(t)
+	spec := EngineerSpec(root, "demo")
+	session, _ := spec.SessionName()
+	for range 2 * MaxRoleRespawns {
+		if err := ensureRolePane(spec, 1); err != nil {
+			t.Fatal(err)
+		}
+		delete(f.panes, session)
+		f.now = f.now.Add(5 * time.Second)
+	}
+	if len(f.spawns) != 1+MaxRoleRespawns {
+		t.Errorf("spawns = %d, want %d", len(f.spawns), 1+MaxRoleRespawns)
+	}
+	bodies := envBodies(t, inbox)
+	var respawns, escalations int
+	for _, b := range bodies {
+		switch {
+		case strings.Contains(b, "respawned engineer (session gone"):
+			respawns++
+		case strings.Contains(b, "escalated: engineer agent died again after 3 respawns in round 2"):
+			escalations++
+		}
+	}
+	if respawns != MaxRoleRespawns || escalations != 1 || len(bodies) != MaxRoleRespawns+1 {
+		t.Errorf("notices = %q, want %d respawns and 1 escalation", bodies, MaxRoleRespawns)
+	}
+}
+
+// A launch line that refused to start the agent records why; the
+// respawn notice quotes it once, and a later death is not blamed on it.
+func TestEnsureRolePaneQuotesRoleBodyExecFailure(t *testing.T) {
+	root, inbox := livenessFixture(t)
+	f := stubPanes(t)
+	spec := EngineerSpec(root, "demo")
+	session, _ := spec.SessionName()
+	stateDir := filepath.Join(task.RoleTaskDir(root, "demo"), "state")
+	if err := ensureRolePane(spec, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(roleBodyExecFailPath(stateDir, "engineer"), []byte("role body /x/engineer.md is unreadable or empty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		delete(f.panes, session)
+		f.now = f.now.Add(5 * time.Second)
+		if err := ensureRolePane(spec, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bodies := envBodies(t, inbox)
+	want := []string{
+		"demo: respawned engineer (session gone within 1m0s of spawn; pane: role body /x/engineer.md is unreadable or empty; round 1, respawn 1/3)",
+		"demo: respawned engineer (session gone within 1m0s of spawn; round 1, respawn 2/3)",
+	}
+	if strings.Join(bodies, "\n") != strings.Join(want, "\n") {
+		t.Errorf("notices = %q, want %q", bodies, want)
 	}
 }
 
@@ -499,5 +573,24 @@ func TestProbeRolePaneTmux(t *testing.T) {
 	missing, err := probeRolePaneTmux("probe-missing")
 	if err != nil || missing.Exists {
 		t.Errorf("missing probe = %+v, %v", missing, err)
+	}
+}
+
+// A has-session failure that is not "no such session" (a wedged
+// server, a call killed by its budget) leaves the pane state unknown
+// instead of reading as a gone session the pass would respawn.
+func TestProbeRolePaneTmuxFailureIsNotGone(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	bin := t.TempDir()
+	shim := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = has-session ]; then echo 'server exited unexpectedly' >&2; exit 1; fi\nexec %s \"$@\"\n", realTmux)
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if p, err := probeRolePaneTmux("probe-wedged"); err == nil {
+		t.Errorf("probe with a failing has-session = %+v, nil; want an error", p)
 	}
 }

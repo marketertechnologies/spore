@@ -1,0 +1,11 @@
+{
+  "name": "spore",
+  "description": "spore harness skills: diagram, select-agent, spore-bootstrap and secrets-profile.",
+  "author": {
+    "name": "spore maintainers"
+  },
+  "homepage": "https://github.com/marketertechnologies/spore",
+  "repository": "https://github.com/marketertechnologies/spore",
+  "license": "Apache-2.0",
+  "skills": "./bootstrap/skills/"
+}

@@ -1,0 +1,8 @@
+# Split render golden fixture.
+# target: CLAUDE.md
+# target: AGENTS.md
+core/header
+core/root
+area/graphql
+core/plain-frontmatter
+area/frontend

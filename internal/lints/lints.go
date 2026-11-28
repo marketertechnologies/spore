@@ -14,11 +14,13 @@ import (
 )
 
 // Issue is one finding produced by a Lint. Path is repo-relative.
-// Line is 1-indexed; 0 means the issue is whole-file.
+// Line is 1-indexed; 0 means the issue is whole-file. Warn marks an
+// advisory finding: reported, but it does not fail the run.
 type Issue struct {
 	Path    string
 	Line    int
 	Message string
+	Warn    bool
 }
 
 func (i Issue) String() string {
@@ -43,9 +45,13 @@ func Default() []Lint {
 		Decoration{},
 		ClaudeDrift{ConsumersDir: "rules/consumers", RulesDir: "rules"},
 		ClaudeTotalSize{},
+		ClaudeSize{},
+		ClaudeSubdir{},
 		AgentMirror{},
 		TaskEvidence{TasksDir: "tasks"},
 		TmuxSocketTest{},
+		SporeTOML{},
+		SandboxOff{},
 	}
 }
 

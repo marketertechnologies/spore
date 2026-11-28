@@ -17,10 +17,10 @@ func TestBuildSummaryCollatesBothReviewers(t *testing.T) {
 	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
 		t.Fatal(err)
 	}
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
+	writeLegacyReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs splitting",
-		Comments: []string{"split commit X", "drop file Y"},
+		Comments: []task.ReviewComment{task.Ungraded("split commit X"), task.Ungraded("drop file Y")},
 	})
 	mustWriteReview(t, root, slug, task.ReviewerA, 2, task.Review{
 		Verdict: task.VerdictApprove,
@@ -109,10 +109,10 @@ func TestWriteSummaryRegeneratesWhenInputCountChanges(t *testing.T) {
 	if _, err := task.EnsureRoleTaskDir(root, slug); err != nil {
 		t.Fatal(err)
 	}
-	mustWriteReview(t, root, slug, task.ReviewerA, 1, task.Review{
+	writeLegacyReview(t, root, slug, task.ReviewerA, 1, task.Review{
 		Verdict:  task.VerdictRequestChanges,
 		Summary:  "needs work",
-		Comments: []string{"fix bug X"},
+		Comments: []task.ReviewComment{task.Ungraded("fix bug X")},
 	})
 	if err := task.WriteEngineerResponse(root, slug, 1, task.EngineerResponse{
 		Addressed: []string{"bug X -> commit Y"},
@@ -285,11 +285,17 @@ func TestDriveRoleLoopWritesEscalationMarker(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
-			Verdict: task.VerdictRequestChanges,
-			Summary: "more work",
+			Verdict:  task.VerdictRequestChanges,
+			Summary:  "more work",
+			Comments: []task.ReviewComment{highBug},
 		})
 	}
 
+	// Escalation wakes the engineer for its fix pass; keep that off
+	// real tmux.
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop (escalation): %v", err)
@@ -530,11 +536,15 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteReview(t, root, slug, task.ReviewerA, i, task.Review{
-			Verdict: task.VerdictRequestChanges,
-			Summary: "more work",
+			Verdict:  task.VerdictRequestChanges,
+			Summary:  "more work",
+			Comments: []task.ReviewComment{highBug},
 		})
 	}
 
+	stubPanes(t)
+	outcome := wakeDelivered
+	stubWakeRole(t, &outcome)
 	snap, err := DriveRoleLoop(root, tasksDir, slug)
 	if err != nil {
 		t.Fatalf("DriveRoleLoop: %v", err)
@@ -551,7 +561,8 @@ func TestDriveRoleLoopNotifiesCoordinatorOnEscalation(t *testing.T) {
 	if envs[0].Source != "role-loop" {
 		t.Errorf("source = %q, want %q", envs[0].Source, "role-loop")
 	}
-	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) + ")"
+	wantBody := "demo: escalated (reviewer A, round " + strconv.Itoa(MaxReviewerRounds) +
+		"); engineer asked to address the high/medium comments once, operator intervention required"
 	if envs[0].Body != wantBody {
 		t.Errorf("body = %q, want %q", envs[0].Body, wantBody)
 	}
@@ -712,6 +723,21 @@ func mustWriteReview(t *testing.T, root, slug string, instance task.ReviewerInst
 	}
 }
 
+// writeLegacyReview writes r without the strict-mode check, the way a
+// reviewer wrote plain-string comments before grading. Files a drive
+// later grandfathers (legacy or grade-exempt) read back as written.
+func writeLegacyReview(t *testing.T, root, slug string, instance task.ReviewerInstance, round int, r task.Review) {
+	t.Helper()
+	if r.Author == "" {
+		r.Author = string(instance)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, task.ReviewPath(root, slug, instance, round), string(b))
+}
+
 // TestDriveRoleLoopRefusesGenericTask pins that a task without
 // `loop: role` is refused even when `.spore/<slug>/` holds a staged
 // brief, and that the refusal spawns nothing and writes no role state.
@@ -737,5 +763,33 @@ func TestDriveRoleLoopRefusesGenericTask(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".worktrees", slug)); !os.IsNotExist(err) {
 		t.Errorf("worktree created on refused drive: %v", err)
+	}
+}
+
+// TestDriveRoleLoopRefusesNonActiveTask pins that role-drive refuses a
+// role task that is not active and spawns nothing for it.
+func TestDriveRoleLoopRefusesNonActiveTask(t *testing.T) {
+	for _, status := range []string{"draft", "paused", "blocked", "done"} {
+		t.Run(status, func(t *testing.T) {
+			root := newGitRepoFor(t, "demo-project")
+			t.Setenv("SPORE_COORDINATOR_STATE_DIR", t.TempDir())
+			slug := "idle"
+			tasksDir := filepath.Join(root, "tasks")
+			if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeRoleLoopTask(t, tasksDir, slug, status)
+
+			_, err := DriveRoleLoop(root, tasksDir, slug)
+			if err == nil || !strings.Contains(err.Error(), "only runs active tasks") {
+				t.Fatalf("DriveRoleLoop err = %v, want a not-active refusal", err)
+			}
+			if _, err := os.Stat(filepath.Join(task.RoleTaskDir(root, slug), "state")); !os.IsNotExist(err) {
+				t.Errorf("state dir created on refused drive: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".worktrees", slug)); !os.IsNotExist(err) {
+				t.Errorf("worktree created on refused drive: %v", err)
+			}
+		})
 	}
 }

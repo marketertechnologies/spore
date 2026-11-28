@@ -1,0 +1,163 @@
+# Secrets broker
+
+Agents use project secrets (read-only database URLs, Sentry, NewRelic) and the GitHub App without ever reading a value. The values live with a separate system user; agents reach them only through a broker that runs allowlisted commands and returns redacted output.
+
+## Why
+
+Without the broker, agents run as the user that owns `~/.config/spore/**` and the App key, so permission deny rules are speed bumps: any path the rules miss (a copy, `base64`, an env dump, a script) reads the value, and from there it reaches transcripts, PRs and the model provider.
+
+## Shape
+
+- **Owner.** `spore-secrets` (a system user from the NixOS module) owns `/var/lib/spore-secrets`. The agent user (`services.spore-fleet.user`) cannot list or read it. Human pilots read it through the `spore-pilots` group, which the agent user must not join (the module asserts this; the broker refuses to start otherwise).
+- **Broker.** `spore-secrets.socket` listens on `/run/spore-secrets/broker.sock` (mode 0660, group `spore-secrets-clients`: the agent user and the pilots) and starts `spore secrets serve` as `spore-secrets`. The service has `ProtectHome=true`, `ProtectSystem=strict` and a private `/tmp`, so it cannot read agent worktrees either. Each connection is identified by the kernel's peer credentials (`SO_PEERCRED`); uids other than root, pilots and the agent user are refused.
+- **Config.** `/etc/spore/secrets-broker.json`, rendered from `services.spore-fleet.secrets`. It names files, profiles and commands, never values.
+- **Audit.** Every call appends a JSON line to `/var/lib/spore-secrets/state/audit.log` (caller uid and pid, claimed project and task, op, profile, command, arguments redacted, exit code, refusal). Refusals also go to the journal (`journalctl -u spore-secrets`).
+
+## Files
+
+```
+/var/lib/spore-secrets/secrets/secrets.env            global keys, layered under each project
+/var/lib/spore-secrets/secrets/<project>/secrets.env  project keys (win over global)
+/var/lib/spore-secrets/secrets/<project>/github.toml  app_id, installation_id, private_key (and api_url)
+/var/lib/spore-secrets/secrets/<project>/app.pem      the App key; private_key = "app.pem" resolves here
+/var/lib/spore-secrets/state/                         audit.log, grants.json, git/<project>.git
+/var/lib/spore-fleet/fleet-enabled                    kill-switch flag
+```
+
+Keep files `spore-secrets:spore-pilots` mode 0640. tmpfiles re-applies the owner and group on boot and switch.
+
+## Profiles
+
+A profile is a project, some of its variables, and the commands allowed to see them. Adding one is a config entry:
+
+```nix
+services.spore-fleet.secrets = {
+  enable = true;
+  pilots = [ "alice" ];
+  path = [ pkgs.postgresql pkgs.curl ];
+  projects.marketer.repo = "github.com/acme/marketer";
+
+  profiles.marketer-db = {
+    project = "marketer";
+    description = "read-only production replica";
+    vars.DATABASE_URL = "MARKETER_RO_DATABASE_URL";
+    commands.psql = {
+      argv = [ "psql" "\${DATABASE_URL}" "-X" "-A" "-v" "ON_ERROR_STOP=1" ];
+      args = [ "-c" "[^\\\\]*" ];   # -c <sql>, no backslash meta-commands
+      stdin = false;
+      timeout = "120s";
+    };
+  };
+
+  profiles.marketer-sentry = {
+    project = "marketer";
+    vars.SENTRY_TOKEN = "SENTRY_AUTH_TOKEN";
+    commands.get = {
+      argv = [ "curl" "-sS" "--fail-with-body" "-H" "Authorization: Bearer \${SENTRY_TOKEN}" ];
+      args = [ "https://sentry\\.example\\.com/api/0(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*/?(\\?[A-Za-z0-9_.=&%-]*)?" ];
+    };
+  };
+
+  profiles.marketer-newrelic = {
+    project = "marketer";
+    vars.NR_KEY = "NEW_RELIC_USER_KEY";
+    commands.nrql = {
+      argv = [ "curl" "-sS" "--fail-with-body" "-H" "API-Key: \${NR_KEY}" "-H" "Content-Type: application/json" "https://api.newrelic.com/graphql" "--data-binary" "@-" ];
+      stdin = true;
+    };
+  };
+};
+```
+
+Rules the broker enforces:
+
+- The caller names a command by its key and supplies only trailing arguments. Each argument must fully match its positional regexp in `args` (`variadic` repeats the last one); no `args` means no arguments. Caller arguments are never `${}`-expanded, so an agent cannot echo a variable back.
+- `${NAME}` in `argv` expands only from the profile's `vars`; `argv[0]` must be a literal program.
+- The command runs in an empty scratch directory with `PATH`, a scratch `HOME` and the profile's variables only (not the rest of the project's secrets).
+- stdout and stderr (each capped at 4 MiB) are redacted against every value of 8+ characters in the project's layered `secrets.env` (`[redacted:KEY]`), token shapes, PEM keys and home paths, as the PR mirror does (`internal/redact`).
+
+Agents use them as:
+
+```
+spore secrets list
+spore secrets run marketer-db -- psql -c "select count(*) from orders"
+echo '{"query":"{ actor { user { name } } }"}' | spore secrets run --stdin marketer-newrelic -- nrql
+```
+
+### Writing safe commands
+
+The broker hides values; it cannot make an unsafe command safe. Narrow every pattern:
+
+- Refuse arguments that let the program read local files or run a shell: psql backslash meta-commands (`\!`, `\o |`, `\copy ... program`, `\setenv`), `curl -K`, `-o`, `-d @file`, `--config`. Redaction catches a value printed verbatim, not one that was reversed, encoded or sent elsewhere.
+- Pin URLs with an anchored host so a credential header cannot be sent to another host. Keep `..` unmatchable in the path: curl resolves `../` before sending, so a class like `[A-Za-z0-9_./-]*` after `/api/0/` reaches any path on the host. Let no path segment start with a dot, as the Sentry example does. The sandbox egress allowlist (agent-sandbox) covers the agent's own processes, not the broker's.
+- Prefer a fixed `argv` plus one constrained argument over `variadic` free text.
+
+## Who may use what
+
+- **Agents** (any caller with `SPORE_TASK_SLUG`: workers, role-loop agents, and coordinators, whose panes carry `SPORE_TASK_SLUG=coordinator`): their own project's profiles plus live grants. Grant another project's coordinator a profile with the slug `coordinator`.
+- **A caller with no `SPORE_TASK_SLUG`** (a plain shell as the agent user): every profile, every project.
+- **Pilots and root**: everything, plus `grant`, `revoke` and re-enabling the fleet.
+
+```
+sudo spore secrets grant <task-slug> <profile> --for 2h [--project <name>]
+sudo spore secrets revoke <task-slug> [<profile>]
+spore secrets grants
+```
+
+Grants expire on their own (at most 7 days) and are logged. `--project` defaults to the project of the current directory; it is the worker's project, not the profile's.
+
+Coordinator and workers run as one uid, so the broker cannot tell them apart: project and task are what the caller claims (from its environment). The scoping limits mistakes and prompt-injected sprawl; it is not a security boundary between agents. The boundary is the value: whatever profile a caller reaches, it gets command output, never credentials.
+
+## GitHub
+
+The App key and every installation token stay in the broker; tokens are minted on demand and cached in memory only.
+
+- The role-loop mirror (`internal/fleet/rolegithub.go`) detects the broker socket and routes its token-bearing calls through it: `gh` calls (`op gh`) and pushes (`op push`). Local reads (`git rev-parse`, `merge-base`) stay local.
+- `gh` calls are limited to what the mirror sends: `gh pr list|view|ready|edit|create|comment|checks` (create must be `--draft`), `gh api` on the project's own `repos/<owner>/<repo>/pulls|issues/<n>[/<sub>]`, a GET of `repos/<owner>/<repo>/commits/<sha>[/check-runs|check-suites|status|statuses]` (CI status; no fields, no other method), and `gh api graphql` with one of the queries spore itself sends (today the role loop's PR feedback read, `secrets.PRActivityQuery`), with `$owner`/`$name` pinned to the project's repo. A GraphQL allowlist and not a filter: GitHub's schema reaches other repositories from nearly any object (`owner.repositories`, `headRepository`, `node(id:)`, `search`, `organization`, cross-reference events), so no field filter is sound. The query arrives as `-f`/`--raw-field`/`-F`/`--field` `query=...` or as the `query` of a `--input -` JSON body (keys matched exactly, no repeats); either way it is lexed, any definition other than a query or fragment (a `mutation` or `subscription`, wherever it sits) is refused, and the remaining tokens must equal an allowed query. Variables must be exactly the query's (`owner`, `name`, `number`), and a repeated field is refused. `gh pr checks` and a default `gh pr view` read `statusCheckRollup`, which needs the App's Actions: read permission; the commit endpoints need Contents, Checks and Commit statuses: read. `--repo`, file inputs (`--body-file`/`--input` other than `-`, `-F k=@file`) and foreign `--hostname` are refused. So is every flag that evaluates a caller expression (`--jq`/`-q`, `--template`/`-t`): gh's jq has `env` and `$ENV`, and it would run inside the process holding the token, so a caller could print a shifted copy the output redaction does not match. Callers ask for `--json` and filter in Go. `GH_REPO` is pinned to `projects.<name>.repo`. Posted text (stdin, `--title` / `--body` and `gh api` field values in every flag spelling; docs/github-app.md lists them) is redacted broker-side, since the agent can no longer read the secrets to redact against. The response carries what was redacted (pattern class and place, never the value) so the caller can record `redaction` events in its project ledger.
+- Pushes travel as a git bundle: the client bundles the task branch (thin against its `origin/*` refs, the whole branch if the broker asks), the broker fetches it into its own bare mirror (`state/git/<project>.git`, a blobless partial clone of origin so a cold mirror of a history with tens of GB of blobs fills in seconds; git fetches the few blobs a thin bundle or push needs on demand). Before every push it fetches origin's branches (commits and trees only), so `git push` excludes everything origin already has even when the base moved since the last push. It checks the tip is the commit the client named, and pushes it. Only branches matching `pushBranch` (default `^wt/[A-Za-z0-9._-]+$`) are pushed; a rewrite needs `--force-with-lease` against the commit it replaces; a bare force is impossible.
+- The base fetch before a new worktree (`fetchBase`) asks the broker for a bundle of `origin/<base>` (thin against the commit the repo already has). The mirror fetches the branch blobless too and pulls only the blobs that bundle carries; commit checks (`bundle verify`, ancestry) never lazy-fetch (`GIT_NO_LAZY_FETCH=1`, honored from git 2.44; the broker needs that or newer), since a lazy fetch of a commit sends no haves and pulls its whole history; a caller with no local commit of the branch gets a full bundle, which pulls every blob of its history. Each push and fetch re-points the mirror's `origin` at the project's current repo URL, so lazy fetches follow a renamed repo. A mirror filled before it went blobless keeps its objects and converts in place.
+- Coordinators and plain workers push and act on PRs with `spore gh push <branch> [--force-with-lease=<sha>]`, `spore gh pr <verb> ...` and `spore gh api <path> ...`. With the socket present these call the same `push` and `gh` ops, under the same allowlist; without it they run `git push` / `gh` with the App token, like `spore gh exec`, so the same commands work on broker-less hosts. `spore gh push` bundles the local branch tip from the cwd repo (worktrees included), then points `origin/<branch>` at the pushed commit and sets it as upstream. `--body-file <path>` (`api --input <path>`, `pr -F <path>`) is read by the client, only from the cwd repo or `$TMPDIR`, and sent as stdin; `--body-file -` forwards the caller's own stdin. The broker refuses `pr -F <file>`: under `gh pr` it is `--body-file`, and would read a file as the broker user.
+- To let a coordinator push branches other than `wt/...`, set `services.spore-fleet.secrets.projects.<name>.pushBranch`, e.g. `^(wt|feature|fix)/[A-Za-z0-9._-]+$`.
+- From a sandboxed pane: `spore gh *` is an excluded command, but Claude Code honours that only for a call with no redirect, pipe or chain (`spore gh pr ... < body.md`, `cat x | spore gh ...` and `cd w && spore gh ...` all run sandboxed). Without the broker a sandboxed call cannot read the App key and fails with a hint to run it as one command, which is why the client reads `--body-file <path>` itself. Behind the broker a sandboxed call still works, since it only needs the socket: `/run` is visible inside bwrap, `network.allowAllUnixSockets` is on, and the socket's group (`spore-secrets-clients`) holds the agent user.
+- `spore gh token` and `spore gh exec` refuse while the broker socket exists: the App key is not readable. On a host with `/etc/spore/secrets-broker.json` (the module installs it), no `spore gh` path reads the App key or a cached token, even when `SPORE_SECRETS_SOCKET` points elsewhere or the socket is down: it fails with a pointer to the broker socket instead. The check (`ghapp.CheckBrokerHost`) runs before `github.toml` is validated, so the role-loop mirror fails with the same pointer, and the base fetch warns with it and fetches without the App token. `spore gh config` still manages the agent-side `github.toml`, which now holds only `pr_flow`, `operator_login`, `commit_name` and `commit_email`; the broker-side copy holds the App ids and key.
+
+Any agent can ask the broker to push a branch matching `pushBranch` or open a draft PR, since it shares the reconciler's uid. That is the same thing the role loop does; nothing else reaches GitHub as the App.
+
+## Kill switch
+
+With the broker on, the flag is `/var/lib/spore-fleet/fleet-enabled` (`SPORE_FLEET_FLAG`, set system-wide and in the reconcile units), in a directory owned by `spore-secrets`. `spore fleet disable` and `spore fleet stop` from an agent go through the broker and work, including from a sandboxed pane, where the flag's directory is read-only (`EROFS`); `spore fleet enable` from an agent is refused. `/etc/spore/secrets-broker.json` pins the flag path: when it sets `fleet_flag`, spore ignores `SPORE_FLEET_FLAG` (with a warning when they differ), so an agent cannot point the variable at a file of its own and reconcile while the fleet is off. `sudo spore fleet enable` (root writes the flag directly) or a pilot's `spore fleet enable` turns it back on. The graceful-deploy scripts remove and recreate the flag as root.
+
+## Claude Code login
+
+`~/.claude/.credentials.json` stays readable by the agent user: Claude Code reads it as that user, and it holds the refresh token. The deny rules (`Read`, `Edit`, `Bash(*.claude/.credentials.json*)`) remain a speed bump. Moving the login behind a helper run as another user does not help: `apiKeyHelper` (and `CLAUDE_CODE_OAUTH_TOKEN`) hand the credential to the `claude` process, and the helper is a command the agent can run itself, so the agent can obtain the same value. Isolating the login needs a different uid for the agent's tool processes than for the `claude` process (sandboxing), not a broker.
+
+## Migrating a host
+
+After the switch that enables `services.spore-fleet.secrets`, move the files (as root) and restart the broker:
+
+```
+sd=/var/lib/spore-secrets/secrets
+install -d -o spore-secrets -g spore-pilots -m 0750 $sd/<project>
+install -o spore-secrets -g spore-pilots -m 0640 <agent-home>/.config/spore/secrets.env $sd/secrets.env
+install -o spore-secrets -g spore-pilots -m 0640 <agent-home>/.config/spore/<project>/secrets.env $sd/<project>/secrets.env
+install -o spore-secrets -g spore-pilots -m 0640 <app key>.pem $sd/<project>/app.pem
+printf 'app_id = ...\ninstallation_id = ...\nprivate_key = "app.pem"\n' > $sd/<project>/github.toml
+spore gh config --set app_id= --set installation_id= --set private_key=   # as the agent user
+shred -u <agent-home>/.config/spore/secrets.env <agent-home>/.config/spore/*/secrets.env <old key> <agent-home>/.local/state/spore/*/github-token.json
+sudo spore fleet enable
+```
+
+Tokens that ever sat in transcripts (P0.4) should also be revoked; App installation tokens expire within an hour on their own.
+
+## Tests and sandboxes
+
+The broker socket has a default (`/run/spore-secrets/broker.sock`), so a private HOME, private XDG dirs and a cleared `SPORE_*` do not isolate a process from the live broker: `spore` still finds the host socket and acts through the real GitHub App for any project name the broker knows.
+
+- **Go tests.** A test binary never falls back to the default socket (`secrets.SocketPath` returns an absent path under `testing.Testing()`). A test that needs a broker starts its own and sets `SPORE_SECRETS_SOCKET`. A test that builds and execs the `spore` binary runs a non-test process, so it sets `SPORE_SECRETS_SOCKET` to an absent path in the child's environment (`noBrokerEnv` in `internal/migrations/managed_settings_prune_test.go`).
+- **Sandbox recipe.** A sandbox that runs the `spore` CLI (manual validation, `scripts/pr-before-after.sh`, `bootstrap/smoke.sh`) sets `SPORE_SECRETS_SOCKET` to a path that does not exist (for example `$sandbox/no-broker.sock`) and `TMPDIR` to a writable private dir. `env -i` drops `TMPDIR`, and under bwrap the fallback `/tmp` is read-only, so commands that stage temp files fail and some fall back to the broker.
+
+## Verifying
+
+`spore secrets check [--config <path>]` validates a broker config the way `spore secrets serve` does at start (names, regexps, `${VAR}` references, known projects) without serving; run it on a rendered config before a rebuild, since an invalid config keeps the broker from starting and fails every broker call on the host. With no `--config` it checks the deployed `/etc/spore/secrets-broker.json`.
+
+`nix build .#checks.x86_64-linux.nixosModules-spore-secrets` boots a VM with an agent user and a pilot and checks: the agent cannot read the secrets directory, the broker's environment or the audit log; `spore secrets run` returns redacted output and refuses other commands and arguments; agents cannot grant or re-enable the fleet; pilots can; `spore gh token` refuses; the audit log carries no value. `internal/secrets` tests cover the policy, the gh allowlist and push/fetch through bundles against a local origin.

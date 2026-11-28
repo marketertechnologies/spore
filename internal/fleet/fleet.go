@@ -12,21 +12,31 @@
 package fleet
 
 import (
-	"bufio"
-	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
+	"github.com/versality/spore/internal/secrets"
+	"github.com/versality/spore/internal/sporetoml"
 	"github.com/versality/spore/internal/task"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
+
+// skipEventEvery bounds reconcile.skipped ledger lines: a held lock or
+// a disabled fleet repeats on every timer tick.
+const skipEventEvery = time.Hour
 
 // DefaultMaxWorkers is the fallback concurrency cap when no override
 // is set via flag, env, or spore.toml.
@@ -36,23 +46,34 @@ const DefaultMaxWorkers = 3
 type Config struct {
 	TasksDir    string
 	ProjectRoot string
-	MaxWorkers  int
+	// MaxWorkers caps concurrent agent units: each worker session and
+	// each role loop with a live pane takes one slot.
+	MaxWorkers int
 }
 
 // Result is the outcome of one reconcile pass. Slug lists are
-// sorted; sets are disjoint by construction (a slug appears in
-// exactly one of Spawned / Kept / Skipped).
+// sorted; sets are disjoint by construction (a slug appears in at most
+// one of Spawned / Kept / Skipped / Crashed).
 type Result struct {
 	// Disabled is true when the kill-switch flag is missing and
-	// Reconcile short-circuited. The slug lists are empty in that
-	// case; the sessions already running (if any) are NOT reaped.
+	// Reconcile short-circuited, or went missing mid-pass and the pass
+	// stopped before its next spawn. The sessions already running (if
+	// any) are NOT reaped; `spore fleet stop` does that.
 	Disabled bool
+
+	// Locked is true when another pass or `spore task start` held the
+	// project's reconcile lock and this pass did nothing.
+	Locked bool
 
 	Active  []string
 	Spawned []string
 	Reaped  []string
 	Kept    []string
 	Skipped []string
+	// Crashed lists active tasks whose worker died fast MaxFastDeaths
+	// times in a row; they are not respawned until a healthy run or
+	// the task leaves active.
+	Crashed []string
 
 	// Matter is the per-matter sync outcome from the prelude pass.
 	// Empty when no matters are configured. Errors do not abort
@@ -60,8 +81,9 @@ type Result struct {
 	// tasks are on disk.
 	Matter []MatterResult
 
-	// Warnings are non-fatal oddities found in task frontmatter, also
-	// printed to stderr as they are found.
+	// Warnings are non-fatal problems found during the pass (bad task
+	// files, a task that failed to spawn or reap), also printed to
+	// stderr as they are found.
 	Warnings []string
 }
 
@@ -79,6 +101,20 @@ type MatterResult struct {
 // singleton coordinator session is ensured alongside the worker fleet
 // when the flag is on, and reaped when the flag goes off.
 func Reconcile(cfg Config) (Result, error) {
+	// Two passes (timer, tasks/ path unit, Stop hook) or a pass and
+	// `spore task start` racing on one task both run `git worktree
+	// add` for wt/<slug>; the loser fails. The holder covers it.
+	unlock, err := task.LockReconcile(cfg.ProjectRoot, 0)
+	if errors.Is(err, task.ErrLockHeld) {
+		task.RecordEventThrottled(cfg.ProjectRoot, "reconcile-locked", skipEventEvery,
+			events.Event{Kind: events.ReconcileSkipped, Detail: "another pass holds the reconcile lock"})
+		return Result{Locked: true}, nil
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("reconcile lock: %w", err)
+	}
+	defer unlock()
+
 	enabled, err := Enabled()
 	if err != nil {
 		return Result{}, err
@@ -89,6 +125,10 @@ func Reconcile(cfg Config) (Result, error) {
 		// is a kernel singleton with no operator-attached state worth
 		// preserving, so we tear it down with the flag.
 		ReapCoordinator(cfg.ProjectRoot)
+		clearGuard(coordinatorGuardPath(cfg.ProjectRoot))
+		clearCoordinatorAlert(cfg.ProjectRoot)
+		task.RecordEventThrottled(cfg.ProjectRoot, "reconcile-disabled", skipEventEvery,
+			events.Event{Kind: events.ReconcileSkipped, Detail: "fleet disabled (kill-switch flag missing)"})
 		return Result{Disabled: true}, nil
 	}
 
@@ -96,13 +136,20 @@ func Reconcile(cfg Config) (Result, error) {
 		cfg.MaxWorkers = DefaultMaxWorkers
 	}
 
-	if _, _, err := EnsureCoordinator(cfg.ProjectRoot); err != nil {
-		return Result{}, fmt.Errorf("coordinator: %w", err)
+	// Every liveness decision below (coordinator respawn, worker
+	// crash guard, slot count) reads this listing. A failed or
+	// timed-out listing is not "no sessions": it would count every
+	// healthy agent as a fast death, so the pass is skipped.
+	sessions, err := task.ListSessions()
+	if err != nil {
+		return Result{}, fmt.Errorf("pass skipped: %w", err)
 	}
+
+	coordinatorWarning := superviseCoordinator(cfg.ProjectRoot, slices.Contains(sessions, CoordinatorSessionName(cfg.ProjectRoot)))
 
 	matterRes := syncMatters(cfg.ProjectRoot)
 
-	metas, err := task.List(cfg.TasksDir)
+	metas, badTasks, err := scanTasks(cfg.TasksDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -139,6 +186,10 @@ func Reconcile(cfg Config) (Result, error) {
 	}
 
 	res := Result{Matter: matterRes}
+	if coordinatorWarning != "" {
+		res.warn(coordinatorWarning)
+	}
+	res.Warnings = append(res.Warnings, noticeBadTasks(cfg.ProjectRoot, badTasks)...)
 
 	// Reap first so freed slots count toward the cap on spawn.
 	// Sessions for tasks the operator paused or blocked are kept
@@ -152,10 +203,30 @@ func Reconcile(cfg Config) (Result, error) {
 			continue
 		}
 		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
-			return res, fmt.Errorf("reap %s: %w", slug, err)
+			res.warn(fmt.Sprintf("reap %s: %v", slug, err))
+			continue
 		}
 		res.Reaped = append(res.Reaped, slug)
 		delete(runningSet, slug)
+	}
+	// Role panes live under spore-role/, outside SpawnedSlugs. Reap
+	// them by the same status rule so a task flipped to done by hand
+	// (not through `spore task done`) does not leak its panes.
+	roleSlugs, err := task.SpawnedRoleSlugs(cfg.ProjectRoot)
+	if err != nil {
+		return res, err
+	}
+	for _, slug := range roleSlugs {
+		switch statusBySlug[slug] {
+		case "active", "paused", "blocked":
+			continue
+		}
+		if err := task.Reap(cfg.TasksDir, cfg.ProjectRoot, slug); err != nil {
+			return res, fmt.Errorf("reap %s: %w", slug, err)
+		}
+		if !slices.Contains(res.Reaped, slug) {
+			res.Reaped = append(res.Reaped, slug)
+		}
 	}
 
 	// Stable iteration: sort by matter_sort_order ascending (lower
@@ -206,30 +277,83 @@ func Reconcile(cfg Config) (Result, error) {
 		case m.Loop == task.LoopRole:
 			roleLooped[m.Slug] = true
 		case m.Loop != "" && m.Status == "active":
-			w := fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole)
-			fmt.Fprintln(os.Stderr, w)
-			res.Warnings = append(res.Warnings, w)
+			res.warn(fmt.Sprintf("task %s: unknown loop: %q (want %q or empty); treating as a generic worker task", m.Slug, m.Loop, task.LoopRole))
 		}
 	}
 
+	// One slot per agent unit: a worker session, or a role loop with
+	// any live pane (engineer plus reviewers count once). Running units
+	// hold their slot; new ones fill free slots in actives order.
+	roleRunning, err := runningRoleLoops(cfg.ProjectRoot)
+	if err != nil {
+		return res, fmt.Errorf("pass stopped: %w", err)
+	}
+	used := len(runningSet) + len(roleRunning)
+	var drive []string
+
+	guards := workerGuards(cfg.ProjectRoot, activeSet)
+	now := nowFunc()
 	for _, slug := range actives {
-		if runningSet[slug] {
-			continue
-		}
 		if roleLooped[slug] {
+			switch {
+			case roleRunning[slug], roleLoopDone(cfg.ProjectRoot, slug):
+				// A done loop has no panes and waits on the operator's
+				// merge; it is still driven (PR feedback, reopen) but
+				// takes no slot.
+				drive = append(drive, slug)
+			case used >= cfg.MaxWorkers:
+				res.Skipped = append(res.Skipped, slug)
+			default:
+				drive = append(drive, slug)
+				used++
+			}
 			continue
 		}
-		if len(runningSet) >= cfg.MaxWorkers {
+		g := guards(slug)
+		if runningSet[slug] {
+			g.alive(now)
+			saveGuard(g)
+			continue
+		}
+		g.dead()
+		if !g.mayRespawn() {
+			if g.capOnce() {
+				notifyFleet(cfg.ProjectRoot, fmt.Sprintf(
+					"%s: worker died within %s of spawn %d times in a row; respawn stopped. Inspect the task, then pause and restart it to retry.",
+					slug, FastDeathWindow, g.Deaths))
+				task.RecordEvent(cfg.ProjectRoot, events.Event{Kind: events.WorkerCrashLoop, Slug: slug,
+					Detail: fmt.Sprintf("%d fast deaths in a row; respawn stopped", g.Deaths)})
+			}
+			saveGuard(g)
+			res.Crashed = append(res.Crashed, slug)
+			continue
+		}
+		saveGuard(g)
+		if used >= cfg.MaxWorkers {
 			res.Skipped = append(res.Skipped, slug)
 			continue
 		}
+		if stopped(&res) {
+			return res, nil
+		}
 		picked, err := assignAgent(cfg.TasksDir, slug, workersCfg, agentCounts)
 		if err != nil {
-			return res, fmt.Errorf("assign agent %s: %w", slug, err)
+			res.warn(fmt.Sprintf("assign agent %s: %v", slug, err))
+			continue
 		}
 		if _, err := task.Ensure(cfg.TasksDir, slug); err != nil {
-			return res, fmt.Errorf("ensure %s: %w", slug, err)
+			res.warn(fmt.Sprintf("ensure %s: %v", slug, err))
+			continue
 		}
+		spawnEv := events.Event{Kind: events.WorkerSpawn, Slug: slug, Fields: map[string]string{"agent": picked}}
+		if g.Deaths > 0 {
+			spawnEv.Kind = events.WorkerRespawn
+			spawnEv.Detail = fmt.Sprintf("after %d fast death(s)", g.Deaths)
+		}
+		task.RecordEvent(cfg.ProjectRoot, spawnEv)
+		g.spawned(now)
+		saveGuard(g)
+		used++
 		// Fire OnSpawn now that the session is up: this is the
 		// rover-claim signal matter adapters bind their upstream
 		// "in progress" mirror to (e.g. Linear's Ready -> In
@@ -242,13 +366,14 @@ func Reconcile(cfg Config) (Result, error) {
 		agentCounts[picked]++
 	}
 
-	// Advance any role-looped tasks. DriveRoleLoop owns the worktree
-	// precondition for these slugs (see the homogeneous-spawn skip
-	// above) and creates `.spore/<slug>/` itself on the first tick, so
-	// a task starts moving on the same pass that classified it.
-	for _, slug := range actives {
-		if !roleLooped[slug] {
-			continue
+	// Advance the role-looped tasks that hold a slot. DriveRoleLoop
+	// owns the worktree precondition for these slugs (see the
+	// homogeneous-spawn skip above) and creates `.spore/<slug>/` itself
+	// on the first tick, so a task starts moving on the same pass that
+	// classified it.
+	for _, slug := range drive {
+		if stopped(&res) {
+			return res, nil
 		}
 		if _, err := DriveRoleLoop(cfg.ProjectRoot, cfg.TasksDir, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "role-loop drive %s: %v\n", slug, err)
@@ -263,7 +388,73 @@ func Reconcile(cfg Config) (Result, error) {
 	sort.Strings(res.Reaped)
 	sort.Strings(res.Kept)
 	sort.Strings(res.Skipped)
+	sort.Strings(res.Crashed)
 	return res, nil
+}
+
+// runningRoleLoops returns the slugs with at least one live role pane
+// (spore-role/<project>/<slug>/<role>).
+func runningRoleLoops(projectRoot string) (map[string]bool, error) {
+	slugs, err := task.SpawnedRoleSlugs(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, s := range slugs {
+		out[s] = true
+	}
+	return out, nil
+}
+
+// roleLoopDone reports whether slug's role loop reached PhaseDone (PR
+// ready, waiting for the operator's merge).
+func roleLoopDone(projectRoot, slug string) bool {
+	snap, err := DeriveSnapshot(projectRoot, slug)
+	return err == nil && snap.Phase == PhaseDone
+}
+
+// stopped re-reads the kill switch before each spawn, so a pass
+// already past its own check spawns nothing after `spore fleet stop`.
+func stopped(res *Result) bool {
+	if on, err := Enabled(); err != nil || on {
+		return false
+	}
+	res.Disabled = true
+	res.warn("fleet disabled during the pass; nothing more spawned")
+	return true
+}
+
+// workerGuards returns a loader for per-slug crash-loop records under
+// the project state dir, after dropping the records of tasks that are
+// no longer active (pausing a task re-arms its cap).
+func workerGuards(projectRoot string, active map[string]bool) func(string) *spawnGuard {
+	dir, err := fleetStateDir(projectRoot, "workers")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: worker crash records: %v\n", err)
+		return func(string) *spawnGuard { return &spawnGuard{} }
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if slug, ok := strings.CutSuffix(e.Name(), ".json"); !ok || !active[slug] {
+			clearGuard(filepath.Join(dir, e.Name()))
+		}
+	}
+	return func(slug string) *spawnGuard { return loadGuard(filepath.Join(dir, slug+".json")) }
+}
+
+func saveGuard(g *spawnGuard) {
+	if g.path == "" {
+		return
+	}
+	if err := g.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: crash record: %v\n", err)
+	}
+}
+
+// warn records a per-task failure that must not abort the pass.
+func (r *Result) warn(w string) {
+	fmt.Fprintln(os.Stderr, w)
+	r.Warnings = append(r.Warnings, w)
 }
 
 // agentCountsFromMetas tallies the agent name carried in the
@@ -331,85 +522,63 @@ func syncMatters(projectRoot string) []MatterResult {
 		return nil
 	}
 	out := make([]MatterResult, 0, len(matters))
-	ctx := context.Background()
 	for _, m := range matters {
+		ctx, cancel := callbudget.Context()
 		c, u, err := m.Sync(ctx, projectRoot)
+		cancel()
 		out = append(out, MatterResult{Name: m.Name(), Created: c, Updated: u, Err: err})
 	}
 	return out
 }
 
 // LoadMaxWorkers reads `[fleet] max_workers = N` from a spore.toml
-// at projectRoot, falling back to DefaultMaxWorkers when missing.
-// Mirrors the tiny TOML subset accepted by `internal/align`.
-func LoadMaxWorkers(projectRoot string) (int, error) {
-	tomlPath := filepath.Join(projectRoot, "spore.toml")
-	b, err := os.ReadFile(tomlPath)
+// at projectRoot. set reports whether the key is present; without it
+// n is DefaultMaxWorkers.
+func LoadMaxWorkers(projectRoot string) (n int, set bool, err error) {
+	entries, err := sporetoml.ReadSection(projectRoot, "fleet")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return DefaultMaxWorkers, nil
+		return DefaultMaxWorkers, false, fmt.Errorf("fleet: %w", err)
+	}
+	for _, e := range entries {
+		if e.Key != "max_workers" {
+			continue
 		}
-		return DefaultMaxWorkers, err
-	}
-	overrides, err := parseFleetTOML(string(b))
-	if err != nil {
-		return DefaultMaxWorkers, fmt.Errorf("fleet: parse %s: %w", tomlPath, err)
-	}
-	if v, ok := overrides["max_workers"]; ok {
-		n, err := strconv.Atoi(v)
+		n, err := strconv.Atoi(e.Value)
 		if err != nil {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers: want integer, got %q", v)
+			return DefaultMaxWorkers, false, fmt.Errorf("fleet: max_workers: want integer, got %q", e.Value)
 		}
 		if n < 1 {
-			return DefaultMaxWorkers, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
+			return DefaultMaxWorkers, false, fmt.Errorf("fleet: max_workers must be >= 1, got %d", n)
 		}
-		return n, nil
+		return n, true, nil
 	}
-	return DefaultMaxWorkers, nil
+	return DefaultMaxWorkers, false, nil
 }
 
-// parseFleetTOML collects the scalar entries of the [fleet] section as
-// raw strings (comments stripped, quotes kept for the caller to strip)
-// so integer knobs (max_workers) and string knobs (account_tier) can
-// share the section.
-func parseFleetTOML(content string) (map[string]string, error) {
-	out := map[string]string{}
-	inFleet := false
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for lineNum := 1; scanner.Scan(); lineNum++ {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inFleet = strings.TrimSpace(line[1:len(line)-1]) == "fleet"
-			continue
-		}
-		if !inFleet {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			return nil, fmt.Errorf("line %d: malformed entry %q", lineNum, line)
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		if i := strings.IndexByte(val, '#'); i >= 0 {
-			val = strings.TrimSpace(val[:i])
-		}
-		out[key] = val
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+// HostConfigPath is the host config whose `fleet_flag` pins the
+// kill-switch path (the NixOS module writes it with the secrets
+// broker). Deliberately not env-overridable; tests repoint it.
+var HostConfigPath = secrets.DefaultConfigPath
 
-// FlagPath returns the kill-switch path:
+// FlagPath returns the kill-switch path: the host config's
+// `fleet_flag` when set, else $SPORE_FLEET_FLAG, else
 // `<XDG_STATE_HOME>/spore/fleet-enabled`, falling back to
 // `$HOME/.local/state/spore/fleet-enabled` when XDG_STATE_HOME is
 // unset. Reconcile short-circuits when this path is missing.
+//
+// The host config wins over the env so an agent cannot point
+// SPORE_FLEET_FLAG at a file of its own and reconcile past the switch.
 func FlagPath() (string, error) {
+	env := os.Getenv("SPORE_FLEET_FLAG")
+	if p := hostFlagPath(); p != "" {
+		if env != "" && filepath.Clean(env) != filepath.Clean(p) {
+			fmt.Fprintf(os.Stderr, "spore fleet: ignoring SPORE_FLEET_FLAG=%s: %s pins the flag at %s\n", env, HostConfigPath, p)
+		}
+		return p, nil
+	}
+	if env != "" {
+		return env, nil
+	}
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
 		home := os.Getenv("HOME")
@@ -421,32 +590,73 @@ func FlagPath() (string, error) {
 	return filepath.Join(base, "spore", "fleet-enabled"), nil
 }
 
+func hostFlagPath() string {
+	b, err := os.ReadFile(HostConfigPath)
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		FleetFlag string `json:"fleet_flag"`
+	}
+	if json.Unmarshal(b, &c) != nil {
+		return ""
+	}
+	return c.FleetFlag
+}
+
 // Enable creates the kill-switch flag (along with parent dirs).
-// Idempotent.
+// Idempotent. A flag this user cannot write is asked of the secrets
+// broker, which only lets root or a pilot re-enable.
 func Enable() error {
 	p, err := FlagPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+	err = os.MkdirAll(filepath.Dir(p), 0o755)
+	if err == nil {
+		var f *os.File
+		if f, err = os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			return f.Close()
+		}
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
+	return viaBroker(err, true)
 }
 
 // Disable removes the kill-switch flag. Idempotent (missing flag is
-// a no-op).
+// a no-op). Any agent may stop the fleet, through the broker when
+// the flag is not its own.
 func Disable() error {
 	p, err := FlagPath()
 	if err != nil {
 		return err
 	}
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return viaBroker(err, false)
+	}
+	return nil
+}
+
+// brokerCall is a test seam for the secrets broker round trip.
+var brokerCall = func(enable bool) error {
+	if !secrets.Available() {
+		return secrets.ErrUnavailable
+	}
+	_, _, err := secrets.Call(secrets.Request{Op: secrets.OpFleet, Enable: enable}, nil, 30*time.Second)
+	return err
+}
+
+// viaBroker asks the broker to flip a flag this process cannot write:
+// EACCES/EPERM for a flag owned by the broker user, EROFS from inside
+// the agent sandbox, where the flag's directory is mounted read-only.
+func viaBroker(err error, enable bool) error {
+	if !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EROFS) {
 		return err
+	}
+	if berr := brokerCall(enable); berr != nil {
+		if errors.Is(berr, secrets.ErrUnavailable) {
+			return err
+		}
+		return berr
 	}
 	return nil
 }
@@ -465,4 +675,20 @@ func Enabled() (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// LiveUnits lists projectRoot's live agent units for `spore report`:
+// worker sessions, role loops with any live pane, and whether the
+// coordinator session exists. Errors read as nothing running.
+func LiveUnits(projectRoot string) (workers, roleLoops []string, coordinator bool) {
+	slugs, _ := task.SpawnedSlugs(projectRoot)
+	for _, s := range slugs {
+		if s == CoordinatorSlug {
+			coordinator = true
+			continue
+		}
+		workers = append(workers, s)
+	}
+	roleLoops, _ = task.SpawnedRoleSlugs(projectRoot)
+	return workers, roleLoops, coordinator
 }

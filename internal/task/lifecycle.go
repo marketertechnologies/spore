@@ -1,19 +1,19 @@
 package task
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/versality/spore/codexpolicy"
 	"github.com/versality/spore/evidence"
+	"github.com/versality/spore/internal/callbudget"
 	"github.com/versality/spore/internal/editor"
+	"github.com/versality/spore/internal/events"
 	"github.com/versality/spore/internal/matter"
 	"github.com/versality/spore/internal/task/frontmatter"
 )
@@ -60,26 +60,74 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	worktree := filepath.Join(projectRoot, ".worktrees", slug)
-	if _, err := os.Stat(worktree); err == nil {
-		return worktree, nil
-	} else if !os.IsNotExist(err) {
+	// An existing worktree needs no meta: a half-edited frontmatter
+	// must not break the role driver's per-tick call.
+	worktree, ok, err := existingWorktree(projectRoot, slug)
+	if err != nil || ok {
+		return worktree, err
+	}
+	meta, err := readTaskMeta(tasksDir, slug)
+	if err != nil {
 		return "", err
 	}
-	branch := "wt/" + slug
-	args := []string{"worktree", "add", worktree}
-	if branchExists(projectRoot, branch) {
-		args = append(args, branch)
-	} else {
-		args = append(args, "-b", branch)
-	}
-	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
-		return "", fmt.Errorf("copy brief: %w", err)
+	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
+		return "", err
 	}
 	return worktree, nil
+}
+
+func existingWorktree(projectRoot, slug string) (string, bool, error) {
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	if _, err := os.Stat(worktree); err == nil {
+		return worktree, true, nil
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	return worktree, false, nil
+}
+
+// ensureWorktree is EnsureWorktree for callers that already hold the
+// project root and task meta; ensureSession goes through here too, so
+// both paths read `base:` and copy .worktreeinclude the same way.
+func ensureWorktree(tasksDir, projectRoot, slug string, meta frontmatter.Meta) (string, error) {
+	worktree, ok, err := existingWorktree(projectRoot, slug)
+	if err != nil || ok {
+		return worktree, err
+	}
+	if err := addWorktree(tasksDir, projectRoot, slug, meta.Extra["base"], os.Stderr); err != nil {
+		return "", err
+	}
+	return worktree, nil
+}
+
+// addWorktree creates <projectRoot>/.worktrees/<slug> on wt/<slug>.
+// An existing branch is checked out as it is; a new one is created
+// --no-track from forkPoint. Then the .worktreeinclude files and the
+// brief are copied in.
+func addWorktree(tasksDir, projectRoot, slug, base string, warn io.Writer) error {
+	worktree := filepath.Join(projectRoot, ".worktrees", slug)
+	branch := "wt/" + slug
+	args := []string{"worktree", "add"}
+	if branchExists(projectRoot, branch) {
+		args = append(args, worktree, branch)
+	} else {
+		args = append(args, "--no-track", "-b", branch, worktree)
+		if start := forkPoint(projectRoot, base, warn); start != "" {
+			args = append(args, start)
+		}
+	}
+	if out, err := gitCmd(projectRoot, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	// Includes go first: a later Ensure sees the worktree and returns,
+	// so a failed brief copy must not leave them uncopied for good.
+	copyWorktreeInclude(projectRoot, worktree, warn)
+	// The brief may not be committed on the fork point (Start rewrites
+	// it just before this call), so headless workers get a copy.
+	if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
+		return fmt.Errorf("copy brief: %w", err)
+	}
+	return nil
 }
 
 // Reap kills every tmux session matching slug for the project (the
@@ -88,25 +136,22 @@ func EnsureWorktree(tasksDir, slug string) (string, error) {
 // and branch are left untouched. Used by the fleet reconciler when a
 // task leaves active.
 func Reap(tasksDir, projectRoot, slug string) error {
-	killAllSlugSessions(tasksDir, projectRoot, slug)
-	return nil
+	return killAllSlugSessions(tasksDir, projectRoot, slug)
 }
 
 // SpawnedSlugs lists slugs of every tmux session that matches the
-// "spore/<project>/<slug>" pattern. Returns an empty slice (and a
-// nil error) when no tmux server is running.
+// "spore/<project>/<slug>" pattern. Empty (nil error) when no tmux
+// server is running; a listing that fails otherwise is an error, so a
+// slow or wedged server never reads as "every session died".
 func SpawnedSlugs(projectRoot string) ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	names, err := ListSessions()
 	if err != nil {
-		// tmux exits non-zero with "no server running" or no
-		// sessions; treat both as empty.
-		return nil, nil
+		return nil, err
 	}
 	prefix := tmuxSessionPrefix(projectRoot)
 	var slugs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, prefix) {
+	for _, line := range names {
+		if !strings.HasPrefix(line, prefix) {
 			continue
 		}
 		slugs = append(slugs, strings.TrimPrefix(line, prefix))
@@ -115,11 +160,40 @@ func SpawnedSlugs(projectRoot string) ([]string, error) {
 	return slugs, nil
 }
 
-// Pause flips an active task to paused. The worktree is left in
-// place; the tmux session is reaped only if it has been idle past
-// IdleReapThreshold (model exited, pane sitting at an empty prompt).
-// A mid-tool-call rower stays alive so the operator can attach and
-// finish a thought. Refuses when the inbox has unread messages.
+// SpawnedRoleSlugs lists the slugs that have at least one
+// "spore-role/<project>/<slug>/<role>" pane. Empty (nil error) when no
+// tmux server is running; other listing failures are errors.
+func SpawnedRoleSlugs(projectRoot string) ([]string, error) {
+	names, err := ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	project, err := ProjectName(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "spore-role/" + project + "/"
+	seen := map[string]bool{}
+	var slugs []string
+	for _, line := range names {
+		rest, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		slug, _, ok := strings.Cut(rest, "/")
+		if !ok || slug == "" || seen[slug] {
+			continue
+		}
+		seen[slug] = true
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs, nil
+}
+
+// Pause flips an active task to paused. The worktree and every tmux
+// session (worker and role panes) stay; the reconciler keeps paused
+// sessions too. Refuses when the inbox has unread messages.
 func Pause(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -127,13 +201,12 @@ func Pause(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "paused"); err != nil {
 		return err
 	}
-	reapIdleSlugSessions(tasksDir, slug)
+	recordEvent(tasksDir, events.Event{Kind: events.TaskPause, Slug: slug})
 	return nil
 }
 
-// Block flips an active task to blocked. Same idle-gated reap as
-// Pause: the worktree stays, the session is killed only if idle past
-// IdleReapThreshold. Refuses when the inbox has unread messages.
+// Block flips an active task to blocked. Like Pause, it tears
+// nothing down. Refuses when the inbox has unread messages.
 func Block(tasksDir, slug string) error {
 	if err := inboxGate(slug); err != nil {
 		return err
@@ -141,7 +214,7 @@ func Block(tasksDir, slug string) error {
 	if err := flipStatus(tasksDir, slug, "active", "blocked"); err != nil {
 		return err
 	}
-	reapIdleSlugSessions(tasksDir, slug)
+	recordEvent(tasksDir, events.Event{Kind: events.TaskBlock, Slug: slug})
 	return nil
 }
 
@@ -210,7 +283,7 @@ func Done(tasksDir, slug string, force bool) error {
 	}
 
 	branch := "wt/" + slug
-	unmerged, err := UnmergedCommits(projectRoot, branch)
+	unmerged, err := UnmergedCommitsAgainst(projectRoot, branch, m.Extra["base"])
 	if err != nil {
 		return err
 	}
@@ -218,7 +291,7 @@ func Done(tasksDir, slug string, force bool) error {
 		if force {
 			fmt.Fprintf(os.Stderr, "spore task done %s: --force: discarding %d unmerged commit(s) on %s\n", slug, unmerged, branch)
 		} else {
-			return fmt.Errorf("done refused for %s: branch %q has %d unmerged commit(s); run 'spore task merge %s' first, or 'spore task done %s --force' to discard", slug, branch, unmerged, slug, slug)
+			return fmt.Errorf("done refused for %s: branch %q has %d unmerged commit(s) against its base; merge it (PR or 'spore task merge %s') first, or 'spore task done %s --force' to discard", slug, branch, unmerged, slug, slug)
 		}
 	}
 
@@ -231,11 +304,14 @@ func Done(tasksDir, slug string, force bool) error {
 		return err
 	}
 
+	RecordEvent(projectRoot, events.Event{Kind: events.TaskDone, Slug: slug, Fields: map[string]string{"unmerged_discarded": discarded(unmerged)}})
 	notifyMatterDone(projectRoot, slug, m, os.Stderr)
 
 	worktree := filepath.Join(projectRoot, ".worktrees", slug)
 
-	killAllSlugSessions(tasksDir, projectRoot, slug)
+	if err := killAllSlugSessions(tasksDir, projectRoot, slug); err != nil {
+		fmt.Fprintf(os.Stderr, "spore task done: %v\n", err)
+	}
 	if _, statErr := os.Stat(worktree); statErr == nil {
 		if out, err := gitCmd(projectRoot, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "spore task done %s: git worktree remove %s: %v: %s\n",
@@ -302,7 +378,9 @@ func notifyMatterDone(projectRoot, slug string, m frontmatter.Meta, warnOut io.W
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnDone(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnDone(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore task done %s: matter %s OnDone: %v\n", slug, name, err)
 	}
 }
@@ -359,7 +437,9 @@ func notifyMatterSpawn(projectRoot, slug string, m frontmatter.Meta, warnOut io.
 	if len(matters) == 0 {
 		return
 	}
-	if err := matters[0].OnSpawn(context.Background(), slug, copyExtra(m.Extra)); err != nil {
+	ctx, cancel := callbudget.Context()
+	defer cancel()
+	if err := matters[0].OnSpawn(ctx, slug, copyExtra(m.Extra)); err != nil {
 		fmt.Fprintf(warnOut, "spore notify-matter-spawn %s: matter %s OnSpawn: %v\n", slug, name, err)
 	}
 }
@@ -461,30 +541,13 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	worktree := filepath.Join(projectRoot, ".worktrees", slug)
-	branch := "wt/" + slug
-
-	if _, err := os.Stat(worktree); os.IsNotExist(err) {
-		args := []string{"worktree", "add", worktree}
-		if branchExists(projectRoot, branch) {
-			args = append(args, branch)
-		} else {
-			args = append(args, "-b", branch)
-		}
-		out, err := gitCmd(projectRoot, args...).CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
-		}
-		// Copy the brief into the new worktree so headless workers
-		// can read it. The worktree forks from the source branch's
-		// HEAD which often does not yet include this brief: Start
-		// rewrites it just before this call (status flip), and the
-		// operator may not have committed it on the source branch
-		// either. Soft-fails on a missing source brief; the worker
-		// falls back to interactive mode there.
-		if err := copyBriefToWorktree(tasksDir, worktree, slug); err != nil {
-			return "", fmt.Errorf("copy brief: %w", err)
-		}
+	_, reused, err := existingWorktree(projectRoot, slug)
+	if err != nil {
+		return "", err
+	}
+	worktree, err := ensureWorktree(tasksDir, projectRoot, slug, meta)
+	if err != nil {
+		return "", err
 	}
 
 	if external := meta.Session; external != "" && hasSession(external) {
@@ -494,7 +557,11 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if hasSession(session) {
 		return session, nil
 	}
-	agent, err := workerAgentCommand(meta)
+	settings, err := WorkerAgentSettings(projectRoot, meta)
+	if err != nil {
+		return "", err
+	}
+	agent, err := workerAgentCommand(meta, settings)
 	if err != nil {
 		return "", err
 	}
@@ -502,13 +569,19 @@ func ensureSession(tasksDir, slug string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	args = append(args, workerSettingsEnv(meta, settings)...)
 	prelude := LoadPreStart(projectRoot).Prelude(projectRoot, slug, "worker")
+	if reused {
+		if note := dirtyWorktreeNote(worktree, briefRelPath(tasksDir, slug)); note != "" {
+			prelude += appendStartNote(note)
+		}
+	}
 	if meta.Agent == "codex" {
 		args = append(args, codexWorkerShellCommand(prelude, agent, briefRelPath(tasksDir, slug)))
 	} else {
 		args = append(args, workerShellCommand(prelude, agent))
 	}
-	out, err := exec.Command("tmux", args...).CombinedOutput()
+	out, err := callbudget.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -543,7 +616,7 @@ func workerSessionArgs(projectRoot, slug, session, worktree string) ([]string, e
 	if tier := LoadAccountTier(projectRoot); tier != "" {
 		args = append(args, "-e", "SPORE_ACCOUNT_TIER="+tier)
 	}
-	return args, nil
+	return append(args, SandboxSessionEnv(projectRoot, worktree)...), nil
 }
 
 func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
@@ -560,42 +633,6 @@ func readTaskMeta(tasksDir, slug string) (frontmatter.Meta, error) {
 		return frontmatter.Meta{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return m, nil
-}
-
-// workerAgentCommand returns the agent command for a worker. The
-// SPORE_AGENT_BINARY override applies to claude workers only: on hosts
-// it is a claude launcher, so honouring it for codex would run claude.
-func workerAgentCommand(m frontmatter.Meta) (string, error) {
-	switch m.Agent {
-	case "", "claude", "claude-code":
-		if override := os.Getenv(AgentBinaryEnv); override != "" {
-			return override, nil
-		}
-		return defaultAgentBinary, nil
-	case "codex":
-		return CodexAgentCommand(m)
-	default:
-		return m.Agent, nil
-	}
-}
-
-// CodexAgentCommand returns the interactive codex command line for a
-// task, without a prompt: effort and model from the frontmatter, the
-// model falling back to SPORE_CODEX_MODEL. Role panes share it.
-func CodexAgentCommand(m frontmatter.Meta) (string, error) {
-	effort, err := codexpolicy.EffortForTask(m.Extra["effort"], m.Extra["complexity"])
-	if err != nil {
-		return "", err
-	}
-	model := m.Extra["model"]
-	if model == "" {
-		model = os.Getenv(CodexModelEnv)
-	}
-	args := codexpolicy.InteractiveArgs(model, effort)
-	if bin := os.Getenv(CodexBinEnv); bin != "" {
-		args[0] = bin
-	}
-	return shellJoin(args), nil
 }
 
 // briefRelPath is the brief's path relative to the worktree, where
@@ -709,7 +746,7 @@ func copyBriefToWorktree(tasksDir, worktree, slug string) error {
 }
 
 func branchExists(projectRoot, branch string) bool {
-	return gitCmd(projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
+	return refExists(projectRoot, "refs/heads/"+branch)
 }
 
 // slugServicesDir returns the per-slug services state dir:
@@ -727,4 +764,11 @@ func slugServicesDir(slug string) (string, error) {
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "spore", "services", slug), nil
+}
+
+func discarded(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }

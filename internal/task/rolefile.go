@@ -3,6 +3,8 @@ package task
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,26 @@ const InvalidSuffix = ".invalid"
 // Those files may omit `author` and carry unknown keys: rejecting them
 // would rewind an in-flight loop that already consumed them.
 const legacyMarker = "legacy-files"
+
+// orderExemptMarker lists, like legacyMarker, the role files on disk
+// when a tree was first driven by a binary that enforces severity
+// order. Those reviews may keep an unsorted `comments` list: their
+// IDs already went out, and bouncing them would rewind the loop.
+const orderExemptMarker = "order-exempt-files"
+
+// gradeExemptMarker lists, like orderExemptMarker, the role files on
+// disk when a tree was first driven by a binary that rejects a
+// comment-less request_changes and plain-string comments in strict
+// reviews. Those files were already consumed; bouncing them would
+// rewind the loop.
+const gradeExemptMarker = "grade-exempt-files"
+
+// overrideMarker lists the review files `spore task force-approve`
+// rewrote, each with the sha256 of the content it wrote. Only that
+// exact content may carry `operator_override`: a reviewer that sets it
+// itself, or rewrites a forced file, would approve past its own
+// high/medium comments.
+const overrideMarker = "operator-overrides"
 
 // ErrInvalidRoleFile is wrapped by every validation failure so callers
 // can tell a bad file (skip it, bounce it) from an I/O error.
@@ -95,26 +117,84 @@ func ValidateRoleFile(projectRoot, slug string, f RoleFile) error {
 	if err != nil {
 		return err
 	}
-	legacy, err := isLegacyFile(projectRoot, slug, f.Rel)
+	if f.Instance == "" {
+		legacy, err := isLegacyFile(projectRoot, slug, f.Rel)
+		if err != nil {
+			return err
+		}
+		_, err = ParseEngineerResponse(f.Path, b, legacy)
+		return err
+	}
+	rules, err := reviewStrictness(projectRoot, slug, f.Rel)
 	if err != nil {
 		return err
 	}
-	if f.Instance == "" {
-		_, err = ParseEngineerResponse(f.Path, b, legacy)
-	} else {
-		_, err = ParseReview(f.Path, b, f.Instance, legacy)
+	if rules.override, err = overrideRecorded(projectRoot, slug, f.Rel, b); err != nil {
+		return err
 	}
+	_, err = parseReview(f.Path, b, f.Instance, f.Round, rules)
 	return err
 }
 
+// reviewRules is the checks a review file is held to beyond the
+// shared minimum. Each flag is off for files written before the binary
+// that introduced its check first drove the tree.
+type reviewRules struct {
+	legacy bool
+	// sorted requires comments in severity order.
+	sorted bool
+	// strictGrades rejects plain-string comments and a request_changes
+	// with no comments.
+	strictGrades bool
+	// override allows `operator_override`.
+	override bool
+}
+
+func strictRules() reviewRules { return reviewRules{sorted: true, strictGrades: true} }
+
+// reviewStrictness returns the rules the review at rel is held to.
+func reviewStrictness(projectRoot, slug, rel string) (reviewRules, error) {
+	legacy, err := isLegacyFile(projectRoot, slug, rel)
+	if err != nil || legacy {
+		return reviewRules{legacy: legacy}, err
+	}
+	orderExempt, err := listedInMarker(projectRoot, slug, orderExemptMarker, rel)
+	if err != nil {
+		return reviewRules{}, err
+	}
+	gradeExempt, err := listedInMarker(projectRoot, slug, gradeExemptMarker, rel)
+	return reviewRules{sorted: !orderExempt, strictGrades: !gradeExempt}, err
+}
+
 // ParseReview decodes a reviewer verdict. Strict mode rejects unknown
-// keys, trailing data, a missing summary, and an author other than
-// the reviewer instance. Legacy mode (grandfathered files) tolerates
-// unknown keys and a missing author. Both enforce the verdict enum.
-func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) (Review, error) {
+// keys, trailing data, a missing summary, an author other than the
+// reviewer instance, and graded comments out of severity order.
+// Strict mode also rejects plain-string comments and a request_changes
+// with no comments. Legacy mode (grandfathered files) tolerates unknown
+// keys, a missing author, and any comment order. Both enforce the
+// verdict enum, a known `prefix`, the graded comment shape, and the
+// grade-derived verdict rule for round (the N in round-N.json). It
+// rejects `operator_override`: only a file recorded by
+// RecordOperatorOverride may carry one (see ReadReview).
+func ParseReview(path string, b []byte, instance ReviewerInstance, round int, legacy bool) (Review, error) {
+	rules := strictRules()
+	if legacy {
+		rules = reviewRules{legacy: true}
+	}
+	return parseReview(path, b, instance, round, rules)
+}
+
+// parseReview is ParseReview with each strict check switched by rules:
+// a strict file written before a check existed is exempt from it (see
+// orderExemptMarker, gradeExemptMarker).
+func parseReview(path string, b []byte, instance ReviewerInstance, round int, rules reviewRules) (Review, error) {
+	legacy := rules.legacy
 	var r Review
 	if err := decodeRoleJSON(b, &r, legacy); err != nil {
 		return r, invalid(path, err.Error())
+	}
+	if r.OperatorOverride != "" && !rules.override {
+		return r, invalid(path, "operator_override is written only by `spore task force-approve`; remove it")
 	}
 	if r.Verdict != VerdictApprove && r.Verdict != VerdictRequestChanges {
 		return r, invalid(path, fmt.Sprintf("verdict %q not one of %q, %q", r.Verdict, VerdictApprove, VerdictRequestChanges))
@@ -124,6 +204,22 @@ func ParseReview(path string, b []byte, instance ReviewerInstance, legacy bool) 
 	}
 	if !legacy && strings.TrimSpace(r.Summary) == "" {
 		return r, invalid(path, `missing required field "summary"`)
+	}
+	if r.Prefix != "" && !knownPrefix(r.Prefix) {
+		return r, invalid(path, fmt.Sprintf("prefix %q is not a reviewer ID prefix: copy $SPORE_REVIEWER_PREFIX", r.Prefix))
+	}
+	if rules.strictGrades {
+		if err := checkStrictGrades(r); err != nil {
+			return r, invalid(path, err.Error())
+		}
+	}
+	if err := checkGrades(r, round); err != nil {
+		return r, invalid(path, err.Error())
+	}
+	if rules.sorted {
+		if err := checkSeverityOrder(r); err != nil {
+			return r, invalid(path, err.Error())
+		}
 	}
 	return r, nil
 }
@@ -137,6 +233,16 @@ func ParseEngineerResponse(path string, b []byte, legacy bool) (EngineerResponse
 	}
 	if err := checkAuthor(path, r.Author, EngineerAuthor, legacy); err != nil {
 		return r, err
+	}
+	for i, o := range r.Outcomes {
+		if err := o.validate(); err != nil {
+			return r, invalid(path, fmt.Sprintf("outcomes[%d]: %v", i, err))
+		}
+	}
+	if r.PR != nil {
+		if err := r.PR.validate(); err != nil {
+			return r, invalid(path, "pr: "+err.Error())
+		}
 	}
 	return r, nil
 }
@@ -194,8 +300,26 @@ func QuarantinePath(path string) (string, int) {
 // of a task tree by this binary. Idempotent: an existing marker is left
 // alone. A fresh tree records an empty list, so every file is strict.
 func EnsureLegacyMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, legacyMarker)
+}
+
+// EnsureGradeExemptMarker records the role files present on the first
+// drive by a binary that enforces strict grades; see gradeExemptMarker.
+// Idempotent like EnsureLegacyMarker.
+func EnsureGradeExemptMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, gradeExemptMarker)
+}
+
+// EnsureOrderExemptMarker records the role files present on the first
+// drive by a binary that enforces severity order; see
+// orderExemptMarker. Idempotent like EnsureLegacyMarker.
+func EnsureOrderExemptMarker(projectRoot, slug string) error {
+	return ensureListMarker(projectRoot, slug, orderExemptMarker)
+}
+
+func ensureListMarker(projectRoot, slug, name string) error {
 	stateDir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
-	marker := filepath.Join(stateDir, legacyMarker)
+	marker := filepath.Join(stateDir, name)
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
@@ -229,7 +353,13 @@ func EnsureLegacyMarker(projectRoot, slug string) error {
 // disk (a pre-upgrade tree not yet driven), every file counts as
 // legacy: that is what the first drive will record.
 func isLegacyFile(projectRoot, slug, rel string) (bool, error) {
-	f, err := os.Open(filepath.Join(RoleTaskDir(projectRoot, slug), "state", legacyMarker))
+	return listedInMarker(projectRoot, slug, legacyMarker, rel)
+}
+
+// listedInMarker reports whether rel is listed in the named state
+// marker. A missing marker lists every file (see isLegacyFile).
+func listedInMarker(projectRoot, slug, name, rel string) (bool, error) {
+	f, err := os.Open(filepath.Join(RoleTaskDir(projectRoot, slug), "state", name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return true, nil
@@ -244,6 +374,86 @@ func isLegacyFile(projectRoot, slug, rel string) (bool, error) {
 		}
 	}
 	return false, sc.Err()
+}
+
+// RecordOperatorOverride lists the review at instance/round in the
+// override marker, bound to b (the forced file's exact content), so
+// that content's `operator_override` validates and any rewrite of the
+// file does not. Idempotent.
+func RecordOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int, b []byte) error {
+	if err := validateInstance(instance); err != nil {
+		return err
+	}
+	rel := relTo(RoleTaskDir(projectRoot, slug), ReviewPath(projectRoot, slug, instance, round))
+	if ok, err := overrideRecorded(projectRoot, slug, rel, b); err != nil || ok {
+		return err
+	}
+	stateDir := filepath.Join(RoleTaskDir(projectRoot, slug), "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(stateDir, overrideMarker), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(overrideLine(rel, b) + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// DropOperatorOverride removes every record for instance/round from
+// the override marker; a no-op when none is listed.
+func DropOperatorOverride(projectRoot, slug string, instance ReviewerInstance, round int) error {
+	if err := validateInstance(instance); err != nil {
+		return err
+	}
+	rel := relTo(RoleTaskDir(projectRoot, slug), ReviewPath(projectRoot, slug, instance, round))
+	marker := filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker)
+	b, err := os.ReadFile(marker)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var keep strings.Builder
+	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		if l != "" && !strings.HasPrefix(l, rel+" ") {
+			keep.WriteString(l + "\n")
+		}
+	}
+	return os.WriteFile(marker, []byte(keep.String()), 0o644)
+}
+
+func overrideLine(rel string, b []byte) string {
+	sum := sha256.Sum256(b)
+	return rel + " sha256:" + hex.EncodeToString(sum[:])
+}
+
+// overrideRecorded reports whether the override marker lists rel with
+// content b. It fails closed: unlike the other list markers, a missing
+// marker lists nothing. Content without the key skips the marker read
+// and hash; a false answer only makes parseReview reject an override.
+func overrideRecorded(projectRoot, slug, rel string, b []byte) (bool, error) {
+	if !bytes.Contains(b, []byte(`"operator_override"`)) {
+		return false, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(RoleTaskDir(projectRoot, slug), "state", overrideMarker))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	want := overrideLine(rel, b)
+	for _, l := range strings.Split(string(raw), "\n") {
+		if l == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func relTo(root, p string) string {
